@@ -164,8 +164,8 @@ export function setAttribute(node: ExtendedElement, name: string, value: any,  i
     // console.warn(value)
     if (value) node.innerHTML = value || ''
   } else if (name !== 'list' && name !== 'type' && !isSvg && name in node) {
-    setProperty(node, name, value == null ? '' : value)
-    if (value == null || value === false) node.removeAttribute(name)
+    setProperty(node, name, value === null ? '' : value)
+    if (value === null || value === undefined) node.removeAttribute(name)
   } else {
     const ns = isSvg && (name !== (name = name.replace(/^xlink\:?/, '')))
     if (value == null || value === false) {
@@ -180,7 +180,6 @@ export function setAttribute(node: ExtendedElement, name: string, value: any,  i
       node.setAttributeNS('http://www.w3.org/1999/xlink', name.toLowerCase(), value)
 
     } else {
-
       node.setAttribute(name, value)
     }
   }
