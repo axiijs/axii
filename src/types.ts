@@ -1,4 +1,4 @@
-import { createElement } from "./DOM";
+import { createElement, Fragment } from "./DOM";
 import {Context} from "./Host";
 
 export type Props = {
@@ -10,6 +10,7 @@ export type EffectHandle = () => (void | (() => void))
 
 export type InjectHandles = {
     createElement: typeof createElement,
+    Fragment: typeof createElement,
     useLayoutEffect: (arg: EffectHandle) => void
     ref: {
         [k: string]: HTMLElement

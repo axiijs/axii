@@ -1,5 +1,5 @@
 import {reactive, pauseTracking, resetTracking, isReactive} from "rata";
-import {UnhandledPlaceholder, createElement, JSXElementType, AttributesArg} from "./DOM";
+import {UnhandledPlaceholder, createElement, JSXElementType, AttributesArg, Fragment} from "./DOM";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props} from "./types";
@@ -168,7 +168,7 @@ export class ComponentHost implements Host{
         // CAUTION 组件在渲染的时候只是为了建立联系，这种过程可能会读 reactive，但不应该被更上层监听。
         //  组件的渲染会出现在 FunctionHost 中，并且是在 FunctionHost render 的 computed 中，所以这里 render 中的读的值都可能会被上层 track.
         pauseTracking()
-        const node = this.type(props, {createElement: this.createElement, ref: this.ref, useLayoutEffect: this.useLayoutEffect, context: this.context})
+        const node = this.type(props, {Fragment, createElement: this.createElement, ref: this.ref, useLayoutEffect: this.useLayoutEffect, context: this.context})
 
         componentRenderFrame.pop()
         // 就用当前 component 的 placeholder
