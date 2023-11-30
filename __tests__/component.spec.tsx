@@ -1,7 +1,8 @@
+/** @vitest-environment jsdom */
 /** @jsx createElement */
 import {createElement, createRoot} from "@framework";
 import {reactive, incMap, type Atom} from "rata";
-import {describe, test, beforeEach, expect} from "@jest/globals";
+import {describe, test, beforeEach, expect} from "vitest";
 
 describe('component render', () => {
 

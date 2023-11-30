@@ -1,4 +1,3 @@
-import path from 'path'
 import {fileURLToPath, URL } from 'url'
 
 export default {
