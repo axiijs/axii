@@ -1,4 +1,4 @@
-import {computed, destroyComputed, Atom} from "rata";
+import {computed, destroyComputed, Atom} from "data0";
 import {Context, Host} from "./Host";
 
 export class AtomHost implements Host{

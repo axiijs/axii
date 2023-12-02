@@ -1,5 +1,5 @@
 import {UnhandledPlaceholder, insertBefore} from './DOM'
-import {computed, destroyComputed, TrackOpTypes, TriggerOpTypes} from "rata";
+import {computed, destroyComputed, TrackOpTypes, TriggerOpTypes} from "data0";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 

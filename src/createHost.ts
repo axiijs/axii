@@ -1,6 +1,6 @@
 import {insertBefore, UnhandledPlaceholder} from "./DOM";
 import {Context, Host} from "./Host";
-import { isAtom, isReactive} from "rata";
+import { isAtom, isReactive} from "data0";
 import {ReactiveArrayHost} from "./ReactiveArrayHost";
 import {ComponentHost} from "./ComponentHost";
 import {AtomHost} from "./AtomHost";

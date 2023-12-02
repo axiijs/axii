@@ -11,10 +11,12 @@
   "author": "sskyy<skyking_H@hotmail.com>",
   "license": "MIT",
   "types": "./dist/axii.d.ts",
+  "typings": "./dist/axii.d.ts",
   "exports": {
     ".": {
       "import": "./dist/axii.js",
-      "require": "./dist/axii.umd.cjs"
+      "require": "./dist/axii.umd.cjs",
+      "types": "./dist/axii.d.ts"
     }
   },
   "type": "module",
@@ -34,11 +36,11 @@
     "vitest": "^0.34.6"
   },
   "dependencies": {
-    "rata": "^1.0.0",
     "@antv/g6": "^4.8.20",
     "@tailwindcss/forms": "^0.5.4",
     "acorn": "^8.10.0",
     "chevrotain": "^11.0.1",
+    "data0": "^1.0.0",
     "jquery": "^3.7.0",
     "lodash": "^4.17.21",
     "monaco-editor": "^0.40.0",

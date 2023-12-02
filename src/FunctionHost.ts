@@ -1,4 +1,4 @@
-import {computed, destroyComputed} from "rata";
+import {computed, destroyComputed} from "data0";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'

@@ -1,4 +1,4 @@
-import {reactive, pauseTracking, resetTracking, isReactive} from "rata";
+import {reactive, pauseTracking, resetTracking, isReactive} from "data0";
 import {UnhandledPlaceholder, createElement, JSXElementType, AttributesArg, Fragment} from "./DOM";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";

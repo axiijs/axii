@@ -1,6 +1,6 @@
 import {containerToUnhandled, containerToUnhandledAttr, setAttribute, UnhandledPlaceholder, insertBefore} from "./DOM";
 import {Context, Host} from "./Host";
-import {computed, destroyComputed, isAtom, isReactive} from "rata";
+import {computed, destroyComputed, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
 import {removeNodesBetween} from "./util";
 

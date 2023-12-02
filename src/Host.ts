@@ -1,4 +1,4 @@
-import {computed} from "rata";
+import {computed} from "data0";
 import {Root} from "./render";
 
 export interface Host {
