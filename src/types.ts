@@ -10,7 +10,7 @@ export type EffectHandle = () => (void | (() => void))
 
 export type InjectHandles = {
     createElement: typeof createElement,
-    Fragment: typeof createElement,
+    Fragment: typeof Fragment,
     useLayoutEffect: (arg: EffectHandle) => void
     ref: {
         [k: string]: HTMLElement

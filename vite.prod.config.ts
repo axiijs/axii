@@ -30,6 +30,7 @@ export default {
   },
   plugins: [dts({
     tsconfigPath: resolve(__dirname, 'tsconfig.prod.json'),
-    rollupTypes: true
+    rollupTypes: true,
+    bundledPackages: ['rata']
   })]
 }

@@ -10,7 +10,6 @@ export default {
   },
   resolve: {
     alias: {
-      'rata': fileURLToPath(new URL('../rata/src/index.ts', import.meta.url)),
       '@framework': fileURLToPath(new URL('./src/index.ts', import.meta.url))
     }
   },
