@@ -13,7 +13,7 @@ export class AtomHost implements Host{
 
     replace(value: any) {
         if (this.element === this.placeholder) {
-            const textNode = new Text((value as string).toString())
+            const textNode = new Text((value as string)?.toString ? (value as string).toString() : JSON.stringify(value))
             this.parentElement!.replaceChild(textNode, this.placeholder)
             this.element = textNode
         } else {
