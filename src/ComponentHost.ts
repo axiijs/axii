@@ -186,8 +186,9 @@ export class ComponentHost implements Host{
             if (handle) this.layoutEffectDestroyHandles.add(handle)
         })
     }
-    destroy(parentHandle?: boolean) {
-        this.innerHost!.destroy(parentHandle)
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
+        this.innerHost!.destroy(parentHandle, parentHandleComputed)
         this.layoutEffectDestroyHandles.forEach(handle => handle())
         this.destroyCallback.forEach(callback => callback())
         if (!parentHandle) {

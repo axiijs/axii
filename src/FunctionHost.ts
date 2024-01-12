@@ -1,4 +1,4 @@
-import {atomComputed, computed, destroyComputed, Atom} from "data0";
+import {atomComputed, computed, Atom, destroyComputed, Notifier} from "data0";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
@@ -32,18 +32,24 @@ export class FunctionHost implements Host{
         this.renderComputed = computed(() => {
             // CAUTION 每次都清空上一次的结果
             if(lastRenderedHost) {
-                lastRenderedHost.destroy()
+                lastRenderedHost.destroy(false, false)
             }
 
             lastRenderedHost = this.innerHost!()!
+            Notifier.instance.pauseTracking()
             lastRenderedHost.render()
+            Notifier.instance.resetTracking()
         })
     }
-    destroy(fromParent?: boolean) {
-        const innerHost = this.innerHost!()
-        destroyComputed(this.innerHost)
-
-        innerHost.destroy(true)
-        if (!fromParent) this.placeholder.remove()
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        const innerHost = this.innerHost!()!
+        if (!parentHandleComputed) {
+            destroyComputed(this.renderComputed)
+            destroyComputed(this.innerHost!)
+        }
+        innerHost?.destroy(parentHandle, !parentHandleComputed)
+        if (!parentHandle) {
+            this.placeholder.remove()
+        }
     }
 }

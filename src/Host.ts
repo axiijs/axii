@@ -7,7 +7,7 @@ export interface Host {
     context: Context
     computed?: ReturnType<typeof computed>
     render: () => void
-    destroy : (parentHandleElement?: boolean) => void
+    destroy : (parentHandleElement?: boolean, parentHandleComputed?: boolean) => void
     revoke?: () => void
 }
 

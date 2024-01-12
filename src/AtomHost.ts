@@ -38,8 +38,10 @@ export class AtomHost implements Host{
             this.context.skipIndicator
         )
     }
-    destroy(parentHandle?: boolean) {
-        destroyComputed(this.computed)
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        if (!parentHandleComputed) {
+            destroyComputed(this.computed)
+        }
         if (!parentHandle) {
             this.element.remove()
             this.placeholder.remove()

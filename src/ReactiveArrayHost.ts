@@ -192,11 +192,13 @@ export class ReactiveArrayHost implements Host{
             }
         )
     }
-    destroy(parentHandle?: boolean) {
-        destroyComputed(this.hostsComputed)
-        destroyComputed(this.placeholderAndItemComputed)
+    destroy(fromParentDestroy?: boolean, parentHandleComputed?: boolean) {
+        if (!parentHandleComputed) {
+            destroyComputed(this.hostsComputed)
+            destroyComputed(this.placeholderAndItemComputed)
+        }
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
-        this.hostsComputed!.forEach(host => host.destroy(parentHandle))
-        if (!parentHandle) this.placeholder.remove()
+        this.hostsComputed!.forEach(host => host.destroy(fromParentDestroy))
+        if (!fromParentDestroy) this.placeholder.remove()
     }
 }

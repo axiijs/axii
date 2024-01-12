@@ -174,4 +174,56 @@ describe('component render', () => {
         expect(functionNodeRuns).toBe(1)
 
     })
+
+    test('function node inside function node', () => {
+        function Child2() {
+            const showName = atom(false)
+            const text = atom('child2')
+            return <div>{() => showName() ? text() : <div>anonymous</div>}</div>
+        }
+
+        function App() {
+            return <div>
+                {() => {
+                    // const Component = dynamicComponent()
+                    return <Child2 />
+                }}
+            </div>
+        }
+
+        root.render(<App/>)
+        console.log(rootEl.innerHTML)
+        expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('anonymous')
+    })
+
+
+
+    test('dynamic Component', () => {
+        function Child1() {
+            return <div>child1</div>
+        }
+
+        function Child2() {
+            const showName = atom(false)
+            const text = atom('child2')
+            return <div>{() => showName() ? text() : <div>anonymous</div>}</div>
+        }
+
+        const dynamicComponent = atom(Child2)
+        function App() {
+            return <div>
+                {() => {
+                    const Component = dynamicComponent()
+                    return <Component />
+                }}
+            </div>
+        }
+
+        root.render(<App/>)
+        console.log(rootEl.innerHTML)
+        expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('anonymous')
+        dynamicComponent(Child1)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('child1')
+
+    })
 })
