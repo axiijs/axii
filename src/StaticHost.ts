@@ -2,18 +2,19 @@ import {
     setAttribute,
     UnhandledPlaceholder,
     insertBefore,
-    ExtendedElement
+    ExtendedElement,
+    createElement
 } from "./DOM";
 import {Context, Host} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
 import {removeNodesBetween, assert} from "./util";
-// patch isValidAttribute 用来处理自定义  reactive 属性
-import {createElement} from "./DOM.js";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
 createElement.isValidAttribute = function(name:string, value:any) {
+    if (name.startsWith('on')) return true
+
     if (Array.isArray(value) && value.some(isReactiveValue)) {
         return false
     } else if (isReactiveValue(value)){
