@@ -1,6 +1,13 @@
 import {computed, destroyComputed, Atom} from "data0";
 import {Context, Host} from "./Host";
 
+
+function stringValue(v: any) {
+    return (v as string)?.toString ?
+        (v as string).toString() :
+        (v === undefined ? 'undefined' : JSON.stringify(v))
+}
+
 export class AtomHost implements Host{
     computed: ReturnType<typeof computed>
     element: Text|Comment = this.placeholder
@@ -13,11 +20,11 @@ export class AtomHost implements Host{
 
     replace(value: any) {
         if (this.element === this.placeholder) {
-            const textNode = new Text((value as string)?.toString ? (value as string).toString() : JSON.stringify(value))
+            const textNode = new Text(stringValue(value))
             this.parentElement!.replaceChild(textNode, this.placeholder)
             this.element = textNode
         } else {
-            this.element.nodeValue = (value as string).toString()
+            this.element.nodeValue = stringValue(value)
         }
     }
 

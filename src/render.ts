@@ -1,4 +1,3 @@
-
 import {createHost} from "./createHost";
 import {ComponentNode} from "./types";
 import {Context} from "./Host";
@@ -44,9 +43,6 @@ export function createRoot(element: HTMLElement) {
 
     return root
 }
-
-export  {createElement, Fragment} from './DOM'
-
 
 
 

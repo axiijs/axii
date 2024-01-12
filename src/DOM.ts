@@ -1,5 +1,5 @@
 import {assert, each, isPlainObject} from './util'
-import {Component} from "./types";
+import {Component, VNode} from "./types";
 
 // type WritablePropertyName = Exclude<keyof HTMLElement, keyof Readonly<HTMLElement> >
 /** Attempt to set a DOM property to the given value.
@@ -17,10 +17,12 @@ function setProperty(node: HTMLElement, name: string, value: any) {
   }
 }
 
-interface ExtendedElement extends HTMLElement {
+export interface ExtendedElement extends HTMLElement {
   _listeners?: {
     [k: string]: (e: Event) => any
   },
+  unhandledChildren?: UnhandledChildInfo[]
+  unhandledAttr?: UnhandledAttrInfo[]
 }
 
 function eventProxy(this: ExtendedElement, e: Event) {
@@ -32,16 +34,7 @@ export type UnhandledPlaceholder = Comment
 
 const selectValueTmp = new WeakMap<ExtendedElement, any>()
 
-function isValidAttribute(name:string, value:any) {
-  if (typeof value !== 'object' && typeof value !== 'function') return true
-  // 事件
-  if ((name[0] === 'o' && name[1] === 'n') && typeof value === 'function' ) return true
-  if (isPlainObject(value) && name ==='style') return true
-  // 默认支持 className 的对象形式
-  if (isPlainObject(value) && name ==='className') return true
 
-  return false
-}
 
 function isEventName(name: string) {
   return name[0] === 'o' && name[1] === 'n'
@@ -193,18 +186,11 @@ export type AttributesArg = {
 
 export type JSXElementType =  string | typeof Fragment | Component
 
-
 type UnhandledChildInfo = {placeholder: UnhandledPlaceholder, child: any}
-export const containerToUnhandled = new WeakMap<any, UnhandledChildInfo[]>()
 
 type UnhandledAttrInfo = {el: ExtendedElement, key: string, value: any}
-export const containerToUnhandledAttr = new WeakMap<any, UnhandledAttrInfo[]>()
 
-type VNode = {
-  type: JSXElementType,
-  props? : AttributesArg,
-  children?: any
-}
+
 
 
 export function createElement(type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : VNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null{
@@ -220,7 +206,6 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
     return { type, props, children }
   }
 
-
   const unhandledAttr: UnhandledAttrInfo[] = []
   const unhandledChildren: UnhandledChildInfo[] = []
 
@@ -231,20 +216,11 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
       container.appendChild(document.createTextNode(child.toString()))
     } else if (child instanceof HTMLElement || child instanceof DocumentFragment || child instanceof SVGElement) {
       container.appendChild(child)
-      // 往上传递 unhandledChild ，直到没有 parent 了为止
-      const unhandledChildInChild = containerToUnhandled.get(child)
-      if (unhandledChildInChild) {
-        containerToUnhandled.delete(child)
-        unhandledChildren.push(...unhandledChildInChild)
-      }
-
-      // 往上传递 unhandledAttr 和 attr，直到没有 parent 了为止
-      const unhandledChildInAttr = containerToUnhandledAttr.get(child)
-
-      if (unhandledChildInAttr) {
-        containerToUnhandledAttr.delete(child)
-        unhandledAttr.push(...unhandledChildInAttr)
-      }
+      // 往上传递 unhandledChild unhandledAttr ，直到没有 parent 了为止
+      unhandledChildren.push(...((child as ExtendedElement).unhandledChildren || []))
+      unhandledAttr.push(...((child as ExtendedElement).unhandledAttr || []))
+      delete (child as ExtendedElement).unhandledChildren
+      delete (child as ExtendedElement).unhandledAttr
 
     } else {
       const placeholder: UnhandledPlaceholder = new Comment('unhandledChild')
@@ -258,25 +234,43 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
   if (props) {
     Object.entries(props).forEach(([key, value]) => {
       // 注意这里好像写得很绕，但逻辑判断是最少的
-      if ( Array.isArray(value)) {
-        if (!value.every(v => isValidAttribute(key, v))){
-          unhandledAttr.push({ el: container as ExtendedElement, key, value})
-          return
-        }
-      } else if(!isValidAttribute(key, value)){
+      if(!createElement.isValidAttribute(key, value)){
         unhandledAttr.push({ el: container as ExtendedElement, key, value})
-        return
+      } else {
+        setAttribute(container as ExtendedElement, key, value, _isSVG)
       }
-      setAttribute(container as ExtendedElement, key, value, _isSVG)
     })
   }
 
   // 把 unhandled child/attr 全部收集到顶层的  container 上，等外部处理，这样就不用外部去遍历 jsx 的结果了
-  if (unhandledChildren.length) containerToUnhandled.set(container, unhandledChildren)
-  if (unhandledAttr) containerToUnhandledAttr.set(container, unhandledAttr)
+
+  if (unhandledChildren.length) (container as ExtendedElement).unhandledChildren = unhandledChildren
+  if (unhandledAttr) (container as ExtendedElement).unhandledAttr = unhandledAttr
 
   // CAUTION ref 外部处理
   return container
+}
+
+
+// CAUTION 写到 createElement 上就是为了给外面根据自己需要覆盖的
+/**
+ * style 支持对象
+ * 事件 支持函数或者函数数组
+ * className 支持对象
+ */
+createElement.isValidAttribute = function (name:string, value:any): boolean {
+  if (Array.isArray(value) ){
+    return value.every(v => createElement.isValidAttribute(name, v))
+  }
+
+  if (typeof value !== 'object' && typeof value !== 'function') return true
+  // 事件
+  if ((name[0] === 'o' && name[1] === 'n') && typeof value === 'function' ) return true
+  if (isPlainObject(value) && name ==='style') return true
+  // 默认支持 className 的对象形式
+  if (isPlainObject(value) && name ==='className') return true
+
+  return false
 }
 
 

@@ -1,4 +1,4 @@
-import {computed, destroyComputed} from "data0";
+import {atomComputed, computed, destroyComputed, Atom} from "data0";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
@@ -7,9 +7,9 @@ import {insertBefore} from './DOM'
 type FunctionNode = () => ChildNode|DocumentFragment|string|number|null|boolean
 
 export class FunctionHost implements Host{
-    computed: ReturnType<typeof computed>
+    renderComputed: ReturnType<typeof computed>
     fragmentParent = document.createDocumentFragment()
-    innerHost?: Host
+    innerHost?: Atom<Host>
     constructor(public source: FunctionNode, public placeholder:Comment, public context: Context) {
     }
     get parentElement() {
@@ -19,22 +19,31 @@ export class FunctionHost implements Host{
         return this.innerHost?.element || this.placeholder
     }
     render(): void {
-        this.computed = computed(() => {
-                // CAUTION 每次都清空上一次的结果
-                this.innerHost?.destroy()
 
+        this.innerHost = atomComputed(() => {
                 const node = this.source()
-
                 const newPlaceholder = new Comment('computed node')
                 insertBefore(newPlaceholder, this.placeholder)
-                this.innerHost = createHost(node, newPlaceholder, this.context)
-                this.innerHost.render()
+                return createHost(node, newPlaceholder, this.context)
             }
         )
+
+        let lastRenderedHost: Host|undefined
+        this.renderComputed = computed(() => {
+            // CAUTION 每次都清空上一次的结果
+            if(lastRenderedHost) {
+                lastRenderedHost.destroy()
+            }
+
+            lastRenderedHost = this.innerHost!()!
+            lastRenderedHost.render()
+        })
     }
-    destroy(parentHandle?: boolean) {
-        destroyComputed(this.computed)
-        this.innerHost!.destroy(parentHandle)
-        if (!parentHandle) this.placeholder.remove()
+    destroy(fromParent?: boolean) {
+        const innerHost = this.innerHost!()
+        destroyComputed(this.innerHost)
+
+        innerHost.destroy(true)
+        if (!fromParent) this.placeholder.remove()
     }
 }

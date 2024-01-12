@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 /** @jsx createElement */
 import {createElement, createRoot} from "@framework";
-import {reactive, incMap, type Atom} from "data0";
+import {reactive, incMap, type Atom, atom, computed} from "data0";
 import {describe, test, beforeEach, expect} from "vitest";
 
 describe('component render', () => {
@@ -68,9 +68,110 @@ describe('component render', () => {
 
         })
 
-    test('component inside component', () => {})
-    test('function node', () => {})
-    test('static array node', () => {})
-    test('atom node', () => {})
-    test('reactive attribute', () => {})
+
+    test('function node', () => {
+        const renderText = atom(false)
+        function App() {
+            return <div>
+                {() => renderText() ? <div>hello world</div> : <span>404</span>}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('404')
+
+        renderText(true)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('hello world')
+    })
+
+    test('component with computed inside function node', () => {
+        const insideAtom = atom(1)
+        function Child() {
+            const  text = computed(() => insideAtom() + 1)
+            return <div>{text}</div>
+        }
+
+        let functionNodeRuns = 0
+        function App() {
+            return <div>
+                {() => {
+                    functionNodeRuns++
+                    return <Child />
+                }}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('2')
+        expect(functionNodeRuns).toBe(1)
+
+        // Component computed recomputed should not propagate to function node
+        insideAtom(2)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('3')
+        expect(functionNodeRuns).toBe(1)
+    })
+
+    test('static array node', () => {
+        function App() {
+            return <div>{
+                [
+                    <div>hello world</div>,
+                    <span>404</span>
+                ]
+            }</div>
+        }
+        root.render(<App/>)
+
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('hello world')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('404')
+    })
+
+    test('atom node', () => {
+        const text = atom('hello world')
+        function App() {
+            return <div>{text}</div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.innerHTML).toBe('hello world')
+
+        text('hello data0')
+        expect(rootEl.firstElementChild!.innerHTML).toBe('hello data0')
+
+        // 设置为 undefined
+        text(undefined)
+        expect(rootEl.firstElementChild!.innerHTML).toBe('undefined')
+
+        // 设置为 null
+        text(null)
+        expect(rootEl.firstElementChild!.innerHTML).toBe('null')
+    })
+
+    test('reactive attribute should not leak to upper computed', () => {
+        const rxStyle = reactive({
+            color: 'red',
+            fontSize: '12px'
+        })
+
+
+        let functionNodeRuns = 0
+        function App() {
+            return <div>
+                {() => {
+                    debugger
+                    functionNodeRuns++
+                    return <div style={rxStyle} />
+                }}
+            </div>
+        }
+
+        root.render(<App/>)
+        const firstChild = () => (rootEl.firstElementChild!.children[0] as HTMLElement)
+        expect(firstChild().style.color).toBe('red')
+
+        rxStyle.color = 'blue'
+        expect(firstChild().style.color).toBe('blue')
+        expect(functionNodeRuns).toBe(1)
+
+    })
 })

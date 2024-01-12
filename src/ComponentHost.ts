@@ -1,25 +1,15 @@
-import {reactive, pauseTracking, resetTracking, isReactive} from "data0";
-import {UnhandledPlaceholder, createElement, JSXElementType, AttributesArg, Fragment} from "./DOM";
+import {isReactive, reactive} from "data0";
+import {AttributesArg, createElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props} from "./types";
 import {assert} from "./util";
 
 
-const componentRenderFrame: ComponentHost[] = []
-
-
-// TODO 应该变成 useEffect ???而且应该从 inject handle 里面取？？？这样就不需要 renderFrame 了？？？
-export function onDestroy(destroyCallback: () => any) {
-    componentRenderFrame.at(-1)!.destroyCallback.add(destroyCallback)
-}
-
 
 function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
-
-type DestroyCallback = () => any
 
 // CAUTION 为了性能，直接 assign。在底层 所有 DOM 节点都可以接受 array attribute，这样就为属性的覆盖和合并减轻了工作量。
 function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
@@ -35,7 +25,8 @@ export class ComponentHost implements Host{
     innerHost?: Host
     props: Props
     public layoutEffects = new Set<EffectHandle>()
-    public destroyCallback = new Set<DestroyCallback>()
+    public effects = new Set<EffectHandle>()
+    public destroyCallback = new Set<Exclude<ReturnType<EffectHandle>, void>>()
     public layoutEffectDestroyHandles = new Set<Exclude<ReturnType<EffectHandle>, void>>()
     public ref: {[k:string]: any} = reactive({})
     public config? : Config
@@ -110,15 +101,13 @@ export class ComponentHost implements Host{
             }
 
             if (thisItemConfig.eventTarget) {
-                // TODO 支持 eventTarget，用户
+                // 支持 eventTarget，用户可以将事件转发到另一个节点上
                 thisItemConfig.eventTarget.forEach(eventTarget => {
                     eventTarget((e: Event) => {
                         this.eventTargetTrigger(e, name)
                     })
                 })
-
             }
-
 
             // 支持 children 和 configure 同时存在
             if (thisItemConfig.children) {
@@ -149,32 +138,35 @@ export class ComponentHost implements Host{
         // CAUTION 因为 keydown 等 event 是无法通过 node.dispatchEvent 模拟的，所以这里我们直接用 DOM 的 eventProxy 实现。
         this.ref[targetName].dispatchEvent( targetEvent)
     }
-
+    // 处理视图相关的 effect
     useLayoutEffect = (callback: EffectHandle) => {
         this.layoutEffects.add(callback)
     }
+    // 处理纯业务相关的 effect，例如建立长连接等
+    useEffect = (callback: EffectHandle) => {
+        this.effects.add(callback)
+    }
 
-    // TODO 需要用 computed 限制一下自己的变化范围？？？
     render(): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
             assert(false, 'should never rerender')
         }
-        componentRenderFrame.push(this)
 
-        const props = {...this.props}
         // CAUTION 注意这里 children 的写法，没有children 就不要传，免得后面 props 继续往下透传的时候出问题。
-        if (this.children) props.children = this.children
-        // CAUTION 组件在渲染的时候只是为了建立联系，这种过程可能会读 reactive，但不应该被更上层监听。
-        //  组件的渲染会出现在 FunctionHost 中，并且是在 FunctionHost render 的 computed 中，所以这里 render 中的读的值都可能会被上层 track.
-        pauseTracking()
-        const node = this.type(props, {Fragment, createElement: this.createElement, ref: this.ref, useLayoutEffect: this.useLayoutEffect, context: this.context})
+        const renderContext = {
+            Fragment,
+            createElement: this.createElement,
+            ref: this.ref,
+            useLayoutEffect: this.useLayoutEffect,
+            useEffect: this.useEffect,
+            context: this.context
+        }
+        const node = this.type({...this.props, children: this.children}, renderContext)
 
-        componentRenderFrame.pop()
         // 就用当前 component 的 placeholder
         this.innerHost = createHost(node, this.placeholder, this.context)
         this.innerHost.render()
-        resetTracking()
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.props.ref) {
@@ -182,7 +174,13 @@ export class ComponentHost implements Host{
             this.props.ref(this)
         }
 
-        // TODO 理论上要有个通知挂载的事件时才执行。虽然组件 render，但未来可能为了一些其他原因会延迟挂载到 document 上。
+        this.effects.forEach(effect => {
+            const handle = effect()
+            if (handle) this.destroyCallback.add(handle)
+        })
+
+
+        // TODO 理论上要有个通知挂载的事件时才执行。虽然组件 render，但未来可能为了一些其他原因会延迟挂载到 document 上。但是现在我们没法知道是不是真的挂载到了 document 上，所以只能这样了。
         this.layoutEffects.forEach(layoutEffect => {
             const handle = layoutEffect()
             if (handle) this.layoutEffectDestroyHandles.add(handle)
@@ -202,8 +200,11 @@ type FunctionProp = (arg:any) => object
 type EventTarget = (arg: (e:Event) => any) => void
 
 type ConfigItem = {
+    // 将事件转发到另一个节点上
     eventTarget?: EventTarget[],
+    // 手动调整内部组件的 props
     props?: object|FunctionProp,
+    // children
     children?: any
 }
 
