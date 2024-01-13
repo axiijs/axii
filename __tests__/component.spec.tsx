@@ -209,7 +209,7 @@ describe('component render', () => {
             return <div>{() => showName() ? text() : <div>anonymous</div>}</div>
         }
 
-        const dynamicComponent = atom(Child2)
+        const dynamicComponent = atom<Function>(Child2)
         function App() {
             return <div>
                 {() => {
