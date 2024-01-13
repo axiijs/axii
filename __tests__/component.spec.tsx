@@ -220,10 +220,42 @@ describe('component render', () => {
         }
 
         root.render(<App/>)
-        console.log(rootEl.innerHTML)
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('anonymous')
         dynamicComponent(Child1)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('child1')
 
+    })
+
+    test('computed in Component should destroy when component destroyed', () => {
+
+        const name = atom('')
+        let innerComputedRuns = 0
+
+        function Child() {
+            const nameWithPrefix = computed(() => {
+                innerComputedRuns++
+                return name() ? 'Mr.' + name() : 'anonymous'
+            })
+            return <div>{nameWithPrefix}</div>
+        }
+
+        const showChild = atom(true)
+        function App() {
+            return <div>
+                {() => {
+                    return showChild() ? <Child /> : null
+                }}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('anonymous')
+        name('data0')
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('Mr.data0')
+        expect(innerComputedRuns).toBe(2)
+        showChild(false)
+        name('data1')
+        expect(innerComputedRuns).toBe(2)
+        expect(rootEl.firstElementChild!.children.length).toBe(0)
     })
 })
