@@ -258,4 +258,50 @@ describe('component render', () => {
         expect(innerComputedRuns).toBe(2)
         expect(rootEl.firstElementChild!.children.length).toBe(0)
     })
+
+    test('computed in Component should destroy when component destroyed', () => {
+        const name = atom('')
+        let innerComputedRuns = 0
+
+        function Child() {
+            const nameWithPrefix = computed(function nameWithPrefix() {
+                innerComputedRuns++
+                return name() ? 'Mr.' + name() : 'anonymous'
+            })
+            return <div>{nameWithPrefix}</div>
+        }
+
+        const items = reactive([1, 2, 3])
+
+        function App() {
+            return <div>
+                {incMap(items, (item: Atom) => {
+                    return <Child />
+                })}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('anonymous')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('anonymous')
+        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('anonymous')
+        name('data0')
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('Mr.data0')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('Mr.data0')
+        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('Mr.data0')
+        expect(innerComputedRuns).toBe(6)
+        //
+        // name('data1')
+        // expect(innerComputedRuns).toBe(2)
+        // expect(rootEl.firstElementChild!.children.length).toBe(0)
+        items.pop()
+        expect(rootEl.firstElementChild!.children.length).toBe(2)
+        expect(innerComputedRuns).toBe(6)
+
+        name('data1')
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('Mr.data1')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('Mr.data1')
+        expect(innerComputedRuns).toBe(8)
+
+    })
 })

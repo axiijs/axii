@@ -1,4 +1,4 @@
-import {isReactive, reactive} from "data0";
+import {isReactive, reactive, ReactiveEffect} from "data0";
 import {AttributesArg, createElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
@@ -31,8 +31,10 @@ export class ComponentHost implements Host{
     public ref: {[k:string]: any} = reactive({})
     public config? : Config
     public children: any
-
+    public frame?: ReactiveEffect[] = []
+    public name: string
     constructor({ type, props, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public context: Context) {
+        this.name = type.name
         this.type = type
         this.props = props
         if(children[0] instanceof Config) {
@@ -162,7 +164,9 @@ export class ComponentHost implements Host{
             useEffect: this.useEffect,
             context: this.context
         }
+        const getFrame = ReactiveEffect.collectEffect()
         const node = this.type({...this.props, children: this.children}, renderContext)
+        this.frame = getFrame()
 
         // 就用当前 component 的 placeholder
         this.innerHost = createHost(node, this.placeholder, this.context)
@@ -187,6 +191,12 @@ export class ComponentHost implements Host{
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        if (!parentHandleComputed) {
+            // 如果上层是 computed rerun，那么也会清理掉我们产生的 computed。但不能确定，所以这里还是自己清理一下。
+            this.frame?.forEach(effect =>
+                ReactiveEffect.destroy(effect)
+            )
+        }
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
         this.innerHost!.destroy(parentHandle, parentHandleComputed)
         this.layoutEffectDestroyHandles.forEach(handle => handle())
