@@ -16,7 +16,7 @@ export class FunctionHost implements Host{
         return this.placeholder.parentElement || this.fragmentParent
     }
     get element() : HTMLElement|Comment|Text|SVGElement{
-        return this.innerHost?.element || this.placeholder
+        return this.innerHost?.().element || this.placeholder
     }
     render(): void {
 

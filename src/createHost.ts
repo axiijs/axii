@@ -1,6 +1,6 @@
 import {insertBefore, UnhandledPlaceholder} from "./DOM";
 import {Context, Host} from "./Host";
-import { isAtom, isReactive} from "data0";
+import {isAtom, isReactive, RxList} from "data0";
 import {ReactiveArrayHost} from "./ReactiveArrayHost";
 import {ComponentHost} from "./ComponentHost";
 import {AtomHost} from "./AtomHost";
@@ -8,6 +8,7 @@ import {FunctionHost} from "./FunctionHost";
 import {StaticHost} from "./StaticHost";
 import {StaticArrayHost} from "./StaticArrayHost";
 import {assert} from "./util";
+import {RxListHost} from "./RxListHost.js";
 
 class EmptyHost implements Host{
     element = new Comment('empty')
@@ -37,13 +38,14 @@ class PrimitiveHost implements Host{
 export function createHost(source: any, placeholder: UnhandledPlaceholder, context: Context) {
     if (!(placeholder instanceof Comment)) throw new Error('incorrect placeholder type')
     let host:Host
-    if ( Array.isArray(source)  ) {
+    if (source instanceof RxList) {
+        host = new RxListHost(source, placeholder, context)
+    } else if ( Array.isArray(source)  ) {
         if(isReactive(source) ) {
             host = new ReactiveArrayHost(source, placeholder, context)
         } else {
             host = new StaticArrayHost(source, placeholder, context)
         }
-
     } else if( typeof source === 'object' && typeof source?.type === 'function') {
         host = new ComponentHost(source, placeholder, context)
     } else if (isAtom(source)) {

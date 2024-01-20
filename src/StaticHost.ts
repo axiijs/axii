@@ -81,10 +81,10 @@ export class StaticHost implements Host{
     }
     destroy(parentHandle?:boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
-            this.attrComputeds!.forEach(attrComputed => destroyComputed(attrComputed))
+            this.attrComputeds?.forEach(attrComputed => destroyComputed(attrComputed))
         }
 
-        this.reactiveHosts!.forEach(host => host.destroy(true, parentHandleComputed))
+        this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
 
         if (!parentHandle) {
             removeNodesBetween(this.element!, this.placeholder, true)
