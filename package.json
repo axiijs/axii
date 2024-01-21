@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "vite",
-    "build": "vite build --config vite.prod.config.ts",
+    "build": "vite build --config vite.prod.config.ts && node scripts/type.js",
     "test": "vitest",
     "release": "node scripts/release.js"
   },
