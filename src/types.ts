@@ -12,7 +12,7 @@ export type VNode = {
     children?: any
 }
 
-export type EffectHandle = () => (void | (() => void))
+export type EffectHandle = () => (any)
 
 export type RenderContext = {
     createElement: (type: JSXElementType, rawProps : AttributesArg, ...children: any[]) => VNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null,

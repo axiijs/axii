@@ -180,14 +180,15 @@ export class ComponentHost implements Host{
 
         this.effects.forEach(effect => {
             const handle = effect()
-            if (handle) this.destroyCallback.add(handle)
+            // 也支持 async function return promise，只不过不做处理
+            if (typeof handle === 'function') this.destroyCallback.add(handle)
         })
 
 
         // TODO 理论上要有个通知挂载的事件时才执行。虽然组件 render，但未来可能为了一些其他原因会延迟挂载到 document 上。但是现在我们没法知道是不是真的挂载到了 document 上，所以只能这样了。
         this.layoutEffects.forEach(layoutEffect => {
             const handle = layoutEffect()
-            if (handle) this.layoutEffectDestroyHandles.add(handle)
+            if (typeof handle === 'function') this.layoutEffectDestroyHandles.add(handle)
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
