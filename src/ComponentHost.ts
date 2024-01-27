@@ -33,6 +33,7 @@ export class ComponentHost implements Host{
     public children: any
     public frame?: ReactiveEffect[] = []
     public name: string
+    deleteLayoutEffectCallback: () => void
     constructor({ type, props, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public context: Context) {
         this.name = type.name
         this.type = type
@@ -42,6 +43,8 @@ export class ComponentHost implements Host{
         } else {
             this.children = children
         }
+
+        this.deleteLayoutEffectCallback = context.root.on('attach', this.runLayoutEffect)
     }
     get parentElement() {
         return this.placeholder.parentElement
@@ -183,9 +186,8 @@ export class ComponentHost implements Host{
             // 也支持 async function return promise，只不过不做处理
             if (typeof handle === 'function') this.destroyCallback.add(handle)
         })
-
-
-        // TODO 理论上要有个通知挂载的事件时才执行。虽然组件 render，但未来可能为了一些其他原因会延迟挂载到 document 上。但是现在我们没法知道是不是真的挂载到了 document 上，所以只能这样了。
+    }
+    runLayoutEffect = () => {
         this.layoutEffects.forEach(layoutEffect => {
             const handle = layoutEffect()
             if (typeof handle === 'function') this.layoutEffectDestroyHandles.add(handle)
@@ -205,6 +207,8 @@ export class ComponentHost implements Host{
         if (!parentHandle) {
             this.placeholder.remove()
         }
+
+        this.deleteLayoutEffectCallback()
     }
 }
 

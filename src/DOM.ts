@@ -294,7 +294,6 @@ export function insertBefore(newEl: Comment|HTMLElement|DocumentFragment|SVGElem
   return result
 }
 
-// TODO reactive 化
 export function createElementNS(type: string, props: AttributesArg, ...children: any[]) {
   return createElement(type, {_isSVG: true, ...(props || {})}, children)
 }
