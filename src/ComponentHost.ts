@@ -180,7 +180,6 @@ export class ComponentHost implements Host{
             assert(typeof this.props.ref === 'function', `ref on component should be a function after parent component handled`)
             this.props.ref(this)
         }
-
         this.effects.forEach(effect => {
             const handle = effect()
             // 也支持 async function return promise，只不过不做处理

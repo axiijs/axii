@@ -1,5 +1,5 @@
 import {insertBefore, UnhandledPlaceholder} from './DOM'
-import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes} from "data0";
+import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 
@@ -32,6 +32,7 @@ export class RxListHost implements Host{
     }
 
     render(): void {
+        const host = this
 
         this.hosts = this.source.map((item) => {
             return createHost(item, new Comment('rx list item'), this.context)
@@ -61,28 +62,28 @@ export class RxListHost implements Host{
         })
 
         this.hostRenderComputed = computed(
-            (trackOnce) => {
-                trackOnce!(this.hosts!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
-                trackOnce!(this.hosts!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE)
-                insertBefore(this.renderNewHosts(this.hosts!), this.placeholder)
+            function computation(this:Computed) {
+                this.manualTrack(host.hosts!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
+                this.manualTrack(host.hosts!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE)
+                insertBefore(host.renderNewHosts(host.hosts!), host.placeholder)
                 return null
             },
-            (_, triggerInfos) => {
+            function applyPatch(_, triggerInfos) {
             triggerInfos.forEach(({method, argv, result, key, newValue}) => {
                 if (method === 'splice') {
                     // 这里的 this.hosts 是已经修改好的。
-                    const insertBeforeHost = this.hosts!.at(argv![0] + argv!.slice(2)!.length)
+                    const insertBeforeHost = host.hosts!.at(argv![0] + argv!.slice(2)!.length)
 
                     const newHosts = argv!.slice(2)!
-                    const newHostsFrag =  this.renderNewHosts(newHosts)
+                    const newHostsFrag =  host.renderNewHosts(newHosts)
 
-                    insertBefore(newHostsFrag, insertBeforeHost?.element || this.placeholder)
+                    insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
 
                 } else if(!method && key){
                     // 会回收之前 placeholder，完全重新执行
                     const index = key as number
-                    insertBefore(this.hosts!.at(index)!.placeholder, this.hosts!.at(index+1)?.element || this.placeholder)
-                    this.hosts!.at(index)!.render()
+                    insertBefore(host.hosts!.at(index)!.placeholder, host.hosts!.at(index+1)?.element || host.placeholder)
+                    host.hosts!.at(index)!.render()
                 } else {
                     throw new Error('unknown trigger info')
                 }

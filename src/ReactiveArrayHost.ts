@@ -1,5 +1,5 @@
 import {UnhandledPlaceholder, insertBefore} from './DOM'
-import {computed, destroyComputed, TrackOpTypes, TriggerOpTypes} from "data0";
+import {computed, destroyComputed, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
 
@@ -33,24 +33,25 @@ export class ReactiveArrayHost implements Host{
     }
 
     render(): void {
+        const host = this
         this.placeholderAndItemComputed = computed(
-            (trackOnce) => {
+            function computation(this: Computed) {
 
-                trackOnce!(this.source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
-                trackOnce!(this.source, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
+                this.manualTrack(host.source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
+                this.manualTrack(host.source, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
 
                 // CAUTION 应该不支持重算，这里理论上覆盖了所有的 patch 场景。
-                if (this.hostsComputed) {
+                if (host.hostsComputed) {
                     throw new Error('should never recompute reactiveArray')
                 }
 
-                return this.source.map(this.createPlaceholder)
+                return host.source.map(host.createPlaceholder)
             },
-            (placeholderAndItems, triggerInfos) => {
+            function applyPatch(placeholderAndItems, triggerInfos) {
                 // CAUTION 特别注意，下面必须先处理 element 再处理数据，因为数据的处理会连环触发下面的  computed 也重新就散。
                 triggerInfos.forEach(({method, argv, result}) => {
                     if (method === 'push') {
-                        const newPlaceholderAndItems = argv!.map(this.createPlaceholder)
+                        const newPlaceholderAndItems = argv!.map(host.createPlaceholder)
                         placeholderAndItems.push(...newPlaceholderAndItems)
                     } else if (method === 'pop') {
                         // placeholders 里面已经处理
@@ -60,10 +61,10 @@ export class ReactiveArrayHost implements Host{
                         placeholderAndItems.shift()
                         // CAUTION 不需要处理 placeholder，因为下面的 computed 里的 Host 会处理。
                     } else if (method === 'unshift') {
-                        const newPlaceholderAndItems = argv!.map(this.createPlaceholder)
+                        const newPlaceholderAndItems = argv!.map(host.createPlaceholder)
                         placeholderAndItems.unshift(...newPlaceholderAndItems)
                     } else if (method === 'splice') {
-                        const newPlaceholderAndItems = argv!.slice(2)!.map(this.createPlaceholder)
+                        const newPlaceholderAndItems = argv!.slice(2)!.map(host.createPlaceholder)
                         placeholderAndItems.splice(argv![0], argv![1], ...newPlaceholderAndItems)
                         // CAUTION 不需要处理 placeholder，因为下面的 computed 里的 Host 会处理。
                     } else if(!method && result){
@@ -79,7 +80,7 @@ export class ReactiveArrayHost implements Host{
                         })
 
                         result.update?.forEach(({ key, newValue }) => {
-                            placeholderAndItems[key] = this.createPlaceholder(newValue)
+                            placeholderAndItems[key] = host.createPlaceholder(newValue)
                         })
                     } else {
                         throw new Error('unknown trigger info')
@@ -92,32 +93,31 @@ export class ReactiveArrayHost implements Host{
         )
 
         this.hostsComputed = computed(
-            (trackOnce) => {
+            function computation(this: Computed) {
                 // CAUTION 不支持重算，这里理论上支持了所有变化场景
-                if (this.hostsComputed?.length) throw new Error('hostsComputed should not recompute')
+                if (host.hostsComputed?.length) throw new Error('hostsComputed should not recompute')
 
-
-                trackOnce!(this.placeholderAndItemComputed!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
-                trackOnce!(this.placeholderAndItemComputed!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
-                const hosts = this.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, this.context))
+                this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
+                this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
+                const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, host.context))
                 const frag = document.createDocumentFragment()
-                hosts.forEach(host => {
-                    frag.appendChild(host.placeholder)
-                    host.render()
+                hosts.forEach(itemHost => {
+                    frag.appendChild(itemHost.placeholder)
+                    itemHost.render()
                 })
-                insertBefore(frag, this.placeholder)
+                insertBefore(frag, host.placeholder)
                 return hosts
             },
-            (hosts, triggerInfos) => {
+            function applyPatch(hosts, triggerInfos) {
                 triggerInfos.forEach(({method, argv, result}) => {
                     if (method === 'push') {
-                        const newHosts = argv!.map(this.createHost)
+                        const newHosts = argv!.map(host.createHost)
                         const frag = document.createDocumentFragment()
                         newHosts.forEach(host => {
                             frag.appendChild(host.placeholder)
                             host.render()
                         })
-                        insertBefore(frag, this.placeholder)
+                        insertBefore(frag, host.placeholder)
                         hosts.push(...newHosts)
                     } else if (method === 'pop') {
                         const last = hosts.pop()
@@ -126,25 +126,25 @@ export class ReactiveArrayHost implements Host{
                         const first = hosts.shift()
                         first.destroy()
                     } else if (method === 'unshift') {
-                        const newHosts = argv!.map(this.createHost)
+                        const newHosts = argv!.map(host.createHost)
                         const frag = document.createDocumentFragment()
-                        newHosts.forEach(host => {
-                            frag.appendChild(host.placeholder)
-                            host.render()
+                        newHosts.forEach(newHost => {
+                            frag.appendChild(newHost.placeholder)
+                            newHost.render()
                         })
-                        insertBefore(frag, this.element)
+                        insertBefore(frag, host.element)
                         hosts.unshift(...newHosts)
                     } else if (method === 'splice') {
                         const frag = document.createDocumentFragment()
-                        const newHosts = argv!.slice(2)!.map(this.createHost)
-                        newHosts.forEach(host => {
-                            frag.appendChild(host.placeholder)
-                            host.render()
+                        const newHosts = argv!.slice(2)!.map(host.createHost)
+                        newHosts.forEach(newHost => {
+                            frag.appendChild(newHost.placeholder)
+                            newHost.render()
                         })
 
-                        if (argv![0] === 0 && argv![1] >= hosts.length && this.isOnlyChildrenOfParent()) {
+                        if (argv![0] === 0 && argv![1] >= hosts.length && host.isOnlyChildrenOfParent()) {
                             // CAUTION 如果完全就是某个子 children，那么这里一次性 replaceChildren 可以提升性能。
-                            const parent = this.placeholder.parentNode!
+                            const parent = host.placeholder.parentNode!
                             if (!newHosts.length && parent instanceof HTMLElement) {
                                 (parent as HTMLElement).innerHTML = ''
                                 parent.appendChild(frag)
@@ -152,13 +152,13 @@ export class ReactiveArrayHost implements Host{
                                 parent.replaceChildren(frag)
                             }
                             // CAUTION 一定记得把自己 placeholder 重新 append 进去。
-                            parent.appendChild(this.placeholder)
+                            parent.appendChild(host.placeholder)
 
                             hosts.forEach((host: Host) => host.destroy(true))
                             hosts.splice(0, Infinity, ...newHosts)
                         } else {
                             const removeLength = getSpliceRemoveLength(argv!, hosts.length)
-                            insertBefore(frag, hosts[argv![0] + removeLength]?.element || this.placeholder)
+                            insertBefore(frag, hosts[argv![0] + removeLength]?.element || host.placeholder)
 
                             const removed = hosts.splice(argv![0], removeLength, ...newHosts)
                             removed.forEach((host: Host) => host.destroy())
@@ -177,9 +177,9 @@ export class ReactiveArrayHost implements Host{
                         result.update?.forEach(({ key, newValue }) => {
                             // 会回收之前 placeholder，完全重新执行
                             hosts[key].destroy()
-                            hosts[key] = this.createHost(newValue)
+                            hosts[key] = host.createHost(newValue)
                             // CAUTION 特别注意这里的 key 是 string
-                            insertBefore(hosts[key].placeholder, hosts[parseInt(key, 10)+1]?.element || this.placeholder)
+                            insertBefore(hosts[key].placeholder, hosts[parseInt(key, 10)+1]?.element || host.placeholder)
                             hosts[key].render()
                         })
                     } else {
