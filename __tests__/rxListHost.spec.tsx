@@ -39,7 +39,7 @@ describe('rxList render', () => {
             expect(rootEl.firstElementChild!.children[4].innerHTML).toBe('5')
 
             arr.pop()
-            expect(arr.length).toBe(4)
+            expect(arr.length()).toBe(4)
             expect(rootEl.firstElementChild!.children.length).toBe(4)
             expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('4')
 
