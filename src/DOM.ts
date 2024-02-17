@@ -40,6 +40,10 @@ function isEventName(name: string) {
   return name[0] === 'o' && name[1] === 'n'
 }
 
+function camelToKebabCase(str:string) {
+  return str.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+}
+
 export function setAttribute(node: ExtendedElement, name: string, value: any,  isSvg?: boolean): void {
   if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name) ) {
     // 全都是覆盖模式，只处理最后一个
@@ -80,12 +84,13 @@ export function setAttribute(node: ExtendedElement, name: string, value: any,  i
     styles.forEach(style => {
       if (typeof style !== 'object') assert(false, 'style can only be object, string style is deprecated')
       each(style, (v, k) => {
+        const styleKey = camelToKebabCase(k)
         if (v === undefined) {
           // @ts-ignore
-          node.style[k] = ''
+          node.style[styleKey] = ''
         } else {
           // @ts-ignore
-          node.style[k] = typeof v === 'number' ? (`${v}px`) : v
+          node.style[styleKey] = typeof v === 'number' ? (`${v}px`) : v
         }
       })
     })
