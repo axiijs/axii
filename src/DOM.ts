@@ -1,6 +1,8 @@
 import {assert, each, isPlainObject} from './util'
 import {Component, VNode} from "./types";
 
+const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize)/
+
 // type WritablePropertyName = Exclude<keyof HTMLElement, keyof Readonly<HTMLElement> >
 /** Attempt to set a DOM property to the given value.
  *  IE & FF throw for certain property-value combinations.
@@ -86,7 +88,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any,  i
           node.style[k] = ''
         } else {
           // @ts-ignore
-          node.style[k] = typeof v === 'number' ? (`${v}px`) : v
+          node.style[k] = typeof v === 'number' && AUTO_ADD_PX_STYLE.test(k) ? (`${v}px`) : v
         }
       })
     })
