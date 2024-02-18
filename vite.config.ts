@@ -1,4 +1,5 @@
 import {fileURLToPath, URL } from 'url'
+import tsconfigPaths from 'vite-tsconfig-paths'
 
 export default {
   esbuild: {
@@ -20,4 +21,6 @@ export default {
       allow: ['..'],
     },
   },
+  plugins: [tsconfigPaths()],
+
 }

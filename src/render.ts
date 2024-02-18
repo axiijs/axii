@@ -15,7 +15,7 @@ export function createRoot(element: HTMLElement) {
         element,
         context,
         host: undefined as Host|undefined,
-        render(componentOrEl: HTMLElement|ComponentNode|Function) {
+        render(componentOrEl: Element|ComponentNode|Function) {
             const placeholder = new Comment('root')
             element.appendChild(placeholder)
             root.host = createHost(componentOrEl, placeholder, context)

@@ -1,4 +1,4 @@
-import { ComponentNode } from "./src/types";
+type DOMElement = Element
 
 // Global compile-time constants
 declare var __DEV__: boolean
@@ -12,7 +12,7 @@ declare global {
             // @ts-ignore suppress ts:2374 = Duplicate string index signature.
             [name: string]: any
         }
-        interface Element extends  ComponentNode {}
+        interface Element extends  DOMElement {}
     }
 }
 

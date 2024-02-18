@@ -16,7 +16,7 @@
     "esModuleInterop": true,
     "removeComments": false,
     "lib": ["esnext", "dom"],
-    "types": ["jest/globals", "node"],
+    "types": ["node"],
     "rootDir": ".",
     "paths": {
       "@framework": ["./src"]

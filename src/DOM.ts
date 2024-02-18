@@ -1,5 +1,5 @@
 import {assert, each, isPlainObject} from './util'
-import {Component, VNode} from "./types";
+import {Component, ComponentNode} from "./types";
 
 const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize)/
 
@@ -196,7 +196,7 @@ type UnhandledAttrInfo = {el: ExtendedElement, key: string, value: any}
 
 
 
-export function createElement(type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : VNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null{
+export function createElement(type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ComponentNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null{
   const { _isSVG, ...props } = rawProps || {}
 
   let container: HTMLElement|DocumentFragment|SVGElement
@@ -206,7 +206,7 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
   } else if (typeof type === 'string') {
     container = _isSVG ? document.createElementNS('http://www.w3.org/2000/svg', type) : document.createElement(type)
   } else {
-    return { type, props, children }
+    return { type, props, children } as ComponentNode
   }
 
   const unhandledAttr: UnhandledAttrInfo[] = []
