@@ -2,7 +2,7 @@
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 
-const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize)/
+const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth)/
 
 // type WritablePropertyName = Exclude<keyof HTMLElement, keyof Readonly<HTMLElement> >
 /** Attempt to set a DOM property to the given value.
