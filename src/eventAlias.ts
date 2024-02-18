@@ -18,6 +18,21 @@ export const onESCKey = eventAlias((e: KeyboardEvent) => e.key === 'Escape')
 export const onBackspaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Backspace')
 export const onSpaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Space')
 
+
+export type onKeyConfig = {
+    meta?: boolean,
+    ctrl?: boolean,
+    alt?: boolean,
+    shift?: boolean
+}
+export const onKey = (key:string, config?: onKeyConfig) => eventAlias((e: KeyboardEvent) => {
+    if (config?.meta && !e.metaKey) return false
+    if (config?.ctrl && !e.ctrlKey) return false
+    if (config?.alt && !e.altKey) return false
+    if (config?.shift && !e.shiftKey) return false
+    return e.key === key
+})
+
 export const onSelf = eventAlias(e => e.target === e.currentTarget)
 
 type Trigger = (e: Event) => any
