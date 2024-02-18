@@ -7,7 +7,6 @@ import { assertType } from 'vitest'
 const el = <div></div>
 
 assertType<JSX.Element>(el)
-assertType<Element>(el)
 assertType<HTMLElement>(el as HTMLElement)
 
 

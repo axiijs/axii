@@ -1,6 +1,7 @@
 import { appendFile } from 'fs/promises'
 import path from 'path'
 const contentToAppend = `
+type JSXElement = ComponentNode|HTMLElement|DocumentFragment|SVGElement
 declare global {
     namespace JSX {
         interface IntrinsicElements {
@@ -8,7 +9,8 @@ declare global {
             // @ts-ignore suppress ts:2374 = Duplicate string index signature.
             [name: string]: any
         }
-        interface Element extends  DOMElement {}
+        type ElementClass = Component
+        type Element =  JSXElement
     }
 }
 `;

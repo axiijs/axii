@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 
@@ -195,8 +196,8 @@ type UnhandledAttrInfo = {el: ExtendedElement, key: string, value: any}
 
 
 
-
-export function createElement(type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ComponentNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null{
+// 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
+export function createElement(type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ComponentNode|HTMLElement|DocumentFragment|SVGElement{
   const { _isSVG, ...props } = rawProps || {}
 
   let container: HTMLElement|DocumentFragment|SVGElement

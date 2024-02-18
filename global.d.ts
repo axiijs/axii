@@ -1,9 +1,10 @@
-type DOMElement = Element
 
 // Global compile-time constants
+import {Component, ComponentNode} from "@framework";
+
 declare var __DEV__: boolean
 
-
+type JSXElement = ComponentNode|HTMLElement|DocumentFragment|SVGElement
 declare global {
     var __DEV__: boolean
     namespace JSX {
@@ -12,7 +13,8 @@ declare global {
             // @ts-ignore suppress ts:2374 = Duplicate string index signature.
             [name: string]: any
         }
-        interface Element extends  DOMElement {}
+        type ElementClass = Component
+        type Element =  JSXElement
     }
 }
 

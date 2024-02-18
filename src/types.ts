@@ -3,7 +3,7 @@ import {Context} from "./Host";
 
 export type Props = {
     [k: string]: any,
-    children?: ChildNode[]
+    children?: any[]
 }
 
 export type EffectHandle = () => (any)
