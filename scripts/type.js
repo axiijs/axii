@@ -10,6 +10,7 @@ declare global {
             [name: string]: any
         }
         interface IntrinsicAttributes {
+            [key: \`$${string}\`]: boolean;
             ref?: any
         }
         type ElementClass = Component
