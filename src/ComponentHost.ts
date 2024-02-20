@@ -207,6 +207,11 @@ export class ComponentHost implements Host{
             this.placeholder.remove()
         }
 
+        if (this.props.ref) {
+            assert(typeof this.props.ref === 'function', `ref on component should be a function after parent component handled`)
+            this.props.ref(null)
+        }
+
         this.deleteLayoutEffectCallback()
     }
 }
