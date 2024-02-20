@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
 /** @jsx createElement */
-import {createElement, createRoot} from "@framework";
+import {createElement, createRoot, RenderContext} from "@framework";
 import {reactive, incMap, type Atom, atom, computed} from "data0";
 import {describe, test, beforeEach, expect} from "vitest";
+import {ComponentHost} from "../src/ComponentHost.js";
 
 describe('component render', () => {
 
@@ -303,5 +304,30 @@ describe('component render', () => {
         expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('Mr.data1')
         expect(innerComputedRuns).toBe(8)
 
+    })
+})
+
+describe('component ref', () => {
+
+    let root: ReturnType<typeof createRoot>
+    let rootEl: HTMLElement
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        rootEl = document.createElement('div')
+        document.body.appendChild(rootEl)
+        root = createRoot(rootEl)
+    })
+    test('get ref of dom element', () => {
+        function App(props:any, {createElement}: RenderContext) {
+            return <div $container>
+                app
+            </div>
+        }
+
+        root.render(<App/>)
+
+        expect(rootEl.firstElementChild!.innerHTML).toBe('app')
+        expect((root.host as ComponentHost).ref.container).toBeDefined()
+        expect((root.host as ComponentHost).ref.container.innerHTML).toBe('app')
     })
 })
