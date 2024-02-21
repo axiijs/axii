@@ -26,11 +26,11 @@ export function createRoot(element: HTMLElement) {
             }
             return root.host
         },
-        dispose() {
+        destroy() {
             eventCallbacks.clear()
             element.innerHTML = ''
             root.dispatch('detach')
-            root.host?.destroy()
+            root.host?.destroy(true)
         },
         on(event: string, callback: EventCallback) {
             let callbacks = eventCallbacks.get(event)

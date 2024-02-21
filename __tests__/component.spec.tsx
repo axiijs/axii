@@ -305,6 +305,32 @@ describe('component render', () => {
         expect(innerComputedRuns).toBe(8)
 
     })
+
+    test('destroy', () => {
+        function Child({name}: {name: Atom}) {
+            const nameWithPrefix = computed(function nameWithPrefix() {
+                return name ? 'Mr.' + name : 'anonymous'
+            })
+            return <div>{nameWithPrefix}</div>
+        }
+
+        const items = reactive([1, 2, 3])
+
+        function App() {
+            return <div>
+                {incMap(items, (item: Atom) => {
+                    return <Child name={item} />
+                })}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('Mr.1')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('Mr.2')
+        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('Mr.3')
+        root.destroy()
+        expect(rootEl.innerHTML).toBe('')
+    })
 })
 
 describe('component ref', () => {
