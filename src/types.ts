@@ -18,7 +18,7 @@ export type RenderContext = {
     context: Context
 }
 
-export type Component = (props?: Props, injectHandles?: RenderContext) => HTMLElement|Text|DocumentFragment|null|undefined|string|number|Function|JSX.Element
+export type Component = (props?: Props, injectHandles?: RenderContext) => HTMLElement|Text|DocumentFragment|null|string|number|Function|JSX.Element
 export type ComponentNode = {
     type: Component,
     props : Props,
