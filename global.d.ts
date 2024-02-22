@@ -1,10 +1,9 @@
 
 // Global compile-time constants
-import {Component, ComponentNode} from "@framework";
+import { Component, JSXElement } from "@framework";
 
 declare var __DEV__: boolean
 
-type JSXElement = ComponentNode|HTMLElement|DocumentFragment|SVGElement
 declare global {
     var __DEV__: boolean
     namespace JSX {

@@ -1,7 +1,6 @@
 import { appendFile } from 'fs/promises'
 import path from 'path'
 const contentToAppend = `
-type JSXElement = ComponentNode|HTMLElement|DocumentFragment|SVGElement
 declare global {
     namespace JSX {
         interface IntrinsicElements {

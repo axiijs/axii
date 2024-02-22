@@ -8,8 +8,10 @@ export type Props = {
 
 export type EffectHandle = () => (any)
 
+export type JSXElement = ComponentNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null
+
 export type RenderContext = {
-    createElement: (type: JSXElementType, rawProps : AttributesArg, ...children: any[]) => ComponentNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null,
+    createElement: (type: JSXElementType, rawProps : AttributesArg, ...children: any[]) => JSXElement,
     Fragment: typeof Fragment,
     useLayoutEffect: (arg: EffectHandle) => void
     ref: {
@@ -18,7 +20,7 @@ export type RenderContext = {
     context: Context
 }
 
-export type Component = (props?: Props, injectHandles?: RenderContext) => HTMLElement|Text|DocumentFragment|null|string|number|Function|JSX.Element
+export type Component = (props?: Props, injectHandles?: RenderContext) => JSXElement
 export type ComponentNode = {
     type: Component,
     props : Props,
