@@ -20,7 +20,7 @@ export type RenderContext = {
     context: Context
 }
 
-export type Component = (props?: Props, injectHandles?: RenderContext) => JSXElement
+export type Component = (props: any, injectHandles?: RenderContext) => JSXElement
 export type ComponentNode = {
     type: Component,
     props : Props,
