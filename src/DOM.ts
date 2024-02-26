@@ -24,12 +24,20 @@ export interface ExtendedElement extends HTMLElement {
   _listeners?: {
     [k: string]: (e: Event) => any
   },
+  _captureListeners?: {
+    [k: string]: (e: Event) => any
+  }
   unhandledChildren?: UnhandledChildInfo[]
   unhandledAttr?: UnhandledAttrInfo[]
 }
 
 function eventProxy(this: ExtendedElement, e: Event) {
   const listener = this._listeners![e.type]
+  return Array.isArray(listener) ? listener.forEach(l => l?.(e)) : listener?.(e)
+}
+
+function captureEventProxy(this: ExtendedElement, e: Event) {
+  const listener = this._captureListeners![e.type]
   return Array.isArray(listener) ? listener.forEach(l => l?.(e)) : listener?.(e)
 }
 
@@ -63,14 +71,19 @@ export function setAttribute(node: ExtendedElement, name: string, value: any,  i
     let eventName = name.toLowerCase().substring(2)
     // CAUTION 体验改成和 react 的一致
     if (eventName === 'change') eventName = 'input'
+    const proxy = useCapture ? captureEventProxy : eventProxy
     if (value) {
-      node.addEventListener(eventName, eventProxy, useCapture)
+      node.addEventListener(eventName, proxy, useCapture)
     } else {
-      node.removeEventListener(eventName, eventProxy, useCapture)
+      node.removeEventListener(eventName, proxy, useCapture)
     }
 
-    assert(node._listeners?.[eventName] === undefined, `${eventName} already listened`);
-    (node._listeners || (node._listeners = {}))[eventName] = value
+    const listeners = useCapture ?
+        (node._captureListeners || (node._captureListeners = {})) :
+        (node._listeners || (node._listeners = {}))
+
+    assert(listeners?.[eventName] === undefined, `${name} already listened`);
+    listeners[eventName] = value
 
     return
   }
