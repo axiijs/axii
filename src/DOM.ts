@@ -2,7 +2,7 @@
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 
-const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth)/
+export const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth)/
 
 // type WritablePropertyName = Exclude<keyof HTMLElement, keyof Readonly<HTMLElement> >
 /** Attempt to set a DOM property to the given value.
@@ -203,9 +203,19 @@ export type AttributesArg = {
 
 export type JSXElementType =  string | typeof Fragment | Component
 
-type UnhandledChildInfo = {placeholder: UnhandledPlaceholder, child: any}
+type UnhandledChildInfo = {
+  placeholder: UnhandledPlaceholder,
+  child: any,
+  path: number[]
+}
 
-type UnhandledAttrInfo = {el: ExtendedElement, key: string, value: any}
+type UnhandledAttrInfo = {
+  el: ExtendedElement,
+  key: string,
+  value: any,
+  path: number[]
+
+}
 
 
 
@@ -226,7 +236,7 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
   const unhandledAttr: UnhandledAttrInfo[] = []
   const unhandledChildren: UnhandledChildInfo[] = []
 
-  children?.forEach((child) => {
+  children?.forEach((child, index) => {
     if (child === undefined || child === null) return
 
     if (typeof child === 'string' || typeof child === 'number') {
@@ -234,15 +244,19 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
     } else if (child instanceof HTMLElement || child instanceof DocumentFragment || child instanceof SVGElement) {
       container.appendChild(child)
       // 往上传递 unhandledChild unhandledAttr ，直到没有 parent 了为止
-      unhandledChildren.push(...((child as ExtendedElement).unhandledChildren || []))
-      unhandledAttr.push(...((child as ExtendedElement).unhandledAttr || []))
+      const childUnhandledChildren = (child as ExtendedElement).unhandledChildren || []
+      unhandledChildren.push(...childUnhandledChildren.map(c => ({...c, path: [index, ...c.path]})))
+
+      const childUnhandledAttr = (child as ExtendedElement).unhandledAttr || []
+      unhandledAttr.push(...childUnhandledAttr.map(c => ({...c, path: [index, ...c.path]})))
+
       delete (child as ExtendedElement).unhandledChildren
       delete (child as ExtendedElement).unhandledAttr
 
     } else {
       const placeholder: UnhandledPlaceholder = new Comment('unhandledChild')
       container.appendChild(placeholder)
-      unhandledChildren.push({ placeholder, child})
+      unhandledChildren.push({ placeholder, child, path: [index]})
     }
   })
 
@@ -252,7 +266,7 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
     Object.entries(props).forEach(([key, value]) => {
       // 注意这里好像写得很绕，但逻辑判断是最少的
       if(!createElement.isValidAttribute(key, value)){
-        unhandledAttr.push({ el: container as ExtendedElement, key, value})
+        unhandledAttr.push({ el: container as ExtendedElement, key, value, path:[]})
       } else {
         setAttribute(container as ExtendedElement, key, value, _isSVG)
       }
@@ -269,9 +283,13 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
 }
 
 
+function isSimpleStyleObject(value: any) {
+    return isPlainObject(value) && Object.entries(value).every(([k, v]) => /[a-zA-Z\-]+/.test(k) && typeof v === 'string' || typeof v === 'number')
+}
+
 // CAUTION 写到 createElement 上就是为了给外面根据自己需要覆盖的
 /**
- * style 支持对象
+ * style 支持对象和字符串形式，但是嵌套的对象形式不支持。
  * 事件 支持函数或者函数数组
  * className 支持对象
  */
@@ -283,7 +301,7 @@ createElement.isValidAttribute = function (name:string, value:any): boolean {
   if (typeof value !== 'object' && typeof value !== 'function') return true
   // 事件
   if ((name[0] === 'o' && name[1] === 'n') && typeof value === 'function' ) return true
-  if (isPlainObject(value) && name ==='style') return true
+  if ((isSimpleStyleObject(value) || typeof value === 'string') && name ==='style') return true
   // 默认支持 className 的对象形式
   if (isPlainObject(value) && name ==='className') return true
 

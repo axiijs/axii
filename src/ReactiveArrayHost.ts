@@ -20,7 +20,7 @@ export class ReactiveArrayHost implements Host{
         return [item, new Comment('frag item host')]
     }
     createHost = ([item, placeholder] : [any, UnhandledPlaceholder]) : Host => {
-        return createHost(item, placeholder, this.context)
+        return createHost(item, placeholder, {...this.context, hostPath: [...this.context.hostPath, this]})
     }
 
     isOnlyChildrenOfParent() {
@@ -99,7 +99,7 @@ export class ReactiveArrayHost implements Host{
 
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
-                const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, host.context))
+                const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, {...host.context, hostPath: [...host.context.hostPath, host]}))
                 const frag = document.createDocumentFragment()
                 hosts.forEach(itemHost => {
                     frag.appendChild(itemHost.placeholder)

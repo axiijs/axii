@@ -28,3 +28,5 @@ typings
 coverage
 .next
 package-lock.json
+playground
+

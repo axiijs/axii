@@ -21,6 +21,7 @@ function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
 }
 
 export class ComponentHost implements Host{
+    static typeIds = new Map<Function, number>()
     type: Component
     innerHost?: Host
     props: Props
@@ -35,6 +36,10 @@ export class ComponentHost implements Host{
     public name: string
     deleteLayoutEffectCallback: () => void
     constructor({ type, props, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public context: Context) {
+        if (!ComponentHost.typeIds.has(type)) {
+            ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
+        }
+
         this.name = type.name
         this.type = type
         this.props = props
@@ -45,6 +50,9 @@ export class ComponentHost implements Host{
         }
 
         this.deleteLayoutEffectCallback = context.root.on('attach', this.runLayoutEffect)
+    }
+    get typeId() {
+        return ComponentHost.typeIds.get(this.type)!
     }
     get parentElement() {
         return this.placeholder.parentElement
@@ -172,7 +180,7 @@ export class ComponentHost implements Host{
         this.frame = getFrame()
 
         // 就用当前 component 的 placeholder
-        this.innerHost = createHost(node, this.placeholder, this.context)
+        this.innerHost = createHost(node, this.placeholder, {...this.context, hostPath: [...this.context.hostPath, this]})
         this.innerHost.render()
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。

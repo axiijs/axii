@@ -13,5 +13,7 @@ export interface Host {
 
 export type Context = {
     [k:string]:any,
-    root: Root
+    root: Root,
+    hostPath: Host[],
+    elementPath: number[]
 }

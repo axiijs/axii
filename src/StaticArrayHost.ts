@@ -37,7 +37,7 @@ export class StaticArrayHost implements Host{
                     // 其他未知节点了
                     const newPlaceholder: Comment = new Comment('array item')
                     frag.appendChild(newPlaceholder)
-                    const newHost = createHost(item, newPlaceholder, this.context)
+                    const newHost = createHost(item, newPlaceholder, {...this.context, hostPath: [...this.context.hostPath, this]})
                     this.childHosts.push(newHost)
                     if (index === 0) this.firstChild = newHost
                 }

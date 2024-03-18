@@ -35,7 +35,7 @@ export class RxListHost implements Host{
         const host = this
 
         this.hosts = this.source.map((item) => {
-            return createHost(item, new Comment('rx list item'), this.context)
+            return createHost(item, new Comment('rx list item'), {...this.context, hostPath: [...this.context.hostPath, this]})
         }, ({method, argv, result, key, newValue}) => {
             if (method === 'splice') {
                 // 要删除的 hosts

@@ -10,7 +10,10 @@ export type Root = ReturnType<typeof createRoot>
 export function createRoot(element: HTMLElement) {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 
-    const context: Context = {} as unknown as Context
+    const context: Context = {
+        hostPath: [],
+        elementPath: [],
+    } as unknown as Context
     const root = {
         element,
         context,

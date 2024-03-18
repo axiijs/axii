@@ -24,7 +24,7 @@ export class FunctionHost implements Host{
                 const node = this.source()
                 const newPlaceholder = new Comment('computed node')
                 insertBefore(newPlaceholder, this.placeholder)
-                return createHost(node, newPlaceholder, this.context)
+                return createHost(node, newPlaceholder, {...this.context, hostPath: [...this.context.hostPath, this]})
             }
         )
 
