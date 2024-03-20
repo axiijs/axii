@@ -1,8 +1,8 @@
 import {isReactive, reactive, ReactiveEffect} from "data0";
-import {AttributesArg, createElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
+import {AttributesArg, createElement, createSVGElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
-import {Component, ComponentNode, EffectHandle, Props} from "./types";
+import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
 import {assert} from "./util";
 
 
@@ -11,11 +11,16 @@ function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
 
-// CAUTION 为了性能，直接 assign。在底层 所有 DOM 节点都可以接受 array attribute，这样就为属性的覆盖和合并减轻了工作量。
+// CAUTION 为了性能，直接 assign。
+//  只有事件监听和 ref 被认为是外层需要 merge，其他都是否该
 function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     Object.entries(newProps).forEach(([key, value]) => {
         const originValue = origin[key]
-        origin[key] = ensureArray(originValue).concat(value)
+        if(key.startsWith('on') || key === 'ref') {
+            origin[key] = ensureArray(originValue).concat(value)
+        } else {
+            origin[key] = value
+        }
     })
     return origin
 }
@@ -29,7 +34,7 @@ export class ComponentHost implements Host{
     public effects = new Set<EffectHandle>()
     public destroyCallback = new Set<Exclude<ReturnType<EffectHandle>, void>>()
     public layoutEffectDestroyHandles = new Set<Exclude<ReturnType<EffectHandle>, void>>()
-    public ref: {[k:string]: any} = reactive({})
+    public refs: {[k:string]: any} = reactive({})
     public config? : Config
     public children: any
     public frame?: ReactiveEffect[] = []
@@ -79,7 +84,7 @@ export class ComponentHost implements Host{
                     // 为了性能，直接使用了 delete
                     delete rawProps[key]
                     return true
-                } else  if (key === 'ref') {
+                } else  if (key === 'as') {
                     name = rawProps[key]
                     delete rawProps[key]
                     return true
@@ -87,42 +92,31 @@ export class ComponentHost implements Host{
             })
         }
 
+        assert(!(name && this.refs[name]), `ref name ${name} already exists`)
 
         let finalProps = rawProps
         let finalChildren = children
         if (name && this.config?.items[name]) {
 
-
             // 为了性能，又直接操作了 rawProps
             const thisItemConfig = this.config!.items[name]
+            // 1. 支持正对当前节点的 props 调整
             if (thisItemConfig.props) {
-
-                if (isComponent) {
-                    // 如果是个 component，它的 props 无法自动合并，所以用户要自己处理
-                    assert(typeof thisItemConfig.props === 'function', 'configure a component node must use function to handle props rewrite')
-                    finalProps = (thisItemConfig.props as FunctionProp)(rawProps)
-                } else {
-                    // CAUTION 普通节点，这里默认适合原来的 props 合并，除非用户想要自己的处理
-                    if (typeof thisItemConfig.props === 'function') {
-                        finalProps = thisItemConfig.props(rawProps)
+                // CAUTION 普通节点，这里默认适合原来的 props 合并，除非用户想要自己的处理
+                if (typeof thisItemConfig.props === 'function') {
+                    finalProps = thisItemConfig.props(rawProps)
+                } else if(typeof thisItemConfig.props === 'object') {
+                    if (isComponent) {
+                        finalProps = {...rawProps, ...thisItemConfig.props}
                     } else {
                         finalProps = combineProps(rawProps, thisItemConfig.props)
-                        // if (name === 'container') console.log(thisItemConfig.props, rawProps)
                     }
+                } else {
+                    assert(false, 'props should be object or function')
                 }
-
             }
 
-            if (thisItemConfig.eventTarget) {
-                // 支持 eventTarget，用户可以将事件转发到另一个节点上
-                thisItemConfig.eventTarget.forEach(eventTarget => {
-                    eventTarget((e: Event) => {
-                        this.eventTargetTrigger(e, name)
-                    })
-                })
-            }
-
-            // 支持 children 和 configure 同时存在
+            // 2. 支持 children 和 configure 同时存在
             if (thisItemConfig.children) {
                 if (isComponent) {
                     // 支持对 InnerComponent 的穿透 configure
@@ -134,23 +128,17 @@ export class ComponentHost implements Host{
         }
 
         if (name && isComponent) {
-            finalProps.ref = (host: Host) => this.ref[name] = host
+            finalProps.ref = (host: Host) => this.refs[name] = host
         }
         const el = createElement(type, finalProps, ...finalChildren)
 
         if (name && !isComponent) {
-            this.ref[name] = el
+            this.refs[name] = el
         }
+
         return el
     }
-    eventTargetTrigger = (sourceEvent: Event, targetName: string) => {
-        // TODO 如何 clone 各种不同的 event ? 这里的暴力方式是否ok
-        const EventConstructor = sourceEvent.constructor as typeof Event
-        const targetEvent = new EventConstructor(sourceEvent.type, sourceEvent)
-        // console.log(`dispatching ${targetName} ${targetEvent.type} ${targetEvent.key}`)
-        // CAUTION 因为 keydown 等 event 是无法通过 node.dispatchEvent 模拟的，所以这里我们直接用 DOM 的 eventProxy 实现。
-        this.ref[targetName].dispatchEvent( targetEvent)
-    }
+    createSVGElement = createSVGElement
     // 处理视图相关的 effect
     useLayoutEffect = (callback: EffectHandle) => {
         this.layoutEffects.add(callback)
@@ -167,10 +155,11 @@ export class ComponentHost implements Host{
         }
 
         // CAUTION 注意这里 children 的写法，没有children 就不要传，免得后面 props 继续往下透传的时候出问题。
-        const renderContext = {
+        const renderContext: RenderContext = {
             Fragment,
             createElement: this.createElement,
-            ref: this.ref,
+            createSVGElement: this.createSVGElement,
+            refs: this.refs,
             useLayoutEffect: this.useLayoutEffect,
             useEffect: this.useEffect,
             context: this.context

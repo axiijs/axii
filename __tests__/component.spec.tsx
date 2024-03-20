@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
 /** @jsx createElement */
-import {createElement, createRoot, RenderContext} from "@framework";
-import {reactive, incMap, type Atom, atom, computed} from "data0";
-import {describe, test, beforeEach, expect} from "vitest";
+import {configure, createElement, createRoot, JSXElement, RenderContext} from "@framework";
+import {type Atom, atom, computed, incMap, reactive} from "data0";
+import {beforeEach, describe, expect, test} from "vitest";
+import userEvent from "@testing-library/user-event";
 import {ComponentHost} from "../src/ComponentHost.js";
 
 describe('component render', () => {
@@ -345,15 +346,87 @@ describe('component ref', () => {
     })
     test('get ref of dom element', () => {
         function App(props:any, {createElement}: RenderContext) {
-            return <div $container>
-                app
+            return <div>
+                <div $container>
+                    app
+                </div>
+                <div as="container2">
+                    app2
+                </div>
             </div>
         }
 
         root.render(<App/>)
 
-        expect(rootEl.firstElementChild!.innerHTML).toBe('app')
-        expect((root.host as ComponentHost).ref.container).toBeDefined()
-        expect((root.host as ComponentHost).ref.container.innerHTML).toBe('app')
+        expect(rootEl.firstElementChild!.firstElementChild!.innerHTML).toBe('app')
+        expect((root.host as ComponentHost).refs.container).toBeDefined()
+        expect((root.host as ComponentHost).refs.container.innerHTML).toBe('app')
+        expect((root.host as ComponentHost).refs.container2.innerHTML).toBe('app2')
+    })
+
+    test('use ref to get dom ref', () => {
+        let innerRef: HTMLElement|undefined
+        let innerRef2: JSXElement|undefined
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                {innerRef2 = <span ref={(ref:HTMLElement) => innerRef = ref}>app</span> }
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(innerRef).toBeDefined()
+        expect(innerRef!.innerHTML).toBe('app')
+        expect(innerRef).toBe(innerRef2)
+    })
+
+})
+
+
+describe('component configuration', () => {
+    let root: ReturnType<typeof createRoot>
+    let rootEl: HTMLElement
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        rootEl = document.createElement('div')
+        document.body.appendChild(rootEl)
+        root = createRoot(rootEl)
+    })
+    test('get inner ref and attach listener', async () => {
+
+        let helloClicked = false
+        const helloRef = {current: null}
+
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <div $hello onClick={() => helloClicked = true} ref={helloRef}>
+                    hello world
+                </div>
+            </div>
+        }
+
+        let helloClicked2 = false
+        const helloRef2 = {current: null}
+
+        root.render(<App>
+            {configure({
+                hello: {
+                    props: {
+                        style: {
+                            color: 'red'
+                        },
+                        onClick: () => helloClicked2 = true,
+                        ref: helloRef2
+                    }
+                }
+            })}
+        </App>)
+
+        expect(helloRef.current).toBeDefined()
+        expect(getComputedStyle(helloRef.current! as HTMLElement).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
+        expect(helloRef.current).toBe(helloRef2.current)
+
+        await userEvent.click(helloRef.current!)
+        expect(helloClicked).toBe(true)
+        expect(helloClicked2).toBe(true)
     })
 })

@@ -263,6 +263,12 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
   // CAUTION 注意这里一定要先处理往 children 再处理自身的 prop，因为像 Select 这样的元素只有在渲染完 option 之后再设置 value 才有效。
   //  否则会出现  Select value 自动变成 option 第一个的情况。
   if (props) {
+    if(props.ref) {
+      createElement.attachRef(container as HTMLElement, props.ref)
+      delete props.ref
+    }
+
+
     Object.entries(props).forEach(([key, value]) => {
       // 注意这里好像写得很绕，但逻辑判断是最少的
       if(!createElement.isValidAttribute(key, value)){
@@ -308,9 +314,25 @@ createElement.isValidAttribute = function (name:string, value:any): boolean {
   return false
 }
 
+type RefFn = (el: HTMLElement) => void
+type RefObject = {current: HTMLElement|null}
+// 附加在 createElement 上，
+createElement.attachRef = function (el: HTMLElement, ref: (RefFn|RefObject)|(RefFn|RefObject)[] ) {
+  if (Array.isArray(ref))  {
+    ref.forEach(r => createElement.attachRef(el, r))
+    return
+  }
+
+  if (typeof ref === 'function') {
+    ref(el)
+  } else if(typeof ref === 'object' && ref.hasOwnProperty('current')) {
+    ref.current = el
+  } else {
+    assert(false, 'ref should be function or object with current property')
+  }
+}
 
 export function Fragment() {}
-
 
 function resetOptionParentSelectValue(targetOption: HTMLElement) {
   const target = targetOption.parentElement
@@ -333,6 +355,9 @@ export function createElementNS(type: string, props: AttributesArg, ...children:
   return createElement(type, {_isSVG: true, ...(props || {})}, children)
 }
 
+export function createSVGElement(type: string, props: AttributesArg, ...children: any[]) {
+  return createElement(type, {_isSVG: true, ...(props || {})}, children)
+}
 
 export function dispatchEvent(target: ExtendedElement, event: Event) {
   return eventProxy.call(target, event)

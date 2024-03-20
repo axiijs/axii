@@ -13,7 +13,7 @@ export const onDownKey = eventAlias((e: KeyboardEvent) => e.key === 'ArrowDown')
 export const onLeftKey = eventAlias((e: KeyboardEvent) => e.key === 'ArrowLeft')
 export const onRightKey = eventAlias((e: KeyboardEvent) => e.key === 'ArrowRight')
 export const onEnterKey = eventAlias((e: KeyboardEvent) => e.key === 'Enter')
-export const onTabKey = eventAlias((e: KeyboardEvent) => e.key === 'Tab')
+export const  onTabKey = eventAlias((e: KeyboardEvent) => e.key === 'Tab')
 export const onESCKey = eventAlias((e: KeyboardEvent) => e.key === 'Escape')
 export const onBackspaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Backspace')
 export const onSpaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Space')
@@ -35,21 +35,27 @@ export const onKey = (key:string, config?: onKeyConfig) => eventAlias((e: Keyboa
 
 export const onSelf = eventAlias(e => e.target === e.currentTarget)
 
-type Trigger = (e: Event) => any
 
-export function createEventTransfer() {
-    let triggerTargetEvent: Trigger|undefined
-    function target(trigger: Trigger) {
-        if (triggerTargetEvent !== undefined) {
-            debugger
+export function createEventTransfer(transform?: (e: Event) => Event|null|undefined ){
+    let targetRef: HTMLElement|undefined
+    function target(el: HTMLElement) {
+        if (targetRef !== undefined) {
             throw new Error('event transfer can only have one target')
         }
-        triggerTargetEvent = trigger
+        targetRef = el
     }
 
-    function source(e: Event) {
-        if (triggerTargetEvent) {
-            triggerTargetEvent(e)
+    function source(sourceEvent: Event) {
+        if (targetRef) {
+
+            let targetEvent = transform ? transform(sourceEvent) : sourceEvent
+            if (targetEvent === sourceEvent) {
+                // TODO 如何 clone 各种不同的 event ? 这里的暴力方式是否ok
+                const EventConstructor = sourceEvent.constructor as typeof Event
+                targetEvent = new EventConstructor(sourceEvent.type, sourceEvent)
+            }
+
+            if (targetEvent) targetRef.dispatchEvent(targetEvent)
         } else {
             console.warn('target is not ready')
         }

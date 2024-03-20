@@ -12,9 +12,11 @@ export type JSXElement = ComponentNode|HTMLElement|Comment|DocumentFragment|SVGE
 
 export type RenderContext = {
     createElement: (type: JSXElementType, rawProps : AttributesArg, ...children: any[]) => JSXElement,
+    createSVGElement: (type: string, rawProps : AttributesArg, ...children: any[]) => JSXElement,
     Fragment: typeof Fragment,
-    useLayoutEffect: (arg: EffectHandle) => void
-    ref: {
+    useLayoutEffect: (arg: EffectHandle) => void,
+    useEffect: (arg: EffectHandle) => void,
+    refs: {
         [k: string]: HTMLElement
     },
     context: Context
