@@ -17,7 +17,7 @@ export class ReactiveArrayHost implements Host{
     constructor(public source: ReturnType<typeof computed>, public placeholder:UnhandledPlaceholder, public context: Context) {
     }
     createPlaceholder(item: any): [any, Comment] {
-        return [item, new Comment('frag item host')]
+        return [item, document.createComment('frag item host')]
     }
     createHost = ([item, placeholder] : [any, UnhandledPlaceholder]) : Host => {
         return createHost(item, placeholder, {...this.context, hostPath: [...this.context.hostPath, this]})

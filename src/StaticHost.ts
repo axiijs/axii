@@ -57,7 +57,7 @@ class StyleManager {
         const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
         const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
         // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-        return `gen-${lastComponentHost?.typeId??'global'}-${pathToGenerateId.map(host => host.context.elementPath.join('.')).join('-')}-${elementPath.join('.')}`
+        return `gen-${lastComponentHost?.typeId??'global'}-${pathToGenerateId.map(host => host.context.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
     }
     stringifyStyleObject(styleObject: {[k:string]:any}): string {
         return Object.entries(styleObject).map(([key, value]) => {
@@ -100,6 +100,12 @@ ${this.stringifyStyleObject(valueStyleObject)}
 `
 
         const nestedStyleContent: string = nestedKeys.map(key => {
+            // 支持 at-rules for media/container query
+            if (key.startsWith('@')) {
+                return `${key} {
+    ${this.generateStyleContent(selector, styleObject[key])}
+}`
+            }
 
             const nestedClassName = /^(\s?)+&/.test(key) ? key.replace('&', selector) : `${selector} ${key}`
             return this.generateStyleContent(nestedClassName, styleObject[key])
@@ -127,7 +133,7 @@ export class StaticHost implements Host{
     render(): void {
         assert(this.element === this.placeholder, 'should never rerender')
 
-        this.element = this.source instanceof DocumentFragment ? new Comment('fragment start') : this.source
+        this.element = this.source instanceof DocumentFragment ? document.createComment('fragment start') : this.source
         insertBefore(this.source, this.placeholder)
         this.collectInnerHostAndAttr()
         this.reactiveHosts!.forEach(host => host.render())

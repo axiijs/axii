@@ -10,7 +10,7 @@ export class RxListHost implements Host{
     constructor(public source: RxList<any>, public placeholder:UnhandledPlaceholder, public context: Context) {
     }
     createPlaceholder(item: any): [any, Comment] {
-        return [item, new Comment('frag item host')]
+        return [item, document.createComment('frag item host')]
     }
 
     isOnlyChildrenOfParent() {
@@ -35,7 +35,7 @@ export class RxListHost implements Host{
         const host = this
 
         this.hosts = this.source.map((item) => {
-            return createHost(item, new Comment('rx list item'), {...this.context, hostPath: [...this.context.hostPath, this]})
+            return createHost(item, document.createComment('rx list item'), {...this.context, hostPath: [...this.context.hostPath, this]})
         }, ({method, argv, result, key, newValue}) => {
             if (method === 'splice') {
                 // 要删除的 hosts

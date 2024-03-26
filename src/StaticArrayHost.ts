@@ -35,7 +35,7 @@ export class StaticArrayHost implements Host{
                     if (index === 0) this.firstChild = item
                 } else {
                     // 其他未知节点了
-                    const newPlaceholder: Comment = new Comment('array item')
+                    const newPlaceholder: Comment = document.createComment('array item')
                     frag.appendChild(newPlaceholder)
                     const newHost = createHost(item, newPlaceholder, {...this.context, hostPath: [...this.context.hostPath, this]})
                     this.childHosts.push(newHost)

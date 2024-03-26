@@ -254,7 +254,7 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
       delete (child as ExtendedElement).unhandledAttr
 
     } else {
-      const placeholder: UnhandledPlaceholder = new Comment('unhandledChild')
+      const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
       container.appendChild(placeholder)
       unhandledChildren.push({ placeholder, child, path: [index]})
     }

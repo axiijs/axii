@@ -22,7 +22,7 @@ export class FunctionHost implements Host{
 
         this.innerHost = atomComputed(() => {
                 const node = this.source()
-                const newPlaceholder = new Comment('computed node')
+                const newPlaceholder = document.createComment('computed node')
                 insertBefore(newPlaceholder, this.placeholder)
                 return createHost(node, newPlaceholder, {...this.context, hostPath: [...this.context.hostPath, this]})
             }

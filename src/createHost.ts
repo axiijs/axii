@@ -11,7 +11,7 @@ import {assert} from "./util";
 import {RxListHost} from "./RxListHost.js";
 
 class EmptyHost implements Host{
-    element = new Comment('empty')
+    element = document.createComment('empty')
     placeholder = this.element
     constructor(public context: Context) {
     }
