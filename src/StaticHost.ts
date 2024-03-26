@@ -61,18 +61,14 @@ class StyleManager {
     }
     stringifyStyleObject(styleObject: {[k:string]:any}): string {
         return Object.entries(styleObject).map(([key, value]) => {
-            // value 是对象，说明是嵌套的，继续递归
-            if (typeof value === 'object' && value !== null) {
-                return `${key} {
-${this.stringifyStyleObject(value)}}
-`
+
+            const property = key.replace(/([A-Z])/g, '-$1').toLowerCase()
+
+            // value 是数字类型的 attr，自动加上 px
+            if (typeof value === 'number' && AUTO_ADD_PX_STYLE.test(key)) {
+                return `${property}:${value}px;`
             } else {
-                // value 是数字类型的 attr，自动加上 px
-                if (typeof value === 'number' && AUTO_ADD_PX_STYLE.test(key)) {
-                    return `${key}:${value}px;`
-                } else {
-                    return `${key}:${value};`
-                }
+                return `${property}:${value};`
             }
         }).join('\n')
     }
