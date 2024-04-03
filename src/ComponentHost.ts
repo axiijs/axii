@@ -92,8 +92,6 @@ export class ComponentHost implements Host{
             })
         }
 
-        assert(!(name && this.refs[name]), `ref name ${name} already exists`)
-
         let finalProps = rawProps
         let finalChildren = children
         if (name && this.config?.items[name]) {
@@ -128,8 +126,9 @@ export class ComponentHost implements Host{
         }
 
         if (name && isComponent) {
-            finalProps.ref = (host: Host) => this.refs[name] = host
+            finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
         }
+
         const el = createElement(type, finalProps, ...finalChildren)
 
         if (name && !isComponent) {
