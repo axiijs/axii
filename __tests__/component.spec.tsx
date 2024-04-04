@@ -194,7 +194,6 @@ describe('component render', () => {
         }
 
         root.render(<App/>)
-        console.log(rootEl.innerHTML)
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('anonymous')
     })
 
