@@ -25,6 +25,8 @@ function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     return origin
 }
 
+const INNER_CONFIG_PROP = '$$config'
+
 export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
     type: Component
@@ -35,24 +37,58 @@ export class ComponentHost implements Host{
     public destroyCallback = new Set<Exclude<ReturnType<EffectHandle>, void>>()
     public layoutEffectDestroyHandles = new Set<Exclude<ReturnType<EffectHandle>, void>>()
     public refs: {[k:string]: any} = reactive({})
-    public config? : Config
+    public itemConfig : {[k:string]:ConfigItem} = {}
     public children: any
     public frame?: ReactiveEffect[] = []
     public name: string
     deleteLayoutEffectCallback: () => void
-    constructor({ type, props, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public context: Context) {
+    constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public context: Context) {
         if (!ComponentHost.typeIds.has(type)) {
             ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
         }
 
         this.name = type.name
         this.type = type
-        this.props = props
-        if(children[0] instanceof Config) {
-            this.config = children[0]
-        } else {
-            this.children = children
-        }
+        this.props = {}
+
+        Object.entries(props).forEach(([key, value]) => {
+            if (key === INNER_CONFIG_PROP) {
+                this.itemConfig = value
+            } else if (key[0] === '$') {
+                const [itemName, itemProp] = key.slice(1).split(':')
+                if (!this.itemConfig[itemName]) this.itemConfig[itemName] = {}
+
+                if (itemProp === '$eventTarget')  {
+                    // 支持 $eventTarget 来转发事件
+                    this.itemConfig[itemName].eventTarget = ensureArray(value)
+                } else if (itemProp=== '$use'){
+                    // 支持 $use 来覆盖整个 element
+                    this.itemConfig[itemName].use = value
+                } else if (itemProp=== '$props') {
+                    // 用户自定义函数合并 props
+                    this.itemConfig[itemName].propsMergeHandle = value
+                } else if (itemProp=== '$children') {
+                    // 用户自定义函数合并 props
+                    this.itemConfig[itemName].children = value
+                }else if (itemProp=== undefined || itemProp==='') {
+                    // 穿透到子组件的 config
+                    this.itemConfig[itemName].config = value
+                } else if(itemProp?.[0] === '$'){
+                    // 不支持的配置项
+                    assert(false, `unsupported config item: ${itemName}`)
+                } else {
+                    // 支持 $xxx:prop 来覆盖 props
+                    if (!this.itemConfig[itemName].props) this.itemConfig[itemName].props = {}
+                    this.itemConfig[itemName].props![itemProp] = value
+                }
+
+            } else {
+                this.props[key] = value
+            }
+        })
+
+
+        this.children = children
 
         this.deleteLayoutEffectCallback = context.root.on('attach', this.runLayoutEffect)
     }
@@ -79,13 +115,9 @@ export class ComponentHost implements Host{
         let name = ''
         if (rawProps) {
             Object.keys(rawProps).some(key => {
-                if (key[0] === '$') {
-                    name = key.slice(1, Infinity)
-                    // 为了性能，直接使用了 delete
-                    delete rawProps[key]
-                    return true
-                } else  if (key === 'as') {
+                if (key === 'as') {
                     name = rawProps[key]
+                    // 这里为了性能直接 delete 了。
                     delete rawProps[key]
                     return true
                 }
@@ -94,42 +126,43 @@ export class ComponentHost implements Host{
 
         let finalProps = rawProps
         let finalChildren = children
-        if (name && this.config?.items[name]) {
+        if (name && this.itemConfig[name]) {
 
             // 为了性能，又直接操作了 rawProps
-            const thisItemConfig = this.config!.items[name]
+            const thisItemConfig = this.itemConfig[name]
             // 1. 支持正对当前节点的 props 调整
             if (thisItemConfig.props) {
                 // CAUTION 普通节点，这里默认适合原来的 props 合并，除非用户想要自己的处理
-                if (typeof thisItemConfig.props === 'function') {
-                    finalProps = thisItemConfig.props(rawProps)
-                } else if(typeof thisItemConfig.props === 'object') {
-                    if (isComponent) {
-                        finalProps = {...rawProps, ...thisItemConfig.props}
-                    } else {
-                        finalProps = combineProps(rawProps, thisItemConfig.props)
-                    }
+                if (isComponent) {
+                    finalProps = {...rawProps, ...thisItemConfig.props}
                 } else {
-                    assert(false, 'props should be object or function')
+                    finalProps = combineProps(rawProps, thisItemConfig.props)
                 }
+            }
+
+            if (thisItemConfig.propsMergeHandle) {
+                finalProps = thisItemConfig.propsMergeHandle(finalProps)
             }
 
             // 2. 支持 children 和 configure 同时存在
             if (thisItemConfig.children) {
-                if (isComponent) {
-                    // 支持对 InnerComponent 的穿透 configure
-                    finalChildren = [configure(thisItemConfig.children)]
-                } else {
-                    finalChildren = thisItemConfig.children
-                }
+                finalChildren = thisItemConfig.children
             }
+
+            if (thisItemConfig.config && isComponent) {
+                // 穿透给子组件的 config
+                finalProps = {...finalProps, ...thisItemConfig.config}
+            }
+
         }
 
         if (name && isComponent) {
             finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
         }
 
-        const el = createElement(type, finalProps, ...finalChildren)
+        // 支持 use 覆写整个节点
+        const finalType = this.itemConfig[name]?.use || type
+        const el = createElement(finalType, finalProps, ...finalChildren)
 
         if (name && !isComponent) {
             this.refs[name] = el
@@ -173,9 +206,13 @@ export class ComponentHost implements Host{
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.props.ref) {
-            assert(typeof this.props.ref === 'function', `ref on component should be a function after parent component handled`)
-            this.props.ref(this)
+            if (typeof this.props.ref === 'function') {
+                this.props.ref(this.refs)
+            } else {
+                this.props.ref.current = this
+            }
         }
+
         this.effects.forEach(effect => {
             const handle = effect()
             // 也支持 async function return promise，只不过不做处理
@@ -216,18 +253,15 @@ type FunctionProp = (arg:any) => object
 type EventTarget = (arg: (e:Event) => any) => void
 
 type ConfigItem = {
+    // 穿透给组件的
+    config?: { [k:string]: ConfigItem},
+    // 支持覆写 element
+    use?: Component|string,
     // 将事件转发到另一个节点上
     eventTarget?: EventTarget[],
     // 手动调整内部组件的 props
-    props?: object|FunctionProp,
+    props?: {[k:string]: any},
+    propsMergeHandle?: FunctionProp,
     // children
     children?: any
-}
-
-class Config {
-    constructor(public items: {[k:string]:ConfigItem}) {}
-}
-
-export function configure(items: {[k:string]:ConfigItem}) {
-    return new Config(items)
 }

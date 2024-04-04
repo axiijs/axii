@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 /** @jsx createElement */
-import {configure, createElement, createRoot, JSXElement, RenderContext} from "@framework";
+import {createElement, createRoot, JSXElement, RenderContext} from "@framework";
 import {type Atom, atom, computed, incMap, reactive} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import userEvent from "@testing-library/user-event";
@@ -347,7 +347,7 @@ describe('component ref', () => {
     test('get ref of dom element', () => {
         function App(props:any, {createElement}: RenderContext) {
             return <div>
-                <div $container>
+                <div as="container">
                     app
                 </div>
                 <div as="container2">
@@ -391,6 +391,7 @@ describe('component configuration', () => {
         document.body.appendChild(rootEl)
         root = createRoot(rootEl)
     })
+
     test('get inner ref and attach listener', async () => {
 
         let helloClicked = false
@@ -398,7 +399,7 @@ describe('component configuration', () => {
 
         function App(props:any, {createElement}: RenderContext) {
             return <div>
-                <div $hello onClick={() => helloClicked = true} ref={helloRef}>
+                <div as="hello" onClick={() => helloClicked = true} ref={helloRef}>
                     hello world
                 </div>
             </div>
@@ -407,18 +408,11 @@ describe('component configuration', () => {
         let helloClicked2 = false
         const helloRef2 = {current: null}
 
-        root.render(<App>
-            {configure({
-                hello: {
-                    props: {
-                        style: {
-                            color: 'red'
-                        },
-                        onClick: () => helloClicked2 = true,
-                        ref: helloRef2
-                    }
-                }
-            })}
+        root.render(<App
+            $hello:style={{color:'red'}}
+            $hello:onClick={() => helloClicked2 = true}
+            $hello:ref={helloRef2}
+        >
         </App>)
 
         expect(helloRef.current).toBeDefined()
@@ -428,5 +422,32 @@ describe('component configuration', () => {
         await userEvent.click(helloRef.current!)
         expect(helloClicked).toBe(true)
         expect(helloClicked2).toBe(true)
+    })
+
+    test('pass configuration into children of component', async () => {
+
+        let helloClicked = false
+        const helloRef = {current: null}
+
+        function Child(props:any, {createElement}: RenderContext) {
+            return <div as="hello" ref={helloRef}>
+                hello world
+            </div>
+        }
+
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <Child as="child" />
+            </div>
+        }
+
+        root.render(<App
+            $child = {{
+                "$hello:onClick": () => helloClicked = true,
+            }}
+        />)
+
+        await userEvent.click(helloRef.current!)
+        expect(helloClicked).toBe(true)
     })
 })

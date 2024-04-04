@@ -13,8 +13,12 @@ declare global {
             [name: string]: any
         }
         interface IntrinsicAttributes {
-            [key: `$${string}`]: boolean;
+            // [key: `$${string}`]: boolean;
+            // name an element inside component so it can be overwritten
+            as?: string
             ref?: any
+            // pass props to an element inside component
+            [key: `$${string}:${string}`]: any
         }
         type ElementClass = Component
         type Element =  JSXElement
