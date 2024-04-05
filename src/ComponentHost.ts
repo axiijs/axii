@@ -153,7 +153,6 @@ export class ComponentHost implements Host{
                 // 穿透给子组件的 config
                 finalProps = {...finalProps, ...thisItemConfig.config}
             }
-
         }
 
         if (name && isComponent) {

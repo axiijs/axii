@@ -29,6 +29,7 @@ export interface ExtendedElement extends HTMLElement {
   }
   unhandledChildren?: UnhandledChildInfo[]
   unhandledAttr?: UnhandledAttrInfo[]
+  refHandles?: RefHandleInfo[]
 }
 
 function eventProxy(this: ExtendedElement, e: Event) {
@@ -217,7 +218,10 @@ type UnhandledAttrInfo = {
 
 }
 
-
+export type RefHandleInfo = {
+  handle: RefFn|RefObject,
+  path: number[]
+}
 
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ComponentNode|HTMLElement|DocumentFragment|SVGElement{
@@ -235,6 +239,7 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
 
   const unhandledAttr: UnhandledAttrInfo[] = []
   const unhandledChildren: UnhandledChildInfo[] = []
+  const refHandles: RefHandleInfo[] = []
 
   children?.forEach((child, index) => {
     if (child === undefined || child === null) return
@@ -243,15 +248,21 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
       container.appendChild(document.createTextNode(child.toString()))
     } else if (child instanceof HTMLElement || child instanceof DocumentFragment || child instanceof SVGElement) {
       container.appendChild(child)
+
       // 往上传递 unhandledChild unhandledAttr ，直到没有 parent 了为止
-      const childUnhandledChildren = (child as ExtendedElement).unhandledChildren || []
+      const childElement = child as ExtendedElement
+      const childUnhandledChildren = childElement.unhandledChildren || []
       unhandledChildren.push(...childUnhandledChildren.map(c => ({...c, path: [index, ...c.path]})))
 
-      const childUnhandledAttr = (child as ExtendedElement).unhandledAttr || []
+      const childUnhandledAttr = childElement.unhandledAttr || []
       unhandledAttr.push(...childUnhandledAttr.map(c => ({...c, path: [index, ...c.path]})))
 
-      delete (child as ExtendedElement).unhandledChildren
-      delete (child as ExtendedElement).unhandledAttr
+      const childRefHandles = childElement.refHandles || []
+      refHandles.push(...childRefHandles.map(c => ({...c, path: [index, ...c.path]})))
+
+      delete childElement.unhandledChildren
+      delete childElement.unhandledAttr
+      delete childElement.refHandles
 
     } else {
       const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
@@ -265,6 +276,7 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
   if (props) {
     if(props.ref) {
       createElement.attachRef(container as HTMLElement, props.ref)
+      refHandles.push({handle:props.ref, path:[]})
       delete props.ref
     }
 
@@ -280,11 +292,12 @@ export function createElement(type: JSXElementType, rawProps : AttributesArg, ..
   }
 
   // 把 unhandled child/attr 全部收集到顶层的  container 上，等外部处理，这样就不用外部去遍历 jsx 的结果了
+  // CAUTION refHandles 也要向上传递是因为在 DOM 中没有监听 detach 的方法，我们只能依赖外部框架的生命周期来处理。
+  const containerElement = container as ExtendedElement
+  if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
+  if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
+  if (refHandles.length) containerElement.refHandles = refHandles
 
-  if (unhandledChildren.length) (container as ExtendedElement).unhandledChildren = unhandledChildren
-  if (unhandledAttr) (container as ExtendedElement).unhandledAttr = unhandledAttr
-
-  // CAUTION ref 外部处理
   return container
 }
 
@@ -314,7 +327,7 @@ createElement.isValidAttribute = function (name:string, value:any): boolean {
   return false
 }
 
-type RefFn = (el: HTMLElement) => void
+type RefFn = (el: HTMLElement|null) => void
 type RefObject = {current: HTMLElement|null}
 // 附加在 createElement 上，
 createElement.attachRef = function (el: HTMLElement, ref: (RefFn|RefObject)|(RefFn|RefObject)[] ) {
@@ -329,6 +342,20 @@ createElement.attachRef = function (el: HTMLElement, ref: (RefFn|RefObject)|(Ref
     ref.current = el
   } else {
     assert(false, 'ref should be function or object with current property')
+  }
+}
+
+// 在 axii 中，任何元素都是直接属于 StaticHost，由它在 destroy 中调用 detachRef。
+createElement.detachRef = function (ref: (RefFn|RefObject)|(RefFn|RefObject)[] ) {
+  if (Array.isArray(ref))  {
+    ref.forEach(r => createElement.detachRef(r))
+    return
+  }
+
+  if (typeof ref === 'function') {
+    ref(null)
+  } else if(typeof ref === 'object' && ref.hasOwnProperty('current')) {
+    ref.current = null
   }
 }
 

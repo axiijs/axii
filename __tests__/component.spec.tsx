@@ -378,6 +378,21 @@ describe('component ref', () => {
         expect(innerRef).toBe(innerRef2)
     })
 
+    test('ref should be set to null when element removed', () => {
+        let innerRef: HTMLElement|undefined|null
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <span ref={(ref:HTMLElement|null) => innerRef = ref}>app</span>
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(innerRef).toBeDefined()
+        expect(innerRef!.innerHTML).toBe('app')
+        root.destroy()
+        expect(innerRef).toBe(null)
+    })
+
 })
 
 

@@ -3,7 +3,7 @@ import {
     UnhandledPlaceholder,
     insertBefore,
     ExtendedElement,
-    createElement, AUTO_ADD_PX_STYLE
+    createElement, AUTO_ADD_PX_STYLE, RefHandleInfo
 } from "./DOM";
 import {Context, Host} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
@@ -120,6 +120,7 @@ export class StaticHost implements Host{
     computed = undefined
     reactiveHosts?: Host[]
     attrComputeds?: ReturnType<typeof computed>[]
+    refHandles?: RefHandleInfo[]
     constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public context: Context) {
     }
     get parentElement() {
@@ -131,16 +132,17 @@ export class StaticHost implements Host{
 
         this.element = this.source instanceof DocumentFragment ? document.createComment('fragment start') : this.source
         insertBefore(this.source, this.placeholder)
-        this.collectInnerHostAndAttr()
+        this.collectInnerHost()
+        this.collectReactiveAttr()
+        this.collectReactiveAttr()
+        this.collectRefHandles()
         this.reactiveHosts!.forEach(host => host.render())
     }
-    collectInnerHostAndAttr() {
+    collectInnerHost() {
         const result = this.source
         if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
 
-        const isSVG = result instanceof SVGElement
-
-        const { unhandledChildren, unhandledAttr } = result as ExtendedElement
+        const { unhandledChildren } = result as ExtendedElement
 
         this.reactiveHosts =
             unhandledChildren ?
@@ -152,6 +154,15 @@ export class StaticHost implements Host{
                     })
                 ) :
                 []
+
+    }
+    collectReactiveAttr() {
+        const result = this.source
+        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
+
+        const isSVG = result instanceof SVGElement
+
+        const {  unhandledAttr } = result as ExtendedElement
 
         this.attrComputeds = []
         unhandledAttr?.forEach(({ el, key, value, path}) => {
@@ -170,7 +181,12 @@ export class StaticHost implements Host{
                 }
             }))
         })
-
+    }
+    collectRefHandles() {
+        const result = this.source
+        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
+        const {  refHandles } = result as ExtendedElement
+        this.refHandles = refHandles
     }
     destroy(parentHandle?:boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
@@ -178,6 +194,10 @@ export class StaticHost implements Host{
         }
 
         this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
+
+        this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
+            createElement.detachRef(handle)
+        })
 
         if (!parentHandle) {
             removeNodesBetween(this.element!, this.placeholder, true)
