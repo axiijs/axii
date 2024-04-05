@@ -1,4 +1,4 @@
-import {isReactive, reactive, ReactiveEffect} from "data0";
+import {isReactive, reactive, ReactiveEffect, ManualCleanup} from "data0";
 import {AttributesArg, createElement, createSVGElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
 import {Context, Host} from "./Host";
 import {createHost} from "./createHost";
@@ -39,7 +39,7 @@ export class ComponentHost implements Host{
     public refs: {[k:string]: any} = reactive({})
     public itemConfig : {[k:string]:ConfigItem} = {}
     public children: any
-    public frame?: ReactiveEffect[] = []
+    public frame?: ManualCleanup[] = []
     public name: string
     deleteLayoutEffectCallback: () => void
     constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public context: Context) {
@@ -227,8 +227,8 @@ export class ComponentHost implements Host{
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
             // 如果上层是 computed rerun，那么也会清理掉我们产生的 computed。但不能确定，所以这里还是自己清理一下。
-            this.frame?.forEach(effect =>
-                ReactiveEffect.destroy(effect)
+            this.frame?.forEach(manualCleanupObject =>
+                manualCleanupObject.destroy()
             )
         }
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
