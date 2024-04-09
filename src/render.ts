@@ -5,15 +5,24 @@ import {Context, Host} from "./Host";
 
 type EventCallback = (e: any) => void
 
-export type Root = ReturnType<typeof createRoot>
+export type Root = {
+    element: HTMLElement,
+    context: Context,
+    host: Host|undefined,
+    render: (componentOrEl: JSX.Element|ComponentNode|Function) => Host,
+    destroy: () => void,
+    on: (event: string, callback: EventCallback) => () => void,
+    dispatch: (event: string, arg?: any) => void
+}
 
-export function createRoot(element: HTMLElement) {
+export function createRoot(element: HTMLElement): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 
     const context: Context = {
         hostPath: [],
         elementPath: [],
     } as unknown as Context
+
     const root = {
         element,
         context,
@@ -52,7 +61,7 @@ export function createRoot(element: HTMLElement) {
 
     context.root = root
 
-    return root
+    return root as Root
 }
 
 
