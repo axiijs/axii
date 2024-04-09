@@ -465,3 +465,41 @@ describe('component configuration', () => {
         expect(helloClicked).toBe(true)
     })
 })
+
+describe('component data context', () => {
+    let root: ReturnType<typeof createRoot>
+    let rootEl: HTMLElement
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        rootEl = document.createElement('div')
+        document.body.appendChild(rootEl)
+        root = createRoot(rootEl)
+    })
+
+    test('pass data context to children', () => {
+        const data = atom('data0')
+        const ContextType = Symbol('ContextType')
+
+        function Child2(props:any, {createElement, context}: RenderContext) {
+            return <div>{context.get(ContextType).data}</div>
+        }
+
+        function Child(props:any, {createElement}: RenderContext) {
+            return <div>
+                <Child2 />
+            </div>
+        }
+
+        function App(props:any, {createElement, context}: RenderContext) {
+            context.set(ContextType, {data})
+            return <div>
+                <Child />
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data0')
+        data('data1')
+        expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data1')
+    })
+})

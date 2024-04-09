@@ -41,6 +41,7 @@ export class ComponentHost implements Host{
     public children: any
     public frame?: ManualCleanup[] = []
     public name: string
+    public renderContext?: RenderContext
     deleteLayoutEffectCallback: () => void
     constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
@@ -186,17 +187,19 @@ export class ComponentHost implements Host{
         }
 
         // CAUTION 注意这里 children 的写法，没有children 就不要传，免得后面 props 继续往下透传的时候出问题。
-        const renderContext: RenderContext = {
+        this.renderContext = {
             Fragment,
             createElement: this.createElement,
             createSVGElement: this.createSVGElement,
             refs: this.refs,
             useLayoutEffect: this.useLayoutEffect,
             useEffect: this.useEffect,
-            pathContext: this.pathContext
+            pathContext: this.pathContext,
+            context: new DataContext(this.pathContext.hostPath)
         }
+
         const getFrame = ReactiveEffect.collectEffect()
-        const node = this.type({...this.props, children: this.children}, renderContext)
+        const node = this.type({...this.props, children: this.children}, this.renderContext)
         this.frame = getFrame()
 
         // 就用当前 component 的 placeholder
@@ -264,17 +267,35 @@ type ConfigItem = {
     // children
     children?: any
 }
-//
-// export type ContextProviderProps = {
-//     value: any
-//     children: any
-// }
-//
-// export function createContext(contextType: any) {
-//     return function ContextProviderProps({value, children }: ContextProviderProps, { userContext }: RenderContext ) {
-//         userContext.set(contextType, value)
-//         return children
-//     }
-// }
 
+export class DataContext{
+    public valueByType: Map<any, any>
+    constructor(public hostPath: Host[]) {
+        this.valueByType = new Map<any, any>()
+    }
+    get(contextType:any) {
+        // 找到最近具有 contextType 的 host
+        for (let i = this.hostPath.length - 1; i >= 0; i--) {
+            const host = this.hostPath[i]
+            if (host instanceof ComponentHost) {
+                if (host.renderContext!.context.valueByType.has(contextType)) {
+                    return host.renderContext!.context.valueByType.get(contextType)
+                }
+            }
+        }
+    }
+    set(contextType: any, value: any) {
+        this.valueByType.set(contextType, value)
+    }
+}
 
+export type ContextProviderProps = {
+    contextType: any
+    value: any
+    children: any
+}
+
+export function ContextProvider({contextType, value, children }: ContextProviderProps, { context }: RenderContext ) {
+    context.set(contextType, value)
+    return children
+}
