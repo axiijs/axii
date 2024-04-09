@@ -193,7 +193,7 @@ export class ComponentHost implements Host{
             refs: this.refs,
             useLayoutEffect: this.useLayoutEffect,
             useEffect: this.useEffect,
-            context: this.pathContext
+            pathContext: this.pathContext
         }
         const getFrame = ReactiveEffect.collectEffect()
         const node = this.type({...this.props, children: this.children}, renderContext)

@@ -19,7 +19,7 @@ export type RenderContext = {
     refs: {
         [k: string]: HTMLElement
     },
-    context: PathContext
+    pathContext: PathContext
 }
 
 export type Component = (props: any, injectHandles?: RenderContext) => JSXElement
