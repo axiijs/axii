@@ -1,13 +1,13 @@
 import {insertBefore, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 
 export class RxListHost implements Host{
     hosts?: RxList<any>
     placeholderAndItemComputed?: [any, Comment][]
     hostRenderComputed?:  ReturnType<typeof computed>
-    constructor(public source: RxList<any>, public placeholder:UnhandledPlaceholder, public context: Context) {
+    constructor(public source: RxList<any>, public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
     }
     createPlaceholder(item: any): [any, Comment] {
         return [item, document.createComment('frag item host')]
@@ -35,7 +35,7 @@ export class RxListHost implements Host{
         const host = this
 
         this.hosts = this.source.map((item) => {
-            return createHost(item, document.createComment('rx list item'), {...this.context, hostPath: [...this.context.hostPath, this]})
+            return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
         }, ({method, argv, result, key, newValue}) => {
             if (method === 'splice') {
                 // 要删除的 hosts

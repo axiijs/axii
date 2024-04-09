@@ -4,16 +4,16 @@ import {Root} from "./render";
 export interface Host {
     element: HTMLElement|Comment|Text|SVGElement
     placeholder:Comment
-    context: Context
+    pathContext: PathContext
     computed?: ReturnType<typeof computed>
     render: () => void
     destroy : (parentHandleElement?: boolean, parentHandleComputed?: boolean) => void
     revoke?: () => void
 }
 
-export type Context = {
+export type PathContext = {
     [k:string]:any,
     root: Root,
     hostPath: Host[],
-    elementPath: number[]
+    elementPath: number[],
 }

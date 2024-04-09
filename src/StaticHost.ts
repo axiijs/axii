@@ -5,7 +5,7 @@ import {
     ExtendedElement,
     createElement, AUTO_ADD_PX_STYLE, RefHandleInfo
 } from "./DOM";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
 import {removeNodesBetween, assert} from "./util";
@@ -57,7 +57,7 @@ class StyleManager {
         const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
         const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
         // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-        return `gen-${lastComponentHost?.typeId??'global'}-${pathToGenerateId.map(host => host.context.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+        return `gen-${lastComponentHost?.typeId??'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
     }
     stringifyStyleObject(styleObject: {[k:string]:any}): string {
         return Object.entries(styleObject).map(([key, value]) => {
@@ -121,7 +121,7 @@ export class StaticHost implements Host{
     reactiveHosts?: Host[]
     attrComputeds?: ReturnType<typeof computed>[]
     refHandles?: RefHandleInfo[]
-    constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public context: Context) {
+    constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
     }
     get parentElement() {
         return this.placeholder.parentElement
@@ -148,8 +148,8 @@ export class StaticHost implements Host{
             unhandledChildren ?
                 unhandledChildren.map(({ placeholder, child, path}) =>
                     createHost(child, placeholder, {
-                        ...this.context,
-                        hostPath: [...this.context.hostPath, this],
+                        ...this.pathContext,
+                        hostPath: [...this.pathContext.hostPath, this],
                         elementPath: path
                     })
                 ) :
@@ -175,7 +175,7 @@ export class StaticHost implements Host{
                 if (key === 'style' && (hasPsuedoClassOrNestedStyle(final))) {
                     const isStatic = typeof value === 'object'
                     // StaticHost.styleManage.update(this.context.hostPath, path, final, isStatic ? null : el)
-                    StaticHost.styleManager.update(this.context.hostPath, path, final, el, isStatic )
+                    StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
                 } else {
                     setAttribute(el, key, final, isSVG)
                 }

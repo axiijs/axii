@@ -1,5 +1,5 @@
 import {insertBefore, UnhandledPlaceholder} from "./DOM";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 import {isAtom, isReactive, RxList} from "data0";
 import {ReactiveArrayHost} from "./ReactiveArrayHost";
 import {ComponentHost} from "./ComponentHost";
@@ -13,7 +13,7 @@ import {RxListHost} from "./RxListHost.js";
 class EmptyHost implements Host{
     element = document.createComment('empty')
     placeholder = this.element
-    constructor(public context: Context) {
+    constructor(public pathContext: PathContext) {
     }
     render() { return }
     destroy(parentHandle?: boolean) {
@@ -23,7 +23,7 @@ class EmptyHost implements Host{
 
 class PrimitiveHost implements Host{
     element = this.placeholder
-    constructor(public source: string|number|boolean, public placeholder:Comment, public context: Context) {
+    constructor(public source: string|number|boolean, public placeholder:Comment, public pathContext: PathContext) {
     }
     render() {
         this.element = document.createTextNode(this.source.toString());
@@ -36,7 +36,7 @@ class PrimitiveHost implements Host{
 }
 
 
-export function createHost(source: any, placeholder: UnhandledPlaceholder, context: Context) {
+export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext) {
     if (!(placeholder instanceof Comment)) throw new Error('incorrect placeholder type')
     let host:Host
     if (source instanceof RxList) {

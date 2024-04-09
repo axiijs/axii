@@ -1,5 +1,5 @@
 import {computed, destroyComputed, Atom} from "data0";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 
 
 function stringValue(v: any) {
@@ -11,7 +11,7 @@ function stringValue(v: any) {
 export class AtomHost implements Host{
     computed: ReturnType<typeof computed>
     element: Text|Comment = this.placeholder
-    constructor(public source: Atom, public placeholder:Comment, public context: Context) {
+    constructor(public source: Atom, public placeholder:Comment, public pathContext: PathContext) {
     }
     get parentElement() {
         // CAUTION 这里必须用 parentNode，因为可能是在数组下，这个父节点是 staticArrayHost 创建的 frag
@@ -35,7 +35,7 @@ export class AtomHost implements Host{
             undefined,
             undefined,
             undefined,
-            this.context.skipIndicator
+            this.pathContext.skipIndicator
         )
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {

@@ -1,5 +1,5 @@
 import {atomComputed, computed, Atom, destroyComputed, Notifier} from "data0";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 
@@ -10,7 +10,7 @@ export class FunctionHost implements Host{
     renderComputed: ReturnType<typeof computed>
     fragmentParent = document.createDocumentFragment()
     innerHost?: Atom<Host>
-    constructor(public source: FunctionNode, public placeholder:Comment, public context: Context) {
+    constructor(public source: FunctionNode, public placeholder:Comment, public pathContext: PathContext) {
     }
     get parentElement() {
         return this.placeholder.parentElement || this.fragmentParent
@@ -24,7 +24,7 @@ export class FunctionHost implements Host{
                 const node = this.source()
                 const newPlaceholder = document.createComment('computed node')
                 insertBefore(newPlaceholder, this.placeholder)
-                return createHost(node, newPlaceholder, {...this.context, hostPath: [...this.context.hostPath, this]})
+                return createHost(node, newPlaceholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
             }
         )
 

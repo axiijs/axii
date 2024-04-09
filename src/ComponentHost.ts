@@ -1,6 +1,6 @@
 import {isReactive, reactive, ReactiveEffect, ManualCleanup} from "data0";
 import {AttributesArg, createElement, createSVGElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
 import {assert} from "./util";
@@ -42,7 +42,7 @@ export class ComponentHost implements Host{
     public frame?: ManualCleanup[] = []
     public name: string
     deleteLayoutEffectCallback: () => void
-    constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public context: Context) {
+    constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
             ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
         }
@@ -90,7 +90,7 @@ export class ComponentHost implements Host{
 
         this.children = children
 
-        this.deleteLayoutEffectCallback = context.root.on('attach', this.runLayoutEffect)
+        this.deleteLayoutEffectCallback = pathContext.root.on('attach', this.runLayoutEffect)
     }
     get typeId() {
         return ComponentHost.typeIds.get(this.type)!
@@ -193,14 +193,14 @@ export class ComponentHost implements Host{
             refs: this.refs,
             useLayoutEffect: this.useLayoutEffect,
             useEffect: this.useEffect,
-            context: this.context
+            context: this.pathContext
         }
         const getFrame = ReactiveEffect.collectEffect()
         const node = this.type({...this.props, children: this.children}, renderContext)
         this.frame = getFrame()
 
         // 就用当前 component 的 placeholder
-        this.innerHost = createHost(node, this.placeholder, {...this.context, hostPath: [...this.context.hostPath, this]})
+        this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
         this.innerHost.render()
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
@@ -264,3 +264,17 @@ type ConfigItem = {
     // children
     children?: any
 }
+//
+// export type ContextProviderProps = {
+//     value: any
+//     children: any
+// }
+//
+// export function createContext(contextType: any) {
+//     return function ContextProviderProps({value, children }: ContextProviderProps, { userContext }: RenderContext ) {
+//         userContext.set(contextType, value)
+//         return children
+//     }
+// }
+
+

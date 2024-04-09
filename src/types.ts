@@ -1,5 +1,5 @@
 import {AttributesArg, Fragment, JSXElementType} from "./DOM";
-import {Context} from "./Host";
+import {PathContext} from "./Host";
 
 export type Props = {
     [k: string]: any,
@@ -19,7 +19,7 @@ export type RenderContext = {
     refs: {
         [k: string]: HTMLElement
     },
-    context: Context
+    context: PathContext
 }
 
 export type Component = (props: any, injectHandles?: RenderContext) => JSXElement

@@ -1,6 +1,6 @@
 import {UnhandledPlaceholder, insertBefore} from './DOM'
 import {computed, destroyComputed, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 
 function getSpliceRemoveLength(argv: any[], length: number) : number {
@@ -14,13 +14,13 @@ export class ReactiveArrayHost implements Host{
     hostsComputed?: Host[]
     placeholderAndItemComputed?: [any, Comment][]
 
-    constructor(public source: ReturnType<typeof computed>, public placeholder:UnhandledPlaceholder, public context: Context) {
+    constructor(public source: ReturnType<typeof computed>, public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
     }
     createPlaceholder(item: any): [any, Comment] {
         return [item, document.createComment('frag item host')]
     }
     createHost = ([item, placeholder] : [any, UnhandledPlaceholder]) : Host => {
-        return createHost(item, placeholder, {...this.context, hostPath: [...this.context.hostPath, this]})
+        return createHost(item, placeholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
     }
 
     isOnlyChildrenOfParent() {
@@ -99,7 +99,7 @@ export class ReactiveArrayHost implements Host{
 
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
-                const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, {...host.context, hostPath: [...host.context.hostPath, host]}))
+                const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, {...host.pathContext, hostPath: [...host.pathContext.hostPath, host]}))
                 const frag = document.createDocumentFragment()
                 hosts.forEach(itemHost => {
                     frag.appendChild(itemHost.placeholder)

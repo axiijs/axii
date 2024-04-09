@@ -1,13 +1,13 @@
 import {createHost} from "./createHost";
 import {ComponentNode} from "./types";
-import {Context, Host} from "./Host";
+import {PathContext, Host} from "./Host";
 
 
 type EventCallback = (e: any) => void
 
 export type Root = {
     element: HTMLElement,
-    context: Context,
+    pathContext: PathContext,
     host: Host|undefined,
     render: (componentOrEl: JSX.Element|ComponentNode|Function) => Host,
     destroy: () => void,
@@ -18,19 +18,19 @@ export type Root = {
 export function createRoot(element: HTMLElement): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 
-    const context: Context = {
+    const pathContext: PathContext = {
         hostPath: [],
         elementPath: [],
-    } as unknown as Context
+    } as unknown as PathContext
 
     const root = {
         element,
-        context,
+        pathContext,
         host: undefined as Host|undefined,
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
             const placeholder = document.createComment('root')
             element.appendChild(placeholder)
-            root.host = createHost(componentOrEl, placeholder, context)
+            root.host = createHost(componentOrEl, placeholder, pathContext)
             root.host.render()
             // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
             if(document.body.contains(element)) {
@@ -59,7 +59,7 @@ export function createRoot(element: HTMLElement): Root {
         }
     }
 
-    context.root = root
+    pathContext.root = root
 
     return root as Root
 }
