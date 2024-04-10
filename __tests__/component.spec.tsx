@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 /** @jsx createElement */
-import {createElement, createRoot, JSXElement, propTypes, RenderContext} from "@framework";
+import {createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
 import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import userEvent from "@testing-library/user-event";
@@ -525,8 +525,8 @@ describe('component propTypes', () => {
         }
 
         App.propTypes = {
-            atomData: propTypes.atom<string>().default(() => atom('data0')),
-            rxListData: propTypes.rxList<number>().default(() => new RxList([1, 2, 3])),
+            atomData: PropTypes.atom<string>().default(() => atom('data0')),
+            rxListData: PropTypes.rxList<number>().default(() => new RxList([1, 2, 3])),
         }
 
         root.render(<App rxListData={[4,5,6]}/>)

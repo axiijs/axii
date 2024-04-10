@@ -1,5 +1,5 @@
 export { createElement, Fragment, createElementNS, dispatchEvent } from './DOM'
-export { default as propTypes } from './propTypes.js'
+export { default as PropTypes } from './propTypes.js'
 export { createRoot } from './render'
 export { createHost } from './createHost'
 export * from './eventAlias'

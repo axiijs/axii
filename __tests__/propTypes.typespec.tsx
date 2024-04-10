@@ -1,10 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-import { createElement, PropType, ToAllowFixedPropsType, propTypes} from "@framework";
+import { createElement, PropType, ToAllowFixedPropsType, PropTypes, ToPropsType} from "@framework";
 import { assertType } from 'vitest'
 import {Atom, atom, RxList} from "data0";
-import {ToPropsType} from "../src/propTypes.js";
 
 
 function App(props: ToAllowFixedPropsType<typeof App.propTypes>) {
@@ -13,18 +12,19 @@ function App(props: ToAllowFixedPropsType<typeof App.propTypes>) {
 }
 
 App.propTypes = {
-    a: propTypes.number,
-    b: propTypes.atom<string>(),
-    c: propTypes.rxList<string>()
+    a: PropTypes.number,
+    b: PropTypes.atom<string>().isRequired,
+    c: PropTypes.rxList<string>(),
 }
 
 assertType<JSX.ElementClass>(App)
 
-assertType<false>(propTypes.number.required)
+assertType<false>(PropTypes.number.required)
 
 assertType<typeof App.propTypes>({
     a: {} as unknown as PropType<number, {}>,
     b: {} as unknown as PropType<Atom<string>, {
+        required: true,
         coerce: (v: any) => any;
     }>,
     c: {} as unknown as PropType<RxList<string>, {
@@ -35,7 +35,7 @@ assertType<typeof App.propTypes>({
 assertType<false>(App.propTypes.a.required)
 assertType<ToAllowFixedPropsType<typeof App.propTypes>>({a: 1, b: "1", c: ["1"]})
 assertType<ToAllowFixedPropsType<typeof App.propTypes>>({a: 1, b: atom("1")})
-assertType<ToAllowFixedPropsType<typeof App.propTypes>>({c: new RxList(["1"])})
+assertType<ToAllowFixedPropsType<typeof App.propTypes>>({b:"2", c: new RxList(["1"])})
 
 
 const app = <App a={1} b={atom('a')} as="root"/>
