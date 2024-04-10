@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 /** @jsx createElement */
-import {createElement, createRoot, JSXElement, RenderContext} from "@framework";
-import {type Atom, atom, computed, incMap, reactive} from "data0";
+import {createElement, createRoot, JSXElement, propTypes, RenderContext} from "@framework";
+import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import userEvent from "@testing-library/user-event";
 import {ComponentHost} from "../src/ComponentHost.js";
@@ -501,5 +501,36 @@ describe('component data context', () => {
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data0')
         data('data1')
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data1')
+    })
+})
+
+describe('component propTypes', () => {
+    let root: ReturnType<typeof createRoot>
+    let rootEl: HTMLElement
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        rootEl = document.createElement('div')
+        document.body.appendChild(rootEl)
+        root = createRoot(rootEl)
+    })
+
+    test('pass data context to children', () => {
+
+        let innerProps: any
+
+        function App(props:any, {createElement, context}: RenderContext) {
+            innerProps = props
+            return <div>
+            </div>
+        }
+
+        App.propTypes = {
+            atomData: propTypes.atom<string>().default(() => atom('data0')),
+            rxListData: propTypes.rxList<number>().default(() => new RxList([1, 2, 3])),
+        }
+
+        root.render(<App rxListData={[4,5,6]}/>)
+        expect(innerProps.atomData()).toBe('data0')
+        expect(innerProps.rxListData.data).toEqual([4,5,6])
     })
 })

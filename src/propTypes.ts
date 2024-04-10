@@ -8,7 +8,10 @@
  *
  */
 
-import internalCheckPropTypes from './checkPropTypes'
+import {Atom, atom, isAtom, RxList, RxMap} from "data0";
+
+export function internalCheckPropTypes() {
+}
 
 function isStringLike(v: any) {
     const type = typeof v
@@ -18,19 +21,21 @@ function isStringLike(v: any) {
 
 // TODO zero-value
 // 这个写法是为了兼容 react 的 prop-types
-export function createTypeClass(definition: TypeDefinition) {
-    function Type(...argv: any[]) {
+export function createTypeClass<D extends TypeDefinition>(definition: D) {
+    function Type<T>(...argv: any[]): TypeChecker<T, D> {
         function TypeChecker(v: any) {
-            if (!TypeChecker.check(v)) return new Error('type check failed')
+            if (!TypeChecker.check?.(v)) return new Error('type check failed')
         }
 
         TypeChecker.argv = argv
-        TypeChecker.stringify = definition.stringify!.bind(TypeChecker)
-        TypeChecker.parse = definition.parse!.bind(TypeChecker)
-        TypeChecker.check = definition.check!.bind(TypeChecker)
+        TypeChecker.stringify = definition.stringify?.bind(TypeChecker)
+        TypeChecker.parse = definition.parse?.bind(TypeChecker)
+        TypeChecker.check = definition.check?.bind(TypeChecker)
         TypeChecker.is = definition.is || (t => t === Type)
         TypeChecker.zeroValue = definition.zeroValue
         TypeChecker.required = definition.required
+        TypeChecker.createDefaultValue = definition.createDefaultValue
+        TypeChecker.coerce = definition.coerce
 
         if (!TypeChecker.required) {
             Object.defineProperty(TypeChecker, 'isRequired', {
@@ -45,13 +50,40 @@ export function createTypeClass(definition: TypeDefinition) {
             })
         }
 
-        return TypeChecker
+
+        if (!TypeChecker.createDefaultValue) {
+            // 提供一个 default 函数，可以动态将 TypeChecker 变成带 defaultValue 的(其实是动态再创建的)。
+            Object.defineProperty(TypeChecker, 'default', {
+                get() {
+                    return (createDefaultValue: () => any) => createTypeClass( {
+                        ...definition,
+                        required: TypeChecker.required,
+                        createDefaultValue,
+                        is: TypeChecker.is,
+                    })(...argv)
+                },
+            })
+        } else {
+            Object.defineProperty(TypeChecker, 'defaultValue', {
+                get() {
+                    if (TypeChecker.createDefaultValue) {
+                        return TypeChecker.createDefaultValue!()
+                    }
+                },
+            })
+        }
+
+        TypeChecker.valueType = {} as unknown as T
+
+        // FIXME
+        // @ts-ignore
+        return TypeChecker as unknown as TypeChecker<T>
     }
 
     return Type
 }
 
-type TypeChecker = {
+export type TypeChecker<T, D extends TypeDefinition> = {
     (v: any): any,
     [k: string] : any
     argv: any[],
@@ -59,13 +91,15 @@ type TypeChecker = {
     parse: typeof JSON.parse,
     check: (obj: any) => boolean,
     is : (obj: any) => boolean,
-    required?: boolean,
+    required: D["required"] extends true ? true : false,
     createDefaultValue?: () => any,
     default: (createDefaultValue: () => any) => typeof createNormalType
-    defaultValue: any
+    defaultValue: any,
+    coerce?: (v: any) => any,
+    valueType: T,
 }
 
-type TypeDefinition = {
+export type TypeDefinition = {
     stringify?: (...args: any[]) => any,
     parse?: (...args: any[]) => any,
     check?: (v: any) => boolean,
@@ -73,14 +107,19 @@ type TypeDefinition = {
     required?: boolean,
     createDefaultValue?: () => any,
     zeroValue? : any,
+    coerce?: (v: any) => any,
 }
 
-export function createNormalType(type: any, definition: TypeDefinition = {}) : TypeChecker {
+
+export function createNormalType<T, D extends TypeDefinition>(type: any, definition: D) : TypeChecker<T, D> {
     const {
-        stringify = JSON.stringify, parse = JSON.parse, is,
+        stringify = JSON.stringify,
+        parse = JSON.parse,
+        is,
+        required,
         ...rest
     } = definition
-    const TypeChecker: TypeChecker = <TypeChecker>function (v: any) {
+    const TypeChecker = function (v: any) {
         if (typeof type === 'function') {
             if (!type(v)) {
                 return new Error(`${v} type check failed`)
@@ -91,7 +130,7 @@ export function createNormalType(type: any, definition: TypeDefinition = {}) : T
                 return new Error(`${v} is not ${type}`)
             }
         }
-    }
+    } as TypeChecker<T, D>
 
     TypeChecker.stringify = stringify
     TypeChecker.parse = parse
@@ -99,13 +138,15 @@ export function createNormalType(type: any, definition: TypeDefinition = {}) : T
         return (typeof type === 'string') ? (typeof v) === type : type(v)
     }
     TypeChecker.is = is || (t => t === TypeChecker)
+    // @ts-ignore
+    TypeChecker.required = !!required
 
     Object.assign(TypeChecker, rest)
 
     if (!TypeChecker.required) {
         Object.defineProperty(TypeChecker, 'isRequired', {
             get() {
-                return createNormalType(type, {
+                return createNormalType<T, D&{required:true}>(type, {
                     ...definition,
                     required: true,
                     is: TypeChecker.is,
@@ -136,59 +177,65 @@ export function createNormalType(type: any, definition: TypeDefinition = {}) : T
         })
     }
 
+    TypeChecker.valueType = {} as unknown as T
     return TypeChecker
 }
 
 
 export const oneOf = createTypeClass({
-    stringify(this: TypeChecker, v: any) {
+    stringify(this: TypeChecker<any, any>, v: any) {
         if (v === null) return ''
         return isStringLike(this.argv[0][0]) ? v.toString() : JSON.stringify(v)
     },
-    parse(this: TypeChecker, v: any) {
+    parse(this: TypeChecker<any, any>, v: any) {
         return !isStringLike(this.argv[0][0])
             ? JSON.parse(v)
             : ((typeof this.argv[0][0]) === 'string' ? v : parseFloat(v))
     },
-    check(this: TypeChecker, v: any) {
+    check(this: TypeChecker<any, any>, v: any) {
         return this.argv[0].includes(v)
     },
     zeroValue: [],
 })
 
 // TODO 要改成普通JSON.stringify, 剩下的让 editor 处理。
-export const string = createNormalType('string', {
+const stringDef = {
     zeroValue: '',
-})
+}
+export const string = createNormalType<string, typeof stringDef>('string', stringDef)
 
-export const number = createNormalType('number', {
-    stringify(v) { return v.toString() },
-    parse(v) {
+const numberDef = {
+    stringify(v:any) { return v.toString() },
+    parse(v:any) {
         if (/-?\d+(\.\d+)?/.test(v)) return parseFloat(v)
         throw new Error(`${v} is not a number`)
     },
     zeroValue: 0,
-})
+}
+export const number = createNormalType<number, typeof numberDef>('number', numberDef)
 
-export const object = createNormalType((v: any) => {
+const objectDef = { zeroValue: null }
+export const object = createNormalType<object, typeof objectDef>((v: any) => {
     return (typeof v === 'object' && !Array.isArray(v))
-}, { zeroValue: null })
+}, objectDef)
 
-export const array = createNormalType((v: any) => {
+export const array = createNormalType<Array<any>, {}>((v: any) => {
     return Array.isArray(v)
-})
+}, {})
 
-export const bool = createNormalType('bool', { zeroValue: false })
+const boolDef = { zeroValue: false }
+export const bool = createNormalType<boolean, typeof boolDef>('bool', boolDef)
 
-export const func = createNormalType('function', {
-    stringify(v) { return v.toString() },
+const funcDef = {
+    stringify(v: any) { return v.toString() },
     // eslint-disable-next-line no-new-func
-    parse(v) { return new Function(v) },
-})
+    parse(v: any) { return new Function(v) },
+}
+export const func = createNormalType<Function, typeof funcDef>('function', funcDef)
 
-export const symbol = createNormalType('symbol')
+export const symbol = createNormalType<Symbol, {}>('symbol', {})
 
-export const any = createNormalType(() => true, {
+const anyDef = {
     stringify() {
         throw new Error('type any can not stringify')
     },
@@ -200,20 +247,21 @@ export const any = createNormalType(() => true, {
         throw new Error('type any can not check')
         return false
     },
-})
+}
+export const any = createNormalType<any, typeof anyDef>(() => true, anyDef )
 
 export const oneOfType = createTypeClass({
-    check(this: TypeChecker, v: any) {
-        return this.argv[0].some((propType: TypeChecker) => propType.check(v))
+    check(this: TypeChecker<any, any>, v: any) {
+        return this.argv[0].some((propType: TypeChecker<any, any>) => propType.check(v))
     },
-    stringify(this: TypeChecker, v: any) {
-        const propType = this.argv[0].find((propType: TypeChecker) => !(propType(v) instanceof Error))
+    stringify(this: TypeChecker<any, any>, v: any) {
+        const propType = this.argv[0].find((propType: TypeChecker<any, any>) => !(propType(v) instanceof Error))
         return propType.stringify(v)
     },
-    parse(this: TypeChecker, v: any) {
+    parse(this: TypeChecker<any, any>, v: any) {
         // TODO 每个都准备 parse 一下
         let result
-        const haveResult = this.argv[0].some((propType: TypeChecker) => {
+        const haveResult = this.argv[0].some((propType: TypeChecker<any, any>) => {
             try {
                 const parsed = propType.parse(v)
                 if (this.check(parsed)) {
@@ -232,7 +280,7 @@ export const oneOfType = createTypeClass({
 })
 
 export const arrayOf = createTypeClass({
-    check(this: TypeChecker, v: any) {
+    check(this: TypeChecker<any, any>, v: any) {
         if (!Array.isArray(v)) return false
         // TODO of type?
         return v.every(e => this.argv[0].check(e))
@@ -263,16 +311,16 @@ export const shapeOf = createTypeClass({
 })
 
 export const map = createTypeClass({
-    check(this: TypeChecker, v: any) {
-        return Object.entries(this.argv[0]).every(([key, propType]: [string, unknown]) => (propType as TypeChecker).check(v[key]))
+    check(this: TypeChecker<any, any>, v: any) {
+        return Object.entries(this.argv[0]).every(([key, propType]: [string, unknown]) => (propType as TypeChecker<any, any>).check(v[key]))
     },
-    stringify(this: TypeChecker, v: any) {
+    stringify(this: TypeChecker<any, any>, v: any) {
         // 注意里面对 propType.stringify 结果又用了一次 JSON.stringify 是为了转义双引号
         return `{${Object.entries(this.argv[0]).map(([key, propType]: [string, unknown]) => {
-            return `${key}:${JSON.stringify((propType as TypeChecker).stringify(v[key]))}`
+            return `${key}:${JSON.stringify((propType as TypeChecker<any, any>).stringify(v[key]))}`
         }).join(',')}`
     },
-    parse(this: TypeChecker, v: any) {
+    parse(this: TypeChecker<any, any>, v: any) {
         const map = JSON.parse(v)
         Object.keys(map).forEach((key) => {
             map[key] = this.argv[0][key].parse(map[key])
@@ -288,6 +336,31 @@ export const element = any
 export const elementType = any
 
 export const checkPropTypes = internalCheckPropTypes
+
+function atomType<T>() {
+    return createTypeClass( {
+        coerce: (v: any) => {
+            return isAtom(v) ? v : atom(v)
+        },
+    })<Atom<T>>()
+}
+
+function rxListType<T>() {
+    return createTypeClass( {
+        coerce: (v: any) => {
+            return v instanceof RxList ? v : new RxList(v)
+        },
+    })<RxList<T>>()
+}
+
+function rxMapType<K, V>() {
+    return createTypeClass( {
+        coerce: (v: any) => {
+            return v instanceof RxMap ? v : new RxMap(v)
+        },
+    })<RxMap<K, V>>()
+}
+
 export default {
     string,
     number,
@@ -316,4 +389,49 @@ export default {
     // customProps/customArrayProps
     any,
     checkPropTypes,
+    // reactive types
+    atom: atomType,
+    rxList: rxListType,
+    rxMap: rxMapType,
 }
+
+export type PropType<T, U extends TypeDefinition> = TypeChecker<T, U>
+export type PropTypes = {
+    [k: string]: PropType<any, any>
+}
+
+export type AllowFixed<T> = T extends RxList<infer U> ? U[]|T :
+    T extends RxMap<infer K, infer V> ? [K, V][]|T :
+        T extends Atom<infer U> ? U|T : T
+
+
+type OmitNever<T> = Omit<T, { [K in keyof T]: T[K] extends never ? K : never }[keyof T]>
+
+
+type ToAllowFixedPropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
+    [K in keyof T]: T[K]['required'] extends true ?
+        never :
+        AllowFixed<T[K]['valueType']>
+}>>
+
+type ToAllowFixedPropsTypeRequired<T extends PropTypes> = OmitNever<{
+    [K in keyof T]: T[K]['required'] extends true ?
+        AllowFixed<T[K]['valueType']> :
+        never
+}>
+
+export type ToAllowFixedPropsType<T extends PropTypes> = ToAllowFixedPropsTypeOptional<T> & ToAllowFixedPropsTypeRequired<T>
+
+type ToPropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
+    [K in keyof T]: T[K]['required'] extends true ?
+        never :
+        T[K]['valueType']
+}>>
+
+type ToPropsTypeRequired<T extends PropTypes> = OmitNever<{
+    [K in keyof T]: T[K]['required'] extends true ?
+        T[K]['valueType'] :
+        never
+}>
+
+export type ToPropsType<T extends PropTypes> = ToPropsTypeOptional<T> & ToPropsTypeRequired<T>

@@ -1,10 +1,9 @@
-import {isReactive, reactive, ReactiveEffect, ManualCleanup} from "data0";
+import {isReactive, ManualCleanup, reactive, ReactiveEffect} from "data0";
 import {AttributesArg, createElement, createSVGElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
-import {PathContext, Host} from "./Host";
+import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
 import {assert} from "./util";
-
 
 
 function ensureArray(o: any) {
@@ -179,6 +178,21 @@ export class ComponentHost implements Host{
     useEffect = (callback: EffectHandle) => {
         this.effects.add(callback)
     }
+    handleProps(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
+        const finalProps: Props = {}
+        // TODO dev 模式下类型检查
+        Object.entries(propTypes).forEach(([key, type]) => {
+           if (props[key] !== undefined) {
+               // coerce
+               debugger
+               finalProps[key] = type.coerce?.(props[key]) || props[key]
+           } else {
+               // create defaultValue
+               finalProps[key] = type.defaultValue
+           }
+        })
+        return finalProps
+    }
 
     render(): void {
         if (this.element !== this.placeholder) {
@@ -198,8 +212,11 @@ export class ComponentHost implements Host{
             context: new DataContext(this.pathContext.hostPath)
         }
 
+        const {ref: refProp, ...componentProps} = this.props
+
         const getFrame = ReactiveEffect.collectEffect()
-        const node = this.type({...this.props, children: this.children}, this.renderContext)
+        const finalComponentProps = this.type.propTypes ? this.handleProps(this.type.propTypes, componentProps) : componentProps
+        const node = this.type({...finalComponentProps, children: this.children}, this.renderContext)
         this.frame = getFrame()
 
         // 就用当前 component 的 placeholder
@@ -289,13 +306,3 @@ export class DataContext{
     }
 }
 
-export type ContextProviderProps = {
-    contextType: any
-    value: any
-    children: any
-}
-
-export function ContextProvider({contextType, value, children }: ContextProviderProps, { context }: RenderContext ) {
-    context.set(contextType, value)
-    return children
-}

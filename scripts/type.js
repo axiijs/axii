@@ -9,7 +9,10 @@ declare global {
             [name: string]: any
         }
         interface IntrinsicAttributes {
-            [key: \`$\${string}\`]: boolean;
+            // name an element inside component so it can be overwritten
+            as?: string
+            // pass props to an element inside component
+            [key: \`$\${string}:\${string}\`]: any;
             ref?: any
         }
         type ElementClass = Component

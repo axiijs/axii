@@ -1,6 +1,7 @@
 import {AttributesArg, Fragment, JSXElementType} from "./DOM";
 import { PathContext} from "./Host";
 import { DataContext } from './ComponentHost.js'
+import {PropTypes} from "./propTypes.js";
 
 export type Props = {
     [k: string]: any,
@@ -24,9 +25,15 @@ export type RenderContext = {
     pathContext: PathContext
 }
 
-export type Component = (props: any, injectHandles?: RenderContext) => JSXElement
+export type Component = {
+    (props: any, injectHandles?: RenderContext): JSXElement,
+    propTypes?: PropTypes
+}
+
 export type ComponentNode = {
     type: Component,
     props : Props,
     children: any
 }
+
+export { ToAllowFixedPropsType, PropTypes, PropType } from './propTypes.js'
