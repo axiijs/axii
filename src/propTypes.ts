@@ -406,8 +406,7 @@ export type AllowFixed<T> = T extends RxList<infer U> ? U[]|T :
         T extends Atom<infer U> ? U|T : T
 
 
-type OmitNever<T> = Omit<T, { [K in keyof T]: T[K] extends never ? K : never }[keyof T]>
-
+type OmitNever<T> = { [K in keyof T as T[K] extends never ? never : K]: T[K] }
 
 type ToAllowFixedPropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
     [K in keyof T]: T[K]['required'] extends true ?

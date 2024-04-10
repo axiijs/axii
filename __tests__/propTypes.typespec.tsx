@@ -10,13 +10,18 @@ const AppPropTypes = {
     a: PropTypes.number.default(() =>1),
     b: PropTypes.atom<string>().isRequired,
     c: PropTypes.rxList<string>(),
+    d: PropTypes.atom<any>()
 }
 
 assertType<PropType<number, {}>>(AppPropTypes.a)
+assertType<typeof AppPropTypes.d>(null as unknown as never)
 
 function App(props: ToAllowFixedPropsType<typeof AppPropTypes>) {
-    const {b} = props as ToPropsType<typeof App.propTypes>
-    return <div>{b}</div>
+    const {b, d} = props as ToPropsType<typeof App.propTypes>
+    return <div>
+        <span>{b}</span>
+        <span>{d}</span>
+    </div>
 }
 
 App.propTypes = AppPropTypes
@@ -32,6 +37,9 @@ assertType<typeof App.propTypes>({
         coerce: (v: any) => any;
     }>,
     c: {} as unknown as PropType<RxList<string>, {
+        coerce: (v: any) => any;
+    }>,
+    d:  {} as unknown as PropType<Atom<any>, {
         coerce: (v: any) => any;
     }>,
 })
@@ -81,3 +89,46 @@ console.log(app, app2)
 //
 // const number1 = createNormalType({})
 // assertType<false>(number1.isRequired)
+
+// const a = function() {}
+// const b = {}
+// const
+// type AT = typeof a
+// type ISO = AT extends object ? true:false
+// assertType<ISO>(true)
+//
+//
+// // type AtomBase =
+//
+// type Atom<T = any> = T extends object ? (T & {
+//     __v_isAtom: true;
+//     raw: T;
+// } & {
+//     (newValue?: any): T;
+// }) : {
+//     __v_isAtom: true;
+//     raw: T;
+// } & {
+//     (newValue?: any): T;
+// };
+//
+// assertType<Atom<any>>({} as unknown as never)
+// assertType<any>({} as unknown as Atom<any>)
+
+// type ISA = never extends any ? true : false
+// // assertType<ISA>(false)
+// assertType<never>(null as unknown as Atom<any>)
+// type ISAO = any extends object ? true : false
+// assertType<false>(null as unknown as ISAO)
+//
+// type Combined = any & {():  void}
+// assertType<never>(null as unknown as Combined)
+// type OmitNever<T> = { [K in keyof T as T[K] extends never ? never : K]: T[K] }
+// // type OmitNever<T> = Omit<T, { [K in keyof T]: T[K] extends never ? K : never }[keyof T]>
+// const a = {
+//     a: null as unknown as Atom<any>
+// }
+// type A = typeof a
+// type AA = OmitNever<typeof a>
+// assertType<Atom<any>>(null as unknown as A["a"])
+// assertType<Atom<any>>(null as unknown as AA["a"])
