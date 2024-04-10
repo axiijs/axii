@@ -6,16 +6,20 @@ import { assertType } from 'vitest'
 import {Atom, atom, RxList} from "data0";
 
 
-function App(props: ToAllowFixedPropsType<typeof App.propTypes>) {
+const AppPropTypes = {
+    a: PropTypes.number.default(() =>1),
+    b: PropTypes.atom<string>().isRequired,
+    c: PropTypes.rxList<string>(),
+}
+
+assertType<PropType<number, {}>>(AppPropTypes.a)
+
+function App(props: ToAllowFixedPropsType<typeof AppPropTypes>) {
     const {b} = props as ToPropsType<typeof App.propTypes>
     return <div>{b}</div>
 }
 
-App.propTypes = {
-    a: PropTypes.number,
-    b: PropTypes.atom<string>().isRequired,
-    c: PropTypes.rxList<string>(),
-}
+App.propTypes = AppPropTypes
 
 assertType<JSX.ElementClass>(App)
 

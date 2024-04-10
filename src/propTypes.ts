@@ -93,7 +93,7 @@ export type TypeChecker<T, D extends TypeDefinition> = {
     is : (obj: any) => boolean,
     required: D["required"] extends true ? true : false,
     createDefaultValue?: () => any,
-    default: (createDefaultValue: () => any) => typeof createNormalType
+    default: (createDefaultValue: () => any) => TypeChecker<T, D & {createDefaultValue: () => any}>,
     defaultValue: any,
     coerce?: (v: any) => any,
     valueType: T,
