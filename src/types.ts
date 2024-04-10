@@ -36,4 +36,4 @@ export type ComponentNode = {
     children: any
 }
 
-export { ToAllowFixedPropsType, PropTypes, PropType } from './propTypes.js'
+export { type ToAllowFixedPropsType, type PropTypes, type PropType } from './propTypes.js'
