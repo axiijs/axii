@@ -3,7 +3,7 @@ import {
     UnhandledPlaceholder,
     insertBefore,
     ExtendedElement,
-    createElement, AUTO_ADD_PX_STYLE, RefHandleInfo
+    createElement, AUTO_ADD_PX_STYLE, RefHandleInfo, RectRefHandleInfo
 } from "./DOM";
 import {PathContext, Host} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
@@ -121,6 +121,7 @@ export class StaticHost implements Host{
     reactiveHosts?: Host[]
     attrComputeds?: ReturnType<typeof computed>[]
     refHandles?: RefHandleInfo[]
+    rectRefHandles?: RectRefHandleInfo[]
     constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
     }
     get parentElement() {
@@ -136,6 +137,7 @@ export class StaticHost implements Host{
         this.collectReactiveAttr()
         this.collectReactiveAttr()
         this.collectRefHandles()
+        this.collectRectRefHandles()
         this.reactiveHosts!.forEach(host => host.render())
     }
     collectInnerHost() {
@@ -188,6 +190,12 @@ export class StaticHost implements Host{
         const {  refHandles } = result as ExtendedElement
         this.refHandles = refHandles
     }
+    collectRectRefHandles() {
+        const result = this.source
+        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
+        const {  rectRefHandles } = result as ExtendedElement
+        this.rectRefHandles = rectRefHandles
+    }
     destroy(parentHandle?:boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
             this.attrComputeds?.forEach(attrComputed => destroyComputed(attrComputed))
@@ -197,6 +205,10 @@ export class StaticHost implements Host{
 
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
+        })
+
+        this.rectRefHandles?.forEach(({ handle, element }: RectRefHandleInfo) => {
+            createElement.detachRectRef(element, handle)
         })
 
         if (!parentHandle) {

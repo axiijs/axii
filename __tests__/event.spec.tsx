@@ -1,4 +1,4 @@
-/** @vitest-environment jsdom */
+/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {createElement, createEventTransfer, createRoot} from "@framework";
 import {beforeEach, describe, expect, test} from "vitest";

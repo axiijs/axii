@@ -14,6 +14,7 @@ declare global {
             // pass props to an element inside component
             [key: \`$\${string}:\${string}\`]: any;
             ref?: any
+            rectRef?: any
         }
         type ElementClass = Component
         type Element =  JSXElement

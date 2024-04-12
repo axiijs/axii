@@ -1,4 +1,4 @@
-/** @vitest-environment jsdom */
+/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
 import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
@@ -430,7 +430,7 @@ describe('component configuration', () => {
         </App>)
 
         expect(helloRef.current).toBeDefined()
-        expect(getComputedStyle(helloRef.current! as HTMLElement).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
+        expect(getComputedStyle(helloRef.current! as HTMLElement).getPropertyValue('color')).toBe('red')
         expect(helloRef.current).toBe(helloRef2.current)
 
         await userEvent.click(helloRef.current!)

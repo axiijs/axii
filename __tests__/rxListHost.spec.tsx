@@ -1,4 +1,4 @@
-/** @vitest-environment jsdom */
+/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {createElement, createRoot} from "@framework";
 import {RxList} from "data0";
