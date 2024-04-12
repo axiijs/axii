@@ -480,6 +480,8 @@ createElement.detachRectRef = function (el: HTMLElement, rectRef: RectRefObject)
             assert(false, `unknown position option ${rectRef.options.position}`)
         }
     }
+
+    rectRef.current = null
 }
 
 
