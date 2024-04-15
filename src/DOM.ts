@@ -314,6 +314,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         }
 
         if (props.rectRef) {
+            // TODO 应该移到外部去？？？只有在 attach 之后才能 attachRectRef，不然是没有 rect 的。
             createElement.attachRectRef(container as HTMLElement, props.rectRef)
             rectRefHandles.push({element: container as HTMLElement, handle: props.rectRef, path: []})
             delete props.rectRef

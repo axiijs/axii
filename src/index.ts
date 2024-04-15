@@ -6,5 +6,8 @@ export * from './eventAlias.js'
 export * from './Host.js'
 export * from './types.js'
 export * from './ref.js'
+export * from './Portal.js'
+export * from './common.js'
+
 export * from 'data0'
 export {ContextProvider, type ContextProviderProps} from "./ContextProvider.js";

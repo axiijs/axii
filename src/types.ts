@@ -22,13 +22,15 @@ export type RenderContext = {
         [k: string]: HTMLElement
     },
     context: DataContext,
-    pathContext: PathContext
+    pathContext: PathContext,
+    createPortal: (children: JSXElement, container: HTMLElement) => JSXElement
 }
 
 export type Component = {
-    (props: any, injectHandles?: RenderContext): JSXElement,
+    (props: any, injectHandles: RenderContext): JSXElement,
     propTypes?: PropTypes
 }
+
 
 export type ComponentNode = {
     type: Component,

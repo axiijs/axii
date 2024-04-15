@@ -16,6 +16,9 @@ declare global {
             ref?: any
             rectRef?: any
         }
+        interface ElementChildrenAttribute {
+            children: {}; // specify children name to use
+        }
         type ElementClass = Component
         type Element =  JSXElement
     }

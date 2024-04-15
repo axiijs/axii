@@ -42,7 +42,7 @@ export class RxListHost implements Host{
                 const deletedHosts = this.hosts!.data!.slice(argv![0], argv![0]+argv![1])
                 const isOnlyChildrenOfParent = this.isOnlyChildrenOfParent()
 
-                if (deletedHosts.length === this.hosts!.length && isOnlyChildrenOfParent) {
+                if (deletedHosts.length === this.hosts!.length() && isOnlyChildrenOfParent) {
                     const parent = this.placeholder.parentNode!
                     if (parent instanceof HTMLElement) {
                         (parent as HTMLElement).innerHTML = ''

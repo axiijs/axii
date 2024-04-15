@@ -21,6 +21,9 @@ declare global {
             // pass props to an element inside component
             [key: `$${string}:${string}`]: any
         }
+        interface ElementChildrenAttribute {
+            children: {}; // specify children name to use
+        }
         type ElementClass = Component
         type Element =  JSXElement
     }

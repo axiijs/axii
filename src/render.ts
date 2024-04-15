@@ -15,10 +15,10 @@ export type Root = {
     dispatch: (event: string, arg?: any) => void
 }
 
-export function createRoot(element: HTMLElement): Root {
+export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 
-    const pathContext: PathContext = {
+    const pathContext: PathContext = parentContext || {
         hostPath: [],
         elementPath: [],
     } as unknown as PathContext
@@ -40,9 +40,8 @@ export function createRoot(element: HTMLElement): Root {
         },
         destroy() {
             eventCallbacks.clear()
-            element.innerHTML = ''
             root.dispatch('detach')
-            root.host?.destroy(true)
+            root.host?.destroy()
         },
         on(event: string, callback: EventCallback) {
             let callbacks = eventCallbacks.get(event)

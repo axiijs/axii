@@ -4,6 +4,7 @@ import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
 import {assert} from "./util";
+import {Portal} from "./Portal.js";
 
 
 function ensureArray(o: any) {
@@ -170,6 +171,9 @@ export class ComponentHost implements Host{
         return el
     }
     createSVGElement = createSVGElement
+    createPortal = (componentOrEl: JSX.Element|ComponentNode, container: HTMLElement) => {
+        return createElement(Portal, {container}, componentOrEl)
+    }
     // 处理视图相关的 effect
     useLayoutEffect = (callback: EffectHandle) => {
         this.layoutEffects.add(callback)
@@ -209,7 +213,8 @@ export class ComponentHost implements Host{
             useLayoutEffect: this.useLayoutEffect,
             useEffect: this.useEffect,
             pathContext: this.pathContext,
-            context: new DataContext(this.pathContext.hostPath)
+            context: new DataContext(this.pathContext.hostPath),
+            createPortal: this.createPortal
         }
 
         const {ref: refProp, ...componentProps} = this.props
