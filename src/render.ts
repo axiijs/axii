@@ -43,6 +43,7 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             root.dispatch('detach')
             root.host?.destroy()
         },
+        // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
         on(event: string, callback: EventCallback) {
             let callbacks = eventCallbacks.get(event)
             if (!callbacks) {

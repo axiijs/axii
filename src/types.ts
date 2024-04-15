@@ -1,6 +1,6 @@
-import {AttributesArg, Fragment, JSXElementType} from "./DOM";
+import {AttributesArg, Fragment, JSXElementType, RectRefObject, RefObject} from "./DOM";
 import { PathContext} from "./Host";
-import { DataContext } from './ComponentHost.js'
+import {DataContext, ManualHandledRectRefOptions} from './ComponentHost.js'
 import {PropTypes} from "./propTypes.js";
 
 export type Props = {
@@ -24,6 +24,10 @@ export type RenderContext = {
     context: DataContext,
     pathContext: PathContext,
     createPortal: (children: JSXElement, container: HTMLElement) => JSXElement
+    createRef: () => RefObject,
+    createRxRef: () => RefObject,
+    createRectRef: (options?: ManualHandledRectRefOptions) => RectRefObject,
+    createRxRectRef: (options?: ManualHandledRectRefOptions) => RectRefObject,
 }
 
 export type Component = {

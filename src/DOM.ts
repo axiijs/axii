@@ -487,6 +487,10 @@ createElement.detachRectRef = function (el: HTMLElement, rectRef: RectRefObject)
     rectRef.current = null
 }
 
+createElement.isElementRectObserved = function (el: HTMLElement) {
+    return resizeTargetToRectRef.has(el) || positionRecalculateEventTargetToListener.has(el) || positionRecalculateRequestAnimationFrameRefToIds.has(el) || positionRecalculateRequestIdleCallbackRefToIds.has(el)
+}
+
 
 export function Fragment() {
 }

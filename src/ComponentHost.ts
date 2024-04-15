@@ -1,10 +1,21 @@
 import {isReactive, ManualCleanup, reactive, ReactiveEffect} from "data0";
-import {AttributesArg, createElement, createSVGElement, Fragment, JSXElementType, UnhandledPlaceholder} from "./DOM";
+import {
+    AttributesArg,
+    createElement,
+    createSVGElement,
+    Fragment,
+    JSXElementType,
+    RectRefObject,
+    UnhandledPlaceholder
+} from "./DOM";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
 import {assert} from "./util";
 import {Portal} from "./Portal.js";
+import { createRef, createRxRef, createRectRef, createRxRectRef } from "./ref.js";
+
+export type ManualHandledRectRefOptions = RectRefObject['options'] & {target?: HTMLElement}
 
 
 function ensureArray(o: any) {
@@ -42,6 +53,7 @@ export class ComponentHost implements Host{
     public frame?: ManualCleanup[] = []
     public name: string
     public renderContext?: RenderContext
+    public manualHandledRxRectRefs: { el: HTMLElement, ref: RectRefObject}[] = []
     deleteLayoutEffectCallback: () => void
     constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
@@ -182,13 +194,25 @@ export class ComponentHost implements Host{
     useEffect = (callback: EffectHandle) => {
         this.effects.add(callback)
     }
+    createRef = createRef
+    createRxRef = createRxRef
+    createRectRef = createRectRef
+    createRxRectRef = (options: ManualHandledRectRefOptions = {}) => {
+        if (options.target) {
+            const ref = createRxRectRef(options)
+            createElement.attachRectRef(options.target, ref)
+            this.manualHandledRxRectRefs.push({el: options.target, ref})
+            return ref
+        } else {
+            return createRxRectRef(options as RectRefObject['options'])
+        }
+    }
     handleProps(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
         const finalProps: Props = {}
         // TODO dev 模式下类型检查
         Object.entries(propTypes).forEach(([key, type]) => {
            if (props[key] !== undefined) {
                // coerce
-               debugger
                finalProps[key] = type.coerce?.(props[key]) || props[key]
            } else {
                // create defaultValue
@@ -214,7 +238,11 @@ export class ComponentHost implements Host{
             useEffect: this.useEffect,
             pathContext: this.pathContext,
             context: new DataContext(this.pathContext.hostPath),
-            createPortal: this.createPortal
+            createPortal: this.createPortal,
+            createRef: this.createRef,
+            createRxRef: this.createRxRef,
+            createRectRef: this.createRectRef,
+            createRxRectRef: this.createRxRectRef
         }
 
         const {ref: refProp, ...componentProps} = this.props
@@ -231,7 +259,7 @@ export class ComponentHost implements Host{
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.props.ref) {
             if (typeof this.props.ref === 'function') {
-                this.props.ref(this.refs)
+                this.props.ref(this)
             } else {
                 this.props.ref.current = this
             }
@@ -250,6 +278,11 @@ export class ComponentHost implements Host{
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        if (this.props.ref) {
+            assert(typeof this.props.ref === 'function', `ref on component should be a function after parent component handled`)
+            this.props.ref(null)
+        }
+
         if (!parentHandleComputed) {
             // 如果上层是 computed rerun，那么也会清理掉我们产生的 computed。但不能确定，所以这里还是自己清理一下。
             this.frame?.forEach(manualCleanupObject =>
@@ -260,13 +293,14 @@ export class ComponentHost implements Host{
         this.innerHost!.destroy(parentHandle, parentHandleComputed)
         this.layoutEffectDestroyHandles.forEach(handle => handle())
         this.destroyCallback.forEach(callback => callback())
+
+        this.manualHandledRxRectRefs.forEach(({el, ref}) => {
+            createElement.detachRectRef(el, ref)
+        })
+
+        // 删除 dom
         if (!parentHandle) {
             this.placeholder.remove()
-        }
-
-        if (this.props.ref) {
-            assert(typeof this.props.ref === 'function', `ref on component should be a function after parent component handled`)
-            this.props.ref(null)
         }
 
         this.deleteLayoutEffectCallback()
