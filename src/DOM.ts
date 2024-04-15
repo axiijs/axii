@@ -425,7 +425,36 @@ const globalResizeObserver = new ResizeObserver(entries => {
 const positionRecalculateEventTargetToListener = new WeakMap<HTMLElement, (e: Event) => any>()
 const positionRecalculateRequestAnimationFrameRefToIds = new WeakMap<HTMLElement, number>()
 const positionRecalculateRequestIdleCallbackRefToIds = new WeakMap<HTMLElement, number>()
-createElement.attachRectRef = function (el: HTMLElement, ref: RectRefObject) {
+const windowResizeRefToListener = new WeakMap<RectRefObject, () => any>()
+createElement.attachRectRef = function (elOrWindow: HTMLElement|Window, ref: RectRefObject) {
+    if (elOrWindow === window) {
+        // TODO window 的 resizeObserver
+        const assignRect = () => {
+            ref.current = {
+                top: 0,
+                left: 0,
+                right: window.innerWidth,
+                bottom: window.innerHeight,
+                width: window.innerWidth,
+                height: window.innerHeight
+            }
+        }
+        if (ref.options.size) {
+            const listener = () => assignRect()
+            windowResizeRefToListener.set(ref, listener)
+            window.addEventListener('resize', listener)
+        }
+        // position 永远不会变
+        if (ref.options.position) {
+            ref.sync = assignRect
+        }
+
+        assignRect()
+        return
+    }
+
+    const el = elOrWindow as HTMLElement
+
     const assignRect = () => {
         const rect = el.getBoundingClientRect()
         ref.current = {
@@ -446,8 +475,9 @@ createElement.attachRectRef = function (el: HTMLElement, ref: RectRefObject) {
     if (ref.options.position) {
         if (Array.isArray(ref.options.position)) {
             ref.options.position.forEach(event => {
-                event.target.addEventListener(event.event, assignRect)
-                positionRecalculateEventTargetToListener.set(event.target, assignRect)
+                const listener = () => assignRect()
+                event.target.addEventListener(event.event, listener)
+                positionRecalculateEventTargetToListener.set(event.target, listener)
             })
         } else if (ref.options.position === 'requestAnimationFrame') {
             const id = window.requestAnimationFrame(assignRect)
