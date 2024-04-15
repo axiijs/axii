@@ -233,6 +233,7 @@ export type RectRefObject = {
         size?: boolean,
         position?: 'requestAnimationFrame' | 'requestIdleCallback' | PositionRecalculateEvent[],
     }
+    sync?: () => void
 }
 
 export type RectRefHandleInfo = {
@@ -454,7 +455,8 @@ createElement.attachRectRef = function (el: HTMLElement, ref: RectRefObject) {
             const id = window.requestIdleCallback(assignRect)
             positionRecalculateRequestIdleCallbackRefToIds.set(el, id)
         } else {
-            assert(false, `unknown position option ${ref.options.position}`)
+            // 手动同步
+            ref.sync = assignRect
         }
     }
 
@@ -477,7 +479,7 @@ createElement.detachRectRef = function (el: HTMLElement, rectRef: RectRefObject)
         } else if (rectRef.options.position === 'requestIdleCallback') {
             window.cancelIdleCallback(positionRecalculateRequestIdleCallbackRefToIds.get(el)!)
         } else {
-            assert(false, `unknown position option ${rectRef.options.position}`)
+            delete rectRef.sync
         }
     }
 

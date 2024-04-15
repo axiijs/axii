@@ -34,6 +34,7 @@ export function createRectRef(options: RectRefObject['options'] = {}): RectRefOb
 
 export function createRxRectRef(options: RectRefObject['options'] = {}): RectRefObject {
     const ref = atom<RectRefObject>(null)
+    let syncMethod: RectRefObject['sync'] = undefined
 
     return new Proxy({}, {
         get:(_, key) => {
@@ -41,11 +42,15 @@ export function createRxRectRef(options: RectRefObject['options'] = {}): RectRef
                 return ref()
             } else if (key === 'options') {
                 return options
+            } else if (key === 'sync') {
+                return syncMethod
             }
         },
         set: (_, key, value) => {
             if (key === 'current') {
                 ref(value)
+            } else if ( key === 'sync') {
+                syncMethod = value
             }
             return true
         }
