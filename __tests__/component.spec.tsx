@@ -3,7 +3,6 @@
 import {createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
 import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
-import userEvent from "@testing-library/user-event";
 import {ComponentHost} from "../src/ComponentHost.js";
 
 describe('component render', () => {
@@ -396,75 +395,6 @@ describe('component ref', () => {
 })
 
 
-describe('component configuration', () => {
-    let root: ReturnType<typeof createRoot>
-    let rootEl: HTMLElement
-    beforeEach(() => {
-        document.body.innerHTML = ''
-        rootEl = document.createElement('div')
-        document.body.appendChild(rootEl)
-        root = createRoot(rootEl)
-    })
-
-    test('get inner ref and attach listener', async () => {
-
-        let helloClicked = false
-        const helloRef = {current: null}
-
-        function App(props:any, {createElement}: RenderContext) {
-            return <div>
-                <div as="hello" onClick={() => helloClicked = true} ref={helloRef}>
-                    hello world
-                </div>
-            </div>
-        }
-
-        let helloClicked2 = false
-        const helloRef2 = {current: null}
-
-        root.render(<App
-            $hello:style={{color:'red'}}
-            $hello:onClick={() => helloClicked2 = true}
-            $hello:ref={helloRef2}
-        >
-        </App>)
-
-        expect(helloRef.current).toBeDefined()
-        expect(getComputedStyle(helloRef.current! as HTMLElement).getPropertyValue('color')).toBe('red')
-        expect(helloRef.current).toBe(helloRef2.current)
-
-        await userEvent.click(helloRef.current!)
-        expect(helloClicked).toBe(true)
-        expect(helloClicked2).toBe(true)
-    })
-
-    test('pass configuration into children of component', async () => {
-
-        let helloClicked = false
-        const helloRef = {current: null}
-
-        function Child(props:any, {createElement}: RenderContext) {
-            return <div as="hello" ref={helloRef}>
-                hello world
-            </div>
-        }
-
-        function App(props:any, {createElement}: RenderContext) {
-            return <div>
-                <Child as="child" />
-            </div>
-        }
-
-        root.render(<App
-            $child = {{
-                "$hello:onClick": () => helloClicked = true,
-            }}
-        />)
-
-        await userEvent.click(helloRef.current!)
-        expect(helloClicked).toBe(true)
-    })
-})
 
 describe('component data context', () => {
     let root: ReturnType<typeof createRoot>

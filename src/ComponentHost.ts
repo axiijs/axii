@@ -71,22 +71,22 @@ export class ComponentHost implements Host{
                 const [itemName, itemProp] = key.slice(1).split(':')
                 if (!this.itemConfig[itemName]) this.itemConfig[itemName] = {}
 
-                if (itemProp === '$eventTarget')  {
+                if (itemProp === '_eventTarget')  {
                     // 支持 $eventTarget 来转发事件
                     this.itemConfig[itemName].eventTarget = ensureArray(value)
-                } else if (itemProp=== '$use'){
+                } else if (itemProp=== '_use'){
                     // 支持 $use 来覆盖整个 element
                     this.itemConfig[itemName].use = value
-                } else if (itemProp=== '$props') {
+                } else if (itemProp=== '_props') {
                     // 用户自定义函数合并 props
                     this.itemConfig[itemName].propsMergeHandle = value
-                } else if (itemProp=== '$children') {
+                } else if (itemProp=== '_children') {
                     // 用户自定义函数合并 props
                     this.itemConfig[itemName].children = value
                 }else if (itemProp=== undefined || itemProp==='') {
                     // 穿透到子组件的 config
                     this.itemConfig[itemName].config = value
-                } else if(itemProp?.[0] === '$'){
+                } else if(itemProp?.[0] === '_'){
                     // 不支持的配置项
                     assert(false, `unsupported config item: ${itemName}`)
                 } else {
@@ -174,6 +174,18 @@ export class ComponentHost implements Host{
 
         // 支持 use 覆写整个节点
         const finalType = this.itemConfig[name]?.use || type
+        debugger
+
+        if(!isComponent && typeof finalType === "function") {
+            // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxxx 标记的属性，转移到 props 上
+            const propKeys = Object.keys(finalProps || {})
+            propKeys.forEach(key => {
+                if (key.startsWith('prop:')) {
+                    finalProps[key.slice(5)] = finalProps[key]
+                    delete finalProps[key]
+                }
+            })
+        }
         const el = createElement(finalType, finalProps, ...finalChildren)
 
         if (name && !isComponent) {
