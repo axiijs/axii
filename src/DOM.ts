@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import {assert, each, isPlainObject} from './util'
+import {assert, each, isPlainObject, shallowEqual} from './util'
 import {Component, ComponentNode} from "./types";
 
 export const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap)/
@@ -436,7 +436,7 @@ createElement.attachRectRef = function (elOrWindow: HTMLElement|Window, ref: Rec
     if (elOrWindow === window) {
         // TODO window 的 resizeObserver
         const assignRect = () => {
-            ref.current = {
+            const rect = {
                 top: 0,
                 left: 0,
                 right: window.innerWidth,
@@ -444,6 +444,10 @@ createElement.attachRectRef = function (elOrWindow: HTMLElement|Window, ref: Rec
                 width: window.innerWidth,
                 height: window.innerHeight
             }
+            if(!shallowEqual(rect, ref.current)) {
+                ref.current = rect
+            }
+            return rect
         }
         if (ref.options.size) {
             const listener = () => assignRect()
@@ -462,15 +466,19 @@ createElement.attachRectRef = function (elOrWindow: HTMLElement|Window, ref: Rec
     const el = elOrWindow as HTMLElement
 
     const assignRect = () => {
-        const rect = el.getBoundingClientRect()
-        ref.current = {
-            top: rect.top,
-            left: rect.left,
-            right: rect.right,
-            bottom: rect.bottom,
-            width: rect.width,
-            height: rect.height
+        const boundingRect = el.getBoundingClientRect()
+        const rect = {
+            top: boundingRect.top,
+            left: boundingRect.left,
+            right: boundingRect.right,
+            bottom: boundingRect.bottom,
+            width: boundingRect.width,
+            height: boundingRect.height
         }
+        if(!shallowEqual(rect, ref.current)) {
+            ref.current = rect
+        }
+        return rect
     }
 
     if (ref.options.size) {
