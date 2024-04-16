@@ -408,19 +408,24 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
 
 const resizeTargetToRectRef = new WeakMap<HTMLElement, RectRefObject>()
 const globalResizeObserver = new ResizeObserver(entries => {
-
     entries.forEach(entry => {
         const target = entry.target as HTMLElement
         const rectRef = resizeTargetToRectRef.get(target)
         if (rectRef) {
             // 覆盖了 position 信息
-            rectRef.current = {
-                top: entry.contentRect.top,
-                left: entry.contentRect.left,
-                right: entry.contentRect.right,
-                bottom: entry.contentRect.bottom,
+            const originLeft = rectRef.current?.left || 0
+            const originTop = rectRef.current?.top || 0
+            const newRect = {
+                top: originTop,
+                left: originLeft,
+                right: originLeft + entry.contentRect.width,
+                bottom: originTop + entry.contentRect.height,
                 width: entry.contentRect.width,
                 height: entry.contentRect.height
+            }
+
+            if(!shallowEqual(newRect, rectRef.current)) {
+                rectRef.current = newRect
             }
         }
     })
