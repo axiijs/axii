@@ -227,11 +227,16 @@ type PositionRecalculateEvent = {
     event: string
 }
 
+type PositionRecalculateInterval = {
+    type: 'interval',
+    duration: number
+}
+
 export type RectRefObject = {
     current: null | RectInfo,
     options: {
         size?: boolean,
-        position?: 'requestAnimationFrame' | 'requestIdleCallback' | PositionRecalculateEvent[],
+        position?: 'requestAnimationFrame' | 'requestIdleCallback' | 'manual' | PositionRecalculateInterval |PositionRecalculateEvent[],
     }
     sync?: () => void
 }
@@ -425,6 +430,7 @@ const globalResizeObserver = new ResizeObserver(entries => {
 const positionRecalculateEventTargetToListener = new WeakMap<HTMLElement, (e: Event) => any>()
 const positionRecalculateRequestAnimationFrameRefToIds = new WeakMap<HTMLElement, number>()
 const positionRecalculateRequestIdleCallbackRefToIds = new WeakMap<HTMLElement, number>()
+const positionRecalculateIntervalRefToIds = new WeakMap<HTMLElement, number>()
 const windowResizeRefToListener = new WeakMap<RectRefObject, () => any>()
 createElement.attachRectRef = function (elOrWindow: HTMLElement|Window, ref: RectRefObject) {
     if (elOrWindow === window) {
@@ -485,6 +491,9 @@ createElement.attachRectRef = function (elOrWindow: HTMLElement|Window, ref: Rec
         } else if (ref.options.position === 'requestIdleCallback') {
             const id = window.requestIdleCallback(assignRect)
             positionRecalculateRequestIdleCallbackRefToIds.set(el, id)
+        } else if((ref.options.position as PositionRecalculateInterval).type === 'interval') {
+            const id = window.setInterval(assignRect, (ref.options.position as PositionRecalculateInterval).duration || 1000)
+            positionRecalculateIntervalRefToIds.set(el, id)
         } else {
             // 手动同步
             ref.sync = assignRect
@@ -509,6 +518,8 @@ createElement.detachRectRef = function (el: HTMLElement, rectRef: RectRefObject)
             window.cancelAnimationFrame(positionRecalculateRequestAnimationFrameRefToIds.get(el)!)
         } else if (rectRef.options.position === 'requestIdleCallback') {
             window.cancelIdleCallback(positionRecalculateRequestIdleCallbackRefToIds.get(el)!)
+        } else if((rectRef.options.position as PositionRecalculateInterval).type === 'interval'){
+            window.clearInterval(positionRecalculateIntervalRefToIds.get(el)!)
         } else {
             delete rectRef.sync
         }
