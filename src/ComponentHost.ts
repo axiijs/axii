@@ -5,7 +5,7 @@ import {
     createSVGElement,
     Fragment,
     JSXElementType,
-    RectRefObject,
+    RectRefObject, RefFn, RefObject,
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
@@ -232,7 +232,20 @@ export class ComponentHost implements Host{
         })
         return finalProps
     }
-
+    attachRef(ref: RefObject|RefFn) {
+        if (typeof ref === 'function') {
+            ref(this)
+        } else {
+            ref.current = this
+        }
+    }
+    detachRef(ref: RefObject|RefFn) {
+       if(typeof ref === 'function') {
+           ref(null)
+       } else {
+          ref.current = null
+       }
+    }
     render(): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
@@ -269,11 +282,7 @@ export class ComponentHost implements Host{
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.props.ref) {
-            if (typeof this.props.ref === 'function') {
-                this.props.ref(this)
-            } else {
-                this.props.ref.current = this
-            }
+            this.attachRef(this.props.ref)
         }
 
         this.effects.forEach(effect => {
@@ -290,8 +299,7 @@ export class ComponentHost implements Host{
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (this.props.ref) {
-            assert(typeof this.props.ref === 'function', `ref on component should be a function after parent component handled`)
-            this.props.ref(null)
+            this.detachRef(this.props.ref)
         }
 
         if (!parentHandleComputed) {
@@ -317,6 +325,8 @@ export class ComponentHost implements Host{
         this.deleteLayoutEffectCallback()
     }
 }
+
+
 
 type FunctionProp = (arg:any) => object
 type EventTarget = (arg: (e:Event) => any) => void

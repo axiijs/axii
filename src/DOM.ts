@@ -373,8 +373,8 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
     return false
 }
 
-type RefFn = (el: HTMLElement | null) => void
-export type RefObject = { current: HTMLElement | null }
+export type RefFn = (el: any) => void
+export type RefObject = { current: any }
 // 附加在 createElement 上，
 createElement.attachRef = function (el: HTMLElement, ref: (RefFn | RefObject) | (RefFn | RefObject)[]) {
     if (Array.isArray(ref)) {
