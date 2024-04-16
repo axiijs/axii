@@ -174,7 +174,6 @@ export class ComponentHost implements Host{
 
         // 支持 use 覆写整个节点
         const finalType = this.itemConfig[name]?.use || type
-        debugger
 
         if(!isComponent && typeof finalType === "function") {
             // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxxx 标记的属性，转移到 props 上
