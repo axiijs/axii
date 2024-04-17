@@ -1,11 +1,12 @@
-import {isReactive, ManualCleanup, reactive, ReactiveEffect} from "data0";
+import {atom, Atom, isReactive, ManualCleanup, reactive, ReactiveEffect} from "data0";
 import {
     AttributesArg,
     createElement,
     createSVGElement,
     Fragment,
     JSXElementType,
-    RectRefObject, RefFn, RefObject,
+    RefFn,
+    RefObject,
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
@@ -13,9 +14,7 @@ import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
 import {assert} from "./util";
 import {Portal} from "./Portal.js";
-import { createRef, createRxRef, createRectRef, createRxRectRef } from "./ref.js";
-
-export type ManualHandledRectRefOptions = RectRefObject['options'] & {target?: HTMLElement}
+import {createRef, createRxRef} from "./ref.js";
 
 
 function ensureArray(o: any) {
@@ -36,6 +35,9 @@ function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     return origin
 }
 
+export type ReactiveStateTransformer<T> = (target:any, value:Atom<T|null>, options: any) => (() => any)|undefined
+export type ReactiveStateWithRef<T> = Atom<T|null> & { ref:(target:any) => any }
+
 const INNER_CONFIG_PROP = '$$config'
 
 export class ComponentHost implements Host{
@@ -53,7 +55,6 @@ export class ComponentHost implements Host{
     public frame?: ManualCleanup[] = []
     public name: string
     public renderContext?: RenderContext
-    public manualHandledRxRectRefs: { el: HTMLElement, ref: RectRefObject}[] = []
     deleteLayoutEffectCallback: () => void
     constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
@@ -207,17 +208,6 @@ export class ComponentHost implements Host{
     }
     createRef = createRef
     createRxRef = createRxRef
-    createRectRef = createRectRef
-    createRxRectRef = (options: ManualHandledRectRefOptions = {}) => {
-        if (options.target) {
-            const ref = createRxRectRef(options)
-            createElement.attachRectRef(options.target, ref)
-            this.manualHandledRxRectRefs.push({el: options.target, ref})
-            return ref
-        } else {
-            return createRxRectRef(options as RectRefObject['options'])
-        }
-    }
     handleProps(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
         const finalProps: Props = {}
         // TODO dev 模式下类型检查
@@ -246,6 +236,47 @@ export class ComponentHost implements Host{
           ref.current = null
        }
     }
+    cleanupsOfExternalTarget = new Set<() => void>()
+    createReactiveStateFromRef = <T>(transform:ReactiveStateTransformer<T>, options?: any, externalTarget?: any):ReactiveStateWithRef<T> =>  {
+        let lastCleanup: (() => void)|undefined = undefined
+
+        const ref = (target:any) => {
+            if (externalTarget && lastCleanup) {
+                this.cleanupsOfExternalTarget.delete(lastCleanup)
+            }
+
+            lastCleanup?.()
+
+            if (target !== null) {
+                lastCleanup = transform(target, stateValue, options)
+
+                if (externalTarget && lastCleanup) {
+                    this.cleanupsOfExternalTarget.add(lastCleanup)
+                }
+
+            } else {
+                // target 为 Null，表示清理
+                lastCleanup = undefined
+                stateValue(null)
+            }
+        }
+
+        const stateValue:ReactiveStateWithRef<T> = new Proxy(atom<T|null>(null), {
+            get: (target, key) => {
+                if(key === 'ref') {
+                    return ref
+                }
+                return target[key as keyof typeof target]
+            }
+        }) as ReactiveStateWithRef<T>
+
+
+        if (externalTarget) {
+            stateValue.ref(externalTarget)
+        }
+
+        return stateValue
+    }
     render(): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
@@ -265,8 +296,7 @@ export class ComponentHost implements Host{
             createPortal: this.createPortal,
             createRef: this.createRef,
             createRxRef: this.createRxRef,
-            createRectRef: this.createRectRef,
-            createRxRectRef: this.createRxRectRef
+            createReactiveStateFromRef: this.createReactiveStateFromRef
         }
 
         const {ref: refProp, ...componentProps} = this.props
@@ -313,9 +343,8 @@ export class ComponentHost implements Host{
         this.layoutEffectDestroyHandles.forEach(handle => handle())
         this.destroyCallback.forEach(callback => callback())
 
-        this.manualHandledRxRectRefs.forEach(({el, ref}) => {
-            createElement.detachRectRef(el, ref)
-        })
+        this.cleanupsOfExternalTarget.forEach(cleanup => cleanup())
+        this.cleanupsOfExternalTarget.clear()
 
         // 删除 dom
         if (!parentHandle) {

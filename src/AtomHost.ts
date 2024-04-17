@@ -23,7 +23,6 @@ export class AtomHost implements Host{
             const textNode = document.createTextNode(stringValue(value))
             this.parentElement!.replaceChild(textNode, this.placeholder)
             this.element = textNode
-            console.log('replace')
         } else {
             this.element.nodeValue = stringValue(value)
         }

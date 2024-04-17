@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import {assert, each, isPlainObject, shallowEqual} from './util'
+import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 
 export const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap)/
@@ -319,8 +319,6 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         }
 
         if (props.rectRef) {
-            // TODO 应该移到外部去？？？只有在 attach 之后才能 attachRectRef，不然是没有 rect 的。
-            createElement.attachRectRef(container as HTMLElement, props.rectRef)
             rectRefHandles.push({element: container as HTMLElement, handle: props.rectRef, path: []})
             delete props.rectRef
         }
@@ -403,146 +401,6 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
     } else if (typeof ref === 'object' && ref.hasOwnProperty('current')) {
         ref.current = null
     }
-}
-
-
-const resizeTargetToRectRef = new WeakMap<HTMLElement, RectRefObject>()
-const globalResizeObserver = new ResizeObserver(entries => {
-    entries.forEach(entry => {
-        const target = entry.target as HTMLElement
-        const rectRef = resizeTargetToRectRef.get(target)
-        if (rectRef) {
-            // 覆盖了 position 信息
-            const originLeft = rectRef.current?.left || 0
-            const originTop = rectRef.current?.top || 0
-            const newRect = {
-                top: originTop,
-                left: originLeft,
-                right: originLeft + entry.contentRect.width,
-                bottom: originTop + entry.contentRect.height,
-                width: entry.contentRect.width,
-                height: entry.contentRect.height
-            }
-
-            if(!shallowEqual(newRect, rectRef.current)) {
-                rectRef.current = newRect
-            }
-        }
-    })
-})
-
-
-const positionRecalculateEventTargetToListener = new WeakMap<HTMLElement, (e: Event) => any>()
-const positionRecalculateRequestAnimationFrameRefToIds = new WeakMap<HTMLElement, number>()
-const positionRecalculateRequestIdleCallbackRefToIds = new WeakMap<HTMLElement, number>()
-const positionRecalculateIntervalRefToIds = new WeakMap<HTMLElement, number>()
-const windowResizeRefToListener = new WeakMap<RectRefObject, () => any>()
-createElement.attachRectRef = function (elOrWindow: HTMLElement|Window, ref: RectRefObject) {
-    if (elOrWindow === window) {
-        // TODO window 的 resizeObserver
-        const assignRect = () => {
-            const rect = {
-                top: 0,
-                left: 0,
-                right: window.innerWidth,
-                bottom: window.innerHeight,
-                width: window.innerWidth,
-                height: window.innerHeight
-            }
-            if(!shallowEqual(rect, ref.current)) {
-                ref.current = rect
-            }
-            return rect
-        }
-        if (ref.options.size) {
-            const listener = () => assignRect()
-            windowResizeRefToListener.set(ref, listener)
-            window.addEventListener('resize', listener)
-        }
-        // position 永远不会变
-        if (ref.options.position) {
-            ref.sync = assignRect
-        }
-
-        assignRect()
-        return
-    }
-
-    const el = elOrWindow as HTMLElement
-
-    const assignRect = () => {
-        const boundingRect = el.getBoundingClientRect()
-        const rect = {
-            top: boundingRect.top,
-            left: boundingRect.left,
-            right: boundingRect.right,
-            bottom: boundingRect.bottom,
-            width: boundingRect.width,
-            height: boundingRect.height
-        }
-        if(!shallowEqual(rect, ref.current)) {
-            ref.current = rect
-        }
-        return rect
-    }
-
-    if (ref.options.size) {
-        globalResizeObserver.observe(el)
-        resizeTargetToRectRef.set(el, ref)
-    }
-
-    if (ref.options.position) {
-        if (Array.isArray(ref.options.position)) {
-            ref.options.position.forEach(event => {
-                const listener = () => assignRect()
-                event.target.addEventListener(event.event, listener)
-                positionRecalculateEventTargetToListener.set(event.target, listener)
-            })
-        } else if (ref.options.position === 'requestAnimationFrame') {
-            const id = window.requestAnimationFrame(assignRect)
-            positionRecalculateRequestAnimationFrameRefToIds.set(el, id)
-        } else if (ref.options.position === 'requestIdleCallback') {
-            const id = window.requestIdleCallback(assignRect)
-            positionRecalculateRequestIdleCallbackRefToIds.set(el, id)
-        } else if((ref.options.position as PositionRecalculateInterval).type === 'interval') {
-            const id = window.setInterval(assignRect, (ref.options.position as PositionRecalculateInterval).duration || 1000)
-            positionRecalculateIntervalRefToIds.set(el, id)
-        } else {
-            // 手动同步
-            ref.sync = assignRect
-        }
-    }
-
-    assignRect()
-}
-
-createElement.detachRectRef = function (el: HTMLElement, rectRef: RectRefObject) {
-    if (rectRef.options.size) {
-        globalResizeObserver.unobserve(el)
-        resizeTargetToRectRef.delete(el)
-    }
-
-    if (rectRef.options.position) {
-        if (Array.isArray(rectRef.options.position)) {
-            rectRef.options.position.forEach(event => {
-                event.target.removeEventListener(event.event, positionRecalculateEventTargetToListener.get(event.target)!)
-            })
-        } else if (rectRef.options.position === 'requestAnimationFrame') {
-            window.cancelAnimationFrame(positionRecalculateRequestAnimationFrameRefToIds.get(el)!)
-        } else if (rectRef.options.position === 'requestIdleCallback') {
-            window.cancelIdleCallback(positionRecalculateRequestIdleCallbackRefToIds.get(el)!)
-        } else if((rectRef.options.position as PositionRecalculateInterval).type === 'interval'){
-            window.clearInterval(positionRecalculateIntervalRefToIds.get(el)!)
-        } else {
-            delete rectRef.sync
-        }
-    }
-
-    rectRef.current = null
-}
-
-createElement.isElementRectObserved = function (el: HTMLElement) {
-    return resizeTargetToRectRef.has(el) || positionRecalculateEventTargetToListener.has(el) || positionRecalculateRequestAnimationFrameRefToIds.has(el) || positionRecalculateRequestIdleCallbackRefToIds.has(el)
 }
 
 

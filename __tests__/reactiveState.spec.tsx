@@ -1,9 +1,9 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
-import {createRoot, RenderContext, createElement, createRxRectRef} from "@framework";
+import {createElement, createRoot, reactiveSize, RenderContext, SizeObject} from "@framework";
 import {atom} from "data0";
-import { Window } from 'happy-dom'
+import {Window} from 'happy-dom'
 
 describe('ref', () => {
 
@@ -24,12 +24,13 @@ describe('ref', () => {
         root = createRoot(rootEl)
     })
 
-    test('attach rect ref', async () => {
-        const rectRef = createRxRectRef({size: true})
+    test('create reactive size state', async () => {
+        let size: any
         const innerText = atom('hello world')
-        function App({}, {createElement}: RenderContext) {
+        function App({}, {createElement, createReactiveStateFromRef}: RenderContext) {
+            size = createReactiveStateFromRef<SizeObject>(reactiveSize)
             return (
-                <div rectRef={rectRef}>{innerText}</div>
+                <div ref={size.ref}>{innerText}</div>
             )
         }
 
@@ -37,11 +38,9 @@ describe('ref', () => {
 
         await window.happyDOM.waitUntilComplete()
 
-        expect(rectRef.current).not.toBeNull()
-        expect(rectRef.current!.top).not.toBeNull()
-        expect(rectRef.current!.left).not.toBeNull()
-        expect(rectRef.current!.width).not.toBeNull()
-        expect(rectRef.current!.height).not.toBeNull()
+        expect(size()).not.toBeNull()
+        expect(size()!.width).not.toBeNull()
+        expect(size()!.height).not.toBeNull()
 
         // TODO happy-dom ResizeObeserver not working
         //
@@ -59,22 +58,23 @@ describe('ref', () => {
     test('createRxRectRef with manual handled', async () => {
         const appRef = atom<any>(null)
 
-        function App({}, {createElement,  createRxRectRef}: RenderContext) {
+        function App({}, {createElement,  createReactiveStateFromRef}: RenderContext) {
 
-            const portalRectRef = createRxRectRef({size: true, target: portalContainer})
+            const portalRectRef = createReactiveStateFromRef<SizeObject>(reactiveSize,undefined, portalContainer)
 
             return (
-                <div>{portalRectRef.current?.top}</div>
+                <div>{portalRectRef()?.width}</div>
             )
         }
 
         root.render(<App ref={appRef}/>)
 
         expect(rootEl.innerText).toBe('0')
-        expect(appRef().manualHandledRxRectRefs.length).toBe(1)
+        const lastAppRef = appRef()
+        expect(lastAppRef.cleanupsOfExternalTarget.size).toBe(1)
 
         root.destroy()
-        expect(createElement.isElementRectObserved(portalContainer)).toBe(false)
+        expect(lastAppRef.cleanupsOfExternalTarget.size).toBe(0)
 
     })
 
