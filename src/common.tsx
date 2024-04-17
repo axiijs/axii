@@ -156,3 +156,18 @@ export function reactiveSize(target: HTMLElement|Window, value: Atom<SizeObject|
 
 }
 
+export function reactiveFocused(target:HTMLElement, value:Atom<boolean>) {
+    const setToTrue = () => {
+        value(true)
+    }
+    const setToFalse = () => {
+        value(false)
+    }
+    document.addEventListener('focusin', setToTrue)
+    document.addEventListener('focusout', setToFalse)
+    return () => {
+        document.removeEventListener('focusin', setToTrue)
+        document.removeEventListener('focusout', setToFalse)
+    }
+}
+
