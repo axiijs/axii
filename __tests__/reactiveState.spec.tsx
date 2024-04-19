@@ -27,8 +27,8 @@ describe('ref', () => {
     test('create reactive size state', async () => {
         let size: any
         const innerText = atom('hello world')
-        function App({}, {createElement, createReactiveStateFromRef}: RenderContext) {
-            size = createReactiveStateFromRef<SizeObject>(reactiveSize)
+        function App({}, {createElement, createStateFromRef}: RenderContext) {
+            size = createStateFromRef<SizeObject>(reactiveSize)
             return (
                 <div ref={size.ref}>{innerText}</div>
             )
@@ -58,9 +58,9 @@ describe('ref', () => {
     test('createRxRectRef with manual handled', async () => {
         const appRef = atom<any>(null)
 
-        function App({}, {createElement,  createReactiveStateFromRef}: RenderContext) {
+        function App({}, {createElement,  createStateFromRef}: RenderContext) {
 
-            const portalRectRef = createReactiveStateFromRef<SizeObject>(reactiveSize,undefined, portalContainer)
+            const portalRectRef = createStateFromRef<SizeObject>(reactiveSize,undefined, portalContainer)
 
             return (
                 <div>{portalRectRef()?.width}</div>

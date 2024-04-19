@@ -27,7 +27,8 @@ function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     Object.entries(newProps).forEach(([key, value]) => {
         const originValue = origin[key]
         if(key.startsWith('on') || key === 'ref') {
-            origin[key] = ensureArray(originValue).concat(value)
+            // CAUTION 一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
+            origin[key] = ensureArray(value).concat(originValue)
         } else {
             origin[key] = value
         }
@@ -35,8 +36,8 @@ function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     return origin
 }
 
-export type ReactiveStateTransformer<T> = (target:any, value:Atom<T|null>, options: any) => (() => any)|undefined
-export type ReactiveStateWithRef<T> = Atom<T|null> & { ref:(target:any) => any }
+export type StateTransformer<T> = (target:any, value:Atom<T|null>, options: any) => (() => any)|undefined
+export type StateWithRef<T> = Atom<T|null> & { ref:(target:any) => any }
 
 const INNER_CONFIG_PROP = '$$config'
 
@@ -237,7 +238,7 @@ export class ComponentHost implements Host{
        }
     }
     cleanupsOfExternalTarget = new Set<() => void>()
-    createReactiveStateFromRef = <T>(transform:ReactiveStateTransformer<T>, options?: any, externalTarget?: any):ReactiveStateWithRef<T> =>  {
+    createStateFromRef = <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any):StateWithRef<T> =>  {
         let lastCleanup: (() => void)|undefined = undefined
 
         const ref = (target:any) => {
@@ -261,14 +262,14 @@ export class ComponentHost implements Host{
             }
         }
 
-        const stateValue:ReactiveStateWithRef<T> = new Proxy(atom<T|null>(null), {
+        const stateValue:StateWithRef<T> = new Proxy(atom<T|null>(null), {
             get: (target, key) => {
                 if(key === 'ref') {
                     return ref
                 }
                 return target[key as keyof typeof target]
             }
-        }) as ReactiveStateWithRef<T>
+        }) as StateWithRef<T>
 
 
         if (externalTarget) {
@@ -296,7 +297,7 @@ export class ComponentHost implements Host{
             createPortal: this.createPortal,
             createRef: this.createRef,
             createRxRef: this.createRxRef,
-            createReactiveStateFromRef: this.createReactiveStateFromRef
+            createStateFromRef: this.createStateFromRef
         }
 
         const {ref: refProp, ...componentProps} = this.props

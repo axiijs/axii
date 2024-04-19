@@ -1,6 +1,6 @@
 import {AttributesArg, Fragment, JSXElementType, RefObject} from "./DOM";
 import {PathContext} from "./Host";
-import {DataContext, ReactiveStateTransformer, ReactiveStateWithRef} from './ComponentHost.js'
+import {DataContext, StateTransformer, StateWithRef} from './ComponentHost.js'
 import {PropTypes} from "./propTypes.js";
 
 export type Props = {
@@ -26,7 +26,7 @@ export type RenderContext = {
     createPortal: (children: JSXElement, container: HTMLElement) => JSXElement
     createRef: () => RefObject,
     createRxRef: () => RefObject,
-    createReactiveStateFromRef: <T>(transform:ReactiveStateTransformer<T>, options?: any, externalTarget?: any)=>ReactiveStateWithRef<T>,
+    createStateFromRef: <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any)=>StateWithRef<T>,
 }
 
 export type Component = {
