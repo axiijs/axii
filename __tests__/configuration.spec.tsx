@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
-import {createElement, createRoot, RenderContext} from "@framework";
+import {createElement, createRoot, RenderContext, N_ATTR} from "@framework";
 import userEvent from "@testing-library/user-event";
 
 describe('component configuration', () => {
@@ -76,9 +76,11 @@ describe('component configuration', () => {
     test('use component to rewrite element', async () => {
 
         let childOuterProps:any = null
+        let nativeAttrs:any = {}
 
         function Child(props:any, {createElement}: RenderContext) {
             childOuterProps = props.outer
+            nativeAttrs = props[N_ATTR]
             return <div >
                 hello world
             </div>
@@ -86,7 +88,7 @@ describe('component configuration', () => {
 
         function App(props:any, {createElement}: RenderContext) {
             return <div>
-                <div as="inner" prop:outer={props} />
+                <div as="inner" style={{color:'red'}} prop:outer={props} />
             </div>
         }
 
@@ -99,6 +101,7 @@ describe('component configuration', () => {
         />)
 
         expect(childOuterProps.hello).toEqual(appProps.hello)
+        expect(nativeAttrs.style).toEqual({color:'red'})
 
     })
 })

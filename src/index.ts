@@ -8,6 +8,7 @@ export * from './types.js'
 export * from './ref.js'
 export * from './Portal.js'
 export * from './common.js'
+export {N_ATTR} from './ComponentHost.js'
 
 
 export * from 'data0'

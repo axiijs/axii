@@ -159,7 +159,6 @@ describe('component render', () => {
         function App() {
             return <div>
                 {() => {
-                    debugger
                     functionNodeRuns++
                     return <div style={rxStyle} />
                 }}

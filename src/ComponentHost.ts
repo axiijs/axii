@@ -139,7 +139,7 @@ export class ComponentHost implements Host{
             })
         }
 
-        let finalProps = rawProps
+        let finalProps:{[k:string|symbol]:any} = rawProps
         let finalChildren = children
         if (name && this.itemConfig[name]) {
 
@@ -170,23 +170,31 @@ export class ComponentHost implements Host{
             }
         }
 
-        if (name && isComponent) {
-            finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
-        }
-
         // 支持 use 覆写整个节点
         const finalType = this.itemConfig[name]?.use || type
 
         if(!isComponent && typeof finalType === "function") {
             // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxxx 标记的属性，转移到 props 上
             const propKeys = Object.keys(finalProps || {})
+            const nativeAttrs:{[k:string]:any} = {}
+
             propKeys.forEach(key => {
                 if (key.startsWith('prop:')) {
                     finalProps[key.slice(5)] = finalProps[key]
-                    delete finalProps[key]
+                } else {
+                    nativeAttrs[key] = finalProps[key]
                 }
+                delete finalProps[key]
             })
+
+            finalProps[N_ATTR] = nativeAttrs
+            // CAUTION 不能 enumerable 意味着不能 spread 传递，但是可以直接读取。
         }
+
+        if (name && isComponent) {
+            finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
+        }
+
         const el = createElement(finalType, finalProps, ...finalChildren)
 
         if (name && !isComponent) {
@@ -303,8 +311,12 @@ export class ComponentHost implements Host{
         const {ref: refProp, ...componentProps} = this.props
 
         const getFrame = ReactiveEffect.collectEffect()
-        const finalComponentProps = this.type.propTypes ? this.handleProps(this.type.propTypes, componentProps) : componentProps
-        const node = this.type({...finalComponentProps, children: this.children}, this.renderContext)
+        const finalComponentProps = {
+            ...(this.type.propTypes ? this.handleProps(this.type.propTypes, componentProps) : componentProps),
+            children: this.children
+        }
+
+        const node = this.type(finalComponentProps, this.renderContext)
         this.frame = getFrame()
 
         // 就用当前 component 的 placeholder
@@ -396,3 +408,4 @@ export class DataContext{
     }
 }
 
+export const N_ATTR = '__nativeAttrs'
