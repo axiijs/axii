@@ -1,6 +1,6 @@
 import {AttributesArg, Fragment, JSXElementType, RefObject} from "./DOM";
 import {PathContext} from "./Host";
-import {DataContext, StateTransformer, StateWithRef} from './ComponentHost.js'
+import {DataContext, StateTransformer, StateFromRef} from './ComponentHost.js'
 import {PropTypes} from "./propTypes.js";
 
 export type Props = {
@@ -26,7 +26,7 @@ export type RenderContext = {
     createPortal: (children: JSXElement, container: HTMLElement) => JSXElement
     createRef: () => RefObject,
     createRxRef: () => RefObject,
-    createStateFromRef: <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any)=>StateWithRef<T>,
+    createStateFromRef: <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any)=>StateFromRef<T>,
 }
 
 export type Component = {
@@ -42,3 +42,4 @@ export type ComponentNode = {
 }
 
 export { type ToAllowFixedPropsType, type PropTypes, type PropType, type ToPropsType } from './propTypes.js'
+export { StateFromRef, StateTransformer } from './ComponentHost.js'

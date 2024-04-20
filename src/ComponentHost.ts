@@ -37,7 +37,7 @@ function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
 }
 
 export type StateTransformer<T> = (target:any, value:Atom<T|null>, options: any) => (() => any)|undefined
-export type StateWithRef<T> = Atom<T|null> & { ref:(target:any) => any }
+export type StateFromRef<T> = Atom<T|null> & { ref:(target:any) => any }
 
 const INNER_CONFIG_PROP = '$$config'
 
@@ -246,7 +246,7 @@ export class ComponentHost implements Host{
        }
     }
     cleanupsOfExternalTarget = new Set<() => void>()
-    createStateFromRef = <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any):StateWithRef<T> =>  {
+    createStateFromRef = <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any):StateFromRef<T> =>  {
         let lastCleanup: (() => void)|undefined = undefined
 
         const ref = (target:any) => {
@@ -270,14 +270,14 @@ export class ComponentHost implements Host{
             }
         }
 
-        const stateValue:StateWithRef<T> = new Proxy(atom<T|null>(null), {
+        const stateValue:StateFromRef<T> = new Proxy(atom<T|null>(null), {
             get: (target, key) => {
                 if(key === 'ref') {
                     return ref
                 }
                 return target[key as keyof typeof target]
             }
-        }) as StateWithRef<T>
+        }) as StateFromRef<T>
 
 
         if (externalTarget) {
