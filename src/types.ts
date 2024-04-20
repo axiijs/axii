@@ -42,4 +42,4 @@ export type ComponentNode = {
 }
 
 export { type ToAllowFixedPropsType, type PropTypes, type PropType, type ToPropsType } from './propTypes.js'
-export { StateFromRef, StateTransformer } from './ComponentHost.js'
+export { type StateFromRef, type StateTransformer } from './ComponentHost.js'
