@@ -95,7 +95,11 @@ export function reactivePosition(elOrWindow: HTMLElement|Window, value: Atom<Pos
 
 export type SizeObject = {
     width: number
-    height: number
+    height: number,
+    borderBoxWidth: number,
+    borderBoxHeight: number,
+    contentBoxWidth: number,
+    contentBoxHeight: number,
 }
 const resizeTargetToState = new WeakMap<HTMLElement, Atom<SizeObject|null>>()
 const globalResizeObserver = new ResizeObserver(entries => {
@@ -106,7 +110,12 @@ const globalResizeObserver = new ResizeObserver(entries => {
             // 覆盖了 position 信息
             const newSizeObject = {
                 width: entry.contentRect.width,
-                height: entry.contentRect.height
+                height: entry.contentRect.height,
+                borderBoxWidth: entry.borderBoxSize[0].inlineSize,
+                borderBoxHeight: entry.borderBoxSize[0].blockSize,
+                contentBoxWidth: entry.contentBoxSize[0].inlineSize,
+                contentBoxHeight: entry.contentBoxSize[0].blockSize,
+
             }
 
             if(!shallowEqual(newSizeObject, state())) {
@@ -153,7 +162,6 @@ export function reactiveSize(target: HTMLElement|Window, value: Atom<SizeObject|
             value(null)
         }
     }
-
 }
 
 export function reactiveFocused(target:HTMLElement, value:Atom<boolean>) {
