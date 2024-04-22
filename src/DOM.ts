@@ -262,7 +262,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     let container: HTMLElement | DocumentFragment | SVGElement
 
-    const children = rawChildren || props.children || []
+    const children: any[] = rawChildren.length ? rawChildren: (props.children || [])
 
     if (type === Fragment) {
         container = document.createDocumentFragment()
