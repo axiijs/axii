@@ -12,4 +12,4 @@ export {N_ATTR} from './ComponentHost.js'
 
 
 export * from 'data0'
-export {ContextProvider, type ContextProviderProps} from "./ContextProvider.js";
+export {ContextProvider, type ContextProviderProps, createContext} from "./ContextProvider.js";
