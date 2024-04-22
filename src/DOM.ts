@@ -257,10 +257,12 @@ export type RectInfo = {
 }
 
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
-export function createElement(type: JSXElementType, rawProps: AttributesArg, ...children: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     const {_isSVG, ...props} = rawProps || {}
 
     let container: HTMLElement | DocumentFragment | SVGElement
+
+    const children = rawChildren || props.children || []
 
     if (type === Fragment) {
         container = document.createDocumentFragment()
