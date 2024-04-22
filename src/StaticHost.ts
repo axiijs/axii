@@ -1,14 +1,16 @@
 import {
-    setAttribute,
-    UnhandledPlaceholder,
-    insertBefore,
+    AUTO_ADD_PX_STYLE,
+    createElement,
     ExtendedElement,
-    createElement, AUTO_ADD_PX_STYLE, RefHandleInfo, RectRefHandleInfo
+    insertBefore,
+    RefHandleInfo,
+    setAttribute,
+    UnhandledPlaceholder
 } from "./DOM";
-import {PathContext, Host} from "./Host";
+import {Host, PathContext} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
-import {removeNodesBetween, assert} from "./util";
+import {assert, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
@@ -121,7 +123,6 @@ export class StaticHost implements Host{
     reactiveHosts?: Host[]
     attrComputeds?: ReturnType<typeof computed>[]
     refHandles?: RefHandleInfo[]
-    rectRefHandles?: RectRefHandleInfo[]
     constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
     }
     get parentElement() {
@@ -137,7 +138,6 @@ export class StaticHost implements Host{
         this.collectReactiveAttr()
         this.collectReactiveAttr()
         this.collectRefHandles()
-        this.collectRectRefHandles()
         this.reactiveHosts!.forEach(host => host.render())
     }
     collectInnerHost() {
@@ -190,12 +190,6 @@ export class StaticHost implements Host{
         const {  refHandles } = result as ExtendedElement
         this.refHandles = refHandles
     }
-    collectRectRefHandles() {
-        const result = this.source
-        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
-        const {  rectRefHandles } = result as ExtendedElement
-        this.rectRefHandles = rectRefHandles
-    }
     destroy(parentHandle?:boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
             this.attrComputeds?.forEach(attrComputed => destroyComputed(attrComputed))
@@ -207,9 +201,6 @@ export class StaticHost implements Host{
             createElement.detachRef(handle)
         })
 
-        this.rectRefHandles?.forEach(({ handle, element }: RectRefHandleInfo) => {
-            createElement.detachRectRef(element, handle)
-        })
 
         if (!parentHandle) {
             removeNodesBetween(this.element!, this.placeholder, true)
