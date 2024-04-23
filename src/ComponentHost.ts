@@ -118,7 +118,7 @@ export class ComponentHost implements Host{
         return this.innerHost?.element || this.placeholder
     }
 
-    createElement = (type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
+    createHTMLOrSVGElement = (isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
         const isComponent = typeof type === 'function'
         if(__DEV__) {
             if (!isComponent && rawProps)
@@ -195,7 +195,7 @@ export class ComponentHost implements Host{
             finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
         }
 
-        const el = createElement(finalType, finalProps, ...finalChildren)
+        const el = isSVG ? createSVGElement(finalType as string, finalProps, ...finalChildren) : createElement(finalType, finalProps, ...finalChildren)
 
         if (name && !isComponent) {
             this.refs[name] = el
@@ -203,7 +203,8 @@ export class ComponentHost implements Host{
 
         return el
     }
-    createSVGElement = createSVGElement
+    createElement = this.createHTMLOrSVGElement.bind(this, false)
+    createSVGElement = this.createHTMLOrSVGElement.bind(this, true)
     createPortal = (componentOrEl: JSX.Element|ComponentNode, container: HTMLElement) => {
         return createElement(Portal, {container}, componentOrEl)
     }

@@ -329,6 +329,30 @@ describe('component render', () => {
         root.destroy()
         expect(rootEl.innerHTML).toBe('')
     })
+
+    test('pass props to inner component',() => {
+        let innerProps: any
+        function Child(props:any) {
+            innerProps = props
+            return <div>{props.children}</div>
+        }
+
+        function Through(props:any) {
+            return <Child {...props}/>
+        }
+
+        function App() {
+            return <div>
+                <Through name="hello">
+                    hello children
+                </Through>
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(innerProps.name).toBe('hello')
+        expect(innerProps.children).toMatchObject(['hello children'])
+    })
 })
 
 describe('component ref', () => {
