@@ -171,11 +171,11 @@ export function reactiveFocused(target:HTMLElement, value:Atom<boolean|null>) {
     const setToFalse = () => {
         value(false)
     }
-    document.addEventListener('focusin', setToTrue)
-    document.addEventListener('focusout', setToFalse)
+    target.addEventListener('focusin', setToTrue)
+    target.addEventListener('focusout', setToFalse)
     return () => {
-        document.removeEventListener('focusin', setToTrue)
-        document.removeEventListener('focusout', setToFalse)
+        target.removeEventListener('focusin', setToTrue)
+        target.removeEventListener('focusout', setToFalse)
     }
 }
 
