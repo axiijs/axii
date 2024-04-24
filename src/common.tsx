@@ -164,7 +164,7 @@ export function reactiveSize(target: HTMLElement|Window, value: Atom<SizeObject|
     }
 }
 
-export function reactiveFocused(target:HTMLElement, value:Atom<boolean>) {
+export function reactiveFocused(target:HTMLElement, value:Atom<boolean|null>) {
     const setToTrue = () => {
         value(true)
     }
