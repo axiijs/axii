@@ -27,8 +27,14 @@ function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     Object.entries(newProps).forEach(([key, value]) => {
         const originValue = origin[key]
         if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style')) {
-            // CAUTION 一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
-            origin[key] = ensureArray(value).concat(originValue)
+            // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
+            //  style 一定要放后面，才能覆写
+            if(key === 'style') {
+                origin[key] = ensureArray(originValue).concat(value)
+            } else {
+                origin[key] = ensureArray(value).concat(originValue)
+            }
+
         } else {
             origin[key] = value
         }
