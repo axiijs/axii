@@ -26,7 +26,7 @@ function ensureArray(o: any) {
 function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     Object.entries(newProps).forEach(([key, value]) => {
         const originValue = origin[key]
-        if(key.startsWith('on') || key === 'ref') {
+        if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style')) {
             // CAUTION 一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
             origin[key] = ensureArray(value).concat(originValue)
         } else {
@@ -91,8 +91,12 @@ export class ComponentHost implements Host{
                 } else if(itemProp?.[0] === '_'){
                     // 不支持的配置项
                     assert(false, `unsupported config item: ${itemName}`)
+                } else if( itemProp.endsWith('_') ) {
+                    // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
+                    this.itemConfig[itemName].propMergeHandles![itemProp] = value
+
                 } else {
-                    // 支持 $xxx:prop 来覆盖 props
+                    // 支持 $xxx:[prop] 来覆盖 props
                     if (!this.itemConfig[itemName].props) this.itemConfig[itemName].props = {}
                     this.itemConfig[itemName].props![itemProp] = value
                 }
@@ -155,6 +159,13 @@ export class ComponentHost implements Host{
                 }
             }
 
+            if(thisItemConfig.propMergeHandles) {
+                Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handle]) => {
+                    finalProps[key] = handle(finalProps[key])
+                })
+            }
+
+            // 整体重写
             if (thisItemConfig.propsMergeHandle) {
                 finalProps = thisItemConfig.propsMergeHandle(finalProps)
             }
@@ -383,6 +394,9 @@ type ConfigItem = {
     eventTarget?: EventTarget[],
     // 手动调整内部组件的 props
     props?: {[k:string]: any},
+    // 函数手动 merge prop
+    propMergeHandles?: {[k:string]: any},
+
     propsMergeHandle?: FunctionProp,
     // children
     children?: any

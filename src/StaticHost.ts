@@ -34,7 +34,11 @@ function isAtomLike(v:any) {
     return isAtom(v) || typeof v === 'function'
 }
 
-function hasPsuedoClassOrNestedStyle(styleObject: {[k:string]:any}) {
+
+function hasPsuedoClassOrNestedStyle(styleObject: StyleObject|StyleObject[]) {
+    if (Array.isArray(styleObject)) {
+        return styleObject.some(hasPsuedoClassOrNestedStyle)
+    }
     return Object.entries(styleObject).some(([key, value]) => key.startsWith(':') || (typeof value === 'object' && value !== null))
 }
 
@@ -74,7 +78,7 @@ class StyleManager {
             }
         }).join('\n')
     }
-    update(hostPath: Host[], elementPath: number[], styleObject: {[k:string]:any}, el: ExtendedElement, isStatic: boolean = false) {
+    update(hostPath: Host[], elementPath: number[], styleObject: StyleObject, el: ExtendedElement, isStatic: boolean = false) {
         // 使用这个更新的 style 都是有伪类或者有嵌套的，一定需要生成 class 的。
         const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
         let styleScript = this.styleScripts.get(styleSheetId)
@@ -114,6 +118,13 @@ ${this.stringifyStyleObject(valueStyleObject)}
 }
 
 type StyleObject = {[k:string]:any}
+
+function isStaticStyleObject(styleObject: StyleObject|StyleObject[]): boolean {
+    if (Array.isArray(styleObject)) {
+        return styleObject.every(isStaticStyleObject)
+    }
+    return typeof styleObject === 'object'
+}
 
 export class StaticHost implements Host{
     static styleManager = new StyleManager()
@@ -175,9 +186,9 @@ export class StaticHost implements Host{
                     isAtomLike(value) ? value() : value
 
                 if (key === 'style' && (hasPsuedoClassOrNestedStyle(final))) {
-                    const isStatic = typeof value === 'object'
-                    // StaticHost.styleManage.update(this.context.hostPath, path, final, isStatic ? null : el)
-                    StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
+                    const isStatic = isStaticStyleObject(value)
+                    const finalStyleObject = Array.isArray(final) ? Object.assign({}, ...final) : final
+                    StaticHost.styleManager.update(this.pathContext.hostPath, path, finalStyleObject, el, isStatic )
                 } else {
                     setAttribute(el, key, final, isSVG)
                 }

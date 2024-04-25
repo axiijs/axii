@@ -30,7 +30,6 @@ export interface ExtendedElement extends HTMLElement {
     unhandledChildren?: UnhandledChildInfo[]
     unhandledAttr?: UnhandledAttrInfo[]
     refHandles?: RefHandleInfo[]
-    rectRefHandles?: RectRefHandleInfo[]
 }
 
 function eventProxy(this: ExtendedElement, e: Event) {
@@ -222,40 +221,6 @@ export type RefHandleInfo = {
     path: number[]
 }
 
-type PositionRecalculateEvent = {
-    target: HTMLElement,
-    event: string
-}
-
-type PositionRecalculateInterval = {
-    type: 'interval',
-    duration: number
-}
-
-export type RectRefObject = {
-    current: null | RectInfo,
-    options: {
-        size?: boolean,
-        position?: 'requestAnimationFrame' | 'requestIdleCallback' | 'manual' | PositionRecalculateInterval |PositionRecalculateEvent[],
-    }
-    sync?: () => void
-}
-
-export type RectRefHandleInfo = {
-    element: HTMLElement
-    handle: RectRefObject,
-    path: number[]
-}
-
-export type RectInfo = {
-    top: number,
-    left: number,
-    right: number,
-    bottom: number,
-    width: number,
-    height: number
-}
-
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     const {_isSVG, ...props} = rawProps || {}
@@ -275,7 +240,6 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     const unhandledAttr: UnhandledAttrInfo[] = []
     const unhandledChildren: UnhandledChildInfo[] = []
     const refHandles: RefHandleInfo[] = []
-    const rectRefHandles: RectRefHandleInfo[] = []
 
     children?.forEach((child, index) => {
         if (child === undefined || child === null) return
@@ -296,13 +260,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             const childRefHandles = childElement.refHandles || []
             refHandles.push(...childRefHandles.map(c => ({...c, path: [index, ...c.path]})))
 
-            const childRectRefHandles = childElement.rectRefHandles || []
-            rectRefHandles.push(...childRectRefHandles.map(c => ({...c, path: [index, ...c.path]})))
 
             delete childElement.unhandledChildren
             delete childElement.unhandledAttr
             delete childElement.refHandles
-            delete childElement.rectRefHandles
 
         } else {
             const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
@@ -318,11 +279,6 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             createElement.attachRef(container as HTMLElement, props.ref)
             refHandles.push({handle: props.ref, path: []})
             delete props.ref
-        }
-
-        if (props.rectRef) {
-            rectRefHandles.push({element: container as HTMLElement, handle: props.rectRef, path: []})
-            delete props.rectRef
         }
 
 
@@ -342,7 +298,6 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
     if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
     if (refHandles.length) containerElement.refHandles = refHandles
-    if (rectRefHandles.length) containerElement.rectRefHandles = rectRefHandles
 
     return container
 }
@@ -364,7 +319,7 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
     }
 
     if (typeof value !== 'object' && typeof value !== 'function') return true
-    // 事件
+    // 事件 允许是函数
     if ((name[0] === 'o' && name[1] === 'n') && typeof value === 'function') return true
     if ((isSimpleStyleObject(value) || typeof value === 'string') && name === 'style') return true
     // 默认支持 className 的对象形式
