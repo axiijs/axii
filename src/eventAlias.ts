@@ -73,3 +73,10 @@ export function withCurrentRange<T extends Event>(handle: (e: T, range: Range|un
         handle(e, range)
     }
 }
+
+export function withDefaultPrevent<T extends Event>(handle: (e: T) => any) {
+    return (e: T) => {
+        e.preventDefault()
+        handle(e)
+    }
+}
