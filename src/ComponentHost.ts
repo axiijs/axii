@@ -222,8 +222,8 @@ export class ComponentHost implements Host{
     }
     createElement = this.createHTMLOrSVGElement.bind(this, false)
     createSVGElement = this.createHTMLOrSVGElement.bind(this, true)
-    createPortal = (componentOrEl: JSX.Element|ComponentNode, container: HTMLElement) => {
-        return createElement(Portal, {container}, componentOrEl)
+    createPortal = (content: JSX.Element|ComponentNode|Function, container: HTMLElement) => {
+        return createElement(Portal, {container, content})
     }
     // 处理视图相关的 effect
     useLayoutEffect = (callback: EffectHandle) => {

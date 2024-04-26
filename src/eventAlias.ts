@@ -13,10 +13,13 @@ export const onDownKey = eventAlias((e: KeyboardEvent) => e.key === 'ArrowDown')
 export const onLeftKey = eventAlias((e: KeyboardEvent) => e.key === 'ArrowLeft')
 export const onRightKey = eventAlias((e: KeyboardEvent) => e.key === 'ArrowRight')
 export const onEnterKey = eventAlias((e: KeyboardEvent) => e.key === 'Enter')
-export const  onTabKey = eventAlias((e: KeyboardEvent) => e.key === 'Tab')
+export const onTabKey = eventAlias((e: KeyboardEvent) => e.key === 'Tab')
 export const onESCKey = eventAlias((e: KeyboardEvent) => e.key === 'Escape')
 export const onBackspaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Backspace')
 export const onSpaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Space')
+export const onLeftMouseDown = eventAlias((e: MouseEvent) => e.button === 0)
+export const onRightMouseDown = eventAlias((e: MouseEvent) => e.button === 2)
+export const onMiddleMouseDown = eventAlias((e: MouseEvent) => e.button === 1)
 
 
 export type onKeyConfig = {

@@ -23,7 +23,7 @@ export type RenderContext = {
     },
     context: DataContext,
     pathContext: PathContext,
-    createPortal: (children: JSXElement, container: HTMLElement) => JSXElement
+    createPortal: (children: JSXElement|Function, container: HTMLElement) => JSXElement
     createRef: () => RefObject,
     createRxRef: () => RefObject,
     createStateFromRef: <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any)=>StateFromRef<T>,
