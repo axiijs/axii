@@ -99,7 +99,7 @@ export class ComponentHost implements Host{
                     assert(false, `unsupported config item: ${itemName}`)
                 } else if( itemProp.endsWith('_') ) {
                     // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
-                    this.itemConfig[itemName].propMergeHandles![itemProp] = value
+                    this.itemConfig[itemName].propMergeHandles![itemProp.slice(0, -1)] = value
 
                 } else {
                     // 支持 $xxx:[prop] 来覆盖 props
@@ -149,6 +149,12 @@ export class ComponentHost implements Host{
             })
         }
 
+        // 支持 use 里面直接传入 HTMLElement 覆写整个节点
+        if (name && this.itemConfig[name]?.use && this.itemConfig[name]?.use instanceof Element) {
+            return this.itemConfig[name]!.use as HTMLElement
+        }
+
+
         let finalProps:{[k:string|symbol]:any} = rawProps
         let finalChildren = children
         if (name && this.itemConfig[name]) {
@@ -187,8 +193,7 @@ export class ComponentHost implements Host{
             }
         }
 
-        // 支持 use 覆写整个节点
-        const finalType = this.itemConfig[name]?.use || type
+        const finalType = (this.itemConfig[name]?.use || type) as Component|string
 
         if(!isComponent && typeof finalType === "function") {
             // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxxx 标记的属性，转移到 props 上
@@ -395,7 +400,7 @@ type ConfigItem = {
     // 穿透给组件的
     config?: { [k:string]: ConfigItem},
     // 支持覆写 element
-    use?: Component|string,
+    use?: Component|JSX.Element,
     // 将事件转发到另一个节点上
     eventTarget?: EventTarget[],
     // 手动调整内部组件的 props

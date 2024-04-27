@@ -104,4 +104,21 @@ describe('component configuration', () => {
         expect(nativeAttrs.style).toEqual({color:'red'})
 
     })
+
+    test('rewrite with element', () => {
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <div as="inner" style={{color:'red'}} prop:outer={props} />
+            </div>
+        }
+
+        const appProps = {
+            hello: 'world'
+        }
+        root.render(<App
+            {...appProps}
+            $inner:_use = {<div>hello world</div>}
+        />)
+        expect(rootEl.querySelector('div')!.textContent).toBe('hello world')
+    })
 })
