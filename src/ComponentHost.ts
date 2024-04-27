@@ -99,6 +99,7 @@ export class ComponentHost implements Host{
                     assert(false, `unsupported config item: ${itemName}`)
                 } else if( itemProp.endsWith('_') ) {
                     // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
+                    if (!this.itemConfig[itemName].propMergeHandles) this.itemConfig[itemName].propMergeHandles = {}
                     this.itemConfig[itemName].propMergeHandles![itemProp.slice(0, -1)] = value
 
                 } else {
