@@ -83,3 +83,10 @@ export function withPreventDefault<T extends Event>(handle: (e: T) => any) {
         handle(e)
     }
 }
+
+export function withStopPropagation<T extends Event>(handle: (e: T) => any) {
+    return (e: T) => {
+        e.stopPropagation()
+        handle(e)
+    }
+}
