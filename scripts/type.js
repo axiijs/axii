@@ -14,7 +14,8 @@ declare global {
             // pass props to an element inside component
             [key: \`$\${string}:\${string}\`]: any;
             ref?: any
-            rectRef?: any
+            // for test usage
+            __this?: any
         }
         interface ElementChildrenAttribute {
             children: {}; // specify children name to use

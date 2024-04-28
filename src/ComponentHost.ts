@@ -61,6 +61,7 @@ export class ComponentHost implements Host{
     public children: any
     public frame?: ManualCleanup[] = []
     public name: string
+    public exposed: {[k:string]:any} = {}
     public renderContext?: RenderContext
     deleteLayoutEffectCallback: () => void
     constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
@@ -256,6 +257,18 @@ export class ComponentHost implements Host{
         return finalProps
     }
     attachRef(ref: RefObject|RefFn) {
+        const refValue = {
+            ...this.exposed,
+            refs: this.refs
+        }
+
+        if (typeof ref === 'function') {
+            ref(refValue)
+        } else {
+            ref.current = refValue
+        }
+    }
+    attachThis(ref: RefObject|RefFn) {
         if (typeof ref === 'function') {
             ref(this)
         } else {
@@ -310,6 +323,20 @@ export class ComponentHost implements Host{
 
         return stateValue
     }
+    expose = (value:any, name?: string) => {
+        if (typeof value === 'object' && name === undefined) {
+            // kv 形式的 expose
+            Object.assign(this.exposed, value)
+        } else if( typeof name === 'string'){
+            // 单个 expose
+            this.exposed[name] = value
+        }
+
+        return value
+    }
+    onCleanup = (callback: () => any) => {
+        this.destroyCallback.add(callback)
+    }
     render(): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
@@ -330,7 +357,8 @@ export class ComponentHost implements Host{
             createRef: this.createRef,
             createRxRef: this.createRxRef,
             createStateFromRef: this.createStateFromRef,
-            onCleanup: (callback: () => any) => this.destroyCallback.add(callback)
+            onCleanup: this.onCleanup,
+            expose: this.expose
         }
 
         const {ref: refProp, ...componentProps} = this.props
@@ -351,6 +379,10 @@ export class ComponentHost implements Host{
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.props.ref) {
             this.attachRef(this.props.ref)
+        }
+        // for test use
+        if (this.props.__this) {
+            this.attachThis(this.props.__this)
         }
 
         this.effects.forEach(effect => {

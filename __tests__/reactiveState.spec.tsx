@@ -67,7 +67,7 @@ describe('ref', () => {
             )
         }
 
-        root.render(<App ref={appRef}/>)
+        root.render(<App __this={appRef}/>)
 
         expect(rootEl.innerText).toBe('0')
         const lastAppRef = appRef()

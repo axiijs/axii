@@ -415,6 +415,32 @@ describe('component ref', () => {
         expect(innerRef).toBe(null)
     })
 
+    test('ref with exposed values in component', () => {
+        let innerRef: any
+        let clicked = 0
+        function Child({}, {createElement, expose}: RenderContext) {
+            const onClick=expose(() => {
+                clicked += 1
+            }, 'click')
+
+            return <div id="clickTarget" onClick={onClick}></div>
+        }
+
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <Child ref={(ref:any)=>innerRef = ref}/>
+            </div>
+        }
+
+        root.render(<App/>)
+        document.getElementById('clickTarget')!.click()
+        expect(clicked).toBe(1)
+
+        innerRef.click()
+        expect(clicked).toBe(2)
+
+    })
+
 })
 
 

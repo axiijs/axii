@@ -28,6 +28,7 @@ export type RenderContext = {
     createRef: () => RefObject,
     createRxRef: () => RefObject,
     createStateFromRef: <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any)=>StateFromRef<T>,
+    expose: <T>(value: T, name?: string) => T,
 }
 
 export type Component = {
