@@ -3,7 +3,7 @@ import {createContext} from "./ContextProvider.js";
 import {RenderContext} from "./types.js";
 import PropTypes from "./propTypes.js";
 
-type FormProps = {
+export type FormProps = {
     name: string,
     // delegate 所有的 onChange 的 item
     onChange?: (values: any) => void
