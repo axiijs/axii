@@ -18,6 +18,7 @@ export type RenderContext = {
     Fragment: typeof Fragment,
     useLayoutEffect: (arg: EffectHandle) => void,
     useEffect: (arg: EffectHandle) => void,
+    onCleanup: (arg: () => any) => void,
     refs: {
         [k: string]: HTMLElement
     },

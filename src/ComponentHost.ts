@@ -329,7 +329,8 @@ export class ComponentHost implements Host{
             createPortal: this.createPortal,
             createRef: this.createRef,
             createRxRef: this.createRxRef,
-            createStateFromRef: this.createStateFromRef
+            createStateFromRef: this.createStateFromRef,
+            onCleanup: (callback: () => any) => this.destroyCallback.add(callback)
         }
 
         const {ref: refProp, ...componentProps} = this.props
