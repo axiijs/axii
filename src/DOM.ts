@@ -95,16 +95,21 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         }
         const styles = Array.isArray(value) ? value : [value]
         styles.forEach(style => {
-            if (typeof style !== 'object') assert(false, 'style can only be object, string style is deprecated')
-            each(style, (v, k) => {
-                if (v === undefined) {
-                    // @ts-ignore
-                    node.style[k] = ''
-                } else {
-                    // @ts-ignore
-                    node.style[k] = typeof v === 'number' && AUTO_ADD_PX_STYLE.test(k) ? (`${v}px`) : v
-                }
-            })
+            if (typeof style === 'string') {
+                node.style.cssText = style
+            } else  if (typeof style === 'object') {
+                each(style, (v, k) => {
+                    if (v === undefined) {
+                        // @ts-ignore
+                        node.style[k] = ''
+                    } else {
+                        // @ts-ignore
+                        node.style[k] = typeof v === 'number' && AUTO_ADD_PX_STYLE.test(k) ? (`${v}px`) : v
+                    }
+                })
+            } else {
+                assert(false, 'style can only be string or object.')
+            }
         })
         return
     }
