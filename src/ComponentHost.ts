@@ -149,6 +149,8 @@ export class ComponentHost implements Host{
             })
         }
 
+        assert(name !=='self', '"self" is reserved, please use another element name.')
+
         // 支持 use 里面直接传入 HTMLElement 覆写整个节点
         if (name && this.itemConfig[name]?.use && this.itemConfig[name]?.use instanceof Element) {
             return this.itemConfig[name]!.use as HTMLElement
@@ -363,6 +365,7 @@ export class ComponentHost implements Host{
 
         const getFrame = ReactiveEffect.collectEffect()
         const finalComponentProps = {
+            ...(this.type.boundProps || {}),
             ...(this.type.propTypes ? this.handleProps(this.type.propTypes, componentProps) : componentProps),
             children: this.children
         }
@@ -472,3 +475,12 @@ export class DataContext{
 }
 
 export const N_ATTR = '__nativeAttrs'
+
+export function bindProps(Component: Component, props: Props,) {
+    const ComponentWithProps = Component.bind(null)
+    ComponentWithProps.boundProps = {
+        ...(ComponentWithProps.boundProps||{}),
+        ...props
+    }
+    return ComponentWithProps
+}

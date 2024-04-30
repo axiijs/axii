@@ -1,6 +1,6 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
-import {createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
+import {bindProps, createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
 import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import {ComponentHost} from "../src/ComponentHost.js";
@@ -511,5 +511,26 @@ describe('component propTypes', () => {
         root.render(<App rxListData={[4,5,6]}/>)
         expect(innerProps.atomData()).toBe('data0')
         expect(innerProps.rxListData.data).toEqual([4,5,6])
+    })
+
+
+    test('bindProps should work',() => {
+        let innerProps: any
+        function RawApp(props, {createElement}) {
+            innerProps = props
+            return <div>
+            </div>
+        }
+
+        const App = bindProps(RawApp, {
+            name: 'hello',
+            value: 'world'
+        })
+
+        root.render(<App another={[4,5,6]} value={'rewrite'}/>)
+
+        expect(innerProps.name).toBe('hello')
+        expect(innerProps.value).toBe('rewrite')
+        expect(innerProps.another).toEqual([4,5,6])
     })
 })

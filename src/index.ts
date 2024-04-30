@@ -9,7 +9,7 @@ export * from './ref.js'
 export * from './Portal.js'
 export * from './Form.js'
 export * from './common.js'
-export {N_ATTR} from './ComponentHost.js'
+export * from './ComponentHost.js'
 
 
 export * from 'data0'

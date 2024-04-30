@@ -33,7 +33,8 @@ export type RenderContext = {
 
 export type Component = {
     (props: any, injectHandles: RenderContext): JSXElement,
-    propTypes?: PropTypes
+    propTypes?: PropTypes,
+    boundProps?: {[k: string]: any}
 }
 
 
