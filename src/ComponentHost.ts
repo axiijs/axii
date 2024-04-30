@@ -64,7 +64,7 @@ export class ComponentHost implements Host{
     public exposed: {[k:string]:any} = {}
     public renderContext?: RenderContext
     deleteLayoutEffectCallback: () => void
-    constructor({ type, props = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+    constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
             ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
         }
@@ -73,6 +73,7 @@ export class ComponentHost implements Host{
         this.type = type
         this.props = {}
 
+        const props = Object.assign({}, ...this.evaluateBoundProps(), inputProps) as Props
         Object.entries(props).forEach(([key, value]) => {
             if (key === INNER_CONFIG_PROP) {
                 this.itemConfig = value
@@ -126,6 +127,14 @@ export class ComponentHost implements Host{
     // CAUTION innerHost 可能是动态的，所以 element 也可能会变，因此每次都要实时去读
     get element() : HTMLElement|Comment|SVGElement|Text {
         return this.innerHost?.element || this.placeholder
+    }
+    evaluateBoundProps() {
+        return (this.type.boundProps || []).map(b => {
+            if (typeof b === 'function') {
+                return b()
+            }
+            return b
+        })
     }
 
     createHTMLOrSVGElement = (isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
@@ -192,11 +201,6 @@ export class ComponentHost implements Host{
             if (thisItemConfig.children) {
                 finalChildren = thisItemConfig.children
             }
-
-            // 5. 支持继续对组件继续透传 config
-            if (isComponent && thisItemConfig.config) {
-                finalProps = {...finalProps, ...thisItemConfig.config}
-            }
         }
 
         const finalType = (this.itemConfig[name]?.use || type) as Component|string
@@ -216,6 +220,12 @@ export class ComponentHost implements Host{
 
             componentProps[N_ATTR] = finalProps
             finalProps = componentProps
+        }
+
+        // 5. 如果 finalType 是函数，支持继续对组件继续透传 config
+        //  CAUTION 注意这里使用 finalType 判断的，因为可能用 Component 重写了普通 element
+        if (typeof finalType === 'function' && thisItemConfig?.config) {
+            finalProps = {...finalProps, ...thisItemConfig.config}
         }
 
         // 收集 component ref
@@ -370,7 +380,6 @@ export class ComponentHost implements Host{
 
         const getFrame = ReactiveEffect.collectEffect()
         const finalComponentProps = {
-            ...(this.type.boundProps || {}),
             ...(this.type.propTypes ? this.handleProps(this.type.propTypes, componentProps) : componentProps),
             children: this.children
         }
@@ -483,9 +492,6 @@ export const N_ATTR = '__nativeAttrs'
 
 export function bindProps(Component: Component, props: Props,) {
     const ComponentWithProps = Component.bind(null)
-    ComponentWithProps.boundProps = {
-        ...(ComponentWithProps.boundProps||{}),
-        ...props
-    }
+    ComponentWithProps.boundProps = ensureArray(ComponentWithProps.boundProps).concat(props)
     return ComponentWithProps
 }
