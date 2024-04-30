@@ -516,7 +516,7 @@ describe('component propTypes', () => {
 
     test('bindProps should work',() => {
         let innerProps: any
-        function RawApp(props, {createElement}) {
+        function RawApp(props:any, {createElement}: RenderContext) {
             innerProps = props
             return <div>
             </div>
