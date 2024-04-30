@@ -408,30 +408,30 @@ export type AllowFixed<T> = T extends RxList<infer U> ? U[]|T :
 
 type OmitNever<T> = { [K in keyof T as T[K] extends never ? never : K]: T[K] }
 
-type ToAllowFixedPropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
+type FixedCompatiblePropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
     [K in keyof T]: T[K]['required'] extends true ?
         never :
         AllowFixed<T[K]['valueType']>
 }>>
 
-type ToAllowFixedPropsTypeRequired<T extends PropTypes> = OmitNever<{
+type FixedCompatiblePropsTypeRequired<T extends PropTypes> = OmitNever<{
     [K in keyof T]: T[K]['required'] extends true ?
         AllowFixed<T[K]['valueType']> :
         never
 }>
 
-export type ToAllowFixedPropsType<T extends PropTypes> = ToAllowFixedPropsTypeOptional<T> & ToAllowFixedPropsTypeRequired<T>
+export type FixedCompatiblePropsType<T extends PropTypes> = FixedCompatiblePropsTypeOptional<T> & FixedCompatiblePropsTypeRequired<T>
 
-type ToPropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
+type PropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
     [K in keyof T]: T[K]['required'] extends true ?
         never :
         T[K]['valueType']
 }>>
 
-type ToPropsTypeRequired<T extends PropTypes> = OmitNever<{
+type PropsTypeRequired<T extends PropTypes> = OmitNever<{
     [K in keyof T]: T[K]['required'] extends true ?
         T[K]['valueType'] :
         never
 }>
 
-export type ToPropsType<T extends PropTypes> = ToPropsTypeOptional<T> & ToPropsTypeRequired<T>
+export type PropsType<T extends PropTypes> = PropsTypeOptional<T> & PropsTypeRequired<T>

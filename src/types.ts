@@ -44,5 +44,5 @@ export type ComponentNode = {
     children: any
 }
 
-export { type ToAllowFixedPropsType, type PropTypes, type PropType, type ToPropsType } from './propTypes.js'
+export { type FixedCompatiblePropsType, type PropTypes, type PropType, type PropsType } from './propTypes.js'
 export { type StateFromRef, type StateTransformer } from './ComponentHost.js'

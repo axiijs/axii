@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { createElement, PropType, ToAllowFixedPropsType, PropTypes, ToPropsType} from "@framework";
+import { createElement, PropType, FixedCompatiblePropsType, PropTypes, PropsType} from "@framework";
 import { assertType } from 'vitest'
 import {Atom, atom, RxList} from "data0";
 
@@ -16,8 +16,8 @@ const AppPropTypes = {
 assertType<PropType<number, {}>>(AppPropTypes.a)
 assertType<typeof AppPropTypes.d>(null as unknown as never)
 
-function App(props: ToAllowFixedPropsType<typeof AppPropTypes>) {
-    const {b, d} = props as ToPropsType<typeof App.propTypes>
+function App(props: FixedCompatiblePropsType<typeof AppPropTypes>) {
+    const {b, d} = props as PropsType<typeof App.propTypes>
     return <div>
         <span>{b}</span>
         <span>{d}</span>
@@ -45,9 +45,9 @@ assertType<typeof App.propTypes>({
 })
 
 assertType<false>(App.propTypes.a.required)
-assertType<ToAllowFixedPropsType<typeof App.propTypes>>({a: 1, b: "1", c: ["1"]})
-assertType<ToAllowFixedPropsType<typeof App.propTypes>>({a: 1, b: atom("1")})
-assertType<ToAllowFixedPropsType<typeof App.propTypes>>({b:"2", c: new RxList(["1"])})
+assertType<FixedCompatiblePropsType<typeof App.propTypes>>({a: 1, b: "1", c: ["1"]})
+assertType<FixedCompatiblePropsType<typeof App.propTypes>>({a: 1, b: atom("1")})
+assertType<FixedCompatiblePropsType<typeof App.propTypes>>({b:"2", c: new RxList(["1"])})
 
 
 const app = <App a={1} b={atom('a')} as="root"/>
