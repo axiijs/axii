@@ -113,8 +113,6 @@ export class ComponentHost implements Host{
                 this.props[key] = value
             }
         })
-
-
         this.children = children
 
         this.deleteLayoutEffectCallback = pathContext.root.on('attach', this.runLayoutEffect)
@@ -390,6 +388,11 @@ export class ComponentHost implements Host{
             // 也支持 async function return promise，只不过不做处理
             if (typeof handle === 'function') this.destroyCallback.add(handle)
         })
+
+        // 已经 root attach 了，动态生成的节点，需要手动触发 layoutEffect。因为没有 attach 事件了。
+        if (this.pathContext.root.attached) {
+            this.runLayoutEffect()
+        }
     }
     runLayoutEffect = () => {
         this.layoutEffects.forEach(layoutEffect => {

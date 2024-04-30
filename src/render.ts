@@ -9,6 +9,7 @@ export type Root = {
     element: HTMLElement,
     pathContext: PathContext,
     host: Host|undefined,
+    attached: boolean
     render: (componentOrEl: JSX.Element|ComponentNode|Function) => Host,
     destroy: () => void,
     on: (event: string, callback: EventCallback) => () => void,
@@ -27,6 +28,7 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
         element,
         pathContext,
         host: undefined as Host|undefined,
+        attached: false,
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
             const placeholder = document.createComment('root')
             element.appendChild(placeholder)
@@ -35,6 +37,7 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
             if(document.body.contains(element)) {
                 root.dispatch('attach')
+                root.attached = true
             }
             return root.host
         },
@@ -42,6 +45,7 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             eventCallbacks.clear()
             root.dispatch('detach')
             root.host?.destroy()
+            root.attached = false
         },
         // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
         on(event: string, callback: EventCallback) {
