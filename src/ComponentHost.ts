@@ -23,7 +23,7 @@ function ensureArray(o: any) {
 
 // CAUTION 为了性能，直接 assign。
 //  只有事件监听和 ref 被认为是外层需要 merge，其他都是否该
-function combineProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
+export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     Object.entries(newProps).forEach(([key, value]) => {
         const originValue = origin[key]
         if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style')) {
@@ -137,18 +137,9 @@ export class ComponentHost implements Host{
                 })
         }
 
-        let name = ''
-        if (rawProps) {
-            Object.keys(rawProps).some(key => {
-                if (key === 'as') {
-                    name = rawProps[key]
-                    // 这里为了性能直接 delete 了。
-                    delete rawProps[key]
-                    return true
-                }
-            })
-        }
-
+        const name = rawProps?.['as']
+        // 为了性能，直接操作了 rawProps
+        delete rawProps?.['as']
         assert(name !=='self', '"self" is reserved, please use another element name.')
 
         // 支持 use 里面直接传入 HTMLElement 覆写整个节点
@@ -156,71 +147,85 @@ export class ComponentHost implements Host{
             return this.itemConfig[name]!.use as HTMLElement
         }
 
+        const selfMergeProps:{[k:string|symbol]:any} = {}
 
-        let finalProps:{[k:string|symbol]:any} = rawProps
         let finalChildren = children
-        if (name && this.itemConfig[name]) {
 
+        // 整理 props
+        for(const key in rawProps) {
+            if (key.startsWith('$self:')) {
+                // 支持自己 props 的 merge，这是因为有的组件包装了其他组件，想 merge props 而不是替换。
+                // 写成 $self 的形式默认就是 merge，不用再手动使用 mergeProps 了，可读性也更强。
+                selfMergeProps[key.slice(6)] = rawProps[key]
+                delete rawProps[key]
+            }
+        }
+
+        // 支持自己 props 的 merge
+        let finalProps:{[k:string|symbol]:any} = mergeProps(rawProps, selfMergeProps)
+
+        const thisItemConfig = this.itemConfig[name]
+        if (name && thisItemConfig) {
             // 为了性能，又直接操作了 rawProps
-            const thisItemConfig = this.itemConfig[name]
             // 1. 支持正对当前节点的 props 调整
             if (thisItemConfig.props) {
                 // CAUTION 普通节点，这里默认适合原来的 props 合并，除非用户想要自己的处理
                 if (isComponent) {
                     finalProps = {...rawProps, ...thisItemConfig.props}
                 } else {
-                    finalProps = combineProps(rawProps, thisItemConfig.props)
+                    finalProps = mergeProps(rawProps, thisItemConfig.props)
                 }
             }
-
+            // 2. 可以针对某个 prop 单独进行重写
             if(thisItemConfig.propMergeHandles) {
                 Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handle]) => {
-                    finalProps[key] = handle(finalProps[key])
+                    finalProps[key] = handle(finalProps[key], finalProps)
                 })
             }
 
-            // 整体重写
+            // 3. 可以正对 props 进行整体重写
             if (thisItemConfig.propsMergeHandle) {
                 finalProps = thisItemConfig.propsMergeHandle(finalProps)
             }
 
-            // 2. 支持 children 和 configure 同时存在
+            // 4. 支持对 children 进行重写
             if (thisItemConfig.children) {
                 finalChildren = thisItemConfig.children
             }
 
-            if (thisItemConfig.config && isComponent) {
-                // 穿透给子组件的 config
+            // 5. 支持继续对组件继续透传 config
+            if (isComponent && thisItemConfig.config) {
                 finalProps = {...finalProps, ...thisItemConfig.config}
             }
         }
 
         const finalType = (this.itemConfig[name]?.use || type) as Component|string
 
+        // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxx 标记的属性，转移到 props 上
+        //  而原来的 attribute 要转移到 N_ATTR 上，这样组件在内部还能重新利用起来。因为上面可能有 ref 等属性，不用起来会影响原来的功能。
         if(!isComponent && typeof finalType === "function") {
-            // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxxx 标记的属性，转移到 props 上
             const propKeys = Object.keys(finalProps || {})
-            const nativeAttrs:{[k:string]:any} = {}
 
+            const componentProps:{[k:string]:any} = {}
             propKeys.forEach(key => {
                 if (key.startsWith('prop:')) {
-                    finalProps[key.slice(5)] = finalProps[key]
-                } else {
-                    nativeAttrs[key] = finalProps[key]
+                    componentProps[key.slice(5)] = finalProps[key]
+                    delete finalProps[key]
                 }
-                delete finalProps[key]
             })
 
-            finalProps[N_ATTR] = nativeAttrs
-            // CAUTION 不能 enumerable 意味着不能 spread 传递，但是可以直接读取。
+            componentProps[N_ATTR] = finalProps
+            finalProps = componentProps
         }
 
+        // 收集 component ref
         if (name && isComponent) {
             finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
         }
 
         const el = isSVG ? createSVGElement(finalType as string, finalProps, ...finalChildren) : createElement(finalType, finalProps, ...finalChildren)
 
+        // 收集普通  element 的 ref
         if (name && !isComponent) {
             this.refs[name] = el
         }

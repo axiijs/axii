@@ -121,4 +121,20 @@ describe('component configuration', () => {
         />)
         expect(rootEl.querySelector('div')!.textContent).toBe('hello world')
     })
+
+    test('use $self to merge props', () => {
+        function App(props:any, {createElement}: RenderContext) {
+            const {children, ...otherProps} = props
+            return <div {...otherProps} $self:style={{color:'blue'}}>
+            </div>
+        }
+
+        root.render(<App
+            style={{fontSize:24}}
+        />)
+
+        const style=rootEl.querySelector('div')!.style
+        expect(style.color).toBe('blue')
+        expect(style.fontSize).toBe('24px')
+    })
 })
