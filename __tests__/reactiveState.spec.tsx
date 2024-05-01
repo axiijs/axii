@@ -56,7 +56,7 @@ describe('ref', () => {
 
         function App({}, {createElement,  createStateFromRef}: RenderContext) {
 
-            const portalRectRef = createStateFromRef<SizeObject>(reactiveSize,undefined, portalContainer)
+            const portalRectRef = createStateFromRef<SizeObject>(reactiveSize, portalContainer)
 
             return (
                 <div>{portalRectRef()?.width}</div>

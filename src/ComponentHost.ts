@@ -42,7 +42,7 @@ export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}
     return origin
 }
 
-export type StateTransformer<T> = (target:any, value:Atom<T|null>, options: any) => (() => any)|undefined
+export type StateTransformer<T> = (target:any, value:Atom<T|null>) => (() => any)|undefined
 export type StateFromRef<T> = Atom<T|null> & { ref:(target:any) => any }
 
 const INNER_CONFIG_PROP = '$$config'
@@ -297,7 +297,7 @@ export class ComponentHost implements Host{
        }
     }
     cleanupsOfExternalTarget = new Set<() => void>()
-    createStateFromRef = <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any):StateFromRef<T> =>  {
+    createStateFromRef = <T>(transform:StateTransformer<T>, externalTarget?: any):StateFromRef<T> =>  {
         let lastCleanup: (() => void)|undefined = undefined
 
         const ref = (target:any) => {
@@ -308,7 +308,7 @@ export class ComponentHost implements Host{
             lastCleanup?.()
 
             if (target !== null) {
-                lastCleanup = transform(target, stateValue, options)
+                lastCleanup = transform(target, stateValue)
 
                 if (externalTarget && lastCleanup) {
                     this.cleanupsOfExternalTarget.add(lastCleanup)

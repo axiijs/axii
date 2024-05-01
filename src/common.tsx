@@ -3,7 +3,6 @@ import {shallowEqual, assert} from "./util.js";
 
 export const ModalContext = Symbol('ModalContext')
 
-
 export type PositionObject = {
     top: number
     left: number
@@ -24,14 +23,34 @@ type PositionRecalculateInterval = {
 
 type ReactivePositionOptions = 'requestAnimationFrame' | 'requestIdleCallback' | 'manual' | PositionRecalculateInterval |PositionRecalculateEvent[]
 
-export function reactivePosition(elOrWindow: HTMLElement|Window, value: Atom<PositionObject|null>, options: ReactivePositionOptions ) {
-    if (elOrWindow === window) {
+export function createReactivePosition(options: ReactivePositionOptions) {
+    return (elOrWindow: HTMLElement|Window, value: Atom<PositionObject|null>, ) => {
+        if (elOrWindow === window) {
+            const assignRect = () => {
+                const rect = {
+                    right: window.innerWidth,
+                    bottom: window.innerHeight,
+                    width: window.innerWidth,
+                    height: window.innerHeight
+                }
+                if(!shallowEqual(rect, value())) {
+                    value(rect)
+                }
+                return rect
+            }
+
+            assignRect()
+            return
+        }
+
+        const el = elOrWindow as HTMLElement
         const assignRect = () => {
+            const boundingRect = el.getBoundingClientRect()
             const rect = {
-                right: window.innerWidth,
-                bottom: window.innerHeight,
-                width: window.innerWidth,
-                height: window.innerHeight
+                top: boundingRect.top,
+                left: boundingRect.left,
+                right: boundingRect.right,
+                bottom: boundingRect.bottom,
             }
             if(!shallowEqual(rect, value())) {
                 value(rect)
@@ -39,59 +58,38 @@ export function reactivePosition(elOrWindow: HTMLElement|Window, value: Atom<Pos
             return rect
         }
 
-        assignRect()
-        return
-    }
+        if (Array.isArray(options)) {
+            const unlisten:Array<() => any>= []
+            options.forEach(event => {
+                const listener = () => assignRect()
+                event.target.addEventListener(event.event, listener)
+                unlisten.push(() => event.target.removeEventListener(event.event, listener))
+            })
 
-    const el = elOrWindow as HTMLElement
-    const assignRect = () => {
-        const boundingRect = el.getBoundingClientRect()
-        const rect = {
-            top: boundingRect.top,
-            left: boundingRect.left,
-            right: boundingRect.right,
-            bottom: boundingRect.bottom,
-        }
-        if(!shallowEqual(rect, value())) {
-            value(rect)
-        }
-        return rect
-    }
+            return () => {
+                unlisten.forEach(fn => fn())
+            }
 
-    if (Array.isArray(options)) {
-        const unlisten:Array<() => any>= []
-        options.forEach(event => {
-            const listener = () => assignRect()
-            event.target.addEventListener(event.event, listener)
-            unlisten.push(() => event.target.removeEventListener(event.event, listener))
-        })
-
-        return () => {
-            unlisten.forEach(fn => fn())
+        } else if (options === 'requestAnimationFrame') {
+            const id = window.requestAnimationFrame(assignRect)
+            return () => {
+                window.cancelAnimationFrame(id)
+            }
+        } else if (options === 'requestIdleCallback') {
+            const id = window.requestIdleCallback(assignRect)
+            return () => {
+                window.cancelIdleCallback(id)
+            }
+        } else if((options as PositionRecalculateInterval).type === 'interval') {
+            const id = window.setInterval(assignRect, (options as PositionRecalculateInterval).duration || 1000)
+            return () => {
+                window.clearInterval(id)
+            }
+        } else {
+            assert(false, 'invalid options.position')
         }
-
-    } else if (options === 'requestAnimationFrame') {
-        const id = window.requestAnimationFrame(assignRect)
-        return () => {
-            window.cancelAnimationFrame(id)
-        }
-    } else if (options === 'requestIdleCallback') {
-        const id = window.requestIdleCallback(assignRect)
-        return () => {
-            window.cancelIdleCallback(id)
-        }
-    } else if((options as PositionRecalculateInterval).type === 'interval') {
-        const id = window.setInterval(assignRect, (options as PositionRecalculateInterval).duration || 1000)
-        return () => {
-            window.clearInterval(id)
-        }
-    } else {
-        assert(false, 'invalid options.position')
     }
 }
-
-
-
 
 export type SizeObject = {
     width: number
