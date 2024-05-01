@@ -34,6 +34,7 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             element.appendChild(placeholder)
             root.host = createHost(componentOrEl, placeholder, pathContext)
             root.host.render()
+            debugger
             // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
             if(document.body.contains(element)) {
                 root.dispatch('attach')

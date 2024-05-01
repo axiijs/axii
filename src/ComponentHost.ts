@@ -63,7 +63,7 @@ export class ComponentHost implements Host{
     public name: string
     public exposed: {[k:string]:any} = {}
     public renderContext?: RenderContext
-    deleteLayoutEffectCallback: () => void
+    deleteLayoutEffectCallback?: () => void
     constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
             ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
@@ -116,7 +116,6 @@ export class ComponentHost implements Host{
         })
         this.children = children
 
-        this.deleteLayoutEffectCallback = pathContext.root.on('attach', this.runLayoutEffect)
     }
     get typeId() {
         return ComponentHost.typeIds.get(this.type)!
@@ -409,6 +408,8 @@ export class ComponentHost implements Host{
         // 已经 root attach 了，动态生成的节点，需要手动触发 layoutEffect。因为没有 attach 事件了。
         if (this.pathContext.root.attached) {
             this.runLayoutEffect()
+        } else {
+            this.deleteLayoutEffectCallback = this.pathContext.root.on('attach', this.runLayoutEffect)
         }
     }
     runLayoutEffect = () => {
@@ -441,7 +442,7 @@ export class ComponentHost implements Host{
             this.placeholder.remove()
         }
 
-        this.deleteLayoutEffectCallback()
+        this.deleteLayoutEffectCallback?.()
     }
 }
 

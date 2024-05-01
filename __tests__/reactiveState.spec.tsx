@@ -3,17 +3,13 @@
 import {beforeEach, describe, expect, test} from "vitest";
 import {createElement, createRoot, reactiveSize, RenderContext, SizeObject} from "@framework";
 import {atom} from "data0";
-import {Window} from 'happy-dom'
 
 describe('ref', () => {
 
     let root: ReturnType<typeof createRoot>
     let rootEl: any
     let portalContainer: any
-    let window: Window
     beforeEach(() => {
-        window = new Window({ width: 768, height: 1024})
-        const document = window.document
         document.body.innerHTML = ''
         rootEl = document.createElement('div')
         portalContainer = document.createElement('div')
@@ -36,7 +32,7 @@ describe('ref', () => {
 
         root.render(<App />)
 
-        await window.happyDOM.waitUntilComplete()
+        // await window.happyDOM.waitUntilComplete()
 
         expect(size()).not.toBeNull()
         expect(size()!.width).not.toBeNull()

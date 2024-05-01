@@ -150,6 +150,13 @@ export class StaticHost implements Host{
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.reactiveHosts!.forEach(host => host.render())
+
+        if(this.pathContext.root.attached) {
+            this.attachRefs()
+        } else {
+            debugger
+            this.pathContext.root.on('attach', this.attachRefs)
+        }
     }
     collectInnerHost() {
         const result = this.source
@@ -200,6 +207,11 @@ export class StaticHost implements Host{
         if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
         const {  refHandles } = result as ExtendedElement
         this.refHandles = refHandles
+    }
+    attachRefs= () =>{
+        this.refHandles?.forEach(({ handle, el }: RefHandleInfo) => {
+            createElement.attachRef(el, handle)
+        })
     }
     destroy(parentHandle?:boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {

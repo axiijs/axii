@@ -222,6 +222,7 @@ type UnhandledAttrInfo = {
 }
 
 export type RefHandleInfo = {
+    el: any,
     handle: RefFn | RefObject,
     path: number[]
 }
@@ -281,8 +282,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     //  否则会出现  Select value 自动变成 option 第一个的情况。
     if (props) {
         if (props.ref) {
-            createElement.attachRef(container as HTMLElement, props.ref)
-            refHandles.push({handle: props.ref, path: []})
+            // createElement.attachRef(container as HTMLElement, props.ref)
+            refHandles.push({handle: props.ref, path: [], el: container as HTMLElement})
             delete props.ref
         }
 
