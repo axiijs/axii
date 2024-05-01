@@ -344,7 +344,7 @@ createElement.attachRef = function (el: HTMLElement, ref: (RefFn | RefObject) | 
 
     if (typeof ref === 'function') {
         ref(el)
-    } else if (typeof ref === 'object' && ref.hasOwnProperty('current')) {
+    } else if (typeof ref === 'object') {
         ref.current = el
     } else {
         assert(false, 'ref should be function or object with current property')
