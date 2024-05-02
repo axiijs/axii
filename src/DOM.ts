@@ -439,7 +439,7 @@ type Unit = 'px' | 'rem' | 'em' | 'percent'
 type CalcType = 'add' | 'sub' | 'mul' | 'div' | 'origin'
 type CalcItem = {value:number|StyleSize, unit?:Unit, type: CalcType}
 export class StyleSize {
-    public calcItems: CalcItem[] = []
+
     get unit(): Unit|'mixed' {
         const originUnit = this.calcItems[0].unit!
         return this.calcItems.every(item => (!item.unit || (item.value instanceof StyleSize ? item.value.unit : item.unit) === originUnit)) ?
@@ -467,7 +467,7 @@ export class StyleSize {
             }
         }, 0)
     }
-    constructor(value: number, unit: Unit = 'px') {
+    constructor(value: number, unit: Unit = 'px', public calcItems: CalcItem[] = []) {
         this.calcItems.push({value, unit, type: 'origin'})
     }
     getItemString(item: CalcItem, withParen = false) {
@@ -514,6 +514,9 @@ export class StyleSize {
             // 由 calc 函数来算
             return `calc(${this.toCalcString()})`
         }
+    }
+    clone() {
+        return new StyleSize(this.calcItems[0].value as number, this.calcItems[0].unit, [...this.calcItems])
     }
     valueOf() {
         return this.toString()
