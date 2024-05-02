@@ -106,5 +106,13 @@ describe('component render', () => {
 
         const size6 = size5.mul(2)
         expect(size6.toString()).toBe('calc((2.5rem + 2px) * 2)')
+
+        const sizeA = new StyleSize(1, 'rem')
+        const sizeB = new StyleSize(2, 'rem')
+        sizeB.sub(1, 'px')
+        expect(sizeB.toString()).toBe('calc(2rem - 1px)')
+
+        sizeA.add(sizeB)
+        expect(sizeA.toString()).toBe('calc(1rem + (2rem - 1px))')
     })
 })

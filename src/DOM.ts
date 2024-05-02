@@ -439,103 +439,64 @@ type Unit = 'px' | 'rem' | 'em' | 'percent'
 type CalcType = 'add' | 'sub' | 'mul' | 'div' | 'origin'
 type CalcItem = {value:number|StyleSize, unit?:Unit, type: CalcType}
 export class StyleSize {
-
-    get unit(): Unit|'mixed' {
-        const originUnit = this.calcItems[0].unit!
-        return this.calcItems.every(item => (!item.unit || (item.value instanceof StyleSize ? item.value.unit : item.unit) === originUnit)) ?
-            originUnit :
-            'mixed'
-    }
-    get value(): number|undefined {
-        if (this.unit !== 'mixed') {
-            return this.getCalcItemValueResult(this.calcItems)
-        }
-    }
-    getCalcItemValueResult(items: CalcItem[]) {
-        return items.reduce((acc:number, item: CalcItem) => {
-            switch(item.type) {
-                case 'add':
-                    return acc + (item.value instanceof StyleSize ? item.value.value as number : item.value)
-                case 'sub':
-                    return acc - (item.value instanceof StyleSize ? item.value.value as number : item.value)
-                case 'mul':
-                    return acc * (item.value as number)
-                case 'div':
-                    return acc / (item.value as number)
-                case 'origin':
-                    return item.value as number
-            }
-        }, 0)
-    }
-    constructor(value: number, unit: Unit = 'px', public calcItems: CalcItem[] = []) {
-        this.calcItems.push({value, unit, type: 'origin'})
-    }
-    getItemString(item: CalcItem, withParen = false) {
-        if (!(item.value instanceof StyleSize)) {
-            return `${item.value}${item.unit}`
-        }
-
-        let result = item.value.toString()
-        if(withParen && item.value.unit === 'mixed') {
-            result = `(${result})`
-        }
-        return result
-    }
-    toCalcString() {
-        return this.calcItems.reduce((last: CalcItem|string, item) => {
-            if (typeof last === 'string' || (last.unit !== item.unit && item.unit)) {
-                const lastStr = typeof last === 'string'? `(${last})` : this.getItemString(last as CalcItem, true)
-
-                switch(item.type) {
-                    case 'add':
-                        return `${lastStr} + ${this.getItemString(item, true)}`
-                    case 'sub':
-                        return `${lastStr} - ${this.getItemString(item, true)}`
-                    case 'mul':
-                        return `${lastStr} * ${item.value}`
-                    case 'div':
-                        return `${lastStr} / ${item.value}`
-                    case 'origin':
-                        return `${item.value}${item.unit}`
-                }
-            } else {
-                return {
-                    value: this.getCalcItemValueResult([last as CalcItem, item]),
-                    unit: last.unit,
-                    type: 'origin'
-                } as CalcItem
-            }
-        }, {value: 0, unit: this.calcItems[0].unit} as CalcItem)
+    constructor(public value: number|string, public unit: Unit|'mixed' = 'px') {
     }
     toString(): string {
         if(this.unit !== 'mixed'){
-            return `${this.value}${this.calcItems[0].unit}`
+            return `${this.value}${this.unit}`
         } else {
             // 由 calc 函数来算
-            return `calc(${this.toCalcString()})`
+            return `calc(${this.value})`
         }
     }
     clone() {
-        return new StyleSize(this.calcItems[0].value as number, this.calcItems[0].unit, [...this.calcItems])
+        return new StyleSize(this.value, this.unit)
     }
     valueOf() {
         return this.toString()
     }
-    // 不支持 calc 部分的计算？？？
     mul(value: number) {
-        this.calcItems.push({value, type: 'mul'})
-        return this
-    }
-    add(value: number|StyleSize, unit: Unit = this.calcItems[0].unit!) {
-        this.calcItems.push({value, unit, type: 'add'})
-        return this
-    }
-    sub(value: number|StyleSize, unit: Unit = this.calcItems[0].unit!) {
-        this.calcItems.push({value, unit, type: 'sub'})
+        if (typeof this.value === 'number') {
+            this.value = this.value  * value
+        } else {
+            this.value = `(${this.value}) * ${value}`
+            this.unit = 'mixed'
+        }
         return this
     }
     div(value: number) {
-        this.calcItems.push({value, type: 'div'})
+        if (typeof this.value === 'number') {
+            this.value = this.value  / value
+        } else {
+            this.value = `(${this.value}) / ${value}`
+            this.unit = 'mixed'
+        }
+        return this
+    }
+    add(value: number|StyleSize, unit?: Unit) {
+        if (typeof this.value === 'number' && typeof value === 'number' && (!unit || unit === this.unit)) {
+            this.value = this.value + value
+        } else if(typeof this.value === 'number' && value instanceof StyleSize && this.unit === value.unit) {
+            this.value = this.value + (value.value as number)
+        } else {
+            const originStr = typeof this.value === 'number' ? `${this.value}${this.unit}` : `(${this.value})`
+            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : `(${value.value})`
+            this.value = `${originStr} + ${valueStr}`
+            this.unit = 'mixed'
+        }
+        return this
+    }
+    sub(value: number|StyleSize, unit?: Unit) {
+        if (typeof this.value === 'number' && typeof value === 'number' && (!unit || unit === this.unit)) {
+            this.value = this.value - value
+        } else if(typeof this.value === 'number' && value instanceof StyleSize && this.unit === value.unit) {
+            this.value = this.value - (value.value as number)
+        } else {
+            const originStr = typeof this.value === 'number' ? `${this.value}${this.unit}` : `(${this.value})`
+            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : `(${value.value})`
+            this.value = `${originStr} - ${valueStr}`
+            this.unit = 'mixed'
+        }
         return this
     }
 }
