@@ -1,10 +1,10 @@
 import {
-    AUTO_ADD_UNIT_ATTR, autoUnit,
     createElement,
     ExtendedElement,
     insertBefore,
     RefHandleInfo,
     setAttribute,
+    stringifyStyleValue,
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
@@ -69,13 +69,8 @@ class StyleManager {
         return Object.entries(styleObject).map(([key, value]) => {
 
             const property = key.replace(/([A-Z])/g, '-$1').toLowerCase()
-
             // value 是数字类型的 attr，自动加上 单位
-            if (typeof value === 'number' && AUTO_ADD_UNIT_ATTR.test(key)) {
-                return `${property}:${autoUnit(value)};`
-            } else {
-                return `${property}:${value};`
-            }
+            return `${property}:${stringifyStyleValue(property, value)};`
         }).join('\n')
     }
     update(hostPath: Host[], elementPath: number[], styleObject: StyleObject, el: ExtendedElement, isStatic: boolean = false) {
@@ -92,25 +87,31 @@ class StyleManager {
         el.classList.add(styleSheetId)
     }
     generateStyleContent(selector:string, styleObject: StyleObject) {
-        const valueKeys = Object.keys(styleObject).filter(key => typeof styleObject[key] !== 'object')
-        const nestedKeys = Object.keys(styleObject).filter(key => typeof styleObject[key] === 'object')
-        const valueStyleObject = Object.fromEntries(valueKeys.map(key => [key, styleObject[key]]))
+
+        const valueStyleObject = {...styleObject}
+        const nestedStyleEntries: [string, any][] = []
+        for(const key in valueStyleObject) {
+            if (typeof styleObject[key] === 'object' && !Array.isArray(styleObject[key])) {
+                nestedStyleEntries.push([key, styleObject[key]])
+            }
+        }
+
 
         const valueStyleContent = `${selector} {
 ${this.stringifyStyleObject(valueStyleObject)}
 }
 `
 
-        const nestedStyleContent: string = nestedKeys.map(key => {
+        const nestedStyleContent: string = nestedStyleEntries.map(([key, nestedObject]: [string, any]) => {
             // 支持 at-rules for media/container query
             if (key.startsWith('@')) {
                 return `${key} {
-    ${this.generateStyleContent(selector, styleObject[key])}
+    ${this.generateStyleContent(selector, nestedObject)}
 }`
             }
 
             const nestedClassName = /^(\s?)+&/.test(key) ? key.replace('&', selector) : `${selector} ${key}`
-            return this.generateStyleContent(nestedClassName, styleObject[key])
+            return this.generateStyleContent(nestedClassName, nestedObject)
         }).join('\n')
 
         return valueStyleContent + nestedStyleContent
@@ -154,7 +155,6 @@ export class StaticHost implements Host{
         if(this.pathContext.root.attached) {
             this.attachRefs()
         } else {
-            debugger
             this.pathContext.root.on('attach', this.attachRefs)
         }
     }

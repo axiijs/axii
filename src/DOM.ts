@@ -16,6 +16,25 @@ export function autoUnit(num: number|string) {
 
 export const MULTI_VALUE_ATTR = /^(transform|translate|scale|rotate|skew|boxShadow|textShadow|transition)/
 
+export function stringifyStyleValue(k:string, v: any): string {
+    if (v === undefined) {
+        return ''
+    }
+    if(Array.isArray(v)) {
+        // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
+        if (MULTI_VALUE_ATTR.test(k)) {
+            // attr like box-shadow
+            // 这里不可能是 StyleSize 所以不用 toString
+            return v.join(',')
+        } else {
+            // padding/margin
+            return v.map((i:any) => stringifyStyleValue(k, i)).join(' ')
+        }
+    }
+    // number/string/StyleSize
+    return typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v.toString()
+}
+
 
 // type WritablePropertyName = Exclude<keyof HTMLElement, keyof Readonly<HTMLElement> >
 /** Attempt to set a DOM property to the given value.
@@ -112,23 +131,8 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 node.style.cssText = style
             } else  if (typeof style === 'object') {
                 each(style, (v, k) => {
-                    if (v === undefined) {
-                        // @ts-ignore
-                        node.style[k] = ''
-                    } else if(Array.isArray(v)) {
-                        if (MULTI_VALUE_ATTR.test(k)) {
-                            // attr like box-shadow
-                            // @ts-ignore
-                            node.style[k] = v.join(',')
-                        } else {
-                            // padding/margin
-                            // @ts-ignore
-                            node.style[k] = v.map(v => typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v).join(' ')
-                        }
-                    } else {
-                        // @ts-ignore
-                        node.style[k] = typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v
-                    }
+                    // @ts-ignore
+                    node.style[k] = stringifyStyleValue(k, v)
                 })
             } else {
                 assert(false, 'style can only be string or object.')
@@ -332,8 +336,16 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 }
 
 
+function isStyleValue(value: any) {
+    return typeof value === 'string' || typeof value === 'number' || value instanceof StyleSize
+}
+
 function isSimpleStyleObject(value: any) {
-    return isPlainObject(value) && Object.entries(value).every(([k, v]) => /[a-zA-Z\-]+/.test(k) && typeof v === 'string' || typeof v === 'number')
+    // 排除了带 & 的 style, 让外部处理。
+    return isPlainObject(value) &&
+        Object.entries(value).every(([k, v]) =>
+            /[a-zA-Z\-]+/.test(k) && isStyleValue(v) || (Array.isArray(v) && v.every(isStyleValue))
+        )
 }
 
 // CAUTION 写到 createElement 上就是为了给外面根据自己需要覆盖的
@@ -420,4 +432,107 @@ export function createSVGElement(type: string, props: AttributesArg, ...children
 
 export function dispatchEvent(target: ExtendedElement, event: Event) {
     return eventProxy.call(target, event)
+}
+
+
+type Unit = 'px' | 'rem' | 'em' | 'percent'
+type CalcType = 'add' | 'sub' | 'mul' | 'div' | 'origin'
+type CalcItem = {value:number|StyleSize, unit?:Unit, type: CalcType}
+export class StyleSize {
+    public calcItems: CalcItem[] = []
+    get unit(): Unit|'mixed' {
+        const originUnit = this.calcItems[0].unit!
+        return this.calcItems.every(item => (!item.unit || (item.value instanceof StyleSize ? item.value.unit : item.unit) === originUnit)) ?
+            originUnit :
+            'mixed'
+    }
+    get value(): number|undefined {
+        if (this.unit !== 'mixed') {
+            return this.getCalcItemValueResult(this.calcItems)
+        }
+    }
+    getCalcItemValueResult(items: CalcItem[]) {
+        return items.reduce((acc:number, item: CalcItem) => {
+            switch(item.type) {
+                case 'add':
+                    return acc + (item.value instanceof StyleSize ? item.value.value as number : item.value)
+                case 'sub':
+                    return acc - (item.value instanceof StyleSize ? item.value.value as number : item.value)
+                case 'mul':
+                    return acc * (item.value as number)
+                case 'div':
+                    return acc / (item.value as number)
+                case 'origin':
+                    return item.value as number
+            }
+        }, 0)
+    }
+    constructor(value: number, unit: Unit = 'px') {
+        this.calcItems.push({value, unit, type: 'origin'})
+    }
+    getItemString(item: CalcItem, withParen = false) {
+        if (!(item.value instanceof StyleSize)) {
+            return `${item.value}${item.unit}`
+        }
+
+        let result = item.value.toString()
+        if(withParen && item.value.unit === 'mixed') {
+            result = `(${result})`
+        }
+        return result
+    }
+    toCalcString() {
+        return this.calcItems.reduce((last: CalcItem|string, item) => {
+            if (typeof last === 'string' || (last.unit !== item.unit && item.unit)) {
+                const lastStr = typeof last === 'string'? `(${last})` : this.getItemString(last as CalcItem, true)
+
+                switch(item.type) {
+                    case 'add':
+                        return `${lastStr} + ${this.getItemString(item, true)}`
+                    case 'sub':
+                        return `${lastStr} - ${this.getItemString(item, true)}`
+                    case 'mul':
+                        return `${lastStr} * ${item.value}`
+                    case 'div':
+                        return `${lastStr} / ${item.value}`
+                    case 'origin':
+                        return `${item.value}${item.unit}`
+                }
+            } else {
+                return {
+                    value: this.getCalcItemValueResult([last as CalcItem, item]),
+                    unit: last.unit,
+                    type: 'origin'
+                } as CalcItem
+            }
+        }, {value: 0, unit: this.calcItems[0].unit} as CalcItem)
+    }
+    toString(): string {
+        if(this.unit !== 'mixed'){
+            return `${this.value}${this.calcItems[0].unit}`
+        } else {
+            // 由 calc 函数来算
+            return `calc(${this.toCalcString()})`
+        }
+    }
+    valueOf() {
+        return this.toString()
+    }
+    // 不支持 calc 部分的计算？？？
+    mul(value: number) {
+        this.calcItems.push({value, type: 'mul'})
+        return this
+    }
+    add(value: number|StyleSize, unit: Unit = this.calcItems[0].unit!) {
+        this.calcItems.push({value, unit, type: 'add'})
+        return this
+    }
+    sub(value: number|StyleSize, unit: Unit = this.calcItems[0].unit!) {
+        this.calcItems.push({value, unit, type: 'sub'})
+        return this
+    }
+    div(value: number) {
+        this.calcItems.push({value, type: 'div'})
+        return this
+    }
 }

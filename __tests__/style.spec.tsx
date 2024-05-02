@@ -3,6 +3,7 @@
 import {beforeEach, describe, expect, test} from "vitest";
 import {createRoot, RenderContext, createElement} from "@framework";
 import {atom} from "data0";
+import {StyleSize} from "../src/DOM.js";
 
 describe('component render', () => {
 
@@ -87,4 +88,23 @@ describe('component render', () => {
     //     expect(getComputedStyle(testDiv).getPropertyValue('color')).toBe('red')
     // })
 
+    test('StyleSize', () => {
+        const base = new StyleSize(1, 'rem')
+        expect(base.toString()).toBe('1rem')
+        const size1 = base.add(2, 'rem')
+        expect(size1.toString()).toBe('3rem')
+        const size2 = size1.mul(2)
+        expect(size2.toString()).toBe('6rem')
+        const size3 = size2.sub(1)
+        expect(size3.toString()).toBe('5rem')
+
+        const size4 = size3.div(2)
+        expect(size4.toString()).toBe('2.5rem')
+
+        const size5 = size4.add(2, 'px')
+        expect(size5.toString()).toBe('calc(2.5rem + 2px)')
+
+        const size6 = size5.mul(2)
+        expect(size6.toString()).toBe('calc((2.5rem + 2px) * 2)')
+    })
 })
