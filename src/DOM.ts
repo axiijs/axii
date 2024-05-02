@@ -14,6 +14,9 @@ export function autoUnit(num: number|string) {
     return `${num}${autoUnitType}`
 }
 
+export const MULTI_VALUE_ATTR = /^(transform|translate|scale|rotate|skew|boxShadow|textShadow|transition)/
+
+
 // type WritablePropertyName = Exclude<keyof HTMLElement, keyof Readonly<HTMLElement> >
 /** Attempt to set a DOM property to the given value.
  *  IE & FF throw for certain property-value combinations.
@@ -113,8 +116,15 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                         // @ts-ignore
                         node.style[k] = ''
                     } else if(Array.isArray(v)) {
-                        // @ts-ignore
-                        node.style[k] = v.map(v => typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v).join(' ')
+                        if (MULTI_VALUE_ATTR.test(k)) {
+                            // attr like box-shadow
+                            // @ts-ignore
+                            node.style[k] = v.join(',')
+                        } else {
+                            // padding/margin
+                            // @ts-ignore
+                            node.style[k] = v.map(v => typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v).join(' ')
+                        }
                     } else {
                         // @ts-ignore
                         node.style[k] = typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v
