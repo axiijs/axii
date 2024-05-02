@@ -436,8 +436,6 @@ export function dispatchEvent(target: ExtendedElement, event: Event) {
 
 
 type Unit = 'px' | 'rem' | 'em' | 'percent'
-type CalcType = 'add' | 'sub' | 'mul' | 'div' | 'origin'
-type CalcItem = {value:number|StyleSize, unit?:Unit, type: CalcType}
 export class StyleSize {
     constructor(public value: number|string, public unit: Unit|'mixed' = 'px') {
     }
