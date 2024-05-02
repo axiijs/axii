@@ -2,7 +2,17 @@
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 
-export const AUTO_ADD_PX_STYLE = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap)/
+export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap)/
+let autoUnitType: 'px' | 'rem' | 'em' = 'px'
+export function setAutoUnitType(type: 'px' | 'rem' | 'em') {
+    autoUnitType = type
+}
+export function autoUnit(num: number|string) {
+    if (typeof num === 'string') {
+        return num
+    }
+    return `${num}${autoUnitType}`
+}
 
 // type WritablePropertyName = Exclude<keyof HTMLElement, keyof Readonly<HTMLElement> >
 /** Attempt to set a DOM property to the given value.
@@ -102,9 +112,12 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                     if (v === undefined) {
                         // @ts-ignore
                         node.style[k] = ''
+                    } else if(Array.isArray(v)) {
+                        // @ts-ignore
+                        node.style[k] = v.map(v => typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v).join(' ')
                     } else {
                         // @ts-ignore
-                        node.style[k] = typeof v === 'number' && AUTO_ADD_PX_STYLE.test(k) ? (`${v}px`) : v
+                        node.style[k] = typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v
                     }
                 })
             } else {

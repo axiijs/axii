@@ -1,5 +1,5 @@
 import {
-    AUTO_ADD_PX_STYLE,
+    AUTO_ADD_UNIT_ATTR, autoUnit,
     createElement,
     ExtendedElement,
     insertBefore,
@@ -70,9 +70,9 @@ class StyleManager {
 
             const property = key.replace(/([A-Z])/g, '-$1').toLowerCase()
 
-            // value 是数字类型的 attr，自动加上 px
-            if (typeof value === 'number' && AUTO_ADD_PX_STYLE.test(key)) {
-                return `${property}:${value}px;`
+            // value 是数字类型的 attr，自动加上 单位
+            if (typeof value === 'number' && AUTO_ADD_UNIT_ATTR.test(key)) {
+                return `${property}:${autoUnit(value)};`
             } else {
                 return `${property}:${value};`
             }

@@ -1,4 +1,4 @@
-export { createElement, Fragment, createElementNS, dispatchEvent } from './DOM'
+export { createElement, Fragment, createElementNS, dispatchEvent, setAutoUnitType, autoUnit } from './DOM'
 export { default as PropTypes } from './propTypes.js'
 export { createRoot } from './render.js'
 export { createHost } from './createHost.js'
