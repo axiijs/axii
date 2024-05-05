@@ -533,4 +533,5 @@ describe('component propTypes', () => {
         expect(innerProps.value).toBe('rewrite')
         expect(innerProps.another).toEqual([4,5,6])
     })
+
 })

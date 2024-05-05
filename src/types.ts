@@ -34,7 +34,7 @@ export type RenderContext = {
 export type Component = {
     (props: any, injectHandles: RenderContext): JSXElement,
     propTypes?: PropTypes,
-    boundProps?: ({[k: string]: any}|(() => ({[k: string]: any})))[],
+    boundProps?: ({[k: string]: any}|((props: Props, renderContext: RenderContext) => ({[k: string]: any})))[],
 }
 
 

@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
-import {createElement, createRoot, RenderContext, N_ATTR} from "@framework";
+import {Component, createElement, createRoot, N_ATTR, RenderContext} from "@framework";
 import userEvent from "@testing-library/user-event";
 
 describe('component configuration', () => {
@@ -136,5 +136,44 @@ describe('component configuration', () => {
         const style=rootEl.querySelector('div')!.style
         expect(style.color).toBe('blue')
         expect(style.fontSize).toBe('24px')
+    })
+
+    test('configuration should overwrite bound props', () => {
+        let innerProps: any
+
+        function GrandChild(props:any, {createElement}: RenderContext) {
+            innerProps = props
+            return <div>
+                hello world
+            </div>
+
+        }
+
+        const Child:Component = ({}, {createElement}: RenderContext) => {
+            return <GrandChild as="grandChild"/>
+        }
+
+        Child.boundProps = [{
+            //  should combine
+            '$grandChild:style': {
+                color: 'red'
+            },
+            // should overwrite
+            '$grandChild:overwrite1': 'from child',
+            '$grandChild:overwrite2': 'from child'
+        }]
+
+
+        function App({}, {createElement}: RenderContext) {
+            return <div>
+                <Child as="child" $grandChild:style={{fontSize:12}} $grandChild:overwrite1={'from app'}/>
+            </div>
+        }
+
+        root.render(<App $child={{'$grandChild:style': {padding:10}, '$grandChild:overwrite2': 'from root'}}/>)
+
+        expect(innerProps.style).toMatchObject([{color:'red'}, {fontSize:12}, {padding:10}])
+        expect(innerProps.overwrite1).toBe('from app')
+        expect(innerProps.overwrite2).toBe('from root')
     })
 })

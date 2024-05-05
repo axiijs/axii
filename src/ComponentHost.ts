@@ -21,31 +21,34 @@ function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
 
-// CAUTION 为了性能，直接 assign。
-//  只有事件监听和 ref 被认为是外层需要 merge，其他都是否该
-export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
+export function mergeProps(input:{[k:string]: any}, newProps: {[k:string]: any}) {
+    const origin = {...input}
     Object.entries(newProps).forEach(([key, value]) => {
-        const originValue = origin[key]
-        if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style')) {
-            // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
-            //  style 一定要放后面，才能覆写
-            if(key === 'style') {
-                origin[key] = ensureArray(originValue).concat(value)
-            } else {
-                origin[key] = ensureArray(value).concat(originValue)
-            }
-
-        } else {
-            origin[key] = value
-        }
+        origin[key] = mergeProp(key, input[key], value)
     })
     return origin
 }
 
+export function mergeProp(key:string, originValue:any, value: any) {
+    if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style' || key==='classname' || key==='class')) {
+        // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
+        //  style 一定要放后面，才能覆写
+        if(key === 'style') {
+            return ensureArray(originValue).concat(value)
+        } else {
+            return ensureArray(value).concat(originValue)
+        }
+
+    } else {
+        return value
+    }
+}
+
+
 export type StateTransformer<T> = (target:any, value:Atom<T|null>) => (() => any)|undefined
 export type StateFromRef<T> = Atom<T|null> & { ref:(target:any) => any }
 
-const INNER_CONFIG_PROP = '$$config'
+const INNER_CONFIG_PROP = '__config__'
 
 export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
@@ -63,6 +66,9 @@ export class ComponentHost implements Host{
     public name: string
     public exposed: {[k:string]:any} = {}
     public renderContext?: RenderContext
+    public refProp?: RefObject|RefFn
+    public thisProp?: RefObject|RefFn
+    public inputProps: Props
     deleteLayoutEffectCallback?: () => void
     constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
@@ -72,50 +78,47 @@ export class ComponentHost implements Host{
         this.name = type.name
         this.type = type
         this.props = {}
-
-        const props = Object.assign({}, ...this.evaluateBoundProps(), inputProps) as Props
-        Object.entries(props).forEach(([key, value]) => {
-            if (key === INNER_CONFIG_PROP) {
-                this.itemConfig = value
-            } else if (key[0] === '$') {
-                const [itemName, itemProp] = key.slice(1).split(':')
-                if (!this.itemConfig[itemName]) this.itemConfig[itemName] = {}
-
-                if (itemProp === '_eventTarget')  {
-                    // 支持 $eventTarget 来转发事件
-                    this.itemConfig[itemName].eventTarget = ensureArray(value)
-                } else if (itemProp=== '_use'){
-                    // 支持 $use 来覆盖整个 element
-                    this.itemConfig[itemName].use = value
-                } else if (itemProp=== '_props') {
-                    // 用户自定义函数合并 props
-                    this.itemConfig[itemName].propsMergeHandle = value
-                } else if (itemProp=== '_children') {
-                    // 用户自定义函数合并 props
-                    this.itemConfig[itemName].children = value
-                }else if (itemProp=== undefined || itemProp==='') {
-                    // 穿透到子组件的 config
-                    this.itemConfig[itemName].config = value
-                } else if(itemProp?.[0] === '_'){
-                    // 不支持的配置项
-                    assert(false, `unsupported config item: ${itemName}`)
-                } else if( itemProp.endsWith('_') ) {
-                    // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
-                    if (!this.itemConfig[itemName].propMergeHandles) this.itemConfig[itemName].propMergeHandles = {}
-                    this.itemConfig[itemName].propMergeHandles![itemProp.slice(0, -1)] = value
-
-                } else {
-                    // 支持 $xxx:[prop] 来覆盖 props
-                    if (!this.itemConfig[itemName].props) this.itemConfig[itemName].props = {}
-                    this.itemConfig[itemName].props![itemProp] = value
-                }
-
-            } else {
-                this.props[key] = value
-            }
-        })
+        this.refProp = inputProps.ref
+        this.thisProp = inputProps.__this
+        this.inputProps = inputProps
         this.children = children
+    }
 
+    parseItemConfigFromProp(itemConfig: any, key:string, value:any) {
+        if (key[0] === '$') {
+            const [itemName, itemProp] = key.slice(1).split(':')
+            if (!itemConfig[itemName]) itemConfig[itemName] = {}
+
+            if (itemProp === '_eventTarget')  {
+                // 支持 $eventTarget 来转发事件
+                itemConfig[itemName].eventTarget = ensureArray(itemConfig[itemName].eventTarget).concat(value)
+            } else if (itemProp=== '_use'){
+                // 支持 $use 来覆盖整个 element。有多个 _use 的时候，直接用最后一个覆盖
+                itemConfig[itemName].use = value
+            } else if (itemProp=== '_props') {
+                // 用户自定义函数合并 props
+                itemConfig[itemName].propsMergeHandle = ensureArray(itemConfig[itemName].propsMergeHandle).concat(value)
+            } else if (itemProp=== '_children') {
+                // 用户自定义函数合并 props。有多个 _children 的时候，直接用最后一个覆盖
+                itemConfig[itemName].children = value
+            }else if (itemProp=== undefined || itemProp==='') {
+                // 穿透到子组件的 config，支持多个
+                itemConfig[itemName].configProps = ensureArray(itemConfig[itemName].configProps).concat(value)
+            } else if(itemProp?.[0] === '_'){
+                // 不支持的配置项
+                assert(false, `unsupported config item: ${itemName}`)
+            } else if( itemProp.endsWith('_') ) {
+                // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
+                if (!itemConfig[itemName].propMergeHandles) itemConfig[itemName].propMergeHandles = {}
+                const propName = itemProp.slice(0, -1)
+                itemConfig[itemName].propMergeHandles![propName] = ensureArray(itemConfig[itemName].propMergeHandles![propName]).concat(value)
+            } else {
+                // 支持 $xxx:[prop] 来覆盖 props
+                if (!itemConfig[itemName].props) itemConfig[itemName].props = {}
+                itemConfig[itemName].props![itemProp] = mergeProp(itemProp, itemConfig[itemName].props![itemProp], value)
+            }
+        }
+        return itemConfig
     }
     get typeId() {
         return ComponentHost.typeIds.get(this.type)!
@@ -126,14 +129,6 @@ export class ComponentHost implements Host{
     // CAUTION innerHost 可能是动态的，所以 element 也可能会变，因此每次都要实时去读
     get element() : HTMLElement|Comment|SVGElement|Text {
         return this.innerHost?.element || this.placeholder
-    }
-    evaluateBoundProps() {
-        return (this.type.boundProps || []).map(b => {
-            if (typeof b === 'function') {
-                return b()
-            }
-            return b
-        })
     }
 
     createHTMLOrSVGElement = (isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
@@ -170,7 +165,9 @@ export class ComponentHost implements Host{
         }
 
         // 支持自己 props 的 merge
-        let finalProps:{[k:string|symbol]:any} = mergeProps(rawProps, selfMergeProps)
+        // let finalProps:{[k:string|symbol]:any} = mergeProps(rawProps, selfMergeProps)
+        let finalProps:{[k:string|symbol]:any} = {...rawProps}
+        this.parseAndMergeProps({props: finalProps, itemConfig:{}}, selfMergeProps)
 
         const thisItemConfig = this.itemConfig[name]
         if (name && thisItemConfig) {
@@ -186,14 +183,15 @@ export class ComponentHost implements Host{
             }
             // 2. 可以针对某个 prop 单独进行重写
             if(thisItemConfig.propMergeHandles) {
-                Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handle]) => {
-                    finalProps[key] = handle(finalProps[key], finalProps)
+                Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handles]) => {
+                    // finalProps[key] = handle(finalProps[key], finalProps)
+                    finalProps[key] = handles.reduce((acc, handle) => handle(finalProps[key], finalProps), finalProps)
                 })
             }
 
             // 3. 可以正对 props 进行整体重写
             if (thisItemConfig.propsMergeHandle) {
-                finalProps = thisItemConfig.propsMergeHandle(finalProps)
+                finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc), finalProps)
             }
 
             // 4. 支持对 children 进行重写
@@ -223,8 +221,9 @@ export class ComponentHost implements Host{
 
         // 5. 如果 finalType 是函数，支持继续对组件继续透传 config
         //  CAUTION 注意这里使用 finalType 判断的，因为可能用 Component 重写了普通 element
-        if (typeof finalType === 'function' && thisItemConfig?.config) {
-            finalProps = {...finalProps, ...thisItemConfig.config}
+        if (typeof finalType === 'function' && thisItemConfig?.configProps?.length) {
+            // 透传了
+            finalProps = {...finalProps, [INNER_CONFIG_PROP]: thisItemConfig.configProps}
         }
 
         // 收集 component ref
@@ -256,7 +255,7 @@ export class ComponentHost implements Host{
     }
     createRef = createRef
     createRxRef = createRxRef
-    handleProps(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
+    normalizePropsByPropTypes(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
         const finalProps: Props = {}
         // TODO dev 模式下类型检查
         Object.entries(propTypes).forEach(([key, type]) => {
@@ -267,6 +266,15 @@ export class ComponentHost implements Host{
                // create defaultValue
                finalProps[key] = type.defaultValue
            }
+        })
+        return finalProps
+    }
+    normalizePropsWithCoerceValue(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
+        const finalProps: Props = {...props}
+        Object.entries(propTypes).forEach(([key, type]) => {
+            if (props[key] !== undefined) {
+                finalProps[key] = type.coerce?.(props[key]) || props[key]
+            }
         })
         return finalProps
     }
@@ -351,6 +359,38 @@ export class ComponentHost implements Host{
     onCleanup = (callback: () => any) => {
         this.destroyCallback.add(callback)
     }
+    evaluateBoundProps(inputProps:Props, renderContext:RenderContext) {
+        return (this.type.boundProps || []).map(b => {
+            if (typeof b === 'function') {
+                return b(inputProps, renderContext!)
+            }
+            return b
+        })
+    }
+    parseAndMergeProps(last: {props:Props, itemConfig: ConfigItem}, current: Props) {
+        // CAUTION 为了性能直接 assign，外部调用时要自己保证 last 是一个新的对象
+        Object.entries(current).forEach(([key, value]) => {
+            if( key === INNER_CONFIG_PROP) {
+                // 透传过来的 config 这里不处理，外部已经处理了
+            } else if (key[0] === '$')  {
+                last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, key, value)
+            } else  {
+                last.props[key] = mergeProp(key, last.props[key], value)
+            }
+        })
+
+        return last
+    }
+    getFinalPropsAndItemConfig() {
+        const inputPropsWithDefaultValue = this.type.propTypes ? this.normalizePropsByPropTypes(this.type.propTypes, this.inputProps) : this.inputProps
+        const evaluatedProps = this.evaluateBoundProps(inputPropsWithDefaultValue, this.renderContext!)
+
+        // CAUTION boundProps 的优先级是低于 inputProps，但这里 boundProps 还是可以拿到 inputProps 的值是因为
+        //  它需要和 inputProps 里面通用的引用，例如 form 状态。
+        //  boundProps 优先级最低，inputProps 第二高，configProps 最高，是最上层穿透过来的。
+        const allProps = evaluatedProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
+        return allProps.reduce((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}})
+    }
     render(): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
@@ -375,28 +415,33 @@ export class ComponentHost implements Host{
             expose: this.expose
         }
 
-        const {ref: refProp, ...componentProps} = this.props
-
+        // CAUTION collect effects start
         const getFrame = ReactiveEffect.collectEffect()
-        const finalComponentProps = {
-            ...(this.type.propTypes ? this.handleProps(this.type.propTypes, componentProps) : componentProps),
-            children: this.children
-        }
 
-        const node = this.type(finalComponentProps, this.renderContext)
+        const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
+        this.itemConfig = itemConfig
+        this.props = componentProps
+        // 这里要再 coerce props，因为 boundProps 可能 return fixed value
+        const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+
+        normalizedProps.children = this.children
+        this.props = normalizedProps
+
+        const node = this.type(normalizedProps, this.renderContext)
         this.frame = getFrame()
+        // CAUTION collect effects end
 
         // 就用当前 component 的 placeholder
         this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
         this.innerHost.render()
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
-        if (this.props.ref) {
-            this.attachRef(this.props.ref)
+        if (this.refProp) {
+            this.attachRef(this.refProp)
         }
         // for test use
-        if (this.props.__this) {
-            this.attachThis(this.props.__this)
+        if (this.thisProp) {
+            this.attachThis(this.thisProp)
         }
 
         this.effects.forEach(effect => {
@@ -419,8 +464,8 @@ export class ComponentHost implements Host{
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
-        if (this.props.ref) {
-            this.detachRef(this.props.ref)
+        if (this.refProp) {
+            this.detachRef(this.refProp)
         }
 
         if (!parentHandleComputed) {
@@ -454,6 +499,7 @@ type EventTarget = (arg: (e:Event) => any) => void
 type ConfigItem = {
     // 穿透给组件的
     config?: { [k:string]: ConfigItem},
+    configProps?: Props[],
     // 支持覆写 element
     use?: Component|JSX.Element,
     // 将事件转发到另一个节点上
@@ -461,9 +507,9 @@ type ConfigItem = {
     // 手动调整内部组件的 props
     props?: {[k:string]: any},
     // 函数手动 merge prop
-    propMergeHandles?: {[k:string]: any},
+    propMergeHandles?: {[k:string]: ((last:any, props:Props) => any)[]},
 
-    propsMergeHandle?: FunctionProp,
+    propsMergeHandle?: FunctionProp[],
     // children
     children?: any
 }
