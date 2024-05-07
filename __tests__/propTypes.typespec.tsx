@@ -50,9 +50,6 @@ assertType<FixedCompatiblePropsType<typeof App.propTypes>>({a: 1, b: atom("1")})
 assertType<FixedCompatiblePropsType<typeof App.propTypes>>({b:"2", c: new RxList(["1"])})
 
 
-const app = <App a={1} b={atom('a')} as="root"/>
-const app2 = <App a={1} b={atom('a')} c={["1"]}/>
-console.log(app, app2)
 //
 //
 // type Config = {

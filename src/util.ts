@@ -89,3 +89,16 @@ export function shallowEqual(a:any,b:any) {
     }
     return true
 }
+
+
+// TODO cancel?
+export function nextFrames(fns: ((time: number) => void)[]) {
+    let i = 0
+    const next = (time: number) => {
+        if (i < fns.length) {
+            fns[i++](time)
+            requestAnimationFrame(next)
+        }
+    }
+    requestAnimationFrame(next)
+}

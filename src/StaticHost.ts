@@ -10,7 +10,7 @@ import {
 import {Host, PathContext} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
-import {assert, removeNodesBetween} from "./util";
+import {assert, nextFrames, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
@@ -40,6 +40,13 @@ function hasPsuedoClassOrNestedStyle(styleObject: StyleObject|StyleObject[]) {
         return styleObject.some(hasPsuedoClassOrNestedStyle)
     }
     return Object.entries(styleObject).some(([key, value]) => key.startsWith(':') || (typeof value === 'object' && value !== null))
+}
+
+function hasTransition(styleObject: StyleObject|StyleObject[]) {
+    if (Array.isArray(styleObject)) {
+        return styleObject.some(hasTransition)
+    }
+    return styleObject.transition !== undefined
 }
 
 
@@ -73,7 +80,7 @@ class StyleManager {
             return `${property}:${stringifyStyleValue(property, value)};`
         }).join('\n')
     }
-    update(hostPath: Host[], elementPath: number[], styleObject: StyleObject, el: ExtendedElement, isStatic: boolean = false) {
+    update(hostPath: Host[], elementPath: number[], styleObject: StyleObject|StyleObject[], el: ExtendedElement, isStatic: boolean = false) {
         // 使用这个更新的 style 都是有伪类或者有嵌套的，一定需要生成 class 的。
         const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
         let styleScript = this.styleScripts.get(styleSheetId)
@@ -83,8 +90,15 @@ class StyleManager {
             this.styleScripts.set(styleSheetId, styleScript)
         }
 
-        styleScript!.innerHTML = this.generateStyleContent(`.${styleSheetId}`, styleObject)
+        // styleScript!.innerHTML = this.generateStyleContent(`.${styleSheetId}`, styleObject)
         el.classList.add(styleSheetId)
+        const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
+        styleScript!.innerHTML = this.generateStyleContent(`.${styleSheetId}`, styleObjects[0])
+
+        // CAUTION 多个 styleObjects 的更新要用异步任务，这样 transition 中的效果才能生效
+        nextFrames(styleObjects.slice(1).map((one, index) => () => {
+            styleScript!.innerHTML += this.generateStyleContent(`.${styleSheetId}`, one)
+        }))
     }
     generateStyleContent(selector:string, styleObject: StyleObject) {
 
@@ -192,10 +206,9 @@ export class StaticHost implements Host{
                     value.map(v => isAtomLike(v) ? v() : v) :
                     isAtomLike(value) ? value() : value
 
-                if (key === 'style' && (hasPsuedoClassOrNestedStyle(final))) {
+                if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final))) {
                     const isStatic = isStaticStyleObject(value)
-                    const finalStyleObject = Array.isArray(final) ? Object.assign({}, ...final) : final
-                    StaticHost.styleManager.update(this.pathContext.hostPath, path, finalStyleObject, el, isStatic )
+                    StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
                 } else {
                     setAttribute(el, key, final, isSVG)
                 }
