@@ -176,4 +176,35 @@ describe('component configuration', () => {
         expect(innerProps.overwrite1).toBe('from app')
         expect(innerProps.overwrite2).toBe('from root')
     })
+
+    test('configure component rewrite element', () => {
+        let childOuterProps:any = null
+        let nativeAttrs:any = {}
+
+        function Child(props:any, {createElement}: RenderContext) {
+            childOuterProps = props.outer
+            nativeAttrs = props[N_ATTR]
+            return <div >
+                hello
+            </div>
+        }
+
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <div as="inner" style={{color:'red'}} prop:outer={props} />
+            </div>
+        }
+
+        const appProps = {
+            hello: 'world'
+        }
+        root.render(<App
+            {...appProps}
+            $inner:_use = {Child}
+            $inner:style={{color:'blue'}}
+        />)
+
+        expect(childOuterProps.hello).toEqual(appProps.hello)
+        expect(nativeAttrs.style).toMatchObject([{color:'red'},{color:'blue'}])
+    })
 })

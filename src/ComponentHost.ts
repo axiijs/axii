@@ -173,9 +173,7 @@ export class ComponentHost implements Host{
 
         let finalChildren = children
 
-
         let {props: finalProps, componentProps} = this.separateProps(rawProps)
-        componentProps[N_ATTR] = finalProps
 
         const thisItemConfig = this.itemConfig[name]
         if (name && thisItemConfig) {
@@ -193,13 +191,14 @@ export class ComponentHost implements Host{
             // 2. 使用 :[prop_] 语法可以针对某个 prop 单独进行重写
             if(thisItemConfig.propMergeHandles) {
                 Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handles]) => {
-                    // finalProps[key] = handle(finalProps[key], finalProps)
+                    // TODO 这里的 componentProps 需不要 N_ATTR?
                     finalProps[key] = handles.reduce((acc, handle) => handle(acc, componentProps), finalProps[key])
                 })
             }
 
             // 3. 使用:_props 可以正对 props 进行整体重写
             if (thisItemConfig.propsMergeHandle) {
+                // TODO 这里的 componentProps 需不要 N_ATTR?
                 finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc, componentProps), finalProps)
             }
 
@@ -211,47 +210,27 @@ export class ComponentHost implements Host{
 
         const finalType = (this.itemConfig[name]?.use || type) as Component|string
 
-        // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxx 标记的属性，转移到 props 上
-        //  而原来的 attribute 要转移到 N_ATTR 上，这样组件在内部还能重新利用起来。因为上面可能有 ref 等属性，不用起来会影响原来的功能。
-        // if(!isComponent && typeof finalType === "function") {
-        //     const propKeys = Object.keys(finalProps || {})
-        //
-        //     const componentProps:{[k:string]:any} = {}
-        //     propKeys.forEach(key => {
-        //         if (key.startsWith('prop:')) {
-        //             componentProps[key.slice(5)] = finalProps[key]
-        //             delete finalProps[key]
-        //         }
-        //     })
-        //
-        //     componentProps[N_ATTR] = finalProps
-        //     finalProps = componentProps
-        // }
 
+        // CAUTION 如果是用 Component 重写了普通的 element 那么组件的 props 就是用 prop:xxx 标记的属性
+        if (typeof finalType === 'function' && !isComponent) {
+            componentProps[N_ATTR] = finalProps
+            finalProps = componentProps
+        }
         // 5. 如果 finalType 是函数，支持继续对组件继续透传 config
         //  CAUTION 注意这里使用 finalType 判断的，因为可能用 Component 重写了普通 element
         if (typeof finalType === 'function' && thisItemConfig?.configProps?.length) {
             // 透传了
-            finalProps = {...finalProps, [INNER_CONFIG_PROP]: thisItemConfig.configProps}
+            Object.assign(finalProps, { [INNER_CONFIG_PROP]: thisItemConfig.configProps })
         }
 
         // 收集 component ref
-        if (name && isComponent) {
-            finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
+        if (name) {
+            finalProps.ref = ensureArray(finalProps.ref).concat((item: any) => this.refs[name] = item)
         }
 
-        const isRewritePrimitiveWithComponent = typeof finalType === 'function' && !isComponent
-
-        const el = isSVG ?
+        return isSVG ?
             createSVGElement(finalType as string, finalProps, ...finalChildren) :
-            createElement(finalType, isRewritePrimitiveWithComponent ? componentProps : finalProps, ...finalChildren)
-
-        // 收集普通  element 的 ref
-        if (name && !isComponent) {
-            this.refs[name] = el
-        }
-
-        return el
+            createElement(finalType, finalProps, ...finalChildren)
     }
     createElement = this.createHTMLOrSVGElement.bind(this, false)
     createSVGElement = this.createHTMLOrSVGElement.bind(this, true)
