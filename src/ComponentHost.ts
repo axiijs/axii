@@ -21,12 +21,12 @@ function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
 
-export function mergeProps(input:{[k:string]: any}, newProps: {[k:string]: any}) {
-    const origin = {...input}
+export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
+    const output = {...origin}
     Object.entries(newProps).forEach(([key, value]) => {
-        origin[key] = mergeProp(key, input[key], value)
+        output[key] = mergeProp(key, origin[key], value)
     })
-    return origin
+    return output
 }
 
 export function mergeProp(key:string, originValue:any, value: any) {
@@ -131,6 +131,26 @@ export class ComponentHost implements Host{
         return this.innerHost?.element || this.placeholder
     }
 
+    separateProps(rawProps: AttributesArg) {
+        const props: Props = {}
+        const componentProps: Props = {}
+        const selfMergeProps: Props = {}
+        for(const key in rawProps) {
+            if (key.startsWith('prop:')) {
+                componentProps[key.slice(5)] = rawProps[key]
+            } else if (key.startsWith('$self:')) {
+                // 支持自己 props 的 merge，这是因为有的组件包装了其他组件，想 merge props 而不是替换。
+                // 写成 $self 的形式默认就是 merge，不用再手动使用 mergeProps 了，可读性也更强。
+                selfMergeProps[key.slice(6)] = rawProps[key]
+            } else {
+                props[key] = rawProps[key]
+            }
+        }
+
+        // merge props and selfMergeProps
+        this.parseAndMergeProps({props, itemConfig:{}, componentProp: componentProps}, selfMergeProps)
+        return {props, componentProps}
+    }
     createHTMLOrSVGElement = (isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
         const isComponent = typeof type === 'function'
         if(__DEV__) {
@@ -150,29 +170,17 @@ export class ComponentHost implements Host{
             return this.itemConfig[name]!.use as HTMLElement
         }
 
-        const selfMergeProps:{[k:string|symbol]:any} = {}
 
         let finalChildren = children
 
-        // 整理 props
-        for(const key in rawProps) {
-            if (key.startsWith('$self:')) {
-                // 支持自己 props 的 merge，这是因为有的组件包装了其他组件，想 merge props 而不是替换。
-                // 写成 $self 的形式默认就是 merge，不用再手动使用 mergeProps 了，可读性也更强。
-                selfMergeProps[key.slice(6)] = rawProps[key]
-                delete rawProps[key]
-            }
-        }
 
-        // 支持自己 props 的 merge
-        // let finalProps:{[k:string|symbol]:any} = mergeProps(rawProps, selfMergeProps)
-        let finalProps:{[k:string|symbol]:any} = {...rawProps}
-        this.parseAndMergeProps({props: finalProps, itemConfig:{}}, selfMergeProps)
+        let {props: finalProps, componentProps} = this.separateProps(rawProps)
+        componentProps[N_ATTR] = finalProps
 
         const thisItemConfig = this.itemConfig[name]
         if (name && thisItemConfig) {
             // 为了性能，又直接操作了 rawProps
-            // 1. 支持正对当前节点的 props 调整
+            // 1. 使用 :[prop] 语法  对当前节点的 props 调整
             if (thisItemConfig.props) {
                 // CAUTION 普通节点，这里默认适合原来的 props 合并，除非用户想要自己的处理
                 if (isComponent) {
@@ -181,17 +189,18 @@ export class ComponentHost implements Host{
                     finalProps = mergeProps(rawProps, thisItemConfig.props)
                 }
             }
-            // 2. 可以针对某个 prop 单独进行重写
+
+            // 2. 使用 :[prop_] 语法可以针对某个 prop 单独进行重写
             if(thisItemConfig.propMergeHandles) {
                 Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handles]) => {
                     // finalProps[key] = handle(finalProps[key], finalProps)
-                    finalProps[key] = handles.reduce((acc, handle) => handle(finalProps[key], finalProps), finalProps)
+                    finalProps[key] = handles.reduce((acc, handle) => handle(acc, componentProps), finalProps[key])
                 })
             }
 
-            // 3. 可以正对 props 进行整体重写
+            // 3. 使用:_props 可以正对 props 进行整体重写
             if (thisItemConfig.propsMergeHandle) {
-                finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc), finalProps)
+                finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc, componentProps), finalProps)
             }
 
             // 4. 支持对 children 进行重写
@@ -204,20 +213,20 @@ export class ComponentHost implements Host{
 
         // 如果是用 Component 重写了普通的 element，要把 element 上原本用 prop:xxx 标记的属性，转移到 props 上
         //  而原来的 attribute 要转移到 N_ATTR 上，这样组件在内部还能重新利用起来。因为上面可能有 ref 等属性，不用起来会影响原来的功能。
-        if(!isComponent && typeof finalType === "function") {
-            const propKeys = Object.keys(finalProps || {})
-
-            const componentProps:{[k:string]:any} = {}
-            propKeys.forEach(key => {
-                if (key.startsWith('prop:')) {
-                    componentProps[key.slice(5)] = finalProps[key]
-                    delete finalProps[key]
-                }
-            })
-
-            componentProps[N_ATTR] = finalProps
-            finalProps = componentProps
-        }
+        // if(!isComponent && typeof finalType === "function") {
+        //     const propKeys = Object.keys(finalProps || {})
+        //
+        //     const componentProps:{[k:string]:any} = {}
+        //     propKeys.forEach(key => {
+        //         if (key.startsWith('prop:')) {
+        //             componentProps[key.slice(5)] = finalProps[key]
+        //             delete finalProps[key]
+        //         }
+        //     })
+        //
+        //     componentProps[N_ATTR] = finalProps
+        //     finalProps = componentProps
+        // }
 
         // 5. 如果 finalType 是函数，支持继续对组件继续透传 config
         //  CAUTION 注意这里使用 finalType 判断的，因为可能用 Component 重写了普通 element
@@ -231,7 +240,11 @@ export class ComponentHost implements Host{
             finalProps.ref = ensureArray(finalProps.ref).concat((host: Host) => this.refs[name] = host)
         }
 
-        const el = isSVG ? createSVGElement(finalType as string, finalProps, ...finalChildren) : createElement(finalType, finalProps, ...finalChildren)
+        const isRewritePrimitiveWithComponent = typeof finalType === 'function' && !isComponent
+
+        const el = isSVG ?
+            createSVGElement(finalType as string, finalProps, ...finalChildren) :
+            createElement(finalType, isRewritePrimitiveWithComponent ? componentProps : finalProps, ...finalChildren)
 
         // 收集普通  element 的 ref
         if (name && !isComponent) {
@@ -367,7 +380,7 @@ export class ComponentHost implements Host{
             return b
         })
     }
-    parseAndMergeProps(last: {props:Props, itemConfig: ConfigItem}, current: Props) {
+    parseAndMergeProps(last: {props:Props, itemConfig: ConfigItem, componentProp: Props}, current: Props) {
         // CAUTION 为了性能直接 assign，外部调用时要自己保证 last 是一个新的对象
         Object.entries(current).forEach(([key, value]) => {
             if( key === INNER_CONFIG_PROP) {
@@ -389,7 +402,7 @@ export class ComponentHost implements Host{
         //  它需要和 inputProps 里面通用的引用，例如 form 状态。
         //  boundProps 优先级最低，inputProps 第二高，configProps 最高，是最上层穿透过来的。
         const allProps = evaluatedProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
-        return allProps.reduce((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}})
+        return allProps.reduce((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {}})
     }
     render(): void {
         if (this.element !== this.placeholder) {
@@ -493,7 +506,7 @@ export class ComponentHost implements Host{
 
 
 
-type FunctionProp = (arg:any) => object
+type FunctionProp = (arg:any, props: Props) => object
 type EventTarget = (arg: (e:Event) => any) => void
 
 type ConfigItem = {
