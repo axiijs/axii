@@ -435,7 +435,7 @@ export function dispatchEvent(target: ExtendedElement, event: Event) {
 }
 
 
-type Unit = 'px' | 'rem' | 'em' | 'percent'
+type Unit = 'px' | 'rem' | 'em' | '%'
 export class StyleSize {
     constructor(public value: number|string, public unit: Unit|'mixed' = 'px') {
     }
