@@ -478,7 +478,7 @@ export class StyleSize {
             this.value = this.value + (value.value as number)
         } else {
             const originStr = typeof this.value === 'number' ? `${this.value}${this.unit}` : `(${this.value})`
-            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : `(${value.value})`
+            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : (value.unit=== 'mixed' ? `(${value.value})` : value.toString())
             this.value = `${originStr} + ${valueStr}`
             this.unit = 'mixed'
         }
@@ -491,7 +491,7 @@ export class StyleSize {
             this.value = this.value - (value.value as number)
         } else {
             const originStr = typeof this.value === 'number' ? `${this.value}${this.unit}` : `(${this.value})`
-            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : `(${value.value})`
+            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : (value.unit=== 'mixed' ? `(${value.value})` : value.toString())
             this.value = `${originStr} - ${valueStr}`
             this.unit = 'mixed'
         }
