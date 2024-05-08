@@ -83,6 +83,8 @@ export function createTypeClass<D extends TypeDefinition>(definition: D) {
     return Type
 }
 
+type CreateDefaultValueType<T> = () => T
+
 export type TypeChecker<T, D extends TypeDefinition> = {
     (v: any): any,
     [k: string] : any
@@ -92,8 +94,9 @@ export type TypeChecker<T, D extends TypeDefinition> = {
     check: (obj: any) => boolean,
     is : (obj: any) => boolean,
     required: D["required"] extends true ? true : false,
-    createDefaultValue?: () => any,
-    default: (createDefaultValue: () => any) => TypeChecker<T, D & {createDefaultValue: () => any}>,
+    hasDefault: D["hasDefault"] extends true ? true : false,
+    createDefaultValue?: CreateDefaultValueType<T>,
+    default: (createDefaultValue: CreateDefaultValueType<T>) => TypeChecker<T, D & {createDefaultValue: CreateDefaultValueType<T>, hasDefault: true}>,
     defaultValue: any,
     coerce?: (v: any) => any,
     valueType: T,
@@ -106,6 +109,7 @@ export type TypeDefinition = {
     check?: (v: any) => boolean,
     is? : (obj: any) => boolean,
     required?: boolean,
+    hasDefault?: boolean,
     createDefaultValue?: () => any,
     zeroValue? : any,
     coerce?: (v: any) => any,
@@ -425,13 +429,21 @@ export type FixedCompatiblePropsType<T extends PropTypes> = FixedCompatibleProps
 type PropsTypeOptional<T extends PropTypes> = Partial<OmitNever<{
     [K in keyof T]: T[K]['required'] extends true ?
         never :
-        T[K]['valueType']
+        (
+            T[K]['hasDefault'] extends true ?
+                never :
+                T[K]['valueType']
+            )
 }>>
 
 type PropsTypeRequired<T extends PropTypes> = OmitNever<{
     [K in keyof T]: T[K]['required'] extends true ?
         T[K]['valueType'] :
-        never
+        (
+            T[K]['hasDefault'] extends true ?
+                T[K]['valueType'] :
+                never
+        )
 }>
 
 export type PropsType<T extends PropTypes> = PropsTypeOptional<T> & PropsTypeRequired<T>

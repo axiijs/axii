@@ -13,7 +13,7 @@ const AppPropTypes = {
     d: PropTypes.atom<any>()
 }
 
-assertType<PropType<number, {}>>(AppPropTypes.a)
+assertType<PropType<number, {hasDefault:true}>>(AppPropTypes.a)
 assertType<typeof AppPropTypes.d>(null as unknown as never)
 
 function App(props: FixedCompatiblePropsType<typeof AppPropTypes>) {
@@ -31,7 +31,7 @@ assertType<JSX.ElementClass>(App)
 assertType<false>(PropTypes.number.required)
 
 assertType<typeof App.propTypes>({
-    a: {} as unknown as PropType<number, {}>,
+    a: {} as unknown as PropType<number, {hasDefault:true}>,
     b: {} as unknown as PropType<Atom<string>, {
         required: true,
         coerce: (v: any) => any;
@@ -48,6 +48,10 @@ assertType<false>(App.propTypes.a.required)
 assertType<FixedCompatiblePropsType<typeof App.propTypes>>({a: 1, b: "1", c: ["1"]})
 assertType<FixedCompatiblePropsType<typeof App.propTypes>>({a: 1, b: atom("1")})
 assertType<FixedCompatiblePropsType<typeof App.propTypes>>({b:"2", c: new RxList(["1"])})
+
+type AppPropTypesType = PropsType<typeof AppPropTypes>
+assertType<AppPropTypesType["a"]>(1 as number)
+assertType<number>(1 as AppPropTypesType["a"])
 
 
 //

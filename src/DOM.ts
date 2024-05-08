@@ -438,6 +438,9 @@ export function dispatchEvent(target: ExtendedElement, event: Event) {
 type Unit = 'px' | 'rem' | 'em' | '%'
 export class StyleSize {
     constructor(public value: number|string, public unit: Unit|'mixed' = 'px') {
+        if (typeof value === 'string') {
+            this.unit = 'mixed'
+        }
     }
     toString(): string {
         if(this.unit !== 'mixed'){
