@@ -84,12 +84,13 @@ function isEventName(name: string) {
 }
 
 
+const svgForceDashStyleAttributes = /^(strokeWidth|strokeLinecap|strokeLinejoin|strokeMiterlimit|strokeDashoffset|strokeDasharray|strokeOpacity|fillOpacity|stopOpacity)/
+
 export function setAttribute(node: ExtendedElement, name: string, value: any, isSvg?: boolean): void {
     if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name)) {
         // 全都是覆盖模式，只处理最后一个
         return setAttribute(node, name, value.at(-1), isSvg)
     }
-
 
     // uuid
     if (name === 'uuid') {
@@ -219,10 +220,13 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 node.removeAttribute(name)
             }
         } else if (typeof value !== 'function' && ns) {
+            // xlink:href 元素，有 namespace 的
             node.setAttributeNS('http://www.w3.org/1999/xlink', name.toLowerCase(), value)
 
         } else {
-            node.setAttribute(name, value)
+            // svg 的 attrName 要从驼峰转换成连字符风格
+            const attrName = (isSvg && svgForceDashStyleAttributes.test(name)) ? name.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : name
+            node.setAttribute(attrName, value)
         }
     }
 }
