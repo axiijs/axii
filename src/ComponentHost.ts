@@ -248,7 +248,7 @@ export class ComponentHost implements Host{
     createRef = createRef
     createRxRef = createRxRef
     normalizePropsByPropTypes(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
-        const finalProps: Props = {}
+        const finalProps: Props = {...props}
         // TODO dev 模式下类型检查
         Object.entries(propTypes).forEach(([key, type]) => {
            if (props[key] !== undefined) {
