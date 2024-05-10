@@ -103,6 +103,16 @@ export function nextFrames(fns: ((time: number) => void)[]) {
     requestAnimationFrame(next)
 }
 
+// export function nextFrames(fns: ((time: number) => void)[]) {
+//     let i = 0
+//     const next = (time: number) => {
+//         if (i < fns.length) {
+//             fns[i++](time)
+//             setTimeout(next, 500)
+//         }
+//     }
+//     setTimeout(next, 1000)
+// }
 
 // 顺序 执行返回  promise 的函数
 export function sequencePromises(fns: (() => Promise<any>)[]) {

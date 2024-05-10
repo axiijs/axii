@@ -122,10 +122,28 @@ class StyleManager {
 
         styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
         nextFrames(styleObjects.slice(1).map((one, ) => () => {
-            this.generateStyleContent(`.${styleSheetId}`, one).forEach(rule => {
+            // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
+            //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
+            const [valueStyleObject, nestedStyleObject] = this.separateStyleObject(one)
+            this.generateStyleContent(`.${styleSheetId}`, nestedStyleObject).forEach(rule => {
                 styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
             })
+            // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
+            setAttribute(el, 'style', valueStyleObject)
         }))
+    }
+    separateStyleObject(styleObject: StyleObject): [StyleObject, StyleObject] {
+        // 把 value 不是 plainObject 的属性分离出来
+        const valueStyleObject: StyleObject = {}
+        const nestedStyleObject: StyleObject = {}
+        for(const key in styleObject) {
+            if (typeof styleObject[key] === 'object' && !Array.isArray(styleObject[key])) {
+                nestedStyleObject[key] = styleObject[key]
+            } else {
+                valueStyleObject[key] = styleObject[key]
+            }
+        }
+        return [valueStyleObject, nestedStyleObject]
     }
     generateStyleContent(selector:string, styleObject: StyleObject): string[] {
 
