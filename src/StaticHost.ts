@@ -49,6 +49,11 @@ function hasTransition(styleObject: StyleObject|StyleObject[]) {
     return styleObject.transition !== undefined
 }
 
+function forceReflow(el: HTMLElement) {
+    // CAUTION 通过读取 offsetHeight 来触发 reflow
+    el.offsetHeight
+}
+
 
 class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
@@ -85,7 +90,6 @@ class StyleManager {
         const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
         let styleSheet = this.styleScripts.get(styleSheetId)
         if (!styleSheet) {
-
             styleSheet = new CSSStyleSheet()
             document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
             this.styleScripts.set(styleSheetId, styleSheet)
@@ -120,7 +124,24 @@ class StyleManager {
         //     })
         // })
 
+        // styleSheet!.replace(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n')).then(() => {
+        //     nextFrames(styleObjects.slice(1).map((one, ) => () => {
+        //         // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
+        //         //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
+        //         const [valueStyleObject, nestedStyleObject] = this.separateStyleObject(one)
+        //         this.generateStyleContent(`.${styleSheetId}`, nestedStyleObject).forEach(rule => {
+        //             styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
+        //         })
+        //         // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
+        //         setAttribute(el, 'style', valueStyleObject)
+        //     }))
+        // })
+
+        // 对一开始的就有 transition 的节点，要使用这种方式才能触发 transition，不能写到下面的 nextFrames 中。
         styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
+        if (hasTransition(styleObjects[0])) {
+            forceReflow(el)
+        }
         nextFrames(styleObjects.slice(1).map((one, ) => () => {
             // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
             //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
@@ -130,7 +151,12 @@ class StyleManager {
             })
             // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
             setAttribute(el, 'style', valueStyleObject)
+            // CAUTION 如果自己上面有 transition，一定要触发 reflow，后面的 transition 属性变化才会生效
+            if (hasTransition(one)) {
+                forceReflow(el)
+            }
         }))
+
     }
     separateStyleObject(styleObject: StyleObject): [StyleObject, StyleObject] {
         // 把 value 不是 plainObject 的属性分离出来

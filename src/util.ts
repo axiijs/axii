@@ -111,8 +111,12 @@ export function nextFrames(fns: ((time: number) => void)[]) {
 //             setTimeout(next, 500)
 //         }
 //     }
-//     setTimeout(next, 1000)
+//     setTimeout(next, 17)
 // }
+
+export function nextTick(fn: Function) {
+    setTimeout(fn, 1)
+}
 
 // 顺序 执行返回  promise 的函数
 export function sequencePromises(fns: (() => Promise<any>)[]) {
