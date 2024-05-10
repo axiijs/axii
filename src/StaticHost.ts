@@ -10,7 +10,7 @@ import {
 import {Host, PathContext} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
-import {assert, removeNodesBetween} from "./util";
+import {assert, nextFrames, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
@@ -93,29 +93,39 @@ class StyleManager {
 
         el.classList.add(styleSheetId)
         const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
-        // styleSheet!.innerHTML = this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n')
 
         // CAUTION 多个 styleObjects 的更新要用异步任务，这样 transition 中的效果才能生效
-        // nextFrames(styleObjects.slice(1).map((one, index) => () => {
+        // 1. replaceSync 会立即生效，不会有 transition 效果
+        // nextFrames(styleObjects.map((one, index) => () => {
         //     // styleScript!.innerHTML += this.generateStyleContent(`.${styleSheetId}`, one)
-        //     const lastObjects = styleObjects.slice(1, index+1+1)
+        //     const lastObjects = styleObjects.slice(0, index+1)
         //     const newContent = lastObjects.map(one => this.generateStyleContent(`.${styleSheetId}`, one).join('\n')).join('\n')
+        //     console.log(newContent)
         //     styleSheet!.replaceSync(newContent)
         // }))
+
+        // 2. promise chain 对于先 display none 再显示的节点也不能触发 transition
         // TODO 用 insertRule 和 replace/innerHTML 相比性能如何
-        // sequencePromises(styleObjects.slice(1).map((one, index) => () => {
-        //     const lastObjects = styleObjects.slice(1, index+1+1)
+        // sequencePromises(styleObjects.map((one, index) => () => {
+        //     const lastObjects = styleObjects.slice(0, index+1)
         //     const newContent = lastObjects.map(one => this.generateStyleContent(`.${styleSheetId}`, one).join('\n')).join('\n')
         //     return styleSheet!.replace(newContent)
         // }))
 
-        styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
+        // 3. 对于先 display none 再显示的节点也不能触发 transition
+        // styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
+        // styleObjects.slice(1).forEach((one, index)=> {
+        //     this.generateStyleContent(`.${styleSheetId}`, one).forEach(rule => {
+        //         styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
+        //     })
+        // })
 
-        styleObjects.slice(1).forEach((one, index)=> {
+        styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
+        nextFrames(styleObjects.slice(1).map((one, ) => () => {
             this.generateStyleContent(`.${styleSheetId}`, one).forEach(rule => {
                 styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
             })
-        })
+        }))
     }
     generateStyleContent(selector:string, styleObject: StyleObject): string[] {
 

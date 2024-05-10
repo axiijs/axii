@@ -103,6 +103,7 @@ export function nextFrames(fns: ((time: number) => void)[]) {
     requestAnimationFrame(next)
 }
 
+
 // 顺序 执行返回  promise 的函数
 export function sequencePromises(fns: (() => Promise<any>)[]) {
     return fns.reduce((prev, fn) => prev.then(() => fn()), Promise.resolve())
