@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
-import {Component, createElement, createRoot, N_ATTR, RenderContext} from "@framework";
+import {Component, createElement, createRoot, N_ATTR, PropTypes, RenderContext, atom} from "@framework";
 import userEvent from "@testing-library/user-event";
 
 describe('component configuration', () => {
@@ -206,5 +206,35 @@ describe('component configuration', () => {
 
         expect(childOuterProps.hello).toEqual(appProps.hello)
         expect(nativeAttrs.style).toMatchObject([{color:'red'},{color:'blue'}])
+    })
+
+    test('configure component rewrite component with propTypes defaultValue', () => {
+        let childProps:any = null
+
+        function Child(props:any, {createElement}: RenderContext) {
+            childProps = props
+            return <div >
+                hello
+            </div>
+        }
+
+        Child.propTypes = {
+            color: PropTypes.atom<string>().default(() => atom('red')),
+            color2: PropTypes.atom<string>().default(() => atom('red'))
+        }
+
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <Child as="child" />
+            </div>
+        }
+
+        root.render(<App
+            $child:color='blue'
+        />)
+
+        expect(childProps.color()).toBe('blue')
+        expect(childProps.color2()).toBe('red')
+
     })
 })
