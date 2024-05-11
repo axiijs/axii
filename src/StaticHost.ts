@@ -10,7 +10,7 @@ import {
 import {Host, PathContext} from "./Host";
 import {computed, destroyComputed, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
-import {assert, nextFrames, removeNodesBetween} from "./util";
+import {assert, isPlainObject, nextFrames, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
@@ -163,7 +163,8 @@ class StyleManager {
         const valueStyleObject: StyleObject = {}
         const nestedStyleObject: StyleObject = {}
         for(const key in styleObject) {
-            if (typeof styleObject[key] === 'object' && !Array.isArray(styleObject[key])) {
+            // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
+            if (isPlainObject(styleObject[key])) {
                 nestedStyleObject[key] = styleObject[key]
             } else {
                 valueStyleObject[key] = styleObject[key]

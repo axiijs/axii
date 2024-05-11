@@ -93,6 +93,8 @@ export function shallowEqual(a:any,b:any) {
 
 // TODO cancel?
 export function nextFrames(fns: ((time: number) => void)[]) {
+    if (!fns.length) return
+
     let i = 0
     const next = (time: number) => {
         if (i < fns.length) {
