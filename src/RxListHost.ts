@@ -36,28 +36,30 @@ export class RxListHost implements Host{
 
         this.hosts = this.source.map((item) => {
             return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
-        }, ({method, argv, result, key, newValue}) => {
-            if (method === 'splice') {
-                // 要删除的 hosts
-                const deletedHosts = this.hosts!.data!.slice(argv![0], argv![0]+argv![1])
-                const isOnlyChildrenOfParent = this.isOnlyChildrenOfParent()
+        }, {
+            beforePatch: ({method, argv, result, key, newValue}) => {
+                if (method === 'splice') {
+                    // 要删除的 hosts
+                    const deletedHosts = this.hosts!.data!.slice(argv![0], argv![0]+argv![1])
+                    const isOnlyChildrenOfParent = this.isOnlyChildrenOfParent()
 
-                if (deletedHosts.length === this.hosts!.length() && isOnlyChildrenOfParent) {
-                    const parent = this.placeholder.parentNode!
-                    if (parent instanceof HTMLElement) {
-                        (parent as HTMLElement).innerHTML = ''
+                    if (deletedHosts.length === this.hosts!.length() && isOnlyChildrenOfParent) {
+                        const parent = this.placeholder.parentNode!
+                        if (parent instanceof HTMLElement) {
+                            (parent as HTMLElement).innerHTML = ''
+                        }
+                        // CAUTION 一定记得把自己 placeholder 重新 append 进去。
+                        parent.appendChild(this.placeholder)
+                        // destroy host 但是不用处理 element 了。
+                        deletedHosts.forEach((host: Host) => host.destroy(true))
+                    } else {
+                        deletedHosts.forEach((host: Host) => host.destroy())
                     }
-                    // CAUTION 一定记得把自己 placeholder 重新 append 进去。
-                    parent.appendChild(this.placeholder)
-                    // destroy host 但是不用处理 element 了。
-                    deletedHosts.forEach((host: Host) => host.destroy(true))
+                } else if(key){
+                    this.hosts!.at(key as number)!.destroy()
                 } else {
-                    deletedHosts.forEach((host: Host) => host.destroy())
+                    throw new Error('unknown trigger info')
                 }
-            } else if(key){
-                this.hosts!.at(key as number)!.destroy()
-            } else {
-                throw new Error('unknown trigger info')
             }
         })
 

@@ -42,6 +42,7 @@ describe('rxList render', () => {
             expect(arr.length()).toBe(4)
             expect(rootEl.firstElementChild!.children.length).toBe(4)
             expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('4')
+            expect(rootEl.firstElementChild!.children[4]).toBeUndefined()
 
             arr.unshift(-1, 0)
             expect(rootEl.firstElementChild!.children.length).toBe(6)
