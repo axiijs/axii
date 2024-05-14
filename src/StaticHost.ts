@@ -1,5 +1,6 @@
 import {
     createElement,
+    DetachStyledInfo,
     ExtendedElement,
     insertBefore,
     RefHandleInfo,
@@ -142,7 +143,7 @@ class StyleManager {
         if (hasTransition(styleObjects[0])) {
             forceReflow(el)
         }
-        nextFrames(styleObjects.slice(1).map((one, ) => () => {
+        return nextFrames(styleObjects.slice(1).map((one, ) => () => {
             // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
             //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
             const [valueStyleObject, nestedStyleObject] = this.separateStyleObject(one)
@@ -215,12 +216,15 @@ function isStaticStyleObject(styleObject: StyleObject|StyleObject[]): boolean {
 
 export class StaticHost implements Host{
     static styleManager = new StyleManager()
+    // 如果有 detachStyledChildren，会设为 true
+    public forceHandleElement: boolean = false
     // CAUTION Component 只因为 props 的引用变化而重新 render。
     //  只有有 diff 算发以后才会出现引用变化的情况，现在我们还没有实现。所以现在其实永远不会重 render
     computed = undefined
     reactiveHosts?: Host[]
     attrComputeds?: ReturnType<typeof computed>[]
     refHandles?: RefHandleInfo[]
+    detachStyledChildren?: DetachStyledInfo[]
     constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
     }
     get parentElement() {
@@ -235,6 +239,10 @@ export class StaticHost implements Host{
         this.collectInnerHost()
         this.collectReactiveAttr()
         this.collectRefHandles()
+        this.collectDetachStyledChildren()
+        if (this.detachStyledChildren?.length) {
+            this.forceHandleElement = true
+        }
         this.reactiveHosts!.forEach(host => host.render())
 
         if(this.pathContext.root.attached) {
@@ -272,25 +280,33 @@ export class StaticHost implements Host{
         this.attrComputeds = []
         unhandledAttr?.forEach(({ el, key, value, path}) => {
             this.attrComputeds!.push(computed(() => {
-
-                const final = Array.isArray(value) ?
-                    value.map(v => isAtomLike(v) ? v() : v) :
-                    isAtomLike(value) ? value() : value
-
-                if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final))) {
-                    const isStatic = isStaticStyleObject(value)
-                    StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
-                } else {
-                    setAttribute(el, key, final, isSVG)
-                }
+                this.updateAttribute(el, key, value, path, isSVG)
             }))
         })
+    }
+    updateAttribute(el: ExtendedElement, key:string, value:any, path:number[], isSVG:boolean) {
+        const final = Array.isArray(value) ?
+            value.map(v => isAtomLike(v) ? v() : v) :
+            isAtomLike(value) ? value() : value
+
+        if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final))) {
+            const isStatic = isStaticStyleObject(value)
+            return StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
+        } else {
+            setAttribute(el, key, final, isSVG)
+        }
     }
     collectRefHandles() {
         const result = this.source
         if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
         const {  refHandles } = result as ExtendedElement
         this.refHandles = refHandles
+    }
+    collectDetachStyledChildren() {
+        const result = this.source
+        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
+        const {  detachStyledChildren } = result as ExtendedElement
+        this.detachStyledChildren = detachStyledChildren
     }
     attachRefs= () =>{
         this.refHandles?.forEach(({ handle, el }: RefHandleInfo) => {
@@ -308,9 +324,54 @@ export class StaticHost implements Host{
             createElement.detachRef(handle)
         })
 
-
-        if (!parentHandle) {
-            removeNodesBetween(this.element!, this.placeholder, true)
-        }
+        this.removeElements(parentHandle)
     }
+    async removeElements(parentHandle?: boolean) {
+        if (parentHandle) return
+
+        if(this.detachStyledChildren?.length) {
+            const transformingElements = new Set<HTMLElement>()
+            const animatingElements = new Set<HTMLElement>()
+
+            // TODO 提升计算效率
+            // CAUTION 监听所有的 animationrun 和 transitionrun 事件。不能用 animationstart 和 transitionstart，因为不是立刻触发的
+            this.detachStyledChildren?.forEach(({el, style:value}) => {
+                const transitionProperties = getComputedStyle(el).transitionProperty.split(',').map(p => p.trim())
+                // CAUTION 注意这里的计算规则和 updateAttribute 里的不太一样，这里只要找 key 就行了
+                const finalStyle: StyleObject = Array.isArray(value) ?
+                    Object.assign({}, ...value.map(v => isAtomLike(v) ? v() : v)) :
+                    isAtomLike(value) ? value() : value
+
+                const styleKeys = Object.keys(finalStyle)
+                const hasTransition = transitionProperties.includes('all') || styleKeys.some(key => transitionProperties.includes(key))
+                if (hasTransition) {
+                    transformingElements.add(el)
+                }
+                if (finalStyle.animation) {
+                    animatingElements.add(el)
+                }
+            })
+            // 执行完了所有的 update style 任务，这里用 await 是因为修改该 style 用到了 nextFrame 等异步行为
+            await Promise.all(this.detachStyledChildren?.map(({ el, style: value, path }) => {
+                return this.updateAttribute(el, 'style', value, path, el instanceof SVGElement)
+            })||[])
+
+            const transformingElementsArray = Array.from(transformingElements)
+            const animatingElementsArray = Array.from(animatingElements)
+            await Promise.all([
+                ...transformingElementsArray.map(el => eventToPromise(el, 'transitionrun')),
+                ...transformingElementsArray.map(el => eventToPromise(el, 'transitionend')),
+                ...animatingElementsArray.map(el => eventToPromise(el, 'animationrun')),
+                ...animatingElementsArray.map(el => eventToPromise(el, 'animationend')),
+            ])
+        }
+        removeNodesBetween(this.element!, this.placeholder, true)
+    }
+}
+
+
+function eventToPromise(el: HTMLElement, event: string) {
+    return new Promise(resolve => {
+        el.addEventListener(event, resolve, {once: true})
+    })
 }

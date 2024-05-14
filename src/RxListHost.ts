@@ -38,28 +38,30 @@ export class RxListHost implements Host{
             return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
         }, {
             beforePatch: ({method, argv, result, key, newValue}) => {
-                if (method === 'splice') {
-                    // 要删除的 hosts
-                    const deletedHosts = this.hosts!.data!.slice(argv![0], argv![0]+argv![1])
-                    const isOnlyChildrenOfParent = this.isOnlyChildrenOfParent()
-
-                    if (deletedHosts.length === this.hosts!.length() && isOnlyChildrenOfParent) {
-                        const parent = this.placeholder.parentNode!
-                        if (parent instanceof HTMLElement) {
-                            (parent as HTMLElement).innerHTML = ''
-                        }
-                        // CAUTION 一定记得把自己 placeholder 重新 append 进去。
-                        parent.appendChild(this.placeholder)
-                        // destroy host 但是不用处理 element 了。
-                        deletedHosts.forEach((host: Host) => host.destroy(true))
-                    } else {
-                        deletedHosts.forEach((host: Host) => host.destroy())
-                    }
-                } else if(key){
-                    this.hosts!.at(key as number)!.destroy()
-                } else {
-                    throw new Error('unknown trigger info')
-                }
+                // if (method === 'splice') {
+                //     // 要删除的 hosts
+                //     const deletedHosts = this.hosts!.data!.slice(argv![0], argv![0]+argv![1])
+                //     const isOnlyChildrenOfParent = this.isOnlyChildrenOfParent()
+                //
+                //     // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点要强制自己清理。那么直接清空 parent，这样比较快。
+                //     const removeAllElementByParent = deletedHosts.length === this.hosts!.length() && isOnlyChildrenOfParent && this.hosts?.data.every(host => !host.forceHandleElement)
+                //     if (removeAllElementByParent) {
+                //         const parent = this.placeholder.parentNode!
+                //         if (parent instanceof HTMLElement) {
+                //             (parent as HTMLElement).innerHTML = ''
+                //         }
+                //         // CAUTION 一定记得把自己 placeholder 重新 append 进去。
+                //         parent.appendChild(this.placeholder)
+                //         // destroy host 但是不用处理 element 了。
+                //         deletedHosts.forEach((host: Host) => host.destroy(true))
+                //     } else {
+                //         deletedHosts.forEach((host: Host) => host.destroy())
+                //     }
+                // } else if(key){
+                //     this.hosts!.at(key as number)!.destroy()
+                // } else {
+                //     throw new Error('unknown trigger info')
+                // }
             }
         })
 
@@ -71,7 +73,7 @@ export class RxListHost implements Host{
                 return null
             },
             function applyPatch(_, triggerInfos) {
-            triggerInfos.forEach(({method, argv, result, key, newValue}) => {
+            triggerInfos.forEach(({method, argv, result, key, newValue, methodResult}) => {
                 if (method === 'splice') {
                     // 这里的 this.hosts 是已经修改好的。
                     const insertBeforeHost = host.hosts!.at(argv![0] + argv!.slice(2)!.length)
@@ -81,7 +83,28 @@ export class RxListHost implements Host{
 
                     insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
 
+                    const isOnlyChildrenOfParent = host.isOnlyChildrenOfParent()
+                    const deletedHosts = methodResult as Host[]
+
+                    // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点要强制自己清理。那么直接清空 parent，这样比较快。
+                    const removeAllElementByParent = deletedHosts.length === host.hosts!.length() && isOnlyChildrenOfParent && host.hosts?.data.every(inner => !inner.forceHandleElement)
+                    if (removeAllElementByParent) {
+                        const parent = host.placeholder.parentNode!
+                        if (parent instanceof HTMLElement) {
+                            (parent as HTMLElement).innerHTML = ''
+                        }
+                        // CAUTION 一定记得把自己 placeholder 重新 append 进去。
+                        parent.appendChild(host.placeholder)
+                        // destroy host 但是不用处理 element 了。
+                        deletedHosts.forEach((host: Host) => host.destroy(true))
+                    } else {
+                        deletedHosts.forEach((host: Host) => host.destroy())
+                    }
+
                 } else if(!method && key){
+                    const oldHost = methodResult as Host
+                    oldHost.destroy()
+
                     // 会回收之前 placeholder，完全重新执行
                     const index = key as number
                     insertBefore(host.hosts!.at(index)!.placeholder, host.hosts!.at(index+1)?.element || host.placeholder)

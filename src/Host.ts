@@ -7,6 +7,8 @@ export interface Host {
     pathContext: PathContext
     computed?: ReturnType<typeof computed>
     render: () => void
+    // 声明是否强制由自己来处理 element，例如 StaticHost 在有 detachStyledChildren 的时候，就需要自己处理 element
+    forceHandleElement?: boolean
     destroy : (parentHandleElement?: boolean, parentHandleComputed?: boolean) => void
     revoke?: () => void
 }

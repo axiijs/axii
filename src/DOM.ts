@@ -62,6 +62,7 @@ export interface ExtendedElement extends HTMLElement {
     unhandledChildren?: UnhandledChildInfo[]
     unhandledAttr?: UnhandledAttrInfo[]
     refHandles?: RefHandleInfo[]
+    detachStyledChildren?: DetachStyledInfo[]
 }
 
 function eventProxy(this: ExtendedElement, e: Event) {
@@ -258,6 +259,12 @@ export type RefHandleInfo = {
     path: number[]
 }
 
+export type DetachStyledInfo = {
+    el: any,
+    style: any,
+    path: number[]
+}
+
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     const {_isSVG, ...props} = rawProps || {}
@@ -277,6 +284,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     const unhandledAttr: UnhandledAttrInfo[] = []
     const unhandledChildren: UnhandledChildInfo[] = []
     const refHandles: RefHandleInfo[] = []
+    const detachStyledChildren: DetachStyledInfo[] =[]
 
     children?.forEach((child, index) => {
         if (child === undefined || child === null) return
@@ -297,10 +305,14 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             const childRefHandles = childElement.refHandles || []
             refHandles.push(...childRefHandles.map(c => ({...c, path: [index, ...c.path]})))
 
+            const childDetachStyledChildren = childElement.detachStyledChildren || []
+            detachStyledChildren.push(...childDetachStyledChildren.map(c => ({...c, path: [index, ...c.path]})))
+
 
             delete childElement.unhandledChildren
             delete childElement.unhandledAttr
             delete childElement.refHandles
+            delete childElement.detachStyledChildren
 
         } else {
             const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
@@ -318,6 +330,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             delete props.ref
         }
 
+        if (props.detachStyle) {
+            detachStyledChildren.push({el: container as HTMLElement, style: props.detachStyle, path: []})
+            delete props.detachStyle
+        }
 
         Object.entries(props).forEach(([key, value]) => {
             // 注意这里好像写得很绕，但逻辑判断是最少的
@@ -335,6 +351,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
     if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
     if (refHandles.length) containerElement.refHandles = refHandles
+    if (detachStyledChildren.length) containerElement.detachStyledChildren = detachStyledChildren
 
     return container
 }
