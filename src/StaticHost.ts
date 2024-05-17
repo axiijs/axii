@@ -50,6 +50,13 @@ function hasTransition(styleObject: StyleObject|StyleObject[]) {
     return styleObject.transition !== undefined
 }
 
+function hasInlineAnimation(styleObject: StyleObject|StyleObject[]) {
+    if (Array.isArray(styleObject)) {
+        return styleObject.some(hasInlineAnimation)
+    }
+    return styleObject['@keyframes'] !== undefined
+}
+
 function forceReflow(el: HTMLElement) {
     // CAUTION 通过读取 offsetHeight 来触发 reflow
     el.offsetHeight
@@ -139,6 +146,9 @@ class StyleManager {
         // })
 
         // 对一开始的就有 transition 的节点，要使用这种方式才能触发 transition，不能写到下面的 nextFrames 中。
+        // if (hasInlineAnimation(styleObjects[0])) {
+        //     console.log(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
+        // }
         styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
         if (hasTransition(styleObjects[0])) {
             forceReflow(el)
@@ -146,51 +156,98 @@ class StyleManager {
         return nextFrames(styleObjects.slice(1).map((one, ) => () => {
             // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
             //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
-            const [valueStyleObject, nestedStyleObject] = this.separateStyleObject(one)
-            this.generateStyleContent(`.${styleSheetId}`, nestedStyleObject).forEach(rule => {
-                styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
-            })
-            // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
-            setAttribute(el, 'style', valueStyleObject)
+            const [pureValueStyleObject, otherStyleObject] = this.separateStyleObject(one)
+            if (otherStyleObject) {
+                this.generateStyleContent(`.${styleSheetId}`, otherStyleObject).forEach(rule => {
+                    styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
+                })
+            }
+
+            if (pureValueStyleObject) {
+                // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
+                setAttribute(el, 'style', pureValueStyleObject)
+            }
+
             // CAUTION 如果自己上面有 transition，一定要触发 reflow，后面的 transition 属性变化才会生效
             if (hasTransition(one)) {
                 forceReflow(el)
             }
         }))
-
     }
-    separateStyleObject(styleObject: StyleObject): [StyleObject, StyleObject] {
+    isNestedStyleObject(key:string, styleObject: any): boolean {
+        // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
+        return key !== '@keyframes' && isPlainObject(styleObject)
+    }
+    separateStyleObject(styleObject: StyleObject): [StyleObject?, StyleObject?] {
         // 把 value 不是 plainObject 的属性分离出来
-        const valueStyleObject: StyleObject = {}
-        const nestedStyleObject: StyleObject = {}
+        let pureValueStyleObject: StyleObject|undefined = undefined
+        let otherStyleObject: StyleObject|undefined = undefined
         for(const key in styleObject) {
-            // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
-            if (isPlainObject(styleObject[key])) {
-                nestedStyleObject[key] = styleObject[key]
+            if (this.isNestedStyleObject(key, styleObject[key]) || (key==='animation' && styleObject['keyframes'])) {
+                if (!otherStyleObject) otherStyleObject = {}
+                otherStyleObject[key] = styleObject[key]
             } else {
-                valueStyleObject[key] = styleObject[key]
+                if(!pureValueStyleObject) pureValueStyleObject = {}
+                pureValueStyleObject[key] = styleObject[key]
             }
         }
-        return [valueStyleObject, nestedStyleObject]
+        return [pureValueStyleObject, otherStyleObject]
+    }
+    stringifyKeyFrameObject(keyframeObject: StyleObject): string {
+        return Object.entries(keyframeObject).map(([key, value]) => {
+            return `${key} {
+                ${this.stringifyStyleObject(value)}
+            }`
+        }).join('\n')
+    }
+    generateInlineAnimationContent(selector:string, styleObject:StyleObject) {
+        let animationContent = ''
+        let animationName = ''
+        animationName = `animation-${Math.random().toString(36).slice(2)}`
+        if (styleObject['@keyframes']) {
+            const keyframeContent = `@keyframes ${animationName} {
+${this.stringifyKeyFrameObject(styleObject['@keyframes'])}
+}`
+            animationContent = keyframeContent
+        }
+
+        if (styleObject.animation) {
+            const animationValue = (Array.isArray(styleObject.animation) ? styleObject.animation.join(' ') : styleObject.animation)!.replace(/@self/, animationName)
+            animationContent += `
+${selector} {
+    animation: ${animationValue};
+}
+`
+        }
+
+        return animationContent
     }
     generateStyleContent(selector:string, styleObject: StyleObject): string[] {
 
         const valueStyleObject = {...styleObject}
         const nestedStyleEntries: [string, any][] = []
+        const keyframeObj: StyleObject = {}
+
         for(const key in valueStyleObject) {
-            if (typeof styleObject[key] === 'object' && !Array.isArray(styleObject[key])) {
-                nestedStyleEntries.push([key, styleObject[key]])
+            if (key === '@keyframes' || key === 'animation') {
+                keyframeObj[key] = valueStyleObject[key]
+                delete valueStyleObject[key]
+            } else if (this.isNestedStyleObject(key, valueStyleObject[key])) {
+                nestedStyleEntries.push([key, valueStyleObject[key]])
+                delete valueStyleObject[key]
             }
         }
 
-
-        const valueStyleContent = `${selector} {
+        const contents: string[] = [`${selector} {
 ${this.stringifyStyleObject(valueStyleObject)}
-}
-`
+}`]
+
+        const animateContent = this.generateInlineAnimationContent(selector, keyframeObj)
+        if (animateContent) {
+            contents.push(animateContent)
+        }
 
         return nestedStyleEntries.reduce((acc, [key, nestedObject]: [string, any]) => {
-
             // 支持 at-rules for media/container query
             if (key.startsWith('@')) {
                 return acc.concat(`${key} {
@@ -200,7 +257,7 @@ ${this.stringifyStyleObject(valueStyleObject)}
 
             const nestedClassName = /^(\s?)+&/.test(key) ? key.replace('&', selector) : `${selector} ${key}`
             return acc.concat(this.generateStyleContent(nestedClassName, nestedObject))
-        }, [valueStyleContent])
+        }, contents)
 
     }
 }
@@ -289,7 +346,7 @@ export class StaticHost implements Host{
             value.map(v => isAtomLike(v) ? v() : v) :
             isAtomLike(value) ? value() : value
 
-        if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final))) {
+        if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final)) || hasInlineAnimation(final)) {
             const isStatic = isStaticStyleObject(value)
             return StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
         } else {
