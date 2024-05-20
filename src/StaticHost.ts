@@ -90,7 +90,7 @@ class StyleManager {
 
             const property = key.replace(/([A-Z])/g, '-$1').toLowerCase()
             // value 是数字类型的 attr，自动加上 单位
-            return `${property}:${stringifyStyleValue(property, value)};`
+            return `${property}:${stringifyStyleValue(key, value)};`
         }).join('\n')
     }
     update(hostPath: Host[], elementPath: number[], styleObject: StyleObject|StyleObject[], el: ExtendedElement, isStatic: boolean = false) {

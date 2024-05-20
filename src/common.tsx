@@ -177,3 +177,56 @@ export function reactiveFocused(target:HTMLElement, value:Atom<boolean|null>) {
     }
 }
 
+
+
+export const DEFAULT_DRAG_MOVE_EVENT = 'dragmove'
+export type DragMoveOptions = {
+    container?: HTMLElement
+    customEventName?: string
+}
+export type DragMoveDetail = {
+    clientX: number
+    clientY: number
+    deltaX: number
+    deltaY: number
+}
+
+
+export function createOnDragMove(options?: DragMoveOptions) {
+    const container = options?.container || document.body
+    const customEventName = options?.customEventName || DEFAULT_DRAG_MOVE_EVENT
+
+    return function attachRef(ref: HTMLElement) {
+        const mouseDownListener = (e: MouseEvent) => {
+            const mouseStartX = e.clientX
+            const mouseStartY = e.clientY
+            let lastX = mouseStartX
+            let lastY = mouseStartY
+
+            const mouseMoveListener = (e: MouseEvent) => {
+                const detail = {
+                    clientX: e.clientX,
+                    clientY: e.clientY,
+                    deltaXFromStart: e.clientX - mouseStartX,
+                    deltaYFromStart: e.clientY - mouseStartY,
+                    deltaX: e.clientX - lastX,
+                    deltaY: e.clientY - lastY,
+                }
+                ref.dispatchEvent(new CustomEvent(customEventName, {detail}))
+            }
+
+            container.addEventListener('mousemove', mouseMoveListener)
+
+            container.addEventListener('mouseup', () => {
+                console.log('mouseup')
+                container.removeEventListener('mousemove', mouseMoveListener)
+            }, {once: true})
+        }
+
+        ref.addEventListener('mousedown', mouseDownListener)
+
+        return () => {
+            ref.removeEventListener('mousedown', mouseDownListener)
+        }
+    }
+}
