@@ -1,8 +1,11 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {ContextProvider, createElement, createRoot, ModalContext, RenderContext} from "@framework";
-import {atom} from "data0";
+import {atom, setDefaultScheduleRecomputedAsLazy} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
+
+setDefaultScheduleRecomputedAsLazy(false)
+
 
 describe('portal', () => {
 

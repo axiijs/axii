@@ -1,4 +1,4 @@
-import {computed, destroyComputed, Atom} from "data0";
+import {computed, destroyComputed, Atom, autorun} from "data0";
 import {PathContext, Host} from "./Host";
 
 
@@ -9,7 +9,8 @@ function stringValue(v: any) {
 }
 
 export class AtomHost implements Host{
-    computed: ReturnType<typeof computed>
+    stopAutoRun: () => void = () => {}
+    // computed: ReturnType<typeof computed>
     element: Text|Comment = this.placeholder
     constructor(public source: Atom, public placeholder:Comment, public pathContext: PathContext) {
     }
@@ -29,18 +30,25 @@ export class AtomHost implements Host{
     }
 
     render(): void {
-        this.computed = computed(() => {
-                this.replace(this.source())
-            },
-            undefined,
-            undefined,
-            undefined,
-            this.pathContext.skipIndicator
-        )
+        // this.computed = computed(() => {
+        //         this.replace(this.source())
+        //     },
+        //     undefined,
+        //     (recompute) => {
+        //         recompute()
+        //     },
+        //     undefined,
+        //     this.pathContext.skipIndicator
+        // )
+        // FIXME skipIndicator 是干什么的？？
+        this.stopAutoRun = autorun(() => {
+            this.replace(this.source())
+        })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
-            destroyComputed(this.computed)
+            // destroyComputed(this.computed)
+            this.stopAutoRun()
         }
         if (!parentHandle) {
             this.element.remove()

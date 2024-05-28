@@ -2,8 +2,10 @@
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
 import {createRoot, RenderContext, createElement} from "@framework";
-import {atom} from "data0";
+import {atom, setDefaultScheduleRecomputedAsLazy} from "data0";
 import {StyleSize} from "../src/DOM.js";
+
+setDefaultScheduleRecomputedAsLazy(false)
 
 describe('component render', () => {
 

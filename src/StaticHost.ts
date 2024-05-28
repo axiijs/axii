@@ -9,7 +9,7 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
-import {computed, destroyComputed, isAtom, isReactive} from "data0";
+import {autorun, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
 import {assert, isPlainObject, nextFrames, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
@@ -279,7 +279,7 @@ export class StaticHost implements Host{
     //  只有有 diff 算发以后才会出现引用变化的情况，现在我们还没有实现。所以现在其实永远不会重 render
     computed = undefined
     reactiveHosts?: Host[]
-    attrComputeds?: ReturnType<typeof computed>[]
+    attrAutoruns?: (() => void)[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
     constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
@@ -334,11 +334,14 @@ export class StaticHost implements Host{
 
         const {  unhandledAttr } = result as ExtendedElement
 
-        this.attrComputeds = []
+        this.attrAutoruns = []
         unhandledAttr?.forEach(({ el, key, value, path}) => {
-            this.attrComputeds!.push(computed(() => {
-                this.updateAttribute(el, key, value, path, isSVG)
-            }))
+            // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
+            if (!key.includes(':')) {
+                this.attrAutoruns!.push(autorun(() => {
+                    this.updateAttribute(el, key, value, path, isSVG)
+                }))
+            }
         })
     }
     updateAttribute(el: ExtendedElement, key:string, value:any, path:number[], isSVG:boolean) {
@@ -372,7 +375,7 @@ export class StaticHost implements Host{
     }
     destroy(parentHandle?:boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
-            this.attrComputeds?.forEach(attrComputed => destroyComputed(attrComputed))
+            this.attrAutoruns?.forEach(stopAutorun => stopAutorun())
         }
 
         this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))

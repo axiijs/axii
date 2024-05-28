@@ -531,6 +531,7 @@ export const N_ATTR = '__nativeAttrs'
 
 export function bindProps(Component: Component, props: Props,) {
     const ComponentWithProps = Component.bind(null)
+    ComponentWithProps.propTypes = Component.propTypes
     ComponentWithProps.boundProps = ensureArray(ComponentWithProps.boundProps).concat(props)
     return ComponentWithProps
 }

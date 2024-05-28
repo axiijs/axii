@@ -1,9 +1,11 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {bindProps, createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
-import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
+import {type Atom, atom, computed, incMap, reactive, RxList, setDefaultScheduleRecomputedAsLazy} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import {ComponentHost} from "../src/ComponentHost.js";
+
+// setDefaultScheduleRecomputedAsLazy(false)
 
 describe('component render', () => {
 
@@ -80,7 +82,6 @@ describe('component render', () => {
 
         root.render(<App/>)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('404')
-
         renderText(true)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('hello world')
     })

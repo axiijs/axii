@@ -1,5 +1,5 @@
-import {atomComputed, computed, Atom, destroyComputed, Notifier} from "data0";
-import {PathContext, Host} from "./Host";
+import {Atom, atomComputed, autorun, destroyComputed, Notifier} from "data0";
+import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 
@@ -7,7 +7,7 @@ import {insertBefore} from './DOM'
 type FunctionNode = () => ChildNode|DocumentFragment|string|number|null|boolean
 
 export class FunctionHost implements Host{
-    renderComputed: ReturnType<typeof computed>
+    stopAutoRender!: () => any
     fragmentParent = document.createDocumentFragment()
     innerHost?: Atom<Host>
     constructor(public source: FunctionNode, public placeholder:Comment, public pathContext: PathContext) {
@@ -29,7 +29,7 @@ export class FunctionHost implements Host{
         )
 
         let lastRenderedHost: Host|undefined
-        this.renderComputed = computed(() => {
+        this.stopAutoRender = autorun(() => {
             // CAUTION 每次都清空上一次的结果
             if(lastRenderedHost) {
                 lastRenderedHost.destroy(false, false)
@@ -44,7 +44,8 @@ export class FunctionHost implements Host{
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         const innerHost = this.innerHost!()!
         if (!parentHandleComputed) {
-            destroyComputed(this.renderComputed)
+            this.stopAutoRender()
+            // destroyComputed(this.renderComputed)
             destroyComputed(this.innerHost!)
         }
         innerHost?.destroy(parentHandle, !parentHandleComputed)

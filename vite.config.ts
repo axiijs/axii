@@ -12,7 +12,7 @@ export default {
   resolve: {
     alias: {
       '@framework': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
-      // 'data0': fileURLToPath(new URL('../rata/src/index.ts', import.meta.url))
+      'data0': fileURLToPath(new URL('../data0/src/index.ts', import.meta.url))
     }
   },
   server: {
