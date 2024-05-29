@@ -4,10 +4,16 @@ import {ContextProvider, createElement, createRoot, ModalContext, RenderContext}
 import {atom, setDefaultScheduleRecomputedAsLazy} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 
-setDefaultScheduleRecomputedAsLazy(false)
+setDefaultScheduleRecomputedAsLazy(true)
 
 
 describe('portal', () => {
+
+    const wait = (time: number) => {
+        return new Promise(resolve => {
+            setTimeout(resolve, time)
+        })
+    }
 
     let root: ReturnType<typeof createRoot>
     let rootEl: HTMLElement
@@ -22,7 +28,7 @@ describe('portal', () => {
     })
 
 
-    test('portal should work', () => {
+    test('portal should work', async () => {
         function InPortal({}, { context}: RenderContext) {
             return <div>{context.get(ModalContext)}</div>
         }
@@ -48,6 +54,7 @@ describe('portal', () => {
 
         portalText('portal content updated')
         showPortal2(false)
+        await wait(10)
         expect(portalContainer.innerText).toBe('portal content updated\napp context')
     })
 })

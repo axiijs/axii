@@ -1,4 +1,4 @@
-import {Atom, atomComputed, autorun, destroyComputed, Notifier} from "data0";
+import {Atom, autorun, Notifier} from "data0";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
@@ -20,35 +20,36 @@ export class FunctionHost implements Host{
     }
     render(): void {
 
-        this.innerHost = atomComputed(() => {
-                const node = this.source()
-                const newPlaceholder = document.createComment('computed node')
-                insertBefore(newPlaceholder, this.placeholder)
-                return createHost(node, newPlaceholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
-            }
-        )
 
-        let lastRenderedHost: Host|undefined
-        this.stopAutoRender = autorun(() => {
+        let scheduleRecompute = false
+
+        this.stopAutoRender = autorun(({ onCleanup }) => {
             // CAUTION 每次都清空上一次的结果
-            if(lastRenderedHost) {
-                lastRenderedHost.destroy(false, false)
-            }
+            const node = this.source()
+            const newPlaceholder = document.createComment('computed node')
+            insertBefore(newPlaceholder, this.placeholder)
+            const lastRenderedHost = createHost(node, newPlaceholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
 
-            lastRenderedHost = this.innerHost!()!
             Notifier.instance.pauseTracking()
             lastRenderedHost.render()
             Notifier.instance.resetTracking()
+
+            onCleanup(() => {
+                lastRenderedHost.destroy(false, false)
+            })
+        }, (recompute) => {
+            if (scheduleRecompute) return
+            scheduleRecompute = true
+            queueMicrotask(() => {
+                recompute()
+                scheduleRecompute = false
+            })
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
-        const innerHost = this.innerHost!()!
         if (!parentHandleComputed) {
             this.stopAutoRender()
-            // destroyComputed(this.renderComputed)
-            destroyComputed(this.innerHost!)
         }
-        innerHost?.destroy(parentHandle, !parentHandleComputed)
         if (!parentHandle) {
             this.placeholder.remove()
         }

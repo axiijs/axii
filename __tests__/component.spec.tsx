@@ -5,9 +5,15 @@ import {type Atom, atom, computed, incMap, reactive, RxList, setDefaultScheduleR
 import {beforeEach, describe, expect, test} from "vitest";
 import {ComponentHost} from "../src/ComponentHost.js";
 
-// setDefaultScheduleRecomputedAsLazy(false)
+setDefaultScheduleRecomputedAsLazy(true)
 
 describe('component render', () => {
+
+    const wait = (time: number) => {
+        return new Promise(resolve => {
+            setTimeout(resolve, time)
+        })
+    }
 
     let root: ReturnType<typeof createRoot>
     let rootEl: HTMLElement
@@ -72,7 +78,7 @@ describe('component render', () => {
         })
 
 
-    test('function node', () => {
+    test('function node', async () => {
         const renderText = atom(false)
         function App() {
             return <div>
@@ -83,6 +89,7 @@ describe('component render', () => {
         root.render(<App/>)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('404')
         renderText(true)
+        await wait(10)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('hello world')
     })
 
@@ -198,7 +205,7 @@ describe('component render', () => {
 
 
 
-    test('dynamic Component', () => {
+    test('dynamic Component', async () => {
         function Child1() {
             return <div>child1</div>
         }
@@ -222,11 +229,12 @@ describe('component render', () => {
         root.render(<App/>)
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('anonymous')
         dynamicComponent(Child1)
+        await wait(10)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('child1')
 
     })
 
-    test('computed in Component should destroy when component destroyed', () => {
+    test('computed in Component should destroy when component destroyed', async () => {
 
         const name = atom('')
         let innerComputedRuns = 0
@@ -254,6 +262,7 @@ describe('component render', () => {
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('Mr.data0')
         expect(innerComputedRuns).toBe(2)
         showChild(false)
+        await wait(10)
         name('data1')
         expect(innerComputedRuns).toBe(2)
         expect(rootEl.firstElementChild!.children.length).toBe(0)

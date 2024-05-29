@@ -1,5 +1,5 @@
-import {computed, destroyComputed, Atom, autorun} from "data0";
-import {PathContext, Host} from "./Host";
+import {Atom, autorun} from "data0";
+import {Host, PathContext} from "./Host";
 
 
 function stringValue(v: any) {
