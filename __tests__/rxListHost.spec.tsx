@@ -4,7 +4,7 @@ import {createElement, createRoot} from "@framework";
 import {RxList, setDefaultScheduleRecomputedAsLazy} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 
-setDefaultScheduleRecomputedAsLazy(false)
+setDefaultScheduleRecomputedAsLazy(true)
 
 
 describe('rxList render', () => {
@@ -34,7 +34,6 @@ describe('rxList render', () => {
             expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('1')
             expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('2')
             expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('3')
-
 
             arr.push(4, 5)
             expect(rootEl.firstElementChild!.children.length).toBe(5)

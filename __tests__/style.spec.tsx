@@ -2,10 +2,10 @@
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
 import {createRoot, RenderContext, createElement} from "@framework";
-import {atom, setDefaultScheduleRecomputedAsLazy} from "data0";
+import {Atom, atom, RxList, setDefaultScheduleRecomputedAsLazy} from "data0";
 import {StyleSize} from "../src/DOM.js";
 
-setDefaultScheduleRecomputedAsLazy(false)
+setDefaultScheduleRecomputedAsLazy(true)
 
 describe('component render', () => {
 
@@ -116,5 +116,50 @@ describe('component render', () => {
 
         sizeA.add(sizeB)
         expect(sizeA.toString()).toBe('calc(1rem + (2rem - 1px))')
+    })
+
+})
+
+describe('complex style', () => {
+    function App({selected}: {selected:Atom<string>}, {createElement}: RenderContext) {
+        const list = new RxList(['a', 'b', 'c'])
+        const uniqueMatch = list.createSelection(selected)
+
+        return <div id='app'>
+            {uniqueMatch.map(([item, isSelected]) => {
+                const style = () => ({
+                    color: isSelected() ? 'red' : 'blue'
+                })
+                return <div style={style}>{item}</div>
+            })}
+        </div>
+    }
+
+    let root: ReturnType<typeof createRoot>
+    let rootEl: HTMLElement
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        rootEl = document.createElement('div')
+        document.body.appendChild(rootEl)
+        root = createRoot(rootEl)
+    })
+
+    test('complex style', () => {
+        const selected = atom('b')
+        root.render(<App selected={selected} />)
+
+        const app = rootEl.querySelector('#app')!
+        expect(app.children.length).toBe(3)
+        expect(app.children[0].textContent).toBe('a')
+        expect(app.children[1].textContent).toBe('b')
+        expect(app.children[2].textContent).toBe('c')
+        expect(getComputedStyle(app.children[0]).getPropertyValue('color')).toBe('blue')
+        expect(getComputedStyle(app.children[1]).getPropertyValue('color')).toBe('red')
+        expect(getComputedStyle(app.children[2]).getPropertyValue('color')).toBe('blue')
+
+        selected('a')
+        expect(getComputedStyle(app.children[0]).getPropertyValue('color')).toBe('red')
+        expect(getComputedStyle(app.children[1]).getPropertyValue('color')).toBe('blue')
+        expect(getComputedStyle(app.children[2]).getPropertyValue('color')).toBe('blue')
     })
 })

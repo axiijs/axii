@@ -38,6 +38,7 @@ export class RxListHost implements Host{
             return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
         })
 
+        // TODO 改成 autorun ?
         this.hostRenderComputed = computed(
             function computation(this:Computed) {
                 this.manualTrack(host.hosts!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
@@ -86,7 +87,8 @@ export class RxListHost implements Host{
                         throw new Error('unknown trigger info')
                     }
                 })
-            }
+            },
+            true
         )
     }
     destroy(fromParentDestroy?: boolean, parentHandleComputed?: boolean) {
