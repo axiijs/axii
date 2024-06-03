@@ -218,7 +218,6 @@ export function createOnDragMove(options?: DragMoveOptions) {
             container.addEventListener('mousemove', mouseMoveListener)
 
             container.addEventListener('mouseup', () => {
-                console.log('mouseup')
                 container.removeEventListener('mousemove', mouseMoveListener)
             }, {once: true})
         }
