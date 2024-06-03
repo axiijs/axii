@@ -2,7 +2,7 @@ import {atom, Atom, isReactive, ManualCleanup, reactive, ReactiveEffect} from "d
 import {
     AttributesArg,
     createElement,
-    createSVGElement,
+    createSVGElement, ExtendedElement,
     Fragment,
     JSXElementType,
     RefFn,
@@ -228,9 +228,19 @@ export class ComponentHost implements Host{
             finalProps.ref = ensureArray(finalProps.ref).concat((item: any) => this.refs[name] = item)
         }
 
-        return isSVG ?
+        const node = isSVG ?
             createSVGElement(finalType as string, finalProps, ...finalChildren) :
             createElement(finalType, finalProps, ...finalChildren)
+
+        if (!(typeof finalType === 'function')) {
+            const contextComponentProps = this.pathContext.hostPath
+                .filter(h => h instanceof ComponentHost)
+                .map(h => (h as ComponentHost).props).reverse();
+
+            (node as ExtendedElement).listenerBoundArgs = [contextComponentProps, componentProps]
+        }
+
+        return node
     }
     createElement = this.createHTMLOrSVGElement.bind(this, false)
     createSVGElement = this.createHTMLOrSVGElement.bind(this, true)
@@ -366,7 +376,7 @@ export class ComponentHost implements Host{
                 // 透传过来的 config 这里不处理，外部已经处理了
             } else if (key[0] === '$')  {
                 last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, key, value)
-            } else  {
+            } else {
                 last.props[key] = mergeProp(key, last.props[key], value)
             }
         })

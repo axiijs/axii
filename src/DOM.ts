@@ -54,11 +54,12 @@ function setProperty(node: HTMLElement, name: string, value: any) {
 
 export interface ExtendedElement extends HTMLElement {
     _listeners?: {
-        [k: string]: (e: Event) => any
+        [k: string]: (e: Event, ...args: any[]) => any
     },
     _captureListeners?: {
-        [k: string]: (e: Event) => any
+        [k: string]: (e: Event, ...args: any[]) => any
     }
+    listenerBoundArgs?: any[]
     unhandledChildren?: UnhandledChildInfo[]
     unhandledAttr?: UnhandledAttrInfo[]
     refHandles?: RefHandleInfo[]
@@ -67,12 +68,12 @@ export interface ExtendedElement extends HTMLElement {
 
 function eventProxy(this: ExtendedElement, e: Event) {
     const listener = this._listeners![e.type]
-    return Array.isArray(listener) ? listener.forEach(l => l?.(e)) : listener?.(e)
+    return Array.isArray(listener) ? listener.forEach(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
 function captureEventProxy(this: ExtendedElement, e: Event) {
     const listener = this._captureListeners![e.type]
-    return Array.isArray(listener) ? listener.forEach(l => l?.(e)) : listener?.(e)
+    return Array.isArray(listener) ? listener.forEach(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
 export type UnhandledPlaceholder = Comment
