@@ -1,6 +1,6 @@
-import {UnhandledPlaceholder, insertBefore} from './DOM'
-import {computed, destroyComputed, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
-import {PathContext, Host} from "./Host";
+import {insertBefore, UnhandledPlaceholder} from './DOM'
+import {arrayComputed, Computed, destroyComputed, TrackOpTypes, TriggerOpTypes, UnwrapReactive} from "data0";
+import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 
 function getSpliceRemoveLength(argv: any[], length: number) : number {
@@ -12,9 +12,9 @@ function getSpliceRemoveLength(argv: any[], length: number) : number {
 
 export class ReactiveArrayHost implements Host{
     hostsComputed?: Host[]
-    placeholderAndItemComputed?: [any, Comment][]
+    placeholderAndItemComputed?: UnwrapReactive<[any, Comment][]>
 
-    constructor(public source: ReturnType<typeof computed>, public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
+    constructor(public source: any[], public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
     }
     createPlaceholder(item: any): [any, Comment] {
         return [item, document.createComment('frag item host')]
@@ -34,7 +34,7 @@ export class ReactiveArrayHost implements Host{
 
     render(): void {
         const host = this
-        this.placeholderAndItemComputed = computed(
+        this.placeholderAndItemComputed = arrayComputed<[any, Comment]>(
             function computation(this: Computed) {
 
                 this.manualTrack(host.source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
@@ -92,7 +92,7 @@ export class ReactiveArrayHost implements Host{
             }
         )
 
-        this.hostsComputed = computed(
+        this.hostsComputed = arrayComputed<Host>(
             function computation(this: Computed) {
                 // CAUTION 不支持重算，这里理论上支持了所有变化场景
                 if (host.hostsComputed?.length) throw new Error('hostsComputed should not recompute')
@@ -159,7 +159,6 @@ export class ReactiveArrayHost implements Host{
                         } else {
                             const removeLength = getSpliceRemoveLength(argv!, hosts.length)
                             insertBefore(frag, hosts[argv![0] + removeLength]?.element || host.placeholder)
-
                             const removed = hosts.splice(argv![0], removeLength, ...newHosts)
                             removed.forEach((host: Host) => host.destroy())
                         }
@@ -187,9 +186,7 @@ export class ReactiveArrayHost implements Host{
                     }
                 })
             },
-            function onDirty(recompute) {
-                recompute()
-            }
+            true
         )
     }
     destroy(fromParentDestroy?: boolean, parentHandleComputed?: boolean) {
