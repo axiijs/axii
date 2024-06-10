@@ -231,3 +231,68 @@ export function createOnDragMove(options?: DragMoveOptions) {
     }
 }
 
+
+
+export type DragPosition = {
+    clientX: number
+    clientY: number,
+    // x 偏移量
+    offsetX: number,
+    // y 偏移量
+    offsetY: number
+}
+
+export function createReactiveDragPosition(shouldRecord: Atom<any>) {
+    return function reactiveDragPosition(ref: HTMLElement, position: Atom<DragPosition|null>) {
+        const mouseDownListener = (mouseDownEvent: MouseEvent) => {
+            if (!shouldRecord()) {
+                console.log('should not record')
+                return
+            }
+
+            const startPosition: DragPosition = {clientX: mouseDownEvent.clientX, offsetX:0, clientY: mouseDownEvent.clientY, offsetY: 0}
+
+            const mouseMoveListener = (e: MouseEvent) => {
+                position({
+                    clientX: e.clientX,
+                    clientY: e.clientY,
+                    offsetX: e.clientX - startPosition.clientX,
+                    offsetY: e.clientY - startPosition.clientY
+                })
+            }
+
+            ref.addEventListener('mousemove', mouseMoveListener)
+
+            document.addEventListener('mouseup', () => {
+                position(null)
+                ref.removeEventListener('mousemove', mouseMoveListener)
+            }, {once: true})
+        }
+
+        ref.addEventListener('mousedown', mouseDownListener)
+
+        return () => {
+            ref.removeEventListener('mousedown', mouseDownListener)
+        }
+    }
+}
+
+
+export function createReactiveDragTarget(getSnapshot: (ref: HTMLElement,) => any) {
+    return function reactiveDragTarget(ref: HTMLElement, value: Atom<any>) {
+        const mouseDownListener = (mouseDownEvent: MouseEvent) => {
+            value(getSnapshot(ref))
+
+            document.addEventListener('mouseup', () => {
+                value(null)
+            }, {once: true})
+        }
+
+        ref.addEventListener('mousedown', mouseDownListener)
+
+        return () => {
+            ref.removeEventListener('mousedown', mouseDownListener)
+        }
+    }
+}
+

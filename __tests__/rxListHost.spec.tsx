@@ -1,10 +1,8 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {createElement, createRoot} from "@framework";
-import {RxList, setDefaultScheduleRecomputedAsLazy} from "data0";
+import {RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
-
-setDefaultScheduleRecomputedAsLazy(true)
 
 
 describe('rxList render', () => {

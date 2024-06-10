@@ -1,11 +1,10 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {bindProps, createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
-import {type Atom, atom, computed, incMap, reactive, RxList, setDefaultScheduleRecomputedAsLazy} from "data0";
+import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import {ComponentHost} from "../src/ComponentHost.js";
 
-setDefaultScheduleRecomputedAsLazy(true)
 
 describe('component render', () => {
 
