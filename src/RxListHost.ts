@@ -53,7 +53,6 @@ export class RxListHost implements Host{
 
                         const newHosts = argv!.slice(2)!
                         const newHostsFrag =  host.renderNewHosts(newHosts)
-
                         insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
 
                         const isOnlyChildrenOfParent = host.isOnlyChildrenOfParent()
