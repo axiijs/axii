@@ -45,7 +45,7 @@ export function mergeProp(key:string, originValue:any, value: any) {
 }
 
 
-export type StateTransformer<T> = (target:any, value:Atom<T|null>) => (() => any)
+export type StateTransformer<T> = (target:any, value:Atom<T|null>) => ((() => void)|undefined)
 export type StateFromRef<T> = Atom<T|null> & { ref:(target:any) => any }
 
 const INNER_CONFIG_PROP = '__config__'
