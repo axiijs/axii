@@ -8,7 +8,7 @@
  *
  */
 
-import {Atom, atom, isAtom, RxList, RxMap} from "data0";
+import {Atom, atom, isAtom, RxList, RxMap, RxSet} from "data0";
 
 export function internalCheckPropTypes() {
 }
@@ -358,6 +358,14 @@ function rxListType<T>() {
     })<RxList<T>>()
 }
 
+function rxSetType<T>() {
+    return createTypeClass( {
+        coerce: (v: any) => {
+            return v instanceof RxSet ? v : new RxSet(v)
+        },
+    })<RxSet<T>>()
+}
+
 function rxMapType<K, V>() {
     return createTypeClass( {
         coerce: (v: any) => {
@@ -397,6 +405,7 @@ export default {
     // reactive types
     atom: atomType,
     rxList: rxListType,
+    rxSet: rxSetType,
     rxMap: rxMapType,
 }
 
