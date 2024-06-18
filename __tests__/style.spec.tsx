@@ -67,7 +67,7 @@ describe('component render', () => {
         root.render(<App />)
 
         const appFirstEl = rootEl.firstElementChild!
-        expect(appFirstEl.classList.contains('gen-0--')).toBe(true)
+        expect(Array.from(appFirstEl.classList).length).toBe(1)
 
         const lastDiv = document.getElementById('pContainer')!
         const classList = Array.from(lastDiv.classList)

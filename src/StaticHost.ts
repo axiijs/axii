@@ -47,7 +47,15 @@ function hasTransition(styleObject: StyleObject|StyleObject[]) {
     if (Array.isArray(styleObject)) {
         return styleObject.some(hasTransition)
     }
-    return styleObject.transition !== undefined
+    return styleObject.transition !== undefined || styleObject.transitionProperty !== null
+}
+
+function findTransitionProperties(styleObject: StyleObject|StyleObject[]): string[] {
+    if (Array.isArray(styleObject)) {
+        return styleObject.flatMap(findTransitionProperties)
+    }
+    return styleObject.transitionProperty?.split(',').map((p:string) => p.trim()) ??
+        styleObject.transition?.split(',').map((p:string) => p.split(/\s+/)[0]) ?? []
 }
 
 function hasInlineAnimation(styleObject: StyleObject|StyleObject[]) {
@@ -150,22 +158,31 @@ class StyleManager {
         //     console.log(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
         // }
         styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
-        if (hasTransition(styleObjects[0])) {
+        const transitionPropertyNames = findTransitionProperties(styleObjects[0])
+        if (transitionPropertyNames.length) {
             forceReflow(el)
         }
         return nextFrames(styleObjects.slice(1).map((one, ) => () => {
             // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
             //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
-            const [pureValueStyleObject, otherStyleObject] = this.separateStyleObject(one)
+            const [pureValueStyleObject, otherStyleObject, transitionProperties] = this.separateStyleObject(one, transitionPropertyNames)
             if (otherStyleObject) {
                 this.generateStyleContent(`.${styleSheetId}`, otherStyleObject).forEach(rule => {
                     styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
                 })
             }
-
+            // FIXME 是不是可以和上面合并
             if (pureValueStyleObject) {
+                const newTransitionProperties = findTransitionProperties(pureValueStyleObject)
+                transitionPropertyNames.push(...newTransitionProperties)
+                this.generateStyleContent(`.${styleSheetId}`, pureValueStyleObject).forEach(rule => {
+                    styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
+                })
+            }
+            // FIXME 可能还是会出现直接 style 里面的属性覆盖了 Hover 里面属性导致失效的问题。
+            if (transitionProperties) {
                 // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
-                setAttribute(el, 'style', pureValueStyleObject)
+                setAttribute(el, 'style', transitionProperties)
             }
 
             // CAUTION 如果自己上面有 transition，一定要触发 reflow，后面的 transition 属性变化才会生效
@@ -178,20 +195,24 @@ class StyleManager {
         // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
         return key !== '@keyframes' && isPlainObject(styleObject)
     }
-    separateStyleObject(styleObject: StyleObject): [StyleObject?, StyleObject?] {
+    separateStyleObject(styleObject: StyleObject, transitionPropertyNames: string[]): [StyleObject?, StyleObject?, StyleObject?] {
         // 把 value 不是 plainObject 的属性分离出来
         let pureValueStyleObject: StyleObject|undefined = undefined
         let otherStyleObject: StyleObject|undefined = undefined
+        let transitionStyleObject: StyleObject|undefined = undefined
         for(const key in styleObject) {
             if (this.isNestedStyleObject(key, styleObject[key]) || (key==='animation' && styleObject['keyframes'])) {
                 if (!otherStyleObject) otherStyleObject = {}
                 otherStyleObject[key] = styleObject[key]
+            } else if (transitionPropertyNames.includes(key)){
+                if(!transitionStyleObject) transitionStyleObject = {}
+                transitionStyleObject[key] = styleObject[key]
             } else {
                 if(!pureValueStyleObject) pureValueStyleObject = {}
                 pureValueStyleObject[key] = styleObject[key]
             }
         }
-        return [pureValueStyleObject, otherStyleObject]
+        return [pureValueStyleObject, otherStyleObject, transitionStyleObject]
     }
     stringifyKeyFrameObject(keyframeObject: StyleObject): string {
         return Object.entries(keyframeObject).map(([key, value]) => {
@@ -264,6 +285,7 @@ ${this.stringifyStyleObject(valueStyleObject)}
 
 type StyleObject = {[k:string]:any}
 
+// @ts-ignore 待修复
 function isStaticStyleObject(styleObject: StyleObject|StyleObject[]): boolean {
     if (Array.isArray(styleObject)) {
         return styleObject.every(isStaticStyleObject)
@@ -350,7 +372,11 @@ export class StaticHost implements Host{
             isAtomLike(value) ? value() : value
 
         if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final)) || hasInlineAnimation(final)) {
-            const isStatic = isStaticStyleObject(value)
+            // FIXME 即使 value 是静态，也有可能是从 configuration 里面传入的，每个组件不同。所以这里不能从值去判断。
+            //  例外要判断是不是 configuration 还要考虑是运行传入还是通过 boundProps 传入的。
+            //  修复之前只能让 isStatic === false
+            // const isStatic = isStaticStyleObject(value)
+            const isStatic = false
             return StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
         } else {
             setAttribute(el, key, final, isSVG)

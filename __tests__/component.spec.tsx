@@ -174,10 +174,10 @@ describe('component render', () => {
 
         root.render(<App/>)
         const firstChild = () => (rootEl.firstElementChild!.children[0] as HTMLElement)
-        expect(firstChild().style.color).toBe('red')
+        expect(getComputedStyle(firstChild()).color).toBe('red')
 
         rxStyle.color = 'blue'
-        expect(firstChild().style.color).toBe('blue')
+        expect(getComputedStyle(firstChild()).color).toBe('blue')
         expect(functionNodeRuns).toBe(1)
 
     })
