@@ -2,7 +2,7 @@
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 
-export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis)/
+export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap)/
 let autoUnitType: 'px' | 'rem' | 'em' = 'px'
 export function setAutoUnitType(type: 'px' | 'rem' | 'em') {
     autoUnitType = type
@@ -418,8 +418,10 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
 
     if (typeof ref === 'function') {
         ref(null)
-    } else if (typeof ref === 'object' && ref.hasOwnProperty('current')) {
+    } else if (typeof ref === 'object') {
         ref.current = null
+    } else {
+        assert(false, 'ref should be function or object with current property')
     }
 }
 
