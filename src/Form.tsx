@@ -34,6 +34,7 @@ export type FormItemInstance = {
 }
 // TODO 如何支持 multiple form
 // TODO 如何支持 item 多 value
+// TODO  如何只是 dirty/touched/untouched 等状态，和 error/waring 等自定义状态
 export function Form({name, children, onChange, onSubmit, onClear, onReset, values}: FormProps, {
     createElement,
     context
@@ -103,7 +104,11 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
         onClear?.()
     }
 
-    context.set(FormContext, {name, register, unregister, onChange, submit, reset, clear} as FormContextValue)
+    const formOnChange = () => {
+        onChange?.(values)
+    }
+
+    context.set(FormContext, {name, register, unregister, onChange:formOnChange, submit, reset, clear} as FormContextValue)
     return children
 }
 
