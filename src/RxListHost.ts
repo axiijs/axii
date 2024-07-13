@@ -75,7 +75,6 @@ export class RxListHost implements Host{
 
                     } else if(method === undefined && key !== undefined){
                         // explicit key change
-                        debugger
                         const oldHost = methodResult as Host
                         oldHost?.destroy()
 
