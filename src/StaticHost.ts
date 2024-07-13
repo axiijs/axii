@@ -371,7 +371,7 @@ export class StaticHost implements Host{
             value.map(v => isAtomLike(v) ? v() : v) :
             isAtomLike(value) ? value() : value
 
-        if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final)) || hasInlineAnimation(final)) {
+        if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final) || hasInlineAnimation(final))) {
             // FIXME 即使 value 是静态，也有可能是从 configuration 里面传入的，每个组件不同。所以这里不能从值去判断。
             //  例外要判断是不是 configuration 还要考虑是运行传入还是通过 boundProps 传入的。
             //  修复之前只能让 isStatic === false
