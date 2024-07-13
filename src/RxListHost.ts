@@ -73,9 +73,11 @@ export class RxListHost implements Host{
                             deletedHosts.forEach((host: Host) => host.destroy())
                         }
 
-                    } else if(!method && key){
+                    } else if(method === undefined && key !== undefined){
+                        // explicit key change
+                        debugger
                         const oldHost = methodResult as Host
-                        oldHost.destroy()
+                        oldHost?.destroy()
 
                         // 会回收之前 placeholder，完全重新执行
                         const index = key as number

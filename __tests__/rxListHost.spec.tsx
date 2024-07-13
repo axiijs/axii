@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {createElement, createRoot} from "@framework";
-import {RxList, RxMap} from "data0";
+import {atom, RxList, RxMap} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 
 
@@ -70,6 +70,28 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.children[5].innerHTML).toBe('3')
         expect(rootEl.firstElementChild!.children[6].innerHTML).toBe('4')
 
+    })
+
+    test('list with outer reactive value', () => {
+        const arr = new RxList<number>([1,2,3])
+        const base = atom(0)
+        function App() {
+            return <div>
+                {arr.map((item) => <div>{base() + item}</div>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children.length).toBe(3)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('1')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('2')
+        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('3')
+
+        base(1)
+        expect(rootEl.firstElementChild!.children.length).toBe(3)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('2')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('3')
+        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('4')
     })
 
     test('chained list', () => {
