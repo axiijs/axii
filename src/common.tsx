@@ -296,3 +296,26 @@ export function createReactiveDragTarget(getSnapshot: (ref: HTMLElement,) => any
     }
 }
 
+
+export type ScrollPosition = {
+    scrollTop: number
+    scrollLeft: number
+    scrollWidth: number
+    scrollHeight: number
+}
+
+export function reactiveScrollPosition(ref: HTMLElement, position: Atom<ScrollPosition|null>) {
+    const scrollListener = () => {
+        position({
+            scrollTop: ref.scrollTop,
+            scrollLeft: ref.scrollLeft,
+            scrollWidth: ref.scrollWidth,
+            scrollHeight: ref.scrollHeight
+        })
+    }
+    ref.addEventListener('scroll', scrollListener)
+
+    return () => {
+        ref.removeEventListener('scroll', scrollListener)
+    }
+}
