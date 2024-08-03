@@ -1,4 +1,3 @@
-import {fileURLToPath, URL } from 'url'
 import {resolve} from "path";
 import dts from 'vite-plugin-dts'
 
@@ -6,11 +5,6 @@ export default {
   esbuild: {
     jsxFactory: 'createElement',
     jsxFragment: 'Fragment',
-  },
-  resolve: {
-    alias: {
-      '@framework': fileURLToPath(new URL('./src/index.ts', import.meta.url))
-    }
   },
   define: {
     __DEV__: false
@@ -23,10 +17,7 @@ export default {
       // the proper extensions will be added
       fileName: 'axii',
     },
-    sourcemap: 'inline',
-    rollupOptions: {
-
-    },
+    sourcemap: true,
   },
   plugins: [dts({
     tsConfigFilePath: resolve(__dirname, 'tsconfig.prod.json'),
