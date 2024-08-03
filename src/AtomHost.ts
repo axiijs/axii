@@ -1,4 +1,4 @@
-import {Atom, autorun} from "data0";
+import {Atom, computed, destroyComputed} from "data0";
 import {Host, PathContext} from "./Host";
 
 
@@ -10,7 +10,7 @@ function stringValue(v: any) {
 
 export class AtomHost implements Host{
     stopAutoRun: () => void = () => {}
-    // computed: ReturnType<typeof computed>
+    computed: Atom<any>
     element: Text|Comment = this.placeholder
     constructor(public source: Atom, public placeholder:Comment, public pathContext: PathContext) {
     }
@@ -30,25 +30,20 @@ export class AtomHost implements Host{
     }
 
     render(): void {
-        // this.computed = computed(() => {
-        //         this.replace(this.source())
-        //     },
-        //     undefined,
-        //     (recompute) => {
-        //         recompute()
-        //     },
-        //     undefined,
-        //     this.pathContext.skipIndicator
-        // )
-        // FIXME skipIndicator 是干什么的？？
-        this.stopAutoRun = autorun(() => {
-            this.replace(this.source())
-        })
+        this.computed = computed(() => {
+                this.replace(this.source())
+            },
+            undefined,
+            true,
+            undefined,
+            // CAUTION 是给富文本编辑器 contenteditable 来跳过 dom 变换的，
+            this.pathContext.skipIndicator
+        )
+
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
-            // destroyComputed(this.computed)
-            this.stopAutoRun()
+            destroyComputed(this.computed)
         }
         if (!parentHandle) {
             this.element.remove()

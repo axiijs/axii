@@ -362,7 +362,7 @@ export class StaticHost implements Host{
             if (!key.includes(':')) {
                 this.attrAutoruns!.push(autorun(() => {
                     this.updateAttribute(el, key, value, path, isSVG)
-                }))
+                }, true))
             }
         })
     }
