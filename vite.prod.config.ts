@@ -18,6 +18,9 @@ export default {
       fileName: 'axii',
     },
     sourcemap: true,
+    rollupOptions: {
+      external: ['data0'],
+    },
   },
   plugins: [dts({
     tsConfigFilePath: resolve(__dirname, 'tsconfig.prod.json'),
