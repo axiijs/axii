@@ -246,7 +246,6 @@ export function createReactiveDragPosition(shouldRecord: Atom<any>) {
     return function reactiveDragPosition(ref: HTMLElement, position: Atom<DragPosition|null>) {
         const mouseDownListener = (mouseDownEvent: MouseEvent) => {
             if (!shouldRecord()) {
-                console.log('should not record')
                 return
             }
 

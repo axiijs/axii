@@ -46,10 +46,12 @@ export class RxListHost implements Host{
                 return null
             },
             function applyPatch(_, triggerInfos) {
-                triggerInfos.forEach(({method, argv, result, key, newValue, methodResult}) => {
+                triggerInfos.forEach(({method, argv, result, key, newValue, methodResult},  index) => {
                     if (method === 'splice') {
                         // 这里的 this.hosts 是已经修改好的。
-                        const insertBeforeHost = host.hosts!.at(argv![0] + argv!.slice(2)!.length)
+                        // CAUTION 因为 hosts 中的元素可能也是一个一个插进来的。例如 groupBy 中的 patch。
+                        //  我们的下一个元素可能也是新的还没渲染，所以要一直往后找到第一个已经渲染过的元素。
+                        const insertBeforeHost = host.hosts!.data.slice(argv![0] + argv!.slice(2)!.length).find(host => host.element.parentNode)
 
                         const newHosts = argv!.slice(2)!
                         const newHostsFrag =  host.renderNewHosts(newHosts)
