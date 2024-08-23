@@ -54,8 +54,10 @@ export class RxListHost implements Host{
                         const insertBeforeHost = host.hosts!.data.slice(argv![0] + argv!.slice(2)!.length).find(host => host.element.parentNode)
 
                         const newHosts = argv!.slice(2)!
-                        const newHostsFrag =  host.renderNewHosts(newHosts)
-                        insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
+                        if (newHosts.length) {
+                            const newHostsFrag =  host.renderNewHosts(newHosts)
+                            insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
+                        }
 
                         const isOnlyChildrenOfParent = host.isOnlyChildrenOfParent()
                         const deletedHosts = methodResult as Host[]

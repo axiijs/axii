@@ -14,7 +14,7 @@ export function autoUnit(num: number|string) {
     return `${num}${autoUnitType}`
 }
 
-export const MULTI_VALUE_ATTR = /^(transform|translate|scale|rotate|skew|boxShadow|textShadow|transition)/
+export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 
 export function stringifyStyleValue(k:string, v: any): string {
     if (v === undefined) {
@@ -22,12 +22,12 @@ export function stringifyStyleValue(k:string, v: any): string {
     }
     if(Array.isArray(v)) {
         // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
-        if (MULTI_VALUE_ATTR.test(k)) {
+        if (COMMA_MULTI_VALUE_ATTR.test(k)) {
             // attr like box-shadow
             // 这里不可能是 StyleSize 所以不用 toString
             return v.join(',')
         } else {
-            // padding/margin
+            // padding/margin/transform|translate|scale|rotate|skew
             return v.map((i:any) => stringifyStyleValue(k, i)).join(' ')
         }
     }
