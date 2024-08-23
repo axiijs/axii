@@ -438,7 +438,7 @@ function resetOptionParentSelectValue(targetOption: HTMLElement) {
 
 export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
-    const result = refEl.fixparentNode!.insertBefore!(newEl, refEl)
+    const result = refEl.parentNode!.insertBefore!(newEl, refEl)
     if ((newEl as Element).tagName === 'OPTION') {
         resetOptionParentSelectValue(newEl as HTMLElement)
     }
