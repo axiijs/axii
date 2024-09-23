@@ -12,8 +12,7 @@ declare global {
             // name an element inside component so it can be overwritten
             as?: string
             // pass props to an element inside component
-            [key: \`$\${string}\`]: {[key: string]: any}
-            [key: \`$\${string}:\${string}\`]: any;
+            [key: \`$\${string}\`]: any
             ref?: any
             // for test usage
             __this?: any
