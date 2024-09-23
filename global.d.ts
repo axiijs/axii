@@ -20,8 +20,10 @@ declare global {
             // for test usage
             __this?: any
             // pass props to an element inside component
-            [key: `$${string}`]: {[key: string]: any}
-            [key: `$${string}:${string}`]: any
+            [key: `$${string}`]: any
+            // FIXME type
+            // [key: `$${string}`]: {[key: string]: any}
+            // [key: `$${string}:${string}`]: any
         }
         interface ElementChildrenAttribute {
             children: {}; // specify children name to use

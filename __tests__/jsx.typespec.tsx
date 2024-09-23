@@ -28,3 +28,15 @@ const AppWithMultipleReturnType:JSX.ElementClass = function (props: {a: number})
 }
 
 assertType<JSX.ElementClass>(AppWithMultipleReturnType)
+
+function Child() {
+    return <div as={"main"}></div>
+}
+
+assertType<JSX.Element>(<Child
+    $main:style={{color:'red'}}
+    $main:disabled={false}
+    $main:onClick={()=>{}}
+    $main={{onClick:true}}
+/>)
+
