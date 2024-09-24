@@ -313,8 +313,14 @@ export class StaticHost implements Host{
     render(): void {
         assert(this.element === this.placeholder, 'should never rerender')
 
+        // CAUTION 如果是 fragment，我们用一个 comment 节点来作为第一个元素，这样后面  destroy 的时候就能一次性 remove 掉。
         this.element = this.source instanceof DocumentFragment ? document.createComment('fragment start') : this.source
-        insertBefore(this.source, this.placeholder)
+        insertBefore(this.element, this.placeholder)
+        // 如果是 fragment，那么还要插入真实内容
+        if (this.source instanceof DocumentFragment) {
+            insertBefore(this.source, this.placeholder)
+        }
+
         this.collectInnerHost()
         this.collectReactiveAttr()
         this.collectRefHandles()

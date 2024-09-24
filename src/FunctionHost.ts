@@ -28,14 +28,12 @@ export class FunctionHost implements Host{
             const node = this.source()
             const newPlaceholder = document.createComment('computed node')
             insertBefore(newPlaceholder, this.placeholder)
-            const lastRenderedHost = createHost(node, newPlaceholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
-
+            const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
             Notifier.instance.pauseTracking()
-            lastRenderedHost.render()
+            host.render()
             Notifier.instance.resetTracking()
-
             onCleanup(() => {
-                lastRenderedHost.destroy(false, false)
+                host.destroy(false, false)
             })
         }, (recompute) => {
             if (scheduleRecompute) return
