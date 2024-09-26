@@ -59,23 +59,27 @@ export class RxListHost implements Host{
                             insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
                         }
 
-                        const isOnlyChildrenOfParent = host.isOnlyChildrenOfParent()
+
+                        // FIXME 当所有节点删除时，host.isOnlyChildrenOfParent() 判断出错了，里面使用 firstChild 来和 hosts.at(0).element 来判断的。
+                        //  但此时原本的 hosts.at(0)可能已经被删除了，不是原来的了。
+                        // const isOnlyChildrenOfParent = host.isOnlyChildrenOfParent()
                         const deletedHosts = methodResult as Host[]
 
                         // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点要强制自己清理。那么直接清空 parent，这样比较快。
-                        const removeAllElementByParent = deletedHosts.length === host.hosts!.length() && isOnlyChildrenOfParent && host.hosts?.data.every(inner => !inner.forceHandleElement)
-                        if (removeAllElementByParent) {
-                            const parent = host.placeholder.parentNode!
-                            if (parent instanceof HTMLElement) {
-                                (parent as HTMLElement).innerHTML = ''
-                            }
-                            // CAUTION 一定记得把自己 placeholder 重新 append 进去。
-                            parent.appendChild(host.placeholder)
-                            // destroy host 但是不用处理 element 了。
-                            deletedHosts.forEach((host: Host) => host.destroy(true))
-                        } else {
+                        // const removeAllElementByParent = host.hosts!.data.length===0 && isOnlyChildrenOfParent && deletedHosts.every(inner => !inner.forceHandleElement)
+                        // if (removeAllElementByParent) {
+                        //     debugger
+                        //     const parent = host.placeholder.parentNode!
+                        //     if (parent instanceof HTMLElement) {
+                        //         (parent as HTMLElement).innerHTML = ''
+                        //     }
+                        //     // CAUTION 一定记得把自己 placeholder 重新 append 进去。
+                        //     parent.appendChild(host.placeholder)
+                        //     // destroy host 但是不用处理 element 了。
+                        //     deletedHosts.forEach((host: Host) => host.destroy(true))
+                        // } else {
                             deletedHosts.forEach((host: Host) => host.destroy())
-                        }
+                        // }
 
                     } else if(method === undefined && key !== undefined){
                         // explicit key change

@@ -110,4 +110,40 @@ describe('rxList render', () => {
         map1.replace({name1:true, name2:true})
         expect(rootEl.firstElementChild!.children.length).toBe(2)
     })
+
+    test('delete item at tail and head', () => {
+        const arr = new RxList<number>([1,2])
+
+        function App() {
+            return <div>
+                {arr.map((item) => <div>{item}</div>)}
+            </div>
+        }
+
+        root.render(<App/>)
+
+        expect(rootEl.firstElementChild!.children.length).toBe(2)
+        arr.splice(1, 1)
+
+        expect(arr.data.length).toBe(1)
+        expect(rootEl.firstElementChild!.children.length).toBe(1)
+
+        arr.splice(0, 1)
+        expect(rootEl.firstElementChild!.children.length).toBe(0)
+    })
+
+    test('delete all items at once', () => {
+        const arr = new RxList<number>([1,2])
+
+        function App() {
+            return <div>
+                {arr.map((item) => <div>{item}</div>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        debugger
+        arr.splice(0, Infinity)
+        expect(rootEl.firstElementChild!.children.length).toBe(0)
+    })
 })
