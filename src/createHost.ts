@@ -12,12 +12,16 @@ import {RxListHost} from "./RxListHost.js";
 
 class EmptyHost implements Host{
     element = document.createComment('empty')
-    placeholder = this.element
-    constructor(public pathContext: PathContext) {
+    constructor(public pathContext: PathContext, public placeholder: UnhandledPlaceholder,) {
     }
-    render() { return }
+    render() {
+        this.placeholder.parentNode?.insertBefore(this.element, this.placeholder)
+    }
     destroy(parentHandle?: boolean) {
-        if (!parentHandle) this.placeholder.remove()
+        if (!parentHandle) {
+            this.element.remove()
+            this.placeholder.remove()
+        }
     }
 }
 
@@ -56,7 +60,7 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     } else if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
         host = new StaticHost(source, placeholder, context)
     } else if (source === undefined || source === null) {
-        host = new EmptyHost(context)
+        host = new EmptyHost(context, placeholder)
     }else if( typeof source === 'string' || typeof source === 'number' || typeof source === 'boolean'){
         host = new PrimitiveHost(source, placeholder, context)
     } else {
