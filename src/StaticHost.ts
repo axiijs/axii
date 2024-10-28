@@ -222,23 +222,23 @@ class StyleManager {
         }).join('\n')
     }
     generateInlineAnimationContent(selector:string, styleObject:StyleObject) {
-        let animationContent = ''
+        const animationContent:string[] = []
         let animationName = ''
         animationName = `animation-${Math.random().toString(36).slice(2)}`
         if (styleObject['@keyframes']) {
             const keyframeContent = `@keyframes ${animationName} {
 ${this.stringifyKeyFrameObject(styleObject['@keyframes'])}
 }`
-            animationContent = keyframeContent
+            animationContent.push(keyframeContent)
         }
 
         if (styleObject.animation) {
             const animationValue = (Array.isArray(styleObject.animation) ? styleObject.animation.join(' ') : styleObject.animation)!.replace(/@self/, animationName)
-            animationContent += `
+            animationContent.push(`
 ${selector} {
     animation: ${animationValue};
 }
-`
+`)
         }
 
         return animationContent
@@ -264,9 +264,7 @@ ${this.stringifyStyleObject(valueStyleObject)}
 }`]
 
         const animateContent = this.generateInlineAnimationContent(selector, keyframeObj)
-        if (animateContent) {
-            contents.push(animateContent)
-        }
+        contents.push(...animateContent)
 
         return nestedStyleEntries.reduce((acc, [key, nestedObject]: [string, any]) => {
             // 支持 at-rules for media/container query
