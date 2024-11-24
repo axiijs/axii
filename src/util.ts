@@ -1,19 +1,24 @@
-
-
 type PlainObject = {
   [k: string] : any
 }
-
+/**
+ * @internal
+ */
 export function each(obj: PlainObject, fn: (v: any, k: string) => any) {
   for(let k in obj) {
     fn(obj[k], k)
   }
 }
 
+/**
+ * @category Common Utility
+ */
 export function nextJob(fn: Function) {
   Promise.resolve().then(() => fn())
 }
-
+/**
+ * @internal
+ */
 export function debounce(fn: Function, delay: number) {
   let timeoutHandle: number | null
   return (...argv: any[]) => {
@@ -27,7 +32,9 @@ export function debounce(fn: Function, delay: number) {
     }, delay)
   }
 }
-
+/**
+ * @internal
+ */
 export function idleThrottle(fn: Function, timeout = 100) {
   let hasCallback: number | null
   let lastArgv : any[]
@@ -41,7 +48,9 @@ export function idleThrottle(fn: Function, timeout = 100) {
     lastArgv = argv
   }
 }
-
+/**
+ * @internal
+ */
 export function removeNodesBetween(start: ChildNode, endNode: ChildNode|Comment, includeEnd = false) {
   if (start.parentElement !== endNode.parentElement) {
     throw new Error('placeholder and element parentElement not same')
@@ -57,26 +66,38 @@ export function removeNodesBetween(start: ChildNode, endNode: ChildNode|Comment,
 
   if (includeEnd) endNode.remove()
 }
-
+/**
+ * @internal
+ */
 export const isPlainObject = (val: unknown): val is object => val?.constructor === Object
 
 const hasOwnProperty = Object.prototype.hasOwnProperty
+/**
+ * @internal
+ */
 export const hasOwn = (
     val: object,
     key: string | symbol
 ) => hasOwnProperty.call(val, key)
 
+/**
+ * @internal
+ */
 export function assert(condition: boolean, message: string ) {
   if (!condition) {
     if (__DEV__) debugger
     throw new Error(message)
   }
 }
-
+/**
+ * @internal
+ */
 export function mapClassNameToObject(className: string) {
   return Object.fromEntries(className.split(' ').map(c => [c, true]))
 }
-
+/**
+ * @internal
+ */
 export function shallowEqual(a:any,b:any) {
     if (a === b) return true
     if (typeof a !== 'object' || typeof b !== 'object' || a===null || b=== null) return false
@@ -92,6 +113,9 @@ export function shallowEqual(a:any,b:any) {
 
 
 // TODO cancel?
+/**
+ * @internal
+ */
 export function nextFrames(fns: ((time: number) => void)[]) {
     if (!fns.length) return Promise.resolve()
 
@@ -119,12 +143,17 @@ export function nextFrames(fns: ((time: number) => void)[]) {
 //     }
 //     setTimeout(next, 17)
 // }
-
+/**
+ * @category Common Utility
+ */
 export function nextTick(fn: Function) {
     setTimeout(fn, 1)
 }
 
 // 顺序 执行返回  promise 的函数
+/**
+ * @category Common Utility
+ */
 export function sequencePromises(fns: (() => Promise<any>)[]) {
     return fns.reduce((prev, fn) => prev.then(() => fn()), Promise.resolve())
 }

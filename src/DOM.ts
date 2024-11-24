@@ -7,6 +7,7 @@ let autoUnitType: 'px' | 'rem' | 'em' = 'px'
 export function setAutoUnitType(type: 'px' | 'rem' | 'em') {
     autoUnitType = type
 }
+
 export function autoUnit(num: number|string) {
     if (typeof num === 'string') {
         return num
@@ -87,7 +88,9 @@ function isEventName(name: string) {
 
 
 const svgForceDashStyleAttributes = /^(strokeWidth|strokeLinecap|strokeLinejoin|strokeMiterlimit|strokeDashoffset|strokeDasharray|strokeOpacity|fillOpacity|stopOpacity)/
-
+/**
+ * @internal
+ */
 export function setAttribute(node: ExtendedElement, name: string, value: any, isSvg?: boolean): void {
     if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name)) {
         // 全都是覆盖模式，只处理最后一个
@@ -425,7 +428,9 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
     }
 }
 
-
+/**
+ * @category Basic
+ */
 export function Fragment() {
 }
 
@@ -435,7 +440,9 @@ function resetOptionParentSelectValue(targetOption: HTMLElement) {
         (target as HTMLDataElement).value = selectValueTmp.get(target as ExtendedElement)
     }
 }
-
+/**
+ * @internal
+ */
 export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
     const result = refEl.parentNode!.insertBefore!(newEl, refEl)
@@ -454,12 +461,18 @@ export function createSVGElement(type: string, props: AttributesArg, ...children
     return createElement(type, {_isSVG: true, ...(props || {})}, children)
 }
 
+/**
+ * @internal
+ */
 export function dispatchEvent(target: ExtendedElement, event: Event) {
     return eventProxy.call(target, event)
 }
 
 
 type Unit = 'px' | 'rem' | 'em' | '%'
+/**
+ * @category Common Utility
+ */
 export class StyleSize {
     constructor(public value: number|string, public unit: Unit|'mixed' = 'px') {
         if (typeof value === 'string') {

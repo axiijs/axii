@@ -4,7 +4,9 @@ import {createHost} from "./createHost";
 import {removeNodesBetween} from "./util";
 
 
-
+/**
+ * @internal
+ */
 export class StaticArrayHost implements Host{
     computed = undefined
 

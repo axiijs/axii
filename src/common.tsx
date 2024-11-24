@@ -1,8 +1,13 @@
 import {Atom} from "data0";
 import {shallowEqual, assert} from "./util.js";
 
+/**
+ * @category Common Utility
+ */
 export const ModalContext = Symbol('ModalContext')
-
+/**
+ * @category Reactive State Utility
+ */
 export type PositionObject = {
     top: number
     left: number
@@ -23,6 +28,9 @@ type PositionRecalculateInterval = {
 
 type ReactivePositionOptions = 'requestAnimationFrame' | 'requestIdleCallback' | 'manual' | PositionRecalculateInterval |PositionRecalculateEvent[]
 
+/**
+ * @category Reactive State Utility
+ */
 export function createReactivePosition(options: ReactivePositionOptions) {
     return (elOrWindow: HTMLElement|Window, value: Atom<PositionObject|null>, ) => {
         if (elOrWindow === window) {
@@ -91,7 +99,9 @@ export function createReactivePosition(options: ReactivePositionOptions) {
     }
 }
 
-
+/**
+ * @category Reactive State Utility
+ */
 export type SizeObject = {
     width: number
     height: number,
@@ -124,7 +134,9 @@ const globalResizeObserver = new ResizeObserver(entries => {
     })
 })
 
-
+/**
+ * @category Reactive State Utility
+ */
 export function reactiveSize(target: HTMLElement|Window, value: Atom<SizeObject|null>) {
     if (target === window) {
         const assignRect = () => {
@@ -162,7 +174,9 @@ export function reactiveSize(target: HTMLElement|Window, value: Atom<SizeObject|
         }
     }
 }
-
+/**
+ * @category Reactive State Utility
+ */
 export function reactiveFocused(target:HTMLElement, value:Atom<boolean|null>) {
     const setToTrue = () => {
         value(true)
@@ -185,6 +199,9 @@ export type DragMoveOptions = {
     container?: HTMLElement
     customEventName?: string
 }
+/**
+ * @category Reactive State Utility
+ */
 export type DragMoveDetail = {
     clientX: number
     clientY: number
@@ -192,7 +209,9 @@ export type DragMoveDetail = {
     deltaY: number
 }
 
-
+/**
+ * @category Reactive State Utility
+ */
 export function createOnDragMove(options?: DragMoveOptions) {
     const container = options?.container || document.body
     const customEventName = options?.customEventName || DEFAULT_DRAG_MOVE_EVENT
@@ -232,7 +251,9 @@ export function createOnDragMove(options?: DragMoveOptions) {
 }
 
 
-
+/**
+ * @category Reactive State Utility
+ */
 export type DragPosition = {
     clientX: number
     clientY: number,
@@ -241,7 +262,9 @@ export type DragPosition = {
     // y 偏移量
     offsetY: number
 }
-
+/**
+ * @category Reactive State Utility
+ */
 export function createReactiveDragPosition(shouldRecord: Atom<any>) {
     return function reactiveDragPosition(ref: HTMLElement, position: Atom<DragPosition|null>) {
         const mouseDownListener = (mouseDownEvent: MouseEvent) => {
@@ -276,7 +299,9 @@ export function createReactiveDragPosition(shouldRecord: Atom<any>) {
     }
 }
 
-
+/**
+ * @category Reactive State Utility
+ */
 export function createReactiveDragTarget(getSnapshot: (ref: HTMLElement,) => any) {
     return function reactiveDragTarget(ref: HTMLElement, value: Atom<any>) {
         const mouseDownListener = (mouseDownEvent: MouseEvent) => {
@@ -295,14 +320,18 @@ export function createReactiveDragTarget(getSnapshot: (ref: HTMLElement,) => any
     }
 }
 
-
+/**
+ * @category Reactive State Utility
+ */
 export type ScrollPosition = {
     scrollTop: number
     scrollLeft: number
     scrollWidth: number
     scrollHeight: number
 }
-
+/**
+ * @category Reactive State Utility
+ */
 export function reactiveScrollPosition(ref: HTMLElement, position: Atom<ScrollPosition|null>) {
     const scrollListener = () => {
         position({

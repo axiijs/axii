@@ -10,6 +10,9 @@ import {StaticArrayHost} from "./StaticArrayHost";
 import {assert} from "./util";
 import {RxListHost} from "./RxListHost.js";
 
+/**
+ * @internal
+ */
 class EmptyHost implements Host{
     element = document.createComment('empty')
     constructor(public pathContext: PathContext, public placeholder: UnhandledPlaceholder,) {
@@ -24,7 +27,9 @@ class EmptyHost implements Host{
         }
     }
 }
-
+/**
+ * @internal
+ */
 class PrimitiveHost implements Host{
     element = this.placeholder
     constructor(public source: string|number|boolean, public placeholder:Comment, public pathContext: PathContext) {
@@ -39,7 +44,9 @@ class PrimitiveHost implements Host{
     }
 }
 
-
+/**
+ * @internal
+ */
 export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext) {
     if (!(placeholder instanceof Comment)) throw new Error('incorrect placeholder type')
     let host:Host

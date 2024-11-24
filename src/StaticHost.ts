@@ -290,7 +290,9 @@ function isStaticStyleObject(styleObject: StyleObject|StyleObject[]): boolean {
     }
     return typeof styleObject === 'object'
 }
-
+/**
+ * @internal
+ */
 export class StaticHost implements Host{
     static styleManager = new StyleManager()
     // 如果有 detachStyledChildren，会设为 true

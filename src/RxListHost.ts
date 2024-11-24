@@ -2,7 +2,9 @@ import {insertBefore, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
-
+/**
+ * @internal
+ */
 export class RxListHost implements Host{
     hosts?: RxList<any>
     placeholderAndItemComputed?: [any, Comment][]

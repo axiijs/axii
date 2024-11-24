@@ -7,7 +7,9 @@ function stringValue(v: any) {
         (v as string).toString() :
         (v === undefined ? 'undefined' : JSON.stringify(v))
 }
-
+/**
+ * @internal
+ */
 export class AtomHost implements Host{
     stopAutoRun: () => void = () => {}
     computed: Atom<any>

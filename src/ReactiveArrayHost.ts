@@ -9,7 +9,9 @@ function getSpliceRemoveLength(argv: any[], length: number) : number {
     const argv1 = argv1NotUndefined < 0 ? 0 : argv1NotUndefined
     return argv1 !== Infinity ? argv1: (length - (argv![0] as number))
 }
-
+/**
+ * @internal
+ */
 export class ReactiveArrayHost implements Host{
     hostsComputed?: Host[]
     placeholderAndItemComputed?: UnwrapReactive<[any, Comment][]>

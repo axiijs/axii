@@ -1,6 +1,8 @@
 import {computed} from "data0";
 import {Root} from "./render";
-
+/**
+ * @internal
+ */
 export interface Host {
     element: HTMLElement|Comment|Text|SVGElement
     placeholder:Comment
@@ -12,7 +14,9 @@ export interface Host {
     destroy : (parentHandleElement?: boolean, parentHandleComputed?: boolean) => void
     revoke?: () => void
 }
-
+/**
+ * @internal
+ */
 export type PathContext = {
     [k:string]:any,
     root: Root,

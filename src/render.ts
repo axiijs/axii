@@ -5,6 +5,9 @@ import {PathContext, Host} from "./Host";
 
 type EventCallback = (e: any) => void
 
+/**
+ * @category Basic
+ */
 export type Root = {
     element: HTMLElement,
     pathContext: PathContext,
@@ -16,6 +19,9 @@ export type Root = {
     dispatch: (event: string, arg?: any) => void
 }
 
+/**
+ * @category Basic
+ */
 export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 

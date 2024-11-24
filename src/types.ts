@@ -10,27 +10,83 @@ export type Props = {
 
 export type EffectHandle = () => (any)
 
-export type JSXElement = ComponentNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null
+/**
+ * @category Basic
+ */
+export type CreateStateFromRefFn = <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any) => StateFromRef<T>
+/**
+ * @category Basic
+ */
+export type CreatePortalFn = (children: JSXElement|Function, container: HTMLElement) => JSXElement
+/**
+ * @category Basic
+ */
+export type CreateRefFn = () => RefObject
+/**
+ * @category Basic
+ */
+export type CreateRxRefFn = () => RefObject
 
+/**
+ * @category Basic
+ */
+export type UseEffectFn = (arg: EffectHandle) => void
+
+/**
+ * @category Basic
+ */
+export type OnCleanupFn = (arg: () => any) => void
+
+/**
+ * @category Basic
+ */
+export type UseLayoutEffectFn = (arg: EffectHandle) => void
+
+
+/**
+ * @category Miscellaneous
+ */
+export type CreateElementFn = (type: JSXElementType, rawProps : AttributesArg, ...children: any[]) => JSXElement
+
+/**
+ * @category Basic
+ */
+export type CreateSVGElementFn = (type: string, rawProps : AttributesArg, ...children: any[]) => JSXElement
+
+
+/**
+ * @category Basic
+ */
+export type ExposeFn = <T>(value: T, name?: string) => T
+
+export type JSXElement = ComponentNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null
+/**
+ * @category Basic
+ */
 export type RenderContext = {
-    createElement: (type: JSXElementType, rawProps : AttributesArg, ...children: any[]) => JSXElement,
-    createSVGElement: (type: string, rawProps : AttributesArg, ...children: any[]) => JSXElement,
+    createElement: CreateElementFn,
+    createSVGElement: CreateSVGElementFn,
     Fragment: typeof Fragment,
-    useLayoutEffect: (arg: EffectHandle) => void,
-    useEffect: (arg: EffectHandle) => void,
-    onCleanup: (arg: () => any) => void,
+    useLayoutEffect: UseLayoutEffectFn,
+    useEffect: UseEffectFn,
+    onCleanup: OnCleanupFn,
     refs: {
         [k: string]: HTMLElement
     },
     context: DataContext,
+    /**
+     * @internal
+     */
     pathContext: PathContext,
-    createPortal: (children: JSXElement|Function, container: HTMLElement) => JSXElement
-    createRef: () => RefObject,
-    createRxRef: () => RefObject,
-    createStateFromRef: <T>(transform:StateTransformer<T>, options?: any, externalTarget?: any)=>StateFromRef<T>,
-    expose: <T>(value: T, name?: string) => T,
+    createPortal: CreatePortalFn
+    createRef: CreateRefFn,
+    createRxRef: CreateRxRefFn,
+    createStateFromRef: CreateStateFromRefFn,
+    expose: ExposeFn,
 }
-
+/**
+ * @category Basic
+ */
 export type Component = {
     (props: any, injectHandles: RenderContext): JSXElement,
     propTypes?: PropTypes,

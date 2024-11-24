@@ -1,5 +1,6 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
+/** @jsxFrag Fragment */
 import {createElement, createRoot, Fragment} from "@framework";
 import {RxList, atom} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";

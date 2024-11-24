@@ -5,7 +5,9 @@ import {insertBefore} from './DOM'
 
 // CAUTION 纯粹的动态结构，有变化就重算，未来考虑做 dom diff, 现在不做
 type FunctionNode = () => ChildNode|DocumentFragment|string|number|null|boolean
-
+/**
+ * @internal
+ */
 export class FunctionHost implements Host{
     stopAutoRender!: () => any
     fragmentParent = document.createDocumentFragment()

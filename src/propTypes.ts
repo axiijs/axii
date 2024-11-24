@@ -186,7 +186,9 @@ export function createNormalType<T, D extends TypeDefinition>(type: any, definit
     return TypeChecker
 }
 
-
+/**
+ * @internal
+ */
 export const oneOf = createTypeClass({
     stringify(this: TypeChecker<any, any>, v: any) {
         if (v === null) return ''

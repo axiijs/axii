@@ -8,6 +8,7 @@ declare global {
     var __DEV__: boolean
     namespace JSX {
         interface IntrinsicElements {
+            fragment: { children?: JSXElement | JSXElement[] };
             // allow arbitrary elements
             // @ts-ignore suppress ts:2374 = Duplicate string index signature.
             [name: string]: any

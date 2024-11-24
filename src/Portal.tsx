@@ -1,6 +1,8 @@
 import {ComponentNode, RenderContext} from "./types.js";
 import {createRoot} from "./render.js";
-
+/**
+ * @category Basic
+ */
 type PortalProps = {
     container: HTMLElement
     content: JSX.Element|ComponentNode|Function
@@ -8,7 +10,9 @@ type PortalProps = {
 }
 
 const renderedStaticContent = new WeakSet<any>
-
+/**
+ * @category Basic
+ */
 export function Portal({ container,content, destroyOnUnmount }: PortalProps, { useEffect, pathContext } : RenderContext) {
     if (typeof content !=='function') {
         if( renderedStaticContent.has(content)) {

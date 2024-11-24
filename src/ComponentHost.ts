@@ -20,7 +20,9 @@ import {createRef, createRxRef} from "./ref.js";
 function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
-
+/**
+ * @internal
+ */
 export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     const output = {...origin}
     Object.entries(newProps).forEach(([key, value]) => {
@@ -28,7 +30,9 @@ export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}
     })
     return output
 }
-
+/**
+ * @internal
+ */
 export function mergeProp(key:string, originValue:any, value: any) {
     if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style' || key==='classname' || key==='class')) {
         // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
@@ -49,7 +53,9 @@ export type StateTransformer<T> = (target:any, value:Atom<T|null>) => ((() => vo
 export type StateFromRef<T> = Atom<T|null> & { ref:(target:any) => any }
 
 const INNER_CONFIG_PROP = '__config__'
-
+/**
+ * @internal
+ */
 export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
     type: Component
