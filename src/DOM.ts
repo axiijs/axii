@@ -547,3 +547,6 @@ export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesAr
 export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     return createElement(type, rawProps, [children])
 }
+export function jsxDEV(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+    return Array.isArray(children) ? createElement(type, rawProps, children) : createElement(type, rawProps, children ? [children] : [])
+}
