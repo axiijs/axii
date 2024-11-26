@@ -538,3 +538,12 @@ export class StyleSize {
         return this
     }
 }
+
+// for jsx-dev-runtime
+export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+    return createElement(type, rawProps, children)
+}
+
+export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+    return createElement(type, rawProps, [children])
+}
