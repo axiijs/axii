@@ -210,7 +210,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
 
     } else if (name === 'dangerouslySetInnerHTML') {
         // console.warn(value)
-        if (value) node.innerHTML = value || ''
+        node.innerHTML = value
     } else if (name !== 'list' && name !== 'type' && !isSvg && name in node) {
         setProperty(node, name, value === null ? '' : value)
         if (value === null || value === undefined) node.removeAttribute(name)
