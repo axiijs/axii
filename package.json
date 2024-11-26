@@ -22,6 +22,11 @@
       "require": "./dist/axii.umd.cjs",
       "types": "./dist/axii.d.ts"
     },
+    "./jsx-runtime": {
+      "import": "./dist/axii.js",
+      "require": "./dist/axii.umd.cjs",
+      "types": "./dist/axii.d.ts"
+    },
     "./jsx-dev-runtime": {
       "import": "./dist/axii.js",
       "require": "./dist/axii.umd.cjs",
