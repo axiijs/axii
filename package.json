@@ -44,6 +44,6 @@
     "vitest": "^2.1.5"
   },
   "peerDependencies": {
-    "data0": "^1.7.32"
+    "data0": "^1.7.33"
   }
 }
