@@ -10,7 +10,7 @@ export * from './Portal.js'
 export * from './Form.js'
 export * from './common.js'
 export * from './ComponentHost.js'
-
+export * from './StaticHost.js'
 
 export * from 'data0'
 export {ContextProvider, type ContextProviderProps, createContext} from "./ContextProvider.js";

@@ -8,57 +8,57 @@ import {
     stringifyStyleValue,
     UnhandledPlaceholder
 } from "./DOM";
-import {Host, PathContext} from "./Host";
-import {autorun, isAtom, isReactive} from "data0";
-import {createHost} from "./createHost";
-import {assert, isPlainObject, nextFrames, removeNodesBetween} from "./util";
-import {ComponentHost} from "./ComponentHost.js";
+import { Host, PathContext } from "./Host";
+import { autorun, isAtom, isReactive } from "data0";
+import { createHost } from "./createHost";
+import { assert, isPlainObject, nextFrames, removeNodesBetween } from "./util";
+import { ComponentHost } from "./ComponentHost.js";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
-createElement.isValidAttribute = function(name:string, value:any) {
+createElement.isValidAttribute = function (name: string, value: any) {
     if (name.startsWith('on')) return true
 
     if (Array.isArray(value) && value.some(isReactiveValue)) {
         return false
-    } else if (isReactiveValue(value)){
+    } else if (isReactiveValue(value)) {
         return false
     }
     return originalIsValidAttribute(name, value)
 }
 
-function isReactiveValue(v:any) {
+function isReactiveValue(v: any) {
     return isReactive(v) || isAtom(v) || typeof v === 'function'
 }
 
-function isAtomLike(v:any) {
+function isAtomLike(v: any) {
     return isAtom(v) || typeof v === 'function'
 }
 
 
-function hasPsuedoClassOrNestedStyle(styleObject: StyleObject|StyleObject[]) {
+function hasPsuedoClassOrNestedStyle(styleObject: StyleObject | StyleObject[]) {
     if (Array.isArray(styleObject)) {
         return styleObject.some(hasPsuedoClassOrNestedStyle)
     }
     return Object.entries(styleObject).some(([key, value]) => key.startsWith(':') || (typeof value === 'object' && value !== null))
 }
 
-function hasTransition(styleObject: StyleObject|StyleObject[]) {
+function hasTransition(styleObject: StyleObject | StyleObject[]) {
     if (Array.isArray(styleObject)) {
         return styleObject.some(hasTransition)
     }
     return styleObject.transition !== undefined || styleObject.transitionProperty !== null
 }
 
-function findTransitionProperties(styleObject: StyleObject|StyleObject[]): string[] {
+function findTransitionProperties(styleObject: StyleObject | StyleObject[]): string[] {
     if (Array.isArray(styleObject)) {
         return styleObject.flatMap(findTransitionProperties)
     }
-    return styleObject.transitionProperty?.split(',').map((p:string) => p.trim()) ??
-        styleObject.transition?.split(',').map((p:string) => p.split(/\s+/)[0]) ?? []
+    return styleObject.transitionProperty?.split(',').map((p: string) => p.trim()) ??
+        styleObject.transition?.split(',').map((p: string) => p.split(/\s+/)[0]) ?? []
 }
 
-function hasInlineAnimation(styleObject: StyleObject|StyleObject[]) {
+function hasInlineAnimation(styleObject: StyleObject | StyleObject[]) {
     if (Array.isArray(styleObject)) {
         return styleObject.some(hasInlineAnimation)
     }
@@ -70,11 +70,18 @@ function forceReflow(el: HTMLElement) {
     el.offsetHeight
 }
 
+function generateStaticId(hostPath: Host[], elementPath: number[]) {
+    const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
+    const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
+    const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
+    // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
+    return `gen-${lastComponentHost?.typeId ?? 'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+}
 
 class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
     public elToStyleId = new WeakMap<HTMLElement, string>()
-    getStyleSheetId(hostPath: Host[], elementPath: number[], el: ExtendedElement|null) {
+    getStyleSheetId(hostPath: Host[], elementPath: number[], el: ExtendedElement | null) {
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
         if (el) {
             const styleId = this.elToStyleId.get(el)
@@ -87,13 +94,9 @@ class StyleManager {
             }
         }
 
-        const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
-        const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
-        const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
-        // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-        return `gen-${lastComponentHost?.typeId??'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+        return generateStaticId(hostPath, elementPath)
     }
-    stringifyStyleObject(styleObject: {[k:string]:any}): string {
+    stringifyStyleObject(styleObject: { [k: string]: any }): string {
         return Object.entries(styleObject).map(([key, value]) => {
 
             const property = key.replace(/([A-Z])/g, '-$1').toLowerCase()
@@ -101,7 +104,7 @@ class StyleManager {
             return `${property}:${stringifyStyleValue(key, value)};`
         }).join('\n')
     }
-    update(hostPath: Host[], elementPath: number[], styleObject: StyleObject|StyleObject[], el: ExtendedElement, isStatic: boolean = false) {
+    update(hostPath: Host[], elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement, isStatic: boolean = false) {
         // 使用这个更新的 style 都是有伪类或者有嵌套的，一定需要生成 class 的。
         const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
         let styleSheet = this.styleScripts.get(styleSheetId)
@@ -162,7 +165,7 @@ class StyleManager {
         if (transitionPropertyNames.length) {
             forceReflow(el)
         }
-        return nextFrames(styleObjects.slice(1).map((one, ) => () => {
+        return nextFrames(styleObjects.slice(1).map((one,) => () => {
             // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
             //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
             const [pureValueStyleObject, otherStyleObject, transitionProperties] = this.separateStyleObject(one, transitionPropertyNames)
@@ -191,24 +194,24 @@ class StyleManager {
             }
         }))
     }
-    isNestedStyleObject(key:string, styleObject: any): boolean {
+    isNestedStyleObject(key: string, styleObject: any): boolean {
         // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
         return key !== '@keyframes' && isPlainObject(styleObject)
     }
     separateStyleObject(styleObject: StyleObject, transitionPropertyNames: string[]): [StyleObject?, StyleObject?, StyleObject?] {
         // 把 value 不是 plainObject 的属性分离出来
-        let pureValueStyleObject: StyleObject|undefined = undefined
-        let otherStyleObject: StyleObject|undefined = undefined
-        let transitionStyleObject: StyleObject|undefined = undefined
-        for(const key in styleObject) {
-            if (this.isNestedStyleObject(key, styleObject[key]) || (key==='animation' && styleObject['keyframes'])) {
+        let pureValueStyleObject: StyleObject | undefined = undefined
+        let otherStyleObject: StyleObject | undefined = undefined
+        let transitionStyleObject: StyleObject | undefined = undefined
+        for (const key in styleObject) {
+            if (this.isNestedStyleObject(key, styleObject[key]) || (key === 'animation' && styleObject['keyframes'])) {
                 if (!otherStyleObject) otherStyleObject = {}
                 otherStyleObject[key] = styleObject[key]
-            } else if (transitionPropertyNames.includes(key)){
-                if(!transitionStyleObject) transitionStyleObject = {}
+            } else if (transitionPropertyNames.includes(key)) {
+                if (!transitionStyleObject) transitionStyleObject = {}
                 transitionStyleObject[key] = styleObject[key]
             } else {
-                if(!pureValueStyleObject) pureValueStyleObject = {}
+                if (!pureValueStyleObject) pureValueStyleObject = {}
                 pureValueStyleObject[key] = styleObject[key]
             }
         }
@@ -221,8 +224,8 @@ class StyleManager {
             }`
         }).join('\n')
     }
-    generateInlineAnimationContent(selector:string, styleObject:StyleObject) {
-        const animationContent:string[] = []
+    generateInlineAnimationContent(selector: string, styleObject: StyleObject) {
+        const animationContent: string[] = []
         let animationName = ''
         animationName = `animation-${Math.random().toString(36).slice(2)}`
         if (styleObject['@keyframes']) {
@@ -243,13 +246,13 @@ ${selector} {
 
         return animationContent
     }
-    generateStyleContent(selector:string, styleObject: StyleObject): string[] {
+    generateStyleContent(selector: string, styleObject: StyleObject): string[] {
 
-        const valueStyleObject = {...styleObject}
+        const valueStyleObject = { ...styleObject }
         const nestedStyleEntries: [string, any][] = []
         const keyframeObj: StyleObject = {}
 
-        for(const key in valueStyleObject) {
+        for (const key in valueStyleObject) {
             if (key === '@keyframes' || key === 'animation') {
                 keyframeObj[key] = valueStyleObject[key]
                 delete valueStyleObject[key]
@@ -281,19 +284,25 @@ ${this.stringifyStyleObject(valueStyleObject)}
     }
 }
 
-type StyleObject = {[k:string]:any}
+type StyleObject = { [k: string]: any }
 
 // @ts-ignore 待修复
-function isStaticStyleObject(styleObject: StyleObject|StyleObject[]): boolean {
+function isStaticStyleObject(styleObject: StyleObject | StyleObject[]): boolean {
     if (Array.isArray(styleObject)) {
         return styleObject.every(isStaticStyleObject)
     }
     return typeof styleObject === 'object'
 }
+
+// 添加全局配置对象
+export const StaticHostConfig = {
+    autoGenerateTestId: false
+}
+
 /**
  * @internal
  */
-export class StaticHost implements Host{
+export class StaticHost implements Host {
     static styleManager = new StyleManager()
     // 如果有 detachStyledChildren，会设为 true
     public forceHandleElement: boolean = false
@@ -304,12 +313,12 @@ export class StaticHost implements Host{
     attrAutoruns?: (() => void)[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
-    constructor(public source: HTMLElement|SVGElement|DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+    constructor(public source: HTMLElement | SVGElement | DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
     }
     get parentElement() {
         return this.placeholder.parentElement
     }
-    element: HTMLElement|Comment|SVGElement = this.placeholder
+    element: HTMLElement | Comment | SVGElement = this.placeholder
     render(): void {
         assert(this.element === this.placeholder, 'should never rerender')
 
@@ -330,7 +339,7 @@ export class StaticHost implements Host{
         }
         this.reactiveHosts!.forEach(host => host.render())
 
-        if(this.pathContext.root.attached) {
+        if (this.pathContext.root.attached) {
             this.attachRefs()
         } else {
             this.pathContext.root.on('attach', this.attachRefs)
@@ -344,7 +353,7 @@ export class StaticHost implements Host{
 
         this.reactiveHosts =
             unhandledChildren ?
-                unhandledChildren.map(({ placeholder, child, path}) =>
+                unhandledChildren.map(({ placeholder, child, path }) =>
                     createHost(child, placeholder, {
                         ...this.pathContext,
                         hostPath: [...this.pathContext.hostPath, this],
@@ -360,10 +369,14 @@ export class StaticHost implements Host{
 
         const isSVG = result instanceof SVGElement
 
-        const {  unhandledAttr } = result as ExtendedElement
+        const { unhandledAttr } = result as ExtendedElement
 
         this.attrAutoruns = []
-        unhandledAttr?.forEach(({ el, key, value, path}) => {
+        unhandledAttr?.forEach(({ el, key, value, path }) => {
+            // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
+            if (!el.hasAttribute('data-testid')) {
+                this.generateTestId(el, path)
+            }
             // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
             if (!key.includes(':')) {
                 this.attrAutoruns!.push(autorun(() => {
@@ -372,7 +385,7 @@ export class StaticHost implements Host{
             }
         })
     }
-    updateAttribute(el: ExtendedElement, key:string, value:any, path:number[], isSVG:boolean) {
+    updateAttribute(el: ExtendedElement, key: string, value: any, path: number[], isSVG: boolean) {
         const final = Array.isArray(value) ?
             value.map(v => isAtomLike(v) ? v() : v) :
             isAtomLike(value) ? value() : value
@@ -383,7 +396,7 @@ export class StaticHost implements Host{
             //  修复之前只能让 isStatic === false
             // const isStatic = isStaticStyleObject(value)
             const isStatic = false
-            return StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic )
+            return StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic)
         } else {
             setAttribute(el, key, final, isSVG)
         }
@@ -391,21 +404,28 @@ export class StaticHost implements Host{
     collectRefHandles() {
         const result = this.source
         if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
-        const {  refHandles } = result as ExtendedElement
+        const { refHandles } = result as ExtendedElement
         this.refHandles = refHandles
     }
     collectDetachStyledChildren() {
         const result = this.source
         if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
-        const {  detachStyledChildren } = result as ExtendedElement
+        const { detachStyledChildren } = result as ExtendedElement
         this.detachStyledChildren = detachStyledChildren
     }
-    attachRefs= () =>{
+    generateTestId(el: ExtendedElement, elementPath: number[]) {
+        // 增加全局开关控制
+        if (!StaticHostConfig.autoGenerateTestId) return
+        
+        const testId = generateStaticId(this.pathContext.hostPath, elementPath)
+        setAttribute(el, 'data-testid', testId)
+    }
+    attachRefs = () => {
         this.refHandles?.forEach(({ handle, el }: RefHandleInfo) => {
             createElement.attachRef(el, handle)
         })
     }
-    destroy(parentHandle?:boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
             this.attrAutoruns?.forEach(stopAutorun => stopAutorun())
         }
@@ -421,13 +441,13 @@ export class StaticHost implements Host{
     async removeElements(parentHandle?: boolean) {
         if (parentHandle) return
 
-        if(this.detachStyledChildren?.length) {
+        if (this.detachStyledChildren?.length) {
             const transformingElements = new Set<HTMLElement>()
             const animatingElements = new Set<HTMLElement>()
 
             // TODO 提升计算效率
             // CAUTION 监听所有的 animationrun 和 transitionrun 事件。不能用 animationstart 和 transitionstart，因为不是立刻触发的
-            this.detachStyledChildren?.forEach(({el, style:value}) => {
+            this.detachStyledChildren?.forEach(({ el, style: value }) => {
                 const transitionProperties = getComputedStyle(el).transitionProperty.split(',').map(p => p.trim())
                 // CAUTION 注意这里的计算规则和 updateAttribute 里的不太一样，这里只要找 key 就行了
                 const finalStyle: StyleObject = Array.isArray(value) ?
@@ -446,7 +466,7 @@ export class StaticHost implements Host{
             // 执行完了所有的 update style 任务，这里用 await 是因为修改该 style 用到了 nextFrame 等异步行为
             await Promise.all(this.detachStyledChildren?.map(({ el, style: value, path }) => {
                 return this.updateAttribute(el, 'style', value, path, el instanceof SVGElement)
-            })||[])
+            }) || [])
 
             const transformingElementsArray = Array.from(transformingElements)
             const animatingElementsArray = Array.from(animatingElements)
@@ -464,6 +484,6 @@ export class StaticHost implements Host{
 
 function eventToPromise(el: HTMLElement, event: string) {
     return new Promise(resolve => {
-        el.addEventListener(event, resolve, {once: true})
+        el.addEventListener(event, resolve, { once: true })
     })
 }
