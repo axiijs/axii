@@ -353,6 +353,8 @@ export class StaticHost implements Host{
                 ) :
                 []
 
+        delete (result as ExtendedElement).unhandledChildren
+
     }
     collectReactiveAttr() {
         const result = this.source
