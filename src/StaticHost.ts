@@ -70,7 +70,11 @@ function forceReflow(el: HTMLElement) {
     el.offsetHeight
 }
 
-function generateStaticId(hostPath: Host[], elementPath: number[]) {
+function generateGlobalElementStaticId(hostPath: Host[], elementPath: number[]) {
+    return `${hostPath.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+}
+
+function generateComponentElementStaticId(hostPath: Host[], elementPath: number[]) {
     const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
     const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
     const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
@@ -94,7 +98,7 @@ class StyleManager {
             }
         }
 
-        return generateStaticId(hostPath, elementPath)
+        return generateComponentElementStaticId(hostPath, elementPath)
     }
     stringifyStyleObject(styleObject: { [k: string]: any }): string {
         return Object.entries(styleObject).map(([key, value]) => {
@@ -419,7 +423,7 @@ export class StaticHost implements Host {
         // 增加全局开关控制
         if (!StaticHostConfig.autoGenerateTestId) return
         
-        const testId = generateStaticId(this.pathContext.hostPath, elementPath)
+        const testId = generateGlobalElementStaticId(this.pathContext.hostPath, elementPath)
         setAttribute(el, 'data-testid', testId)
     }
     attachRefs = () => {
