@@ -40,14 +40,14 @@ function hasPsuedoClassOrNestedStyle(styleObject: StyleObject | StyleObject[]) {
     if (Array.isArray(styleObject)) {
         return styleObject.some(hasPsuedoClassOrNestedStyle)
     }
-    return Object.entries(styleObject).some(([key, value]) => key.startsWith(':') || (typeof value === 'object' && value !== null))
+    return Object.entries(styleObject).some(([key, value]) => key.startsWith(':') || (isPlainObject(value)))
 }
 
 function hasTransition(styleObject: StyleObject | StyleObject[]) {
     if (Array.isArray(styleObject)) {
         return styleObject.some(hasTransition)
     }
-    return styleObject.transition !== undefined || styleObject.transitionProperty !== null
+    return styleObject.transition || styleObject.transitionProperty
 }
 
 function findTransitionProperties(styleObject: StyleObject | StyleObject[]): string[] {
