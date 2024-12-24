@@ -73,10 +73,10 @@ describe('component render', () => {
         const classList = Array.from(lastDiv.classList)
         expect(classList.length).toBe(1)
         const lastP = lastDiv.lastElementChild as HTMLElement
-        expect(getComputedStyle(lastP).getPropertyValue('color')).toBe('red')
+        expect(getComputedStyle(lastP).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
 
-        lastChildColor('green')
-        expect(getComputedStyle(lastP).getPropertyValue('color')).toBe('green')
+        lastChildColor('rgb(0, 128, 0)')
+        expect(getComputedStyle(lastP).getPropertyValue('color')).toBe('rgb(0, 128, 0)')
     })
 
     // TODO happy-dom media query not working
@@ -152,13 +152,13 @@ describe('complex style', () => {
         expect(app.children[0].textContent).toBe('a')
         expect(app.children[1].textContent).toBe('b')
         expect(app.children[2].textContent).toBe('c')
-        expect(getComputedStyle(app.children[0]).getPropertyValue('color')).toBe('blue')
-        expect(getComputedStyle(app.children[1]).getPropertyValue('color')).toBe('red')
-        expect(getComputedStyle(app.children[2]).getPropertyValue('color')).toBe('blue')
+        expect(getComputedStyle(app.children[0]).getPropertyValue('color')).toBe('rgb(0, 0, 255)')
+        expect(getComputedStyle(app.children[1]).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
+        expect(getComputedStyle(app.children[2]).getPropertyValue('color')).toBe('rgb(0, 0, 255)')
 
         selected('a')
-        expect(getComputedStyle(app.children[0]).getPropertyValue('color')).toBe('red')
-        expect(getComputedStyle(app.children[1]).getPropertyValue('color')).toBe('blue')
-        expect(getComputedStyle(app.children[2]).getPropertyValue('color')).toBe('blue')
+        expect(getComputedStyle(app.children[0]).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
+        expect(getComputedStyle(app.children[1]).getPropertyValue('color')).toBe('rgb(0, 0, 255)')
+        expect(getComputedStyle(app.children[2]).getPropertyValue('color')).toBe('rgb(0, 0, 255)')
     })
 })

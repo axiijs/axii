@@ -157,7 +157,7 @@ describe('component render', () => {
 
     test('reactive attribute should not leak to upper computed', () => {
         const rxStyle = reactive({
-            color: 'red',
+            color: 'rgb(255, 0, 0)',
             fontSize: '12px'
         })
 
@@ -174,10 +174,10 @@ describe('component render', () => {
 
         root.render(<App/>)
         const firstChild = () => (rootEl.firstElementChild!.children[0] as HTMLElement)
-        expect(getComputedStyle(firstChild()).color).toBe('red')
+        expect(getComputedStyle(firstChild()).color).toBe('rgb(255, 0, 0)')
 
-        rxStyle.color = 'blue'
-        expect(getComputedStyle(firstChild()).color).toBe('blue')
+        rxStyle.color = 'rgb(0, 0, 255)'
+        expect(getComputedStyle(firstChild()).color).toBe('rgb(0, 0, 255)')
         expect(functionNodeRuns).toBe(1)
 
     })

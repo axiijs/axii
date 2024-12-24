@@ -31,14 +31,14 @@ describe('component configuration', () => {
         const helloRef2 = {current: null}
 
         root.render(<App
-            $hello:style={{color:'red'}}
+            $hello:style={{color:'rgb(255, 0, 0)'}}
             $hello:onClick={() => helloClicked2 = true}
             $hello:ref={helloRef2}
         >
         </App>)
 
         expect(helloRef.current).toBeDefined()
-        expect(getComputedStyle(helloRef.current! as HTMLElement).getPropertyValue('color')).toBe('red')
+        expect(getComputedStyle(helloRef.current! as HTMLElement).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
         expect(helloRef.current).toBe(helloRef2.current)
 
         await userEvent.click(helloRef.current!)
