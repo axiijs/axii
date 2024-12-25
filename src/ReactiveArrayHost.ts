@@ -15,8 +15,19 @@ function getSpliceRemoveLength(argv: any[], length: number) : number {
 export class ReactiveArrayHost implements Host{
     hostsComputed?: Host[]
     placeholderAndItemComputed?: UnwrapReactive<[any, Comment][]>
+    private cachedParent?: ParentNode
+    private documentFragment?: DocumentFragment
 
     constructor(public source: any[], public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
+        // Cache the parent node to reduce lookups
+        this.cachedParent = placeholder.parentNode
+    }
+
+    private getDocumentFragment(): DocumentFragment {
+        if (!this.documentFragment) {
+            this.documentFragment = document.createDocumentFragment()
+        }
+        return this.documentFragment.cloneNode(true) as DocumentFragment
     }
     createPlaceholder(item: any): [any, Comment] {
         return [item, document.createComment('frag item host')]
@@ -102,65 +113,84 @@ export class ReactiveArrayHost implements Host{
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
                 const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, {...host.pathContext, hostPath: [...host.pathContext.hostPath, host]}))
-                const frag = document.createDocumentFragment()
+                const fragment = host.getDocumentFragment()
                 hosts.forEach(itemHost => {
-                    frag.appendChild(itemHost.placeholder)
+                    fragment.appendChild(itemHost.placeholder)
                     itemHost.render()
                 })
-                insertBefore(frag, host.placeholder)
+                insertBefore(fragment, host.placeholder)
                 return hosts
             },
             function applyPatch(hosts, triggerInfos) {
                 triggerInfos.forEach(({method, argv, result}) => {
                     if (method === 'push') {
+                        // Optimize push operation
                         const newHosts = argv!.map(host.createHost)
-                        const frag = document.createDocumentFragment()
+                        const fragment = host.getDocumentFragment()
+                        
+                        // Batch DOM operations
                         newHosts.forEach(host => {
-                            frag.appendChild(host.placeholder)
+                            fragment.appendChild(host.placeholder)
                             host.render()
                         })
-                        insertBefore(frag, host.placeholder)
+                        insertBefore(fragment, host.placeholder)
                         hosts.push(...newHosts)
                     } else if (method === 'pop') {
+                        // Simple removal - no batching needed
                         const last = hosts.pop()
                         last.destroy()
                     } else if (method === 'shift') {
+                        // Simple removal - no batching needed
                         const first = hosts.shift()
                         first.destroy()
                     } else if (method === 'unshift') {
+                        // Optimize unshift operation
                         const newHosts = argv!.map(host.createHost)
-                        const frag = document.createDocumentFragment()
+                        const fragment = host.getDocumentFragment()
+                        
+                        // Batch DOM operations
                         newHosts.forEach(newHost => {
-                            frag.appendChild(newHost.placeholder)
+                            fragment.appendChild(newHost.placeholder)
                             newHost.render()
                         })
-                        insertBefore(frag, host.element)
+                        insertBefore(fragment, host.element)
                         hosts.unshift(...newHosts)
                     } else if (method === 'splice') {
-                        const frag = document.createDocumentFragment()
+                        // Optimize splice operation with document fragment
+                        const fragment = host.getDocumentFragment()
                         const newHosts = argv!.slice(2)!.map(host.createHost)
                         newHosts.forEach(newHost => {
-                            frag.appendChild(newHost.placeholder)
+                            fragment.appendChild(newHost.placeholder)
                             newHost.render()
                         })
 
                         if (argv![0] === 0 && argv![1] >= hosts.length && host.isOnlyChildrenOfParent()) {
-                            // CAUTION 如果完全就是某个子 children，那么这里一次性 replaceChildren 可以提升性能。
-                            const parent = host.placeholder.parentNode!
+                            // Optimize full replacement case
+                            const parent = host.cachedParent || host.placeholder.parentNode!
+                            
+                            // Batch DOM operations
                             if (!newHosts.length && parent instanceof HTMLElement) {
-                                (parent as HTMLElement).innerHTML = ''
-                                parent.appendChild(frag)
+                                parent.textContent = ''
+                                parent.appendChild(fragment)
                             } else {
-                                parent.replaceChildren(frag)
+                                parent.replaceChildren(fragment)
                             }
-                            // CAUTION 一定记得把自己 placeholder 重新 append 进去。
+                            
+                            // Ensure placeholder is preserved
                             parent.appendChild(host.placeholder)
 
+                            // Clean up old hosts
                             hosts.forEach((host: Host) => host.destroy(true))
                             hosts.splice(0, Infinity, ...newHosts)
                         } else {
+                            // Optimize partial updates
                             const removeLength = getSpliceRemoveLength(argv!, hosts.length)
-                            insertBefore(frag, hosts[argv![0] + removeLength]?.element || host.placeholder)
+                            const nextElement = hosts[argv![0] + removeLength]?.element || host.placeholder
+                            
+                            // Use document fragment for better performance
+                            insertBefore(fragment, nextElement)
+                            
+                            // Clean up removed hosts
                             const removed = hosts.splice(argv![0], removeLength, ...newHosts)
                             removed.forEach((host: Host) => host.destroy())
                         }

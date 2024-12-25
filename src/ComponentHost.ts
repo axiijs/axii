@@ -367,15 +367,41 @@ export class ComponentHost implements Host{
     onCleanup = (callback: () => any) => {
         this.destroyCallback.add(callback)
     }
+    private lastBoundPropsInput?: Props
+    private lastBoundPropsResult?: Props[]
+    
     evaluateBoundProps(inputProps:Props, renderContext:RenderContext) {
-        return (this.type.boundProps || []).map(b => {
+        // Memoize bound props evaluation
+        if (this.lastBoundPropsInput === inputProps) {
+            return this.lastBoundPropsResult || []
+        }
+        
+        const result = (this.type.boundProps || []).map(b => {
             if (typeof b === 'function') {
                 return b(inputProps, renderContext!)
             }
             return b
         })
+        
+        this.lastBoundPropsInput = inputProps
+        this.lastBoundPropsResult = result
+        return result
     }
+    private shallowEqual(obj1: any, obj2: any): boolean {
+        if (obj1 === obj2) return true
+        if (!obj1 || !obj2) return false
+        const keys1 = Object.keys(obj1)
+        const keys2 = Object.keys(obj2)
+        if (keys1.length !== keys2.length) return false
+        return keys1.every(key => obj1[key] === obj2[key])
+    }
+
     parseAndMergeProps(last: {props:Props, itemConfig: ConfigItem, componentProp: Props}, current: Props) {
+        // Skip if props haven't changed
+        if (this.shallowEqual(last.props, current)) {
+            return last
+        }
+
         // CAUTION 为了性能直接 assign，外部调用时要自己保证 last 是一个新的对象
         Object.entries(current).forEach(([key, value]) => {
             if( key === INNER_CONFIG_PROP) {
@@ -399,12 +425,23 @@ export class ComponentHost implements Host{
         const allProps = evaluatedProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
         return allProps.reduce((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {}})
     }
+    private lastProps?: Props
+    private lastNormalizedProps?: Props
+    
     render(): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
             assert(false, 'should never rerender')
         }
 
+        const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
+        
+        // Bailout if props haven't changed
+        if (this.lastProps && this.shallowEqual(this.lastProps, componentProps)) {
+            return
+        }
+        this.lastProps = componentProps
+        
         // CAUTION 注意这里 children 的写法，没有children 就不要传，免得后面 props 继续往下透传的时候出问题。
         this.renderContext = {
             Fragment,
@@ -426,11 +463,18 @@ export class ComponentHost implements Host{
         // CAUTION collect effects start
         const getFrame = ReactiveEffect.collectEffect()
 
-        const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
         this.itemConfig = itemConfig
         this.props = componentProps
-        // 这里要再 coerce props，因为 boundProps 可能 return fixed value
-        const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+        
+        // Skip normalization if props haven't changed
+        let normalizedProps: Props
+        if (this.lastNormalizedProps && this.shallowEqual(this.lastProps, componentProps)) {
+            normalizedProps = this.lastNormalizedProps
+        } else {
+            // 这里要再 coerce props，因为 boundProps 可能 return fixed value
+            normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+            this.lastNormalizedProps = normalizedProps
+        }
 
         normalizedProps.children = this.children
         this.props = normalizedProps

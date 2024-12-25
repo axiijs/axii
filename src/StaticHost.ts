@@ -13,6 +13,7 @@ import { autorun, isAtom, isReactive } from "data0";
 import { createHost } from "./createHost";
 import { assert, isPlainObject, nextFrames, removeNodesBetween } from "./util";
 import { ComponentHost } from "./ComponentHost.js";
+import { StyleCache } from "./StyleCache";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
@@ -85,6 +86,10 @@ function generateComponentElementStaticId(hostPath: Host[], elementPath: number[
 class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
     public elToStyleId = new WeakMap<HTMLElement, string>()
+    private styleCache = StyleCache.getInstance()
+    private batchUpdates = new Map<string, Array<() => void>>()
+    private batchTimeout: number | null = null
+    
     getStyleSheetId(hostPath: Host[], elementPath: number[], el: ExtendedElement | null) {
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
         if (el) {
@@ -108,18 +113,91 @@ class StyleManager {
             return `${property}:${stringifyStyleValue(key, value)};`
         }).join('\n')
     }
+    private flushBatchUpdates() {
+        if (this.batchTimeout) {
+            clearTimeout(this.batchTimeout);
+            this.batchTimeout = null;
+        }
+        
+        for (const [styleSheetId, updates] of this.batchUpdates.entries()) {
+            const styleSheet = this.styleScripts.get(styleSheetId);
+            if (styleSheet) {
+                // Execute all updates for this style sheet
+                updates.forEach(update => update());
+            }
+        }
+        this.batchUpdates.clear();
+    }
+
+    private updateStyles(styleSheet: CSSStyleSheet, styleSheetId: string, styleObjects: StyleObject | StyleObject[]) {
+        // Clear existing rules
+        while (styleSheet.cssRules.length > 0) {
+            styleSheet.deleteRule(0)
+        }
+
+        const objects = Array.isArray(styleObjects) ? styleObjects : [styleObjects]
+        
+        objects.forEach((obj) => {
+            const rules = this.generateStyleContent(`.${styleSheetId}`, obj)
+            rules.forEach(rule => {
+                try {
+                    styleSheet.insertRule(rule, styleSheet.cssRules.length)
+                } catch (e) {
+                    console.warn('Failed to insert rule:', rule, e)
+                }
+            })
+        })
+    }
+
+    private scheduleUpdate(styleSheetId: string, update: () => void) {
+        if (!this.batchUpdates.has(styleSheetId)) {
+            this.batchUpdates.set(styleSheetId, []);
+        }
+        this.batchUpdates.get(styleSheetId)!.push(update);
+
+        if (!this.batchTimeout) {
+            this.batchTimeout = window.setTimeout(() => this.flushBatchUpdates(), 0);
+        }
+    }
+
+
     update(hostPath: Host[], elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement, isStatic: boolean = false) {
         // 使用这个更新的 style 都是有伪类或者有嵌套的，一定需要生成 class 的。
         const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
-        let styleSheet = this.styleScripts.get(styleSheetId)
+        let styleSheet = this.styleCache.getStyleSheet(styleSheetId)
         if (!styleSheet) {
             styleSheet = new CSSStyleSheet()
             document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
             this.styleScripts.set(styleSheetId, styleSheet)
+            this.styleCache.addRule(styleSheetId, '', styleSheet)
         }
 
         el.classList.add(styleSheetId)
-        const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
+        
+        // Handle dynamic style functions and atoms
+        const evaluateStyle = (obj: any): StyleObject => {
+            if (typeof obj === 'function') {
+                return obj()
+            }
+            return obj
+        }
+        
+        // Set up autorun for reactive style updates
+        if (!isStatic && typeof styleObject === 'function') {
+            autorun(() => {
+                const evaluated = evaluateStyle(styleObject)
+                this.updateStyles(styleSheet!, styleSheetId, evaluated)
+            })
+        }
+        
+        const styleObjects = Array.isArray(styleObject) 
+            ? styleObject.map(evaluateStyle)
+            : [evaluateStyle(styleObject)]
+        
+        // Clear existing rules to ensure proper update
+        while (styleSheet.cssRules.length > 0) {
+            styleSheet.deleteRule(0)
+        }
 
         // CAUTION 多个 styleObjects 的更新要用异步任务，这样 transition 中的效果才能生效
         // 1. replaceSync 会立即生效，不会有 transition 效果
@@ -147,11 +225,8 @@ class StyleManager {
         //     })
         // })
 
-        // styleSheet!.replace(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n')).then(() => {
-        //     nextFrames(styleObjects.slice(1).map((one, ) => () => {
-        //         // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
-        //         //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
-        //         const [valueStyleObject, nestedStyleObject] = this.separateStyleObject(one)
+        // Update styles immediately for the initial render
+        this.updateStyles(styleSheet!, styleSheetId, styleObjects)
         //         this.generateStyleContent(`.${styleSheetId}`, nestedStyleObject).forEach(rule => {
         //             styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
         //         })
@@ -164,19 +239,41 @@ class StyleManager {
         // if (hasInlineAnimation(styleObjects[0])) {
         //     console.log(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
         // }
-        styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
-        const transitionPropertyNames = findTransitionProperties(styleObjects[0])
-        if (transitionPropertyNames.length) {
-            forceReflow(el)
+        const initialContent = this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]);
+        const transitionPropertyNames = findTransitionProperties(styleObjects[0]);
+        
+        // Only update if content has changed
+        const contentString = initialContent.join('\n');
+        if (!this.styleCache.hasRule(styleSheetId, contentString)) {
+            this.scheduleUpdate(styleSheetId, () => {
+                styleSheet!.replaceSync(contentString);
+                this.styleCache.addRule(styleSheetId, contentString, styleSheet!);
+            });
         }
+
+        // Handle transitions more efficiently
+        if (transitionPropertyNames.length) {
+            // Schedule reflow in next microtask to batch with other updates
+            queueMicrotask(() => forceReflow(el));
+        }
+
+        // Batch remaining style updates
         return nextFrames(styleObjects.slice(1).map((one,) => () => {
             // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
             //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
             const [pureValueStyleObject, otherStyleObject, transitionProperties] = this.separateStyleObject(one, transitionPropertyNames)
             if (otherStyleObject) {
-                this.generateStyleContent(`.${styleSheetId}`, otherStyleObject).forEach(rule => {
-                    styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
-                })
+                const rules = this.generateStyleContent(`.${styleSheetId}`, otherStyleObject);
+                const rulesString = rules.join('\n');
+                
+                if (!this.styleCache.hasRule(styleSheetId, rulesString)) {
+                    this.scheduleUpdate(styleSheetId, () => {
+                        rules.forEach(rule => {
+                            styleSheet!.insertRule(rule, styleSheet!.cssRules.length);
+                        });
+                        this.styleCache.addRule(styleSheetId, rulesString, styleSheet!);
+                    });
+                }
             }
             // FIXME 是不是可以和上面合并
             if (pureValueStyleObject) {
