@@ -25,7 +25,9 @@ export default {
   test: {
     browser: {
       enabled: true,
-      name: 'chrome',
+      name: 'chromium',
+      provider: 'playwright',
+      headless: true
     },
   },
 }

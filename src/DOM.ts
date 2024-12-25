@@ -271,93 +271,111 @@ export type DetachStyledInfo = {
 
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    const {_isSVG, ...props} = rawProps || {}
+    const {_isSVG, ...rawRestProps} = rawProps || {}
+    let props = rawRestProps
 
-    let container: HTMLElement | DocumentFragment | SVGElement
-
-    const children: any[] = rawChildren.length ? rawChildren: (props.children || [])
-
-    if (type === Fragment) {
-        container = document.createDocumentFragment()
-    } else if (typeof type === 'string') {
-        container = _isSVG ? document.createElementNS('http://www.w3.org/2000/svg', type) : document.createElement(type)
-    } else {
+    // Early return for component nodes
+    if (typeof type !== 'string' && type !== Fragment) {
+        const children: any[] = rawChildren.length ? rawChildren : (props?.children || [])
         return {type, props, children} as ComponentNode
     }
 
+    // Create container with proper type assertion
+    const container = type === Fragment
+        ? document.createDocumentFragment()
+        : (_isSVG 
+            ? document.createElementNS('http://www.w3.org/2000/svg', type as string) as SVGElement
+            : document.createElement(type as string)) as HTMLElement
+
+    // Initialize arrays only if needed
     const unhandledAttr: UnhandledAttrInfo[] = []
     const unhandledChildren: UnhandledChildInfo[] = []
     const refHandles: RefHandleInfo[] = []
-    const detachStyledChildren: DetachStyledInfo[] =[]
+    const detachStyledChildren: DetachStyledInfo[] = []
 
-    children?.forEach((child, index) => {
-        if (child === undefined || child === null) return
+    // Process children in a single pass using DocumentFragment
+    const children: any[] = rawChildren.length ? rawChildren : (props?.children || [])
+    if (children?.length) {
+        const tempFragment = document.createDocumentFragment()
+        
+        children.forEach((child, index) => {
+            if (child == null) return // Handles both undefined and null
 
-        if (typeof child === 'string' || typeof child === 'number') {
-            container.appendChild(document.createTextNode(child.toString()))
-        } else if (child instanceof HTMLElement || child instanceof DocumentFragment || child instanceof SVGElement) {
-            container.appendChild(child)
+            if (typeof child === 'string' || typeof child === 'number') {
+                tempFragment.appendChild(document.createTextNode(child.toString()))
+            } else if (child instanceof Node) { // Covers HTMLElement, DocumentFragment, SVGElement
+                tempFragment.appendChild(child)
 
-            // 往上传递 unhandledChild unhandledAttr ，直到没有 parent 了为止
-            const childElement = child as ExtendedElement
-            const childUnhandledChildren = childElement.unhandledChildren || []
-            unhandledChildren.push(...childUnhandledChildren.map(c => ({...c, path: [index, ...c.path]})))
-
-            const childUnhandledAttr = childElement.unhandledAttr || []
-            unhandledAttr.push(...childUnhandledAttr.map(c => ({...c, path: [index, ...c.path]})))
-
-            const childRefHandles = childElement.refHandles || []
-            refHandles.push(...childRefHandles.map(c => ({...c, path: [index, ...c.path]})))
-
-            const childDetachStyledChildren = childElement.detachStyledChildren || []
-            detachStyledChildren.push(...childDetachStyledChildren.map(c => ({...c, path: [index, ...c.path]})))
-
-
-            delete childElement.unhandledChildren
-            delete childElement.unhandledAttr
-            delete childElement.refHandles
-            delete childElement.detachStyledChildren
-
-        } else {
-            const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
-            container.appendChild(placeholder)
-            unhandledChildren.push({placeholder, child, path: [index]})
-        }
-    })
-
-    // CAUTION 注意这里一定要先处理往 children 再处理自身的 prop，因为像 Select 这样的元素只有在渲染完 option 之后再设置 value 才有效。
-    //  否则会出现  Select value 自动变成 option 第一个的情况。
-    if (props) {
-        if (props.ref) {
-            // createElement.attachRef(container as HTMLElement, props.ref)
-            refHandles.push({handle: props.ref, path: [], el: container as HTMLElement})
-            delete props.ref
-        }
-
-        if (props.detachStyle) {
-            detachStyledChildren.push({el: container as HTMLElement, style: props.detachStyle, path: []})
-            delete props.detachStyle
-        }
-
-        Object.entries(props).forEach(([key, value]) => {
-            // 注意这里好像写得很绕，但逻辑判断是最少的
-            if (!createElement.isValidAttribute(key, value)) {
-                unhandledAttr.push({el: container as ExtendedElement, key, value, path: []})
+                // Handle extended element properties
+                const childElement = child as ExtendedElement
+                if (childElement.unhandledChildren?.length) {
+                    unhandledChildren.push(...childElement.unhandledChildren.map(c => ({...c, path: [index, ...c.path]})))
+                    childElement.unhandledChildren = undefined
+                }
+                if (childElement.unhandledAttr?.length) {
+                    unhandledAttr.push(...childElement.unhandledAttr.map(c => ({...c, path: [index, ...c.path]})))
+                    childElement.unhandledAttr = undefined
+                }
+                if (childElement.refHandles?.length) {
+                    refHandles.push(...childElement.refHandles.map(c => ({...c, path: [index, ...c.path]})))
+                    childElement.refHandles = undefined
+                }
+                if (childElement.detachStyledChildren?.length) {
+                    detachStyledChildren.push(...childElement.detachStyledChildren.map(c => ({...c, path: [index, ...c.path]})))
+                    childElement.detachStyledChildren = undefined
+                }
             } else {
-                setAttribute(container as ExtendedElement, key, value, _isSVG)
+                const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
+                tempFragment.appendChild(placeholder)
+                unhandledChildren.push({placeholder, child, path: [index]})
             }
         })
+        
+        container.appendChild(tempFragment)
     }
 
-    // 把 unhandled child/attr 全部收集到顶层的  container 上，等外部处理，这样就不用外部去遍历 jsx 的结果了
-    // CAUTION refHandles 也要向上传递是因为在 DOM 中没有监听 detach 的方法，我们只能依赖外部框架的生命周期来处理。
+    // Process props after children for proper Select/Option behavior
+    if (props) {
+        // Handle special props first with mutable copy
+        let mutableProps = props
+        
+        if (props.ref) {
+            refHandles.push({handle: props.ref, path: [], el: container as HTMLElement})
+            mutableProps = {...props}
+            delete mutableProps.ref
+            props = mutableProps
+        }
+        
+        if (props.detachStyle) {
+            detachStyledChildren.push({el: container as HTMLElement, style: props.detachStyle, path: []})
+            if (mutableProps === props) {
+                mutableProps = {...props}
+                props = mutableProps
+            }
+            delete mutableProps.detachStyle
+        }
+
+        // Process remaining props
+        const entries = Object.entries(props)
+        if (entries.length) {
+            for (const [key, value] of entries) {
+                if (!createElement.isValidAttribute(key, value)) {
+                    unhandledAttr.push({el: container as ExtendedElement, key, value, path: []})
+                } else {
+                    setAttribute(container as ExtendedElement, key, value, _isSVG)
+                }
+            }
+        }
+    }
+
+    // Attach metadata to container only if necessary
     const containerElement = container as ExtendedElement
     if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
-    if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
+    if (unhandledAttr.length) containerElement.unhandledAttr = unhandledAttr
     if (refHandles.length) containerElement.refHandles = refHandles
     if (detachStyledChildren.length) containerElement.detachStyledChildren = detachStyledChildren
 
-    return container
+    return container as (HTMLElement | DocumentFragment | SVGElement)
 }
 
 
