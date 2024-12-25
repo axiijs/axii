@@ -336,23 +336,14 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     // Process props after children for proper Select/Option behavior
     if (props) {
-        // Handle special props first with mutable copy
-        let mutableProps = props
-        
         if (props.ref) {
             refHandles.push({handle: props.ref, path: [], el: container as HTMLElement})
-            mutableProps = {...props}
-            delete mutableProps.ref
-            props = mutableProps
+            delete props.ref
         }
-        
+
         if (props.detachStyle) {
             detachStyledChildren.push({el: container as HTMLElement, style: props.detachStyle, path: []})
-            if (mutableProps === props) {
-                mutableProps = {...props}
-                props = mutableProps
-            }
-            delete mutableProps.detachStyle
+            delete props.detachStyle
         }
 
         // Process remaining props
