@@ -1,7 +1,6 @@
 import {insertBefore, UnhandledPlaceholder} from "./DOM";
-import {PathContext, Host} from "./Host";
-import {isAtom, isReactive, RxList} from "data0";
-import {ReactiveArrayHost} from "./ReactiveArrayHost";
+import {Host, PathContext} from "./Host";
+import {isAtom, RxList} from "data0";
 import {ComponentHost} from "./ComponentHost";
 import {AtomHost} from "./AtomHost";
 import {FunctionHost} from "./FunctionHost";
@@ -50,26 +49,26 @@ class PrimitiveHost implements Host{
 export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext) {
     if (!(placeholder instanceof Comment)) throw new Error('incorrect placeholder type')
     let host:Host
-    if (source instanceof RxList) {
-        host = new RxListHost(source, placeholder, context)
+    if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
+        host = new StaticHost(source, placeholder, context)
+    } else if( typeof source === 'string' || typeof source === 'number' || typeof source === 'boolean'){
+        host = new PrimitiveHost(source, placeholder, context)
     } else if ( Array.isArray(source)  ) {
-        if(isReactive(source) ) {
-            host = new ReactiveArrayHost(source, placeholder, context)
-        } else {
-            host = new StaticArrayHost(source, placeholder, context)
-        }
+        // if(isReactive(source) ) {
+        //     host = new ReactiveArrayHost(source, placeholder, context)
+        // } else {
+        host = new StaticArrayHost(source, placeholder, context)
+        // }
+    } else if (source === undefined || source === null) {
+        host = new EmptyHost(context, placeholder)
+    } else if (source instanceof RxList) {
+        host = new RxListHost(source, placeholder, context)
     } else if( typeof source === 'object' && typeof source?.type === 'function') {
         host = new ComponentHost(source, placeholder, context)
     } else if (isAtom(source)) {
         host = new AtomHost(source, placeholder, context)
     } else if (typeof source === 'function'){
         host  = new FunctionHost(source, placeholder, context)
-    } else if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
-        host = new StaticHost(source, placeholder, context)
-    } else if (source === undefined || source === null) {
-        host = new EmptyHost(context, placeholder)
-    }else if( typeof source === 'string' || typeof source === 'number' || typeof source === 'boolean'){
-        host = new PrimitiveHost(source, placeholder, context)
     } else {
         assert(false, `unknown child type ${source}`)
     }

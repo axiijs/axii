@@ -25,9 +25,10 @@ function ensureArray(o: any) {
  */
 export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     const output = {...origin}
-    Object.entries(newProps).forEach(([key, value]) => {
+    for(const key in newProps) {
+        const value = newProps[key]
         output[key] = mergeProp(key, origin[key], value)
-    })
+    }
     return output
 }
 /**

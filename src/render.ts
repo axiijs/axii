@@ -37,11 +37,13 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
         attached: false,
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
             const placeholder = document.createComment('root')
-            element.appendChild(placeholder)
+            const frag = document.createDocumentFragment()
+            frag.appendChild(placeholder)
             root.host = createHost(componentOrEl, placeholder, pathContext)
             root.host.render()
+            element.appendChild(frag)
             // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
-            if(document.body.contains(element)) {
+            if(element.isConnected) {
                 root.dispatch('attach')
                 root.attached = true
             }

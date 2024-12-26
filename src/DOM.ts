@@ -152,9 +152,9 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         let classNameValue = ''
         classNames.forEach((className) => {
             if (typeof className === 'object') {
-                Object.entries(className).forEach(([name, shouldShow]) => {
-                    if (shouldShow) classNameValue = `${classNameValue} ${name}`
-                })
+                for(const name in className) {
+                    if (className[name]) classNameValue = `${classNameValue} ${name}`
+                }
             } else if (typeof className === 'string') {
                 // 只能是 string
                 classNameValue = `${classNameValue} ${className}`
@@ -271,13 +271,12 @@ export type DetachStyledInfo = {
 
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    const {_isSVG, ...rawRestProps} = rawProps || {}
-    let props = rawRestProps
+    const {_isSVG, ref:refProp, detachStyle: detachStyleProp, children: childrenProp, ...rawRestProps} = rawProps || {}
 
     // Early return for component nodes
     if (typeof type !== 'string' && type !== Fragment) {
-        const children: any[] = rawChildren.length ? rawChildren : (props?.children || [])
-        return {type, props, children} as ComponentNode
+        const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
+        return {type, props: rawProps||{}, children} as ComponentNode
     }
 
     // Create container with proper type assertion
@@ -294,7 +293,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     const detachStyledChildren: DetachStyledInfo[] = []
 
     // Process children in a single pass using DocumentFragment
-    const children: any[] = rawChildren.length ? rawChildren : (props?.children || [])
+    const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
     if (children?.length) {
         const tempFragment = document.createDocumentFragment()
         
@@ -334,30 +333,27 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         container.appendChild(tempFragment)
     }
 
-    // Process props after children for proper Select/Option behavior
-    if (props) {
-        if (props.ref) {
-            refHandles.push({handle: props.ref, path: [], el: container as HTMLElement})
-            delete props.ref
+    if (rawProps) {
+        // Process props after children for proper Select/Option behavior
+        if (refProp) {
+            refHandles.push({handle: refProp, path: [], el: container as HTMLElement})
         }
 
-        if (props.detachStyle) {
-            detachStyledChildren.push({el: container as HTMLElement, style: props.detachStyle, path: []})
-            delete props.detachStyle
+        if (detachStyleProp) {
+            detachStyledChildren.push({el: container as HTMLElement, style: detachStyleProp, path: []})
         }
 
         // Process remaining props
-        const entries = Object.entries(props)
-        if (entries.length) {
-            for (const [key, value] of entries) {
-                if (!createElement.isValidAttribute(key, value)) {
-                    unhandledAttr.push({el: container as ExtendedElement, key, value, path: []})
-                } else {
-                    setAttribute(container as ExtendedElement, key, value, _isSVG)
-                }
+        for (const key in rawRestProps) {
+            const value = rawRestProps[key]
+            if (!createElement.isValidAttribute(key, rawRestProps)) {
+                unhandledAttr.push({el: container as ExtendedElement, key, value, path: []})
+            } else {
+                setAttribute(container as ExtendedElement, key, value, _isSVG)
             }
         }
     }
+
 
     // Attach metadata to container only if necessary
     const containerElement = container as ExtendedElement
@@ -393,12 +389,14 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
         return value.every(v => createElement.isValidAttribute(name, v))
     }
 
-    if (typeof value !== 'object' && typeof value !== 'function') return true
+    const valueType = typeof value as any
+
+    if (valueType !== 'object' && valueType !== 'function') return true
     // 事件 允许是函数
-    if ((name[0] === 'o' && name[1] === 'n') && typeof value === 'function') return true
-    if ((isSimpleStyleObject(value) || typeof value === 'string') && name === 'style') return true
+    if ((name[0] === 'o' && name[1] === 'n') && valueType === 'function') return true
+    if (name === 'style' && (isSimpleStyleObject(value) || valueType === 'string')) return true
     // 默认支持 className 的对象形式
-    if (isPlainObject(value) && name === 'className') return true
+    if (name === 'className' && isPlainObject(value)) return true
 
     return false
 }
@@ -455,7 +453,7 @@ function resetOptionParentSelectValue(targetOption: HTMLElement) {
 export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
     const result = refEl.parentNode!.insertBefore!(newEl, refEl)
-    if ((newEl as Element).tagName === 'OPTION') {
+    if ((newEl as Element) instanceof HTMLOptionElement) {
         resetOptionParentSelectValue(newEl as HTMLElement)
     }
 

@@ -40,7 +40,12 @@ function hasPsuedoClassOrNestedStyle(styleObject: StyleObject | StyleObject[]) {
     if (Array.isArray(styleObject)) {
         return styleObject.some(hasPsuedoClassOrNestedStyle)
     }
-    return Object.entries(styleObject).some(([key, value]) => key.startsWith(':') || (isPlainObject(value)))
+    for(const key in styleObject) {
+        if (key.startsWith(':') || isPlainObject(styleObject[key])) {
+            return true
+        }
+    }
+    return false
 }
 
 function hasTransition(styleObject: StyleObject | StyleObject[]) {
@@ -317,22 +322,28 @@ export class StaticHost implements Host {
     attrAutoruns?: (() => void)[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
+    parentElement: HTMLElement
+    removeAttachListener?: () => void
     constructor(public source: HTMLElement | SVGElement | DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+        this.parentElement = placeholder.parentElement!
     }
-    get parentElement() {
-        return this.placeholder.parentElement
-    }
+    // get parentElement() {
+    //     return this.placeholder.parentElement
+    // }
     element: HTMLElement | Comment | SVGElement = this.placeholder
     render(): void {
         assert(this.element === this.placeholder, 'should never rerender')
 
         // CAUTION 如果是 fragment，我们用一个 comment 节点来作为第一个元素，这样后面  destroy 的时候就能一次性 remove 掉。
         this.element = this.source instanceof DocumentFragment ? document.createComment('fragment start') : this.source
-        insertBefore(this.element, this.placeholder)
-        // 如果是 fragment，那么还要插入真实内容
-        if (this.source instanceof DocumentFragment) {
-            insertBefore(this.source, this.placeholder)
-        }
+
+        // FIXME 应该要先 render 完所有的里面的 host。再插入自己才对。不然里面的 host render 会触发 layout.
+        // insertBefore(this.element, this.placeholder)
+        //
+        // // 如果是 fragment，那么还要插入真实内容
+        // if (this.source instanceof DocumentFragment) {
+        //     insertBefore(this.source, this.placeholder)
+        // }
 
         this.collectInnerHost()
         this.collectReactiveAttr()
@@ -341,55 +352,60 @@ export class StaticHost implements Host {
         if (this.detachStyledChildren?.length) {
             this.forceHandleElement = true
         }
-        this.reactiveHosts!.forEach(host => host.render())
+        this.reactiveHosts?.forEach(host => host.render())
+        //
+        insertBefore(this.element, this.placeholder)
+        // 如果是 fragment，那么还要插入真实内容
+        if (this.source instanceof DocumentFragment) {
+            insertBefore(this.source, this.placeholder)
+        }
 
         if (this.pathContext.root.attached) {
             this.attachRefs()
         } else {
-            this.pathContext.root.on('attach', this.attachRefs)
+            this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs)
         }
     }
     collectInnerHost() {
-        const result = this.source
-        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
+        const result = this.source as ExtendedElement
 
-        const { unhandledChildren } = result as ExtendedElement
+        const { unhandledChildren } = result
 
-        this.reactiveHosts =
-            unhandledChildren ?
-                unhandledChildren.map(({ placeholder, child, path }) =>
-                    createHost(child, placeholder, {
-                        ...this.pathContext,
-                        hostPath: [...this.pathContext.hostPath, this],
-                        elementPath: path
-                    })
-                ) :
-                []
+        if (unhandledChildren) {
+            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path }) =>
+                createHost(child, placeholder, {
+                    ...this.pathContext,
+                    hostPath: [...this.pathContext.hostPath, this],
+                    elementPath: path
+                })
+            );
 
-        delete (result as ExtendedElement).unhandledChildren
-
+            result.unhandledChildren = undefined
+        }
     }
     collectReactiveAttr() {
-        const result = this.source
-        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
+        const result = this.source as ExtendedElement
 
         const isSVG = result instanceof SVGElement
 
-        const { unhandledAttr } = result as ExtendedElement
+        const { unhandledAttr } = result
 
-        this.attrAutoruns = []
-        unhandledAttr?.forEach(({ el, key, value, path }) => {
-            // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
-            if (!el.hasAttribute('data-testid')) {
-                this.generateTestId(el, path)
-            }
-            // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
-            if (!key.includes(':')) {
-                this.attrAutoruns!.push(autorun(() => {
-                    this.updateAttribute(el, key, value, path, isSVG)
-                }, true))
-            }
-        })
+        if(unhandledAttr) {
+            this.attrAutoruns = []
+            unhandledAttr.forEach(({ el, key, value, path }) => {
+                // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
+                if (!el.hasAttribute('data-testid')) {
+                    this.generateTestId(el, path)
+                }
+                // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
+                if (!key.includes(':')) {
+                    this.attrAutoruns!.push(autorun(() => {
+                        this.updateAttribute(el, key, value, path, isSVG)
+                    }, true))
+                }
+            })
+            result.unhandledAttr = undefined
+        }
     }
     updateAttribute(el: ExtendedElement, key: string, value: any, path: number[], isSVG: boolean) {
         const final = Array.isArray(value) ?
@@ -408,15 +424,11 @@ export class StaticHost implements Host {
         }
     }
     collectRefHandles() {
-        const result = this.source
-        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
-        const { refHandles } = result as ExtendedElement
+        const { refHandles } = this.source as ExtendedElement
         this.refHandles = refHandles
     }
     collectDetachStyledChildren() {
-        const result = this.source
-        if (!(result instanceof HTMLElement || result instanceof DocumentFragment || result instanceof SVGElement)) return
-        const { detachStyledChildren } = result as ExtendedElement
+        const { detachStyledChildren } = this.source as ExtendedElement
         this.detachStyledChildren = detachStyledChildren
     }
     generateTestId(el: ExtendedElement, elementPath: number[]) {
@@ -435,6 +447,8 @@ export class StaticHost implements Host {
         if (!parentHandleComputed) {
             this.attrAutoruns?.forEach(stopAutorun => stopAutorun())
         }
+
+        this.removeAttachListener?.()
 
         this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
 

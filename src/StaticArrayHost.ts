@@ -11,11 +11,13 @@ export class StaticArrayHost implements Host{
     computed = undefined
 
     childHosts: Host[] = []
+    parentElement: HTMLElement|Comment|Text|SVGElement|null
     constructor(public source: any[], public placeholder: Comment, public pathContext: PathContext) {
+        this.parentElement = placeholder.parentElement
     }
-    get parentElement() {
-        return this.placeholder.parentElement
-    }
+    // get parentElement() {
+    //     return this.placeholder.parentElement
+    // }
 
     firstChild?: HTMLElement|Comment|Text|SVGElement|Host
     get element(): HTMLElement|Comment|Text|SVGElement {

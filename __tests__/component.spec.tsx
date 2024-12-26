@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {bindProps, createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
-import {type Atom, atom, computed, incMap, reactive, RxList} from "data0";
+import {type Atom, atom, computed, reactive, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import {ComponentHost} from "../src/ComponentHost.js";
 
@@ -22,60 +22,6 @@ describe('component render', () => {
         document.body.appendChild(rootEl)
         root = createRoot(rootEl)
     })
-
-
-    test('basic component & reactive frag',
-        () => {
-            const arr = reactive([1, 2, 3])
-
-            function App() {
-                return <div>
-                    {incMap(arr, (item: Atom) => <div>{item}</div>)}
-                </div>
-            }
-
-            root.render(<App/>)
-            expect(rootEl.firstElementChild!.children.length).toBe(3)
-            expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('1')
-            expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('2')
-            expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('3')
-
-
-            arr.push(4, 5)
-            expect(rootEl.firstElementChild!.children.length).toBe(5)
-            expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('4')
-            expect(rootEl.firstElementChild!.children[4].innerHTML).toBe('5')
-
-            arr.pop()
-            expect(arr.length).toBe(4)
-            expect(rootEl.firstElementChild!.children.length).toBe(4)
-            expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('4')
-
-            arr.unshift(-1, 0)
-            expect(rootEl.firstElementChild!.children.length).toBe(6)
-            expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('-1')
-            expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('0')
-            expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('1')
-            expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('2')
-            expect(rootEl.firstElementChild!.children[4].innerHTML).toBe('3')
-            expect(rootEl.firstElementChild!.children[5].innerHTML).toBe('4')
-
-            arr.shift()
-            expect(rootEl.firstElementChild!.children.length).toBe(5)
-            expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('0')
-            //
-            arr.splice(2, 1, 9, 99, 999)
-            expect(rootEl.firstElementChild!.children.length).toBe(7)
-            expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('0')
-            expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('1')
-            expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('9')
-            expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('99')
-            expect(rootEl.firstElementChild!.children[4].innerHTML).toBe('999')
-            expect(rootEl.firstElementChild!.children[5].innerHTML).toBe('3')
-            expect(rootEl.firstElementChild!.children[6].innerHTML).toBe('4')
-
-        })
-
 
     test('function node', async () => {
         const renderText = atom(false)
@@ -267,52 +213,6 @@ describe('component render', () => {
         expect(rootEl.firstElementChild!.children.length).toBe(0)
     })
 
-    test('computed in Component should destroy when component destroyed', () => {
-        const name = atom('')
-        let innerComputedRuns = 0
-
-        function Child() {
-            const nameWithPrefix = computed(function nameWithPrefix() {
-                innerComputedRuns++
-                return name() ? 'Mr.' + name() : 'anonymous'
-            })
-            return <div>{nameWithPrefix}</div>
-        }
-
-        const items = reactive([1, 2, 3])
-
-        function App() {
-            return <div>
-                {incMap(items, (item: Atom) => {
-                    return <Child />
-                })}
-            </div>
-        }
-
-        root.render(<App/>)
-        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('anonymous')
-        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('anonymous')
-        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('anonymous')
-        name('data0')
-        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('Mr.data0')
-        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('Mr.data0')
-        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('Mr.data0')
-        expect(innerComputedRuns).toBe(6)
-        //
-        // name('data1')
-        // expect(innerComputedRuns).toBe(2)
-        // expect(rootEl.firstElementChild!.children.length).toBe(0)
-        items.pop()
-        expect(rootEl.firstElementChild!.children.length).toBe(2)
-        expect(innerComputedRuns).toBe(6)
-
-        name('data1')
-        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('Mr.data1')
-        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('Mr.data1')
-        expect(innerComputedRuns).toBe(8)
-
-    })
-
     test('destroy', () => {
         function Child({name}: {name: Atom}) {
             const nameWithPrefix = computed(function nameWithPrefix() {
@@ -321,11 +221,11 @@ describe('component render', () => {
             return <div>{nameWithPrefix}</div>
         }
 
-        const items = reactive([1, 2, 3])
+        const items = new RxList([1, 2, 3])
 
         function App() {
             return <div>
-                {incMap(items, (item: Atom) => {
+                {items.map((item: Atom) => {
                     return <Child name={item} />
                 })}
             </div>
@@ -406,6 +306,7 @@ describe('component ref', () => {
         root.render(<App/>)
         expect(innerRef).toBeDefined()
         expect(innerRef!.innerHTML).toBe('app')
+        expect(innerRef?.isConnected).toBe(true)
         expect(innerRef).toBe(innerRef2)
     })
 
