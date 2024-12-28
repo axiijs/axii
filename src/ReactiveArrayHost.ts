@@ -2,6 +2,7 @@ import {insertBefore, UnhandledPlaceholder} from './DOM'
 import {arrayComputed, Computed, destroyComputed, TrackOpTypes, TriggerOpTypes, UnwrapReactive} from "data0";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
+import {createLinkedNode} from "./LinkedList";
 
 function getSpliceRemoveLength(argv: any[], length: number) : number {
     // CAUTION 按照 mdn 的定义，splice 第二个参数如果是 undefined 但是后面又有其他参数，就会被转成 0。
@@ -22,7 +23,7 @@ export class ReactiveArrayHost implements Host{
         return [item, document.createComment('frag item host')]
     }
     createHost = ([item, placeholder] : [any, UnhandledPlaceholder]) : Host => {
-        return createHost(item, placeholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
+        return createHost(item, placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
     }
 
     isOnlyChildrenOfParent() {
@@ -101,7 +102,7 @@ export class ReactiveArrayHost implements Host{
 
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD);
                 this.manualTrack(host.placeholderAndItemComputed!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE);
-                const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, {...host.pathContext, hostPath: [...host.pathContext.hostPath, host]}))
+                const hosts = host.placeholderAndItemComputed!.map(([item, placeholder]) => createHost(item, placeholder, {...host.pathContext, hostPath: createLinkedNode<Host>(host, host.pathContext.hostPath)}))
                 const frag = document.createDocumentFragment()
                 hosts.forEach(itemHost => {
                     frag.appendChild(itemHost.placeholder)

@@ -2,6 +2,7 @@ import {Atom, autorun, Notifier} from "data0";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
+import {createLinkedNode} from "./LinkedList";
 
 // CAUTION 纯粹的动态结构，有变化就重算，未来考虑做 dom diff, 现在不做
 type FunctionNode = () => ChildNode|DocumentFragment|string|number|null|boolean
@@ -30,7 +31,7 @@ export class FunctionHost implements Host{
             const node = this.source()
             const newPlaceholder = document.createComment('computed node')
             insertBefore(newPlaceholder, this.placeholder)
-            const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
+            const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
             Notifier.instance.pauseTracking()
             host.render()
             Notifier.instance.resetTracking()
