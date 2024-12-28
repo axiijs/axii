@@ -12,7 +12,7 @@ import { Host, PathContext } from "./Host";
 import { autorun, isAtom, isReactive } from "data0";
 import { createHost } from "./createHost";
 import { assert, isPlainObject, nextFrames, removeNodesBetween } from "./util";
-// import { ComponentHost } from "./ComponentHost.js";
+import { ComponentHost } from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
@@ -87,13 +87,23 @@ function generateGlobalElementStaticId(hostPath: LinkedNode<Host>, elementPath: 
 }
 
 function generateComponentElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
-    // FIXME
-    return ''
+    let lastComponentHost:ComponentHost|undefined = undefined
+    const pathToGenerateId: Host[] = []
+    let current: LinkedNode<Host>|null = hostPath
+    while (current) {
+        if (current.node instanceof ComponentHost) {
+            lastComponentHost = current.node
+            break
+        }
+        pathToGenerateId.unshift(current.node)
+        current = current.prev
+    }
+
     // const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
     // const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
     // const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
     // // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-    // return `gen-${lastComponentHost?.typeId ?? 'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+    return `gen-${lastComponentHost?.typeId ?? 'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
 }
 
 class StyleManager {
