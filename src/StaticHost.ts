@@ -445,12 +445,10 @@ export class StaticHost implements Host {
         }
     }
     collectRefHandles() {
-        const { refHandles } = this.source as ExtendedElement
-        this.refHandles = refHandles
+        this.refHandles = (this.source as ExtendedElement).refHandles
     }
     collectDetachStyledChildren() {
-        const { detachStyledChildren } = this.source as ExtendedElement
-        this.detachStyledChildren = detachStyledChildren
+        this.detachStyledChildren = (this.source as ExtendedElement).detachStyledChildren
     }
     generateTestId(el: ExtendedElement, elementPath: number[]) {
         // 增加全局开关控制
