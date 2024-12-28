@@ -1,5 +1,6 @@
 import {computed} from "data0";
 import {Root} from "./render";
+import {LinkedList} from "./utils/LinkedList";
 /**
  * @internal
  */
@@ -20,6 +21,6 @@ export interface Host {
 export type PathContext = {
     [k:string]:any,
     root: Root,
-    hostPath: Host[],
-    elementPath: number[],
+    hostPath: LinkedList<Host>,
+    elementPath: LinkedList<number>,
 }

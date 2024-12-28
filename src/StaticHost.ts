@@ -75,13 +75,13 @@ function forceReflow(el: HTMLElement) {
     el.offsetHeight
 }
 
-function generateGlobalElementStaticId(hostPath: Host[], elementPath: number[]) {
+function generateGlobalElementStaticId(hostPath: LinkedList<Host>, elementPath: LinkedList<number>) {
     return `${hostPath.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
 }
 
-function generateComponentElementStaticId(hostPath: Host[], elementPath: number[]) {
+function generateComponentElementStaticId(hostPath: LinkedList<Host>, elementPath: LinkedList<number>) {
     const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
-    const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
+    const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath.get(lastComponentHostIndex) as ComponentHost
     const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
     // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
     return `gen-${lastComponentHost?.typeId ?? 'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
@@ -375,7 +375,11 @@ export class StaticHost implements Host {
             this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path }) =>
                 createHost(child, placeholder, {
                     ...this.pathContext,
-                    hostPath: [...this.pathContext.hostPath, this],
+                    hostPath: (() => {
+                        const newHostPath = this.pathContext.hostPath.clone();
+                        newHostPath.push(this);
+                        return newHostPath;
+                    })(),
                     elementPath: path
                 })
             );
