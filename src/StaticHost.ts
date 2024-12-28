@@ -12,7 +12,8 @@ import { Host, PathContext } from "./Host";
 import { autorun, isAtom, isReactive } from "data0";
 import { createHost } from "./createHost";
 import { assert, isPlainObject, nextFrames, removeNodesBetween } from "./util";
-import { ComponentHost } from "./ComponentHost.js";
+// import { ComponentHost } from "./ComponentHost.js";
+import {createLinkedNode, LinkedNode} from "./LinkedList";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
@@ -75,22 +76,30 @@ function forceReflow(el: HTMLElement) {
     el.offsetHeight
 }
 
-function generateGlobalElementStaticId(hostPath: Host[], elementPath: number[]) {
-    return `${hostPath.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+function generateGlobalElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
+    const hosts: Host[] = []
+    let current: LinkedNode<Host>|null = hostPath
+    while (current) {
+        hosts.unshift(current.node)
+        current = current.prev
+    }
+    return `${hosts.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
 }
 
-function generateComponentElementStaticId(hostPath: Host[], elementPath: number[]) {
-    const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
-    const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
-    const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
-    // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-    return `gen-${lastComponentHost?.typeId ?? 'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+function generateComponentElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
+    // FIXME
+    return ''
+    // const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
+    // const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
+    // const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
+    // // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
+    // return `gen-${lastComponentHost?.typeId ?? 'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
 }
 
 class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
     public elToStyleId = new WeakMap<HTMLElement, string>()
-    getStyleSheetId(hostPath: Host[], elementPath: number[], el: ExtendedElement | null) {
+    getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
         if (el) {
             const styleId = this.elToStyleId.get(el)
@@ -113,7 +122,7 @@ class StyleManager {
             return `${property}:${stringifyStyleValue(key, value)};`
         }).join('\n')
     }
-    update(hostPath: Host[], elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement, isStatic: boolean = false) {
+    update(hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement, isStatic: boolean = false) {
         // 使用这个更新的 style 都是有伪类或者有嵌套的，一定需要生成 class 的。
         const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
         let styleSheet = this.styleScripts.get(styleSheetId)
@@ -360,11 +369,11 @@ export class StaticHost implements Host {
             insertBefore(this.source, this.placeholder)
         }
 
-        if (this.pathContext.root.attached) {
-            this.attachRefs()
-        } else {
-            this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs)
-        }
+        // if (this.pathContext.root.attached) {
+        //     this.attachRefs()
+        // } else {
+        //     this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs)
+        // }
     }
     collectInnerHost() {
         const result = this.source as ExtendedElement
@@ -375,7 +384,7 @@ export class StaticHost implements Host {
             this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path }) =>
                 createHost(child, placeholder, {
                     ...this.pathContext,
-                    hostPath: [...this.pathContext.hostPath, this],
+                    hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath),
                     elementPath: path
                 })
             );

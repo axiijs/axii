@@ -15,6 +15,7 @@ import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./ty
 import {assert} from "./util";
 import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
+import {createLinkedNode, LinkedNode} from "./LinkedList";
 
 
 function ensureArray(o: any) {
@@ -240,9 +241,20 @@ export class ComponentHost implements Host{
             createElement(finalType, finalProps, ...finalChildren)
 
         if (!(typeof finalType === 'function')) {
-            const contextComponentProps = this.pathContext.hostPath
-                .filter(h => h instanceof ComponentHost)
-                .map(h => (h as ComponentHost).props).reverse();
+            // const contextComponentProps = this.pathContext.hostPath
+            //     .filter(h => h instanceof ComponentHost)
+            //     .map(h => (h as ComponentHost).props).reverse();
+
+            const contextComponentProps: any[] = []
+            let start: LinkedNode<Host>|null = this.pathContext.hostPath
+            while(start){
+                if (start instanceof ComponentHost) {
+                    contextComponentProps.push(start.props)
+                }
+                start = start.prev
+
+            }
+
 
             (node as ExtendedElement).listenerBoundArgs = [contextComponentProps, componentProps]
         }
@@ -441,7 +453,7 @@ export class ComponentHost implements Host{
         // CAUTION collect effects end
 
         // 就用当前 component 的 placeholder
-        this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
+        this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
         this.innerHost.render()
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
@@ -525,19 +537,28 @@ type ConfigItem = {
 
 export class DataContext{
     public valueByType: Map<any, any>
-    constructor(public hostPath: Host[]) {
+    constructor(public hostPath: LinkedNode<Host>) {
         this.valueByType = new Map<any, any>()
     }
     get(contextType:any) {
         // 找到最近具有 contextType 的 host
-        for (let i = this.hostPath.length - 1; i >= 0; i--) {
-            const host = this.hostPath[i]
-            if (host instanceof ComponentHost) {
-                if (host.renderContext!.context.valueByType.has(contextType)) {
-                    return host.renderContext!.context.valueByType.get(contextType)
+        let start: LinkedNode<Host>|null = this.hostPath
+        while(start) {
+            if (start.node instanceof ComponentHost) {
+                if (start.node.renderContext!.context.valueByType.has(contextType)) {
+                    return start.node.renderContext!.context.valueByType.get(contextType)
                 }
             }
+            start = start.prev
         }
+        // for (let i = this.hostPath.length - 1; i >= 0; i--) {
+        //     const host = this.hostPath[i]
+        //     if (host instanceof ComponentHost) {
+        //         if (host.renderContext!.context.valueByType.has(contextType)) {
+        //             return host.renderContext!.context.valueByType.get(contextType)
+        //         }
+        //     }
+        // }
     }
     set(contextType: any, value: any) {
         this.valueByType.set(contextType, value)

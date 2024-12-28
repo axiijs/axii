@@ -294,7 +294,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     // Process children in a single pass using DocumentFragment
     const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
-    if (children?.length) {
+    if (type !== Fragment && children.length === 1 && typeof children[0] === 'string' || typeof children[0]  === 'number') {
+        (container as HTMLElement).innerText = children[0].toString()
+    } else if (children.length) {
         const tempFragment = document.createDocumentFragment()
         
         children.forEach((child, index) => {
