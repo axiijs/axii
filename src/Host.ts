@@ -23,4 +23,7 @@ export type PathContext = {
     root: Root,
     hostPath: LinkedList<Host>,
     elementPath: LinkedList<number>,
+} & {
+    hostPath: LinkedList<Host>,
+    elementPath: LinkedList<number>
 }

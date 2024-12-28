@@ -2,6 +2,7 @@ import {insertBefore, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
+import { LinkedList } from "./utils/LinkedList";
 /**
  * @internal
  */
@@ -37,7 +38,9 @@ export class RxListHost implements Host{
         const host = this
 
         this.hosts = this.source.map((item) => {
-            return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: [...this.pathContext.hostPath, this]})
+            const newHostPath = this.pathContext.hostPath.clone() as LinkedList<Host>;
+            newHostPath.push(this);
+            return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: newHostPath});
         })
 
         this.hostRenderComputed = computed(

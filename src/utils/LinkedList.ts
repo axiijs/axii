@@ -21,7 +21,7 @@ export class LinkedList<T> {
 
   // Required for spread operator support
   *[Symbol.iterator](): Iterator<T> {
-    let current = this._head;
+    let current = this.headNode;
     while (current !== null) {
       yield current.value;
       current = current.next;
@@ -31,7 +31,7 @@ export class LinkedList<T> {
   // Basic operations
   push(value: T): void {
     const newNode = new LinkedListNode(value);
-    this.size++;
+    this.sizeValue++;
 
     if (!this.headNode) {
       this.headNode = newNode;
@@ -64,7 +64,7 @@ export class LinkedList<T> {
   // Array-like operations
   map<U>(callback: (value: T, index: number) => U): LinkedList<U> {
     const result = new LinkedList<U>();
-    let current = this._head;
+    let current = this.headNode;
     let index = 0;
 
     while (current) {
@@ -153,9 +153,9 @@ export class LinkedList<T> {
 
   // Access methods
   get(index: number): T | undefined {
-    if (index < 0 || index >= this._size) return undefined;
+    if (index < 0 || index >= this.sizeValue) return undefined;
 
-    let current = this._head;
+    let current = this.headNode;
     for (let i = 0; i < index && current; i++) {
       current = current.next;
     }
@@ -175,7 +175,7 @@ export class LinkedList<T> {
   concat(...lists: LinkedList<T>[]): LinkedList<T> {
     const result = this.clone();
     lists.forEach(list => {
-      let current = list._head;
+      let current = list.headNode;
       while (current) {
         result.push(current.value);
         current = current.next;
@@ -186,12 +186,12 @@ export class LinkedList<T> {
 
   slice(start: number = 0, end?: number): LinkedList<T> {
     const result = new LinkedList<T>();
-    if (start < 0) start = Math.max(0, this._size + start);
-    if (end === undefined) end = this._size;
-    if (end < 0) end = Math.max(0, this._size + end);
-    end = Math.min(end, this._size);
+    if (start < 0) start = Math.max(0, this.sizeValue + start);
+    if (end === undefined) end = this.sizeValue;
+    if (end < 0) end = Math.max(0, this.sizeValue + end);
+    const finalEnd = Math.min(end, this.sizeValue);
 
-    let current = this._head;
+    let current = this.headNode;
     let index = 0;
 
     // Skip to start
@@ -201,10 +201,22 @@ export class LinkedList<T> {
     }
 
     // Add elements until end
-    while (current && index < end) {
+    while (current && index < finalEnd) {
       result.push(current.value);
       current = current.next;
       index++;
+    }
+
+    return result;
+  }
+
+  reverse(): LinkedList<T> {
+    const result = new LinkedList<T>();
+    let current = this.tailNode;
+    
+    while (current) {
+      result.push(current.value);
+      current = current.prev;
     }
 
     return result;

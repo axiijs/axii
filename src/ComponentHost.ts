@@ -242,10 +242,11 @@ export class ComponentHost implements Host{
 
         if (!(typeof finalType === 'function')) {
             const contextComponentProps = (() => {
-                const filtered = this.pathContext.hostPath.filter((h: Host) => h instanceof ComponentHost);
+                const hostPath = this.pathContext.hostPath;
+                const filtered = hostPath.filter((h: Host) => h instanceof ComponentHost);
                 const mapped = filtered.map((h: Host) => (h as ComponentHost).props);
-                const result = mapped.reverse().toArray();
-                return result;
+                const reversed = mapped.reverse();
+                return reversed.toArray();
             })();
 
             (node as ExtendedElement).listenerBoundArgs = [contextComponentProps, componentProps]
@@ -445,9 +446,9 @@ export class ComponentHost implements Host{
         // CAUTION collect effects end
 
         // 就用当前 component 的 placeholder
-        const newHostPath = this.pathContext.hostPath.clone();
+        const newHostPath = this.pathContext.hostPath.clone() as LinkedList<Host>;
         newHostPath.push(this);
-        this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: newHostPath})
+        this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: newHostPath});
         this.innerHost.render()
 
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。

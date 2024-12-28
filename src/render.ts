@@ -1,6 +1,7 @@
 import {createHost} from "./createHost";
 import {ComponentNode} from "./types";
 import {PathContext, Host} from "./Host";
+import { LinkedList } from "./utils/LinkedList";
 
 
 type EventCallback = (e: any) => void
@@ -25,10 +26,10 @@ export type Root = {
 export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 
-    const pathContext: PathContext = parentContext || {
-        hostPath: [],
-        elementPath: [],
-    } as unknown as PathContext
+    const pathContext: PathContext = parentContext || ({
+        hostPath: new LinkedList<Host>(),
+        elementPath: new LinkedList<number>(),
+    } as PathContext)
 
     const root = {
         element,
