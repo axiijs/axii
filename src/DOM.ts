@@ -349,7 +349,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         // Process remaining props
         for (const key in rawRestProps) {
             const value = rawRestProps[key]
-            if (!createElement.isValidAttribute(key, rawRestProps)) {
+            if (!createElement.isValidAttribute(key, value)) {
                 unhandledAttr.push({el: container as ExtendedElement, key, value, path: []})
             } else {
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
@@ -393,6 +393,7 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
     }
 
     const valueType = typeof value as any
+    if (name === 'className') console.log(valueType, value)
 
     if (valueType !== 'object' && valueType !== 'function') return true
     // 事件 允许是函数
