@@ -142,8 +142,11 @@ describe('rxList render', () => {
         }
 
         root.render(<App/>)
-        debugger
         arr.splice(0, Infinity)
         expect(rootEl.firstElementChild!.children.length).toBe(0)
+
+        // 重新插入
+        arr.push(1,2)
+        expect(rootEl.firstElementChild!.children.length).toBe(2)
     })
 })

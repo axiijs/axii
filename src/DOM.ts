@@ -393,7 +393,6 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
     }
 
     const valueType = typeof value as any
-    if (name === 'className') console.log(valueType, value)
 
     if (valueType !== 'object' && valueType !== 'function') return true
     // 事件 允许是函数
