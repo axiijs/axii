@@ -26,7 +26,7 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 
     const pathContext: PathContext = parentContext || {
-        hostPath: [],
+        hostPath: null,
         elementPath: [],
     } as unknown as PathContext
 
