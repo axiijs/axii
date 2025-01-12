@@ -34,7 +34,7 @@ A high-performance frontend framework powered by intelligent reactive data struc
 ## 🔧 Installation
 
 ```bash
-npm install axii
+npx create-axii-app myapp
 ```
 
 ## 📚 Quick Start
