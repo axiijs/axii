@@ -62,7 +62,7 @@ appRoot.render(<App />)
 
 ## 📖 Documentation
 
-For detailed documentation and examples, visit our [documentation site](https://axiijs.github.io/site/).
+For detailed documentation and examples, visit our [documentation site](https://axii.dev).
 
 ## 🧪 Testing
 
