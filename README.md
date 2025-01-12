@@ -40,24 +40,24 @@ npm install axii
 ## 📚 Quick Start
 
 ```javascript
-import { atom, RxList } from 'axii'
+/* @jsx createElement */
+import { createRoot, createElement, atom } from 'axii'
 
-// Create reactive data
-const count = atom(0)
-const items = new RxList(['Item 1', 'Item 2'])
+function App({}, { createElement }) {
+  const name = atom('world')
+  const onInput = (e) => name(e.target.value)
 
-// Use in components
-function Counter() {
-  return {
-    count,
-    render: () => (
-      <div>
-        <span>Count: {count}</span>
-        <button onClick={() => count.value++}>Increment</button>
-      </div>
-    )
-  }
+  return (
+    <div>
+      <input value={name} onInput={onInput} />
+      <div>Hello, {name}!</div>
+    </div>
+  )
 }
+
+const root = document.getElementById('root')!
+const appRoot = createRoot(root)
+appRoot.render(<App />)
 ```
 
 ## 📖 Documentation
