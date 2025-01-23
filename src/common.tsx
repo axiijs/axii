@@ -323,7 +323,7 @@ export function createReactiveDragTarget(getSnapshot: (ref: HTMLElement,) => any
 /**
  * @category Reactive State Utility
  */
-export function reactiveMouseIn(ref: HTMLElement, value: Atom<boolean>) {
+export function reactiveMouseIn(ref: HTMLElement, value: Atom<boolean|null>) {
     const mouseEnterListener = () => {
         value(true)
     }
