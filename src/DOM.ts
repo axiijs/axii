@@ -463,6 +463,22 @@ export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | S
     return result
 }
 
+/**
+ * @internal
+ */
+export function insertAfter(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
+    // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
+    const result = refEl.parentNode!.insertBefore!(newEl, refEl.nextSibling)
+    if ((newEl as Element) instanceof HTMLOptionElement) {
+        resetOptionParentSelectValue(newEl as HTMLElement)
+    }
+
+    return result
+}
+
+
+
+
 export function createElementNS(type: string, props: AttributesArg, ...children: any[]) {
     return createElement(type, {_isSVG: true, ...(props || {})}, children)
 }

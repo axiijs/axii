@@ -1,4 +1,4 @@
-import {insertBefore, UnhandledPlaceholder} from './DOM'
+import {insertAfter, insertBefore, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
@@ -40,7 +40,7 @@ export class RxListHost implements Host{
                 return null
             },
             function applyPatch(_, triggerInfos) {
-                triggerInfos.forEach(({method, argv, result, key, newValue, methodResult},  index) => {
+                triggerInfos.forEach(({method, argv, key, methodResult, type}) => {
                     if (method === 'splice') {
                         // 这里的 this.hosts 是已经插入好的。
                         // CAUTION 因为 hosts 中的元素可能也是一个一个插进来的。例如 groupBy 中的 patch。
@@ -83,15 +83,21 @@ export class RxListHost implements Host{
                             }
                         }
 
-                    } else if(method === undefined && key !== undefined){
+                    } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
                         // explicit key change
                         const oldHost = methodResult as Host
                         oldHost?.destroy()
 
                         // 会回收之前 placeholder，完全重新执行
                         const index = key as number
-                        insertBefore(host.hosts!.at(index)!.placeholder, host.hosts!.at(index+1)?.element || host.placeholder)
-                        host.hosts!.at(index)!.render()
+                        // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
+                        // placeholder 一定是最后一个元素
+                        if (index === 0) {
+                            insertBefore(host.hosts!.raw.at(index)!.placeholder, host.placeholder.parentElement!.firstChild! as HTMLElement)
+                        } else {
+                            insertAfter(host.hosts!.raw.at(index)!.placeholder, host.hosts!.raw.at(index-1)?.placeholder)
+                        }
+                        host.hosts!.raw.at(index)!.render()
                     } else {
                         throw new Error('unknown trigger info')
                     }

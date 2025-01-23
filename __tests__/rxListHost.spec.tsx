@@ -149,4 +149,58 @@ describe('rxList render', () => {
         arr.push(1,2)
         expect(rootEl.firstElementChild!.children.length).toBe(2)
     })
+
+    test('list with inner reactive', () => {
+        const arr = new RxList<any>([
+            {id:1, deleted:atom(false)},
+            {id:2, deleted:atom(false)},
+            {id:3, deleted:atom(false)},
+            {id:4, deleted:atom(false)},
+            {id:5, deleted:atom(false)},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map((item, index) => <div>{item.id}:{index()}</div>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        arr.splice(2,1)
+        expect(rootEl.firstElementChild!.children.length).toBe(4)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('1:0')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('2:1')
+        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('4:2')
+        expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('5:3')
+
+    })
+
+    test('filtered list', () => {
+        const arr = new RxList<any>([
+            {id:1, deleted:atom(false)},
+            {id:2, deleted:atom(false)},
+            {id:3, deleted:atom(false)},
+            {id:4, deleted:atom(false)},
+            {id:5, deleted:atom(false)},
+        ])
+
+        const notDeleted = arr.filter((item) => !item.deleted())
+
+        function App() {
+            return <div>
+                {notDeleted.map((item, index) => <div>{item.id}:{index()}</div>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.children.length).toBe(5)
+        debugger
+        arr.at(2).deleted(true)
+        expect(rootEl.firstElementChild!.children.length).toBe(4)
+        expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('1:0')
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('2:1')
+        expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('4:2')
+        expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('5:3')
+
+    })
 })
