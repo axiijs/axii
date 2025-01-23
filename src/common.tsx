@@ -323,6 +323,26 @@ export function createReactiveDragTarget(getSnapshot: (ref: HTMLElement,) => any
 /**
  * @category Reactive State Utility
  */
+export function reactiveMouseIn(ref: HTMLElement, value: Atom<boolean>) {
+    const mouseEnterListener = () => {
+        value(true)
+    }
+    const mouseLeaveListener = () => {
+        value(false)
+    }
+
+    ref.addEventListener('mouseenter', mouseEnterListener)
+    ref.addEventListener('mouseleave', mouseLeaveListener)
+
+    return () => {
+        ref.removeEventListener('mouseenter', mouseEnterListener)
+        ref.removeEventListener('mouseleave', mouseLeaveListener)
+    }
+}
+
+/**
+ * @category Reactive State Utility
+ */
 export type ScrollPosition = {
     scrollTop: number
     scrollLeft: number
