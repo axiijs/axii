@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {bindProps, createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
-import {type Atom, atom, computed, reactive, RxList} from "data0";
+import {type Atom, atom, computed, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import {ComponentHost} from "../src/ComponentHost.js";
 
@@ -102,11 +102,10 @@ describe('component render', () => {
     })
 
     test('reactive attribute should not leak to upper computed', () => {
-        const rxStyle = reactive({
+        const rxStyle = atom({
             color: 'rgb(255, 0, 0)',
             fontSize: '12px'
         })
-
 
         let functionNodeRuns = 0
         function App() {
@@ -122,7 +121,10 @@ describe('component render', () => {
         const firstChild = () => (rootEl.firstElementChild!.children[0] as HTMLElement)
         expect(getComputedStyle(firstChild()).color).toBe('rgb(255, 0, 0)')
 
-        rxStyle.color = 'rgb(0, 0, 255)'
+        rxStyle({
+            ...rxStyle.raw,
+            color: 'rgb(0, 0, 255)'
+        })
         expect(getComputedStyle(firstChild()).color).toBe('rgb(0, 0, 255)')
         expect(functionNodeRuns).toBe(1)
 

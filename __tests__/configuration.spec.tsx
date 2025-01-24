@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
-import {Component, createElement, createRoot, N_ATTR, PropTypes, RenderContext, atom} from "@framework";
+import {atom, Component, createElement, createRoot, N_ATTR, PropTypes, RenderContext} from "@framework";
 import userEvent from "@testing-library/user-event";
 
 describe('component configuration', () => {
@@ -139,18 +139,18 @@ describe('component configuration', () => {
     })
 
     test('configuration should overwrite bound props', () => {
-        let innerProps: any
+        const innerProps1 = {value:undefined} as any
+        const innerProps2 = {value:undefined} as any
 
-        function GrandChild(props:any, {createElement}: RenderContext) {
-            innerProps = props
+        function GrandChild({propRef, ...props}:any, {createElement}: RenderContext) {
+            propRef.value = props
             return <div>
                 hello world
             </div>
-
         }
 
-        const Child:Component = ({}, {createElement}: RenderContext) => {
-            return <GrandChild as="grandChild"/>
+        const Child:Component = ({propRef}, {createElement}: RenderContext) => {
+            return <GrandChild propRef={propRef} as="grandChild"/>
         }
 
         Child.boundProps = [{
@@ -166,15 +166,19 @@ describe('component configuration', () => {
 
         function App({}, {createElement}: RenderContext) {
             return <div>
-                <Child as="child" $grandChild:style={{fontSize:12}} $grandChild:overwrite1={'from app'}/>
+                <Child as="child" propRef={innerProps1} $grandChild:style={{fontSize:12}} $grandChild:overwrite1={'from app'}/>
+                <Child as="child" propRef={innerProps2} $grandChild:style={{fontSize:13}} $grandChild:overwrite1={'from app2'}/>
             </div>
         }
 
         root.render(<App $child={{'$grandChild:style': {padding:10}, '$grandChild:overwrite2': 'from root'}}/>)
 
-        expect(innerProps.style).toMatchObject([{color:'red'}, {fontSize:12}, {padding:10}])
-        expect(innerProps.overwrite1).toBe('from app')
-        expect(innerProps.overwrite2).toBe('from root')
+        expect(innerProps1.value.style).toMatchObject([{color:'red'}, {fontSize:12}, {padding:10}])
+        expect(innerProps1.value.overwrite1).toBe('from app')
+        expect(innerProps1.value.overwrite2).toBe('from root')
+        expect(innerProps2.value.style).toMatchObject([{color:'red'}, {fontSize:13}, {padding:10}])
+        expect(innerProps2.value.overwrite1).toBe('from app2')
+        expect(innerProps2.value.overwrite2).toBe('from root')
     })
 
     test('configure component rewrite element', () => {
@@ -235,6 +239,66 @@ describe('component configuration', () => {
 
         expect(childProps.color()).toBe('blue')
         expect(childProps.color2()).toBe('red')
+    })
 
+    test('configure overwrite Component style should not affect each other', () => {
+        function Child(props:any, {createElement}: RenderContext) {
+            // 有 &:hover 才能被当做 unhandledAttr 走 StaticHost 生成 class 的分支
+            return <div as={'root'} style={{color:'red', '&:hover': {color:'cyan'}}}>
+                hello
+            </div>
+        }
+
+        let childRef1:any
+        let childRef2:any
+        let childRef3:any
+
+        function App(props:any, {createElement, createRef}: RenderContext) {
+            childRef1 = createRef()
+            childRef2 = createRef()
+            childRef3 = createRef()
+            return <div>
+                <Child $root:ref={childRef1}/>
+                <Child $root:ref={childRef2} $root:style={{color:'green'}}/>
+                <Child $root:ref={childRef3} $root:style={{color:'blue'}}/>
+            </div>
+        }
+
+        root.render(<App/>)
+
+        expect(getComputedStyle(childRef1.current).color).toBe('rgb(255, 0, 0)')
+        expect(getComputedStyle(childRef2.current).color).toBe('rgb(0, 128, 0)')
+        expect(getComputedStyle(childRef3.current).color).toBe('rgb(0, 0, 255)')
+    })
+
+    test('configure overwrite Component with reactive style should not affect each other', () => {
+        function Child(props:any, {createElement}: RenderContext) {
+            return <div as={'root'} style={{color:'red'}}>
+                hello
+            </div>
+        }
+
+        let childRef1:any
+        let childRef2:any
+        let childRef3:any
+        const style1 = atom({color:'green'})
+        const style2 = atom({color:'blue'})
+
+        function App(props:any, {createElement, createRef}: RenderContext) {
+            childRef1 = createRef()
+            childRef2 = createRef()
+            childRef3 = createRef()
+            return <div>
+                <Child $root:ref={childRef1}/>
+                <Child $root:ref={childRef2} $root:style={style1}/>
+                <Child $root:ref={childRef3} $root:style={style2}/>
+            </div>
+        }
+
+        root.render(<App/>)
+
+        expect(getComputedStyle(childRef1.current).color).toBe('rgb(255, 0, 0)')
+        expect(getComputedStyle(childRef2.current).color).toBe('rgb(0, 128, 0)')
+        expect(getComputedStyle(childRef3.current).color).toBe('rgb(0, 0, 255)')
     })
 })

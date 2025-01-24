@@ -49,6 +49,7 @@ function generateGlobalElementStaticId(hostPath: LinkedNode<Host>, elementPath: 
 
 function generateComponentElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
     let lastComponentHost:ComponentHost|undefined = undefined
+    // 这里如果有 path，只有全部都是 StaticHost
     const pathToGenerateId: Host[] = []
     let current: LinkedNode<Host>|null = hostPath
     while (current) {
@@ -60,12 +61,28 @@ function generateComponentElementStaticId(hostPath: LinkedNode<Host>, elementPat
         current = current.prev
     }
 
-    // const lastComponentHostIndex = hostPath.findLastIndex(host => host instanceof ComponentHost)
-    // const lastComponentHost = lastComponentHostIndex === -1 ? undefined : hostPath[lastComponentHostIndex] as ComponentHost
-    // const pathToGenerateId = lastComponentHostIndex === -1 ? hostPath : hostPath.slice(lastComponentHostIndex + 1)
     // // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-    return `gen-${lastComponentHost?.typeId ?? 'global'}-${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
+    return `${lastComponentHost?.type.name.toString()??'GLOBAL'}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
+
+export function markOverwrite(obj:object) {
+    Object.defineProperty(obj, '__overwrite', {
+        value: true,
+        enumerable: false
+    })
+    return obj
+}
+
+export function isOverwrite(obj:any) {
+    return obj['__overwrite']
+}
+
+
+// class name 中的字母含义
+// P path
+// R random chars
+// F fragment
+// I iterator count
 
 class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
@@ -73,18 +90,21 @@ class StyleManager {
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
+        const staticId = generateComponentElementStaticId(hostPath, elementPath)
+
         if (el) {
             const styleId = this.elToStyleId.get(el)
             if (!styleId) {
-                const newStyleId = `gen-${Math.random().toString(36).slice(2)}`
+                const newStyleId = `${staticId}R${Math.random().toString(36).slice(2)}`
                 this.elToStyleId.set(el, newStyleId)
                 return newStyleId
             } else {
                 return styleId
             }
+        } else {
+            return staticId
         }
 
-        return generateComponentElementStaticId(hostPath, elementPath)
     }
     stringifyStyleObject(styleObject: { [k: string]: any }): string {
         return Object.entries(styleObject).map(([key, value]) => {
@@ -101,23 +121,24 @@ class StyleManager {
         return styleSheet
     }
     update(hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
-        // TODO 只有动态、plain style object 可以直接 setAttribute，其他都应该用 class
-        //  静态的要考虑组件复用的情况，所以也是 class
+        // style 中有嵌套写法/animation/at-rules 等原生不能识别的，都会当做 unhandledAttr 走到这里。当然也包括 atom 和 function
         const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
-        const isStatic = styleObjects.every(o => typeof o !== 'function')
-        // 使用这个更新的 style 都是有伪类或者有嵌套的，一定需要生成 class 的。
-        const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
 
         const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
-
         // 1. 如果是第一次，就全部生成
         // 2. 如果是第二次，只对动态的部分重新生成
         //  2.1. 动态生成的时候是先 add 一个新的，然后删除老的。
+        let allStatic = true
         styleObjects.forEach((styleObject, index) => {
-            const styleSheetIdWithItorNum = `${styleSheetId}-p${index}i${styleItorNum}`
+            const isStatic = (typeof styleObject !== 'function') && !isOverwrite(styleObject)
+            allStatic = allStatic && isStatic
+            const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
+
+            const styleSheetIdWithItorNum = `${styleSheetId}F${index}I${styleItorNum}`
             let styleSheet:any
             if( styleItorNum === 0) {
-                styleSheet = this.createStyleSheet(styleSheetIdWithItorNum, typeof styleObject === 'function' ? styleObject() : styleObject)
+                // const content = this.generateStyleContent(`.${styleSheetIdWithItorNum}`, typeof styleObject === 'function' ? styleObject() : styleObject)
+                styleSheet = this.styleScripts.get(styleSheetIdWithItorNum) || this.createStyleSheet(styleSheetIdWithItorNum, typeof styleObject === 'function' ? styleObject() : styleObject)
                 el.classList.add(styleSheetIdWithItorNum)
             } else {
                 if (typeof styleObject === 'function') {
@@ -127,69 +148,18 @@ class StyleManager {
 
                     // 移除之前的
                     // TODO 如何防止 css 爆炸？应该从 document 上也移除？
-                    const lastId = `${styleSheetId}-p${index}i${styleItorNum-1}`
+                    const lastId = `${styleSheetId}F${index}I${styleItorNum-1}`
                     document.adoptedStyleSheets.splice(document.adoptedStyleSheets.indexOf(this.styleScripts.get(lastId)!), 1)
                     el.classList.remove(lastId)
-                    // FIXME reflow???
                 }
             }
 
-            if (typeof styleObject === 'function') {
-                this.styleScripts.set(styleSheetIdWithItorNum, styleSheet)
-            }
-
-            // let styleSheet = this.styleScripts.get(styleSheetId)
-            // if (!styleSheet) {
-            //     styleSheet = new CSSStyleSheet()
-            //     document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
-            //     this.styleScripts.set(styleSheetId, styleSheet)
-            // }
-            //
-            // el.classList.add(styleSheetId)
-            //
-            // styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
-            // const transitionPropertyNames = findTransitionProperties(styleObjects[0])
-            // if (transitionPropertyNames.length) {
-            //     forceReflow(el)
-            // }
+            this.styleScripts.set(styleSheetIdWithItorNum, styleSheet)
         })
 
-        if (!isStatic) {
+        if (!allStatic) {
             this.elToStyleIdItorNum.set(el, styleItorNum + 1)
         }
-
-
-
-
-        //
-        // return nextFrames(styleObjects.slice(1).map((one,) => () => {
-        //     // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
-        //     //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
-        //     const [pureValueStyleObject, otherStyleObject, transitionProperties] = this.separateStyleObject(one, transitionPropertyNames)
-        //     if (otherStyleObject) {
-        //         this.generateStyleContent(`.${styleSheetId}`, otherStyleObject).forEach(rule => {
-        //             styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
-        //         })
-        //     }
-        //     // FIXME 是不是可以和上面合并
-        //     if (pureValueStyleObject) {
-        //         const newTransitionProperties = findTransitionProperties(pureValueStyleObject)
-        //         transitionPropertyNames.push(...newTransitionProperties)
-        //         this.generateStyleContent(`.${styleSheetId}`, pureValueStyleObject).forEach(rule => {
-        //             styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
-        //         })
-        //     }
-        //     // FIXME 可能还是会出现直接 style 里面的属性覆盖了 Hover 里面属性导致失效的问题。
-        //     if (transitionProperties) {
-        //         // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
-        //         setAttribute(el, 'style', transitionProperties)
-        //     }
-        //
-        //     // CAUTION 如果自己上面有 transition，一定要触发 reflow，后面的 transition 属性变化才会生效
-        //     if (hasTransition(one)) {
-        //         forceReflow(el)
-        //     }
-        // }))
     }
     isNestedStyleObject(key: string, styleObject: any): boolean {
         // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题

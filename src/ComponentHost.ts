@@ -2,7 +2,8 @@ import {atom, Atom, isReactive, ManualCleanup, reactive, ReactiveEffect} from "d
 import {
     AttributesArg,
     createElement,
-    createSVGElement, ExtendedElement,
+    createSVGElement,
+    ExtendedElement,
     Fragment,
     JSXElementType,
     RefFn,
@@ -16,6 +17,7 @@ import {assert} from "./util";
 import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
+import {markOverwrite} from "./StaticHost";
 
 
 function ensureArray(o: any) {
@@ -123,6 +125,10 @@ export class ComponentHost implements Host{
             } else {
                 // 支持 $xxx:[prop] 来覆盖 props
                 if (!itemConfig[itemName].props) itemConfig[itemName].props = {}
+                // style 要特殊标记一下，用去表示是外部覆盖的
+                if (itemProp === 'style') {
+                    markOverwrite(value)
+                }
                 itemConfig[itemName].props![itemProp] = mergeProp(itemProp, itemConfig[itemName].props![itemProp], value)
             }
         }
@@ -253,9 +259,7 @@ export class ComponentHost implements Host{
                     contextComponentProps.push(start.props)
                 }
                 start = start.prev
-
             }
-
 
             (node as ExtendedElement).listenerBoundArgs = [contextComponentProps, componentProps]
         }
