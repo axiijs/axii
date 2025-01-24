@@ -234,6 +234,7 @@ export class ComponentHost implements Host{
         // 收集 component ref
         if (name) {
             finalProps.ref = ensureArray(finalProps.ref).concat((item: any) => this.refs[name] = item)
+            finalProps['data-as'] = name
         }
 
         const node = isSVG ?

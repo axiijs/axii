@@ -8,11 +8,11 @@ import {
     stringifyStyleValue,
     UnhandledPlaceholder
 } from "./DOM";
-import { Host, PathContext } from "./Host";
-import { autorun, isAtom, isReactive } from "data0";
-import { createHost } from "./createHost";
-import { assert, isPlainObject, nextFrames, removeNodesBetween } from "./util";
-import { ComponentHost } from "./ComponentHost.js";
+import {Host, PathContext} from "./Host";
+import {autorun, isAtom, isReactive} from "data0";
+import {createHost} from "./createHost";
+import {assert, isPlainObject, removeNodesBetween} from "./util";
+import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
@@ -36,57 +36,6 @@ function isAtomLike(v: any) {
     return isAtom(v) || typeof v === 'function'
 }
 
-
-function hasPsuedoClassOrNestedStyle(styleObject: StyleObject | StyleObject[]) {
-    if (Array.isArray(styleObject)) {
-        return styleObject.some(hasPsuedoClassOrNestedStyle)
-    }
-    for(const key in styleObject) {
-        if (key.startsWith(':') || isPlainObject(styleObject[key])) {
-            return true
-        }
-    }
-    return false
-}
-
-function hasTransition(styleObject: StyleObject | StyleObject[]) {
-    if (Array.isArray(styleObject)) {
-        return styleObject.some(hasTransition)
-    }
-    return styleObject.transition || styleObject.transitionProperty
-}
-
-function hasVariable(styleObject: StyleObject | StyleObject[]) {
-    if (Array.isArray(styleObject)) {
-        return styleObject.some(hasVariable)
-    }
-    for(const key in styleObject) {
-        if (key.startsWith('--')) {
-            return true
-        }
-    }
-    return false
-}
-
-function findTransitionProperties(styleObject: StyleObject | StyleObject[]): string[] {
-    if (Array.isArray(styleObject)) {
-        return styleObject.flatMap(findTransitionProperties)
-    }
-    return styleObject.transitionProperty?.split(',').map((p: string) => p.trim()) ??
-        styleObject.transition?.split(',').map((p: string) => p.split(/\s+/)[0]) ?? []
-}
-
-function hasInlineAnimation(styleObject: StyleObject | StyleObject[]) {
-    if (Array.isArray(styleObject)) {
-        return styleObject.some(hasInlineAnimation)
-    }
-    return styleObject['@keyframes'] !== undefined
-}
-
-function forceReflow(el: HTMLElement) {
-    // CAUTION 通过读取 offsetHeight 来触发 reflow
-    el.offsetHeight
-}
 
 function generateGlobalElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
     const hosts: Host[] = []
@@ -121,6 +70,7 @@ function generateComponentElementStaticId(hostPath: LinkedNode<Host>, elementPat
 class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
     public elToStyleId = new WeakMap<HTMLElement, string>()
+    public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
         if (el) {
@@ -144,95 +94,102 @@ class StyleManager {
             return `${property}:${stringifyStyleValue(key, value)};`
         }).join('\n')
     }
-    update(hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement, isStatic: boolean = false) {
+    public createStyleSheet(id:string, styleObject:StyleObject) {
+        const styleSheet = new CSSStyleSheet()
+        styleSheet.replaceSync(this.generateStyleContent(`.${id}`, styleObject).join('\n'))
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
+        return styleSheet
+    }
+    update(hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
+        // TODO 只有动态、plain style object 可以直接 setAttribute，其他都应该用 class
+        //  静态的要考虑组件复用的情况，所以也是 class
+        const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
+        const isStatic = styleObjects.every(o => typeof o !== 'function')
         // 使用这个更新的 style 都是有伪类或者有嵌套的，一定需要生成 class 的。
         const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
-        let styleSheet = this.styleScripts.get(styleSheetId)
-        if (!styleSheet) {
-            styleSheet = new CSSStyleSheet()
-            document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
-            this.styleScripts.set(styleSheetId, styleSheet)
+
+        const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
+
+        // 1. 如果是第一次，就全部生成
+        // 2. 如果是第二次，只对动态的部分重新生成
+        //  2.1. 动态生成的时候是先 add 一个新的，然后删除老的。
+        styleObjects.forEach((styleObject, index) => {
+            const styleSheetIdWithItorNum = `${styleSheetId}-p${index}i${styleItorNum}`
+            let styleSheet:any
+            if( styleItorNum === 0) {
+                styleSheet = this.createStyleSheet(styleSheetIdWithItorNum, typeof styleObject === 'function' ? styleObject() : styleObject)
+                el.classList.add(styleSheetIdWithItorNum)
+            } else {
+                if (typeof styleObject === 'function') {
+                    const evaluatedStyleObject = styleObject()
+                    styleSheet = this.createStyleSheet(styleSheetIdWithItorNum, evaluatedStyleObject)
+                    el.classList.add(styleSheetIdWithItorNum)
+
+                    // 移除之前的
+                    // TODO 如何防止 css 爆炸？应该从 document 上也移除？
+                    const lastId = `${styleSheetId}-p${index}i${styleItorNum-1}`
+                    document.adoptedStyleSheets.splice(document.adoptedStyleSheets.indexOf(this.styleScripts.get(lastId)!), 1)
+                    el.classList.remove(lastId)
+                    // FIXME reflow???
+                }
+            }
+
+            if (typeof styleObject === 'function') {
+                this.styleScripts.set(styleSheetIdWithItorNum, styleSheet)
+            }
+
+            // let styleSheet = this.styleScripts.get(styleSheetId)
+            // if (!styleSheet) {
+            //     styleSheet = new CSSStyleSheet()
+            //     document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
+            //     this.styleScripts.set(styleSheetId, styleSheet)
+            // }
+            //
+            // el.classList.add(styleSheetId)
+            //
+            // styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
+            // const transitionPropertyNames = findTransitionProperties(styleObjects[0])
+            // if (transitionPropertyNames.length) {
+            //     forceReflow(el)
+            // }
+        })
+
+        if (!isStatic) {
+            this.elToStyleIdItorNum.set(el, styleItorNum + 1)
         }
 
-        el.classList.add(styleSheetId)
-        const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
 
-        // CAUTION 多个 styleObjects 的更新要用异步任务，这样 transition 中的效果才能生效
-        // 1. replaceSync 会立即生效，不会有 transition 效果
-        // nextFrames(styleObjects.map((one, index) => () => {
-        //     // styleScript!.innerHTML += this.generateStyleContent(`.${styleSheetId}`, one)
-        //     const lastObjects = styleObjects.slice(0, index+1)
-        //     const newContent = lastObjects.map(one => this.generateStyleContent(`.${styleSheetId}`, one).join('\n')).join('\n')
-        //     console.log(newContent)
-        //     styleSheet!.replaceSync(newContent)
-        // }))
 
-        // 2. promise chain 对于先 display none 再显示的节点也不能触发 transition
-        // TODO 用 insertRule 和 replace/innerHTML 相比性能如何
-        // sequencePromises(styleObjects.map((one, index) => () => {
-        //     const lastObjects = styleObjects.slice(0, index+1)
-        //     const newContent = lastObjects.map(one => this.generateStyleContent(`.${styleSheetId}`, one).join('\n')).join('\n')
-        //     return styleSheet!.replace(newContent)
-        // }))
 
-        // 3. 对于先 display none 再显示的节点也不能触发 transition
-        // styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
-        // styleObjects.slice(1).forEach((one, index)=> {
-        //     this.generateStyleContent(`.${styleSheetId}`, one).forEach(rule => {
-        //         styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
-        //     })
-        // })
-
-        // styleSheet!.replace(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n')).then(() => {
-        //     nextFrames(styleObjects.slice(1).map((one, ) => () => {
-        //         // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
-        //         //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
-        //         const [valueStyleObject, nestedStyleObject] = this.separateStyleObject(one)
-        //         this.generateStyleContent(`.${styleSheetId}`, nestedStyleObject).forEach(rule => {
+        //
+        // return nextFrames(styleObjects.slice(1).map((one,) => () => {
+        //     // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
+        //     //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
+        //     const [pureValueStyleObject, otherStyleObject, transitionProperties] = this.separateStyleObject(one, transitionPropertyNames)
+        //     if (otherStyleObject) {
+        //         this.generateStyleContent(`.${styleSheetId}`, otherStyleObject).forEach(rule => {
         //             styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
         //         })
+        //     }
+        //     // FIXME 是不是可以和上面合并
+        //     if (pureValueStyleObject) {
+        //         const newTransitionProperties = findTransitionProperties(pureValueStyleObject)
+        //         transitionPropertyNames.push(...newTransitionProperties)
+        //         this.generateStyleContent(`.${styleSheetId}`, pureValueStyleObject).forEach(rule => {
+        //             styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
+        //         })
+        //     }
+        //     // FIXME 可能还是会出现直接 style 里面的属性覆盖了 Hover 里面属性导致失效的问题。
+        //     if (transitionProperties) {
         //         // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
-        //         setAttribute(el, 'style', valueStyleObject)
-        //     }))
-        // })
-
-        // 对一开始的就有 transition 的节点，要使用这种方式才能触发 transition，不能写到下面的 nextFrames 中。
-        // if (hasInlineAnimation(styleObjects[0])) {
-        //     console.log(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
-        // }
-        styleSheet!.replaceSync(this.generateStyleContent(`.${styleSheetId}`, styleObjects[0]).join('\n'))
-        const transitionPropertyNames = findTransitionProperties(styleObjects[0])
-        if (transitionPropertyNames.length) {
-            forceReflow(el)
-        }
-        return nextFrames(styleObjects.slice(1).map((one,) => () => {
-            // CAUTION 在 chrome 中有时更新 class 可能不能触发 transition。所以这里把 valueStyle 拿出来直接用 setAttribute 更新。
-            //  但如果 transition 写在了 nestedStyleObject 中，仍然可能出现不能触发的情况！
-            const [pureValueStyleObject, otherStyleObject, transitionProperties] = this.separateStyleObject(one, transitionPropertyNames)
-            if (otherStyleObject) {
-                this.generateStyleContent(`.${styleSheetId}`, otherStyleObject).forEach(rule => {
-                    styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
-                })
-            }
-            // FIXME 是不是可以和上面合并
-            if (pureValueStyleObject) {
-                const newTransitionProperties = findTransitionProperties(pureValueStyleObject)
-                transitionPropertyNames.push(...newTransitionProperties)
-                this.generateStyleContent(`.${styleSheetId}`, pureValueStyleObject).forEach(rule => {
-                    styleSheet!.insertRule(rule, styleSheet!.cssRules.length)
-                })
-            }
-            // FIXME 可能还是会出现直接 style 里面的属性覆盖了 Hover 里面属性导致失效的问题。
-            if (transitionProperties) {
-                // valueStyleObject 使用 setAttribute 更新是为了能尽量触发 transition
-                setAttribute(el, 'style', transitionProperties)
-            }
-
-            // CAUTION 如果自己上面有 transition，一定要触发 reflow，后面的 transition 属性变化才会生效
-            if (hasTransition(one)) {
-                forceReflow(el)
-            }
-        }))
+        //         setAttribute(el, 'style', transitionProperties)
+        //     }
+        //
+        //     // CAUTION 如果自己上面有 transition，一定要触发 reflow，后面的 transition 属性变化才会生效
+        //     if (hasTransition(one)) {
+        //         forceReflow(el)
+        //     }
+        // }))
     }
     isNestedStyleObject(key: string, styleObject: any): boolean {
         // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
@@ -325,14 +282,6 @@ ${this.stringifyStyleObject(valueStyleObject)}
 }
 
 type StyleObject = { [k: string]: any }
-
-// @ts-ignore 待修复
-function isStaticStyleObject(styleObject: StyleObject | StyleObject[]): boolean {
-    if (Array.isArray(styleObject)) {
-        return styleObject.every(isStaticStyleObject)
-    }
-    return typeof styleObject === 'object'
-}
 
 // 添加全局配置对象
 export const StaticHostConfig = {
@@ -441,18 +390,14 @@ export class StaticHost implements Host {
         }
     }
     updateAttribute(el: ExtendedElement, key: string, value: any, path: number[], isSVG: boolean) {
-        const final = Array.isArray(value) ?
-            value.map(v => isAtomLike(v) ? v() : v) :
-            isAtomLike(value) ? value() : value
 
-        if (key === 'style' && (hasPsuedoClassOrNestedStyle(final) || hasTransition(final) || hasInlineAnimation(final) || hasVariable(final))) {
-            // FIXME 即使 value 是静态，也有可能是从 configuration 里面传入的，每个组件不同。所以这里不能从值去判断。
-            //  例外要判断是不是 configuration 还要考虑是运行传入还是通过 boundProps 传入的。
-            //  修复之前只能让 isStatic === false
-            // const isStatic = isStaticStyleObject(value)
-            const isStatic = false
-            return StaticHost.styleManager.update(this.pathContext.hostPath, path, final, el, isStatic)
+        if (key === 'style' ) {
+
+            return StaticHost.styleManager.update(this.pathContext.hostPath, path, value, el)
         } else {
+            const final = Array.isArray(value) ?
+                value.map(v => isAtomLike(v) ? v() : v) :
+                isAtomLike(value) ? value() : value
             setAttribute(el, key, final, isSVG)
         }
     }
