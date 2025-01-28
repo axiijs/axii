@@ -4,7 +4,7 @@ import {
     createElement,
     createSVGElement,
     ExtendedElement,
-    Fragment,
+    Fragment, insertBefore,
     JSXElementType,
     RefFn,
     RefObject,
@@ -62,8 +62,10 @@ const INNER_CONFIG_PROP = '__config__'
  */
 export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
+    static reusedNodes = new Map<any, ComponentHost>()
     type: Component
     innerHost?: Host
+    innerReusedHosts: ReusableHost[] = []
     props: Props
     public layoutEffects = new Set<EffectHandle>()
     public effects = new Set<EffectHandle>()
@@ -271,6 +273,11 @@ export class ComponentHost implements Host{
     createPortal = (content: JSX.Element|ComponentNode|Function, container: HTMLElement) => {
         return createElement(Portal, {container, content})
     }
+    reusable = (reusableNode: any) => {
+        const reusedHost = new ReusableHost(reusableNode, new Comment('reusable'), this.pathContext)
+        this.innerReusedHosts.push(reusedHost)
+        return reusedHost
+    }
     // 处理视图相关的 effect
     useLayoutEffect = (callback: EffectHandle) => {
         this.layoutEffects.add(callback)
@@ -438,7 +445,8 @@ export class ComponentHost implements Host{
             createRxRef: this.createRxRef,
             createStateFromRef: this.createStateFromRef,
             onCleanup: this.onCleanup,
-            expose: this.expose
+            expose: this.expose,
+            reusable: this.reusable,
         }
 
         // CAUTION collect effects start
@@ -507,6 +515,8 @@ export class ComponentHost implements Host{
 
         this.cleanupsOfExternalTarget.forEach(cleanup => cleanup())
         this.cleanupsOfExternalTarget.clear()
+
+        this.innerReusedHosts.forEach(host => host.destroyReusable())
 
         // 删除 dom
         if (!parentHandle) {
@@ -577,4 +587,60 @@ export function bindProps(Component: Component, props: Props,) {
     ComponentWithProps.propTypes = Component.propTypes
     ComponentWithProps.boundProps = ensureArray(ComponentWithProps.boundProps).concat(props)
     return ComponentWithProps
+}
+
+export class ReusableHost implements Host{
+    public innerHost: Host
+    reusePlaceholder?: Comment
+    constructor(public source: any, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+        this.innerHost = createHost(source, placeholder, pathContext)
+    }
+    element:HTMLElement|Comment|Text|SVGElement = this.placeholder
+    rendered = false
+    render() {
+        // 第一次渲染
+        if (!this.rendered) {
+            insertBefore(this.placeholder, this.reusePlaceholder!)
+            // debugger
+            this.innerHost.render()
+            this.element = this.innerHost.element
+            this.rendered = true
+        } else {
+            const frag = document.createDocumentFragment()
+            let start = this.innerHost.element
+            while(start !== this.innerHost.placeholder) {
+                const next = start.nextSibling as HTMLElement|Comment|Text|SVGElement
+                frag.appendChild(start)
+                start = next
+            }
+            frag.appendChild(this.innerHost.placeholder)
+            insertBefore(frag, this.reusePlaceholder!)
+        }
+    }
+    moveTo(reusePlaceholder: Comment) {
+        this.reusePlaceholder = reusePlaceholder
+    }
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        // do nothing
+        if (!parentHandle) {
+            const frag = document.createDocumentFragment()
+            let start = this.innerHost.element
+            while(start !== this.innerHost.placeholder) {
+                const next = start.nextSibling as HTMLElement|Comment|Text|SVGElement
+                frag.appendChild(start)
+                start = next
+            }
+            frag.appendChild(this.innerHost.placeholder)
+            // 这个reusePlaceholder不要了，如果再被渲染，会有新的 placeholder
+            if (this.reusePlaceholder) {
+                this.reusePlaceholder.remove()
+            }
+        }
+    }
+    destroyReusable() {
+        debugger
+        // 可能没有真正被渲染过
+        if (this.element !==this.placeholder) return
+        this.innerHost.destroy(false, false)
+    }
 }

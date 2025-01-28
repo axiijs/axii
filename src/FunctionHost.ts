@@ -26,14 +26,16 @@ export class FunctionHost implements Host{
 
         let scheduleRecompute = false
 
-        this.stopAutoRender = autorun(({ onCleanup }) => {
+        this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
             // CAUTION 每次都清空上一次的结果
             const node = this.source()
             const newPlaceholder = document.createComment('computed node')
             insertBefore(newPlaceholder, this.placeholder)
             const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
             Notifier.instance.pauseTracking()
+            pauseCollectChild()
             host.render()
+            resumeCollectChild()
             Notifier.instance.resetTracking()
             onCleanup(() => {
                 host.destroy(false, false)

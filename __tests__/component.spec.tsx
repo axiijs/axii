@@ -178,7 +178,37 @@ describe('component render', () => {
         dynamicComponent(Child1)
         await wait(10)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('child1')
+    })
 
+    test('reusable nodes', async () => {
+        const visible = atom(true)
+        const innerText = atom('anonymous')
+
+        function App({}, {createElement,reusable}: RenderContext) {
+            const reusedNode = reusable(<div>{() => innerText() }</div>)
+            return <div>
+                {() => visible() ? reusedNode : null}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect((rootEl.firstElementChild!.children[0] as HTMLElement).innerText).toBe('anonymous')
+
+        visible(false)
+        await wait(10)
+        expect(rootEl.firstElementChild!.children.length).toBe(0)
+
+        innerText('hello world')
+        visible(true)
+        await wait(10)
+        expect((rootEl.firstElementChild!.children[0] as HTMLElement).innerText).toBe('hello world')
+
+        visible(false)
+        await wait(10)
+        visible(true)
+        innerText('bravo')
+        await wait(10)
+        expect((rootEl.firstElementChild!.children[0] as HTMLElement).innerText).toBe('bravo')
     })
 
     test('computed in Component should destroy when component destroyed', async () => {

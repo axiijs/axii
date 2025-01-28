@@ -59,6 +59,11 @@ export type CreateSVGElementFn = (type: string, rawProps : AttributesArg, ...chi
  */
 export type ExposeFn = <T>(value: T, name?: string) => T
 
+/**
+ * @category Basic
+ */
+export type ReuseFn = (value: any) => any
+
 export type JSXElement = ComponentNode|HTMLElement|Comment|DocumentFragment|SVGElement|string|number|undefined|null
 /**
  * @category Basic
@@ -83,6 +88,7 @@ export type RenderContext = {
     createRxRef: CreateRxRefFn,
     createStateFromRef: CreateStateFromRefFn,
     expose: ExposeFn,
+    reusable: ReuseFn
 }
 /**
  * @category Basic

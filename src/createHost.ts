@@ -1,7 +1,7 @@
 import {insertBefore, UnhandledPlaceholder} from "./DOM";
 import {Host, PathContext} from "./Host";
 import {isAtom, RxList} from "data0";
-import {ComponentHost} from "./ComponentHost";
+import {ComponentHost, ReusableHost} from "./ComponentHost";
 import {AtomHost} from "./AtomHost";
 import {FunctionHost} from "./FunctionHost";
 import {StaticHost} from "./StaticHost";
@@ -63,6 +63,9 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
         host = new EmptyHost(context, placeholder)
     } else if (source instanceof RxList) {
         host = new RxListHost(source, placeholder, context)
+    } else if( source instanceof ReusableHost) {
+        source.moveTo(placeholder)
+        host = source
     } else if( typeof source === 'object' && typeof source?.type === 'function') {
         host = new ComponentHost(source, placeholder, context)
     } else if (isAtom(source)) {

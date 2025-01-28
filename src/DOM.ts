@@ -450,6 +450,7 @@ function resetOptionParentSelectValue(targetOption: HTMLElement) {
         (target as HTMLDataElement).value = selectValueTmp.get(target as ExtendedElement)
     }
 }
+
 /**
  * @internal
  */
