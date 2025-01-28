@@ -638,9 +638,14 @@ export class ReusableHost implements Host{
         }
     }
     destroyReusable() {
-        debugger
         // 可能没有真正被渲染过
-        if (this.element !==this.placeholder) return
-        this.innerHost.destroy(false, false)
+        if (this.element === this.placeholder) {
+            this.element.remove()
+        } else {
+            this.innerHost.destroy(false, false)
+        }
+        if (this.reusePlaceholder) {
+            this.reusePlaceholder.remove()
+        }
     }
 }
