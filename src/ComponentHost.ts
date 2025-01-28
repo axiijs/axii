@@ -24,7 +24,7 @@ function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
 /**
- * @internal
+ * @category Common Utility
  */
 export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}) {
     const output = {...origin}
@@ -35,7 +35,7 @@ export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}
     return output
 }
 /**
- * @internal
+ * @category Common Utility
  */
 export function mergeProp(key:string, originValue:any, value: any) {
     if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style' || key==='classname' || key==='class')) {
