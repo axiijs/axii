@@ -14,6 +14,7 @@ import {createHost} from "./createHost";
 import {assert, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
+import {FunctionHost} from "./FunctionHost";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
@@ -47,20 +48,21 @@ function generateGlobalElementStaticId(hostPath: LinkedNode<Host>, elementPath: 
     return `${hosts.map(host => host.pathContext.elementPath.join('_')).join('-')}-${elementPath.join('_')}`
 }
 
-function generateComponentElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
-    let lastComponentHost:ComponentHost|undefined = undefined
-    // 这里如果有 path，只有全部都是 StaticHost
+function GetPathToLastComponent(hostPath: LinkedNode<Host>) {
     const pathToGenerateId: Host[] = []
     let current: LinkedNode<Host>|null = hostPath
     while (current) {
+        pathToGenerateId.unshift(current.node)
         if (current.node instanceof ComponentHost) {
-            lastComponentHost = current.node
             break
         }
-        pathToGenerateId.unshift(current.node)
         current = current.prev
     }
+    return pathToGenerateId
+}
 
+function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
+    const [lastComponentHost, ...pathToGenerateId] = path as [ComponentHost, ...Host[]]
     // // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
     return `${lastComponentHost?.type.name.toString()??'GLOBAL'}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
@@ -89,14 +91,16 @@ class StyleManager {
     public elToStyleId = new WeakMap<HTMLElement, string>()
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
+        const pathToLastComponent = GetPathToLastComponent(hostPath)
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
-        const staticId = generateComponentElementStaticId(hostPath, elementPath)
+        const staticId = generateComponentElementStaticId(pathToLastComponent, elementPath)
+        const hasFunctionHostInPathToLastComponent = pathToLastComponent.some(host => host instanceof FunctionHost)
 
-        if (el) {
-            const styleId = this.elToStyleId.get(el)
+        if (el || hasFunctionHostInPathToLastComponent) {
+            const styleId = el  ? this.elToStyleId.get(el) : null
             if (!styleId) {
                 const newStyleId = `${staticId}R${Math.random().toString(36).slice(2)}`
-                this.elToStyleId.set(el, newStyleId)
+                if (el) this.elToStyleId.set(el, newStyleId)
                 return newStyleId
             } else {
                 return styleId
