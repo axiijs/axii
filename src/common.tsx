@@ -268,6 +268,10 @@ export type DragPosition = {
 export function createReactiveDragPosition(shouldRecord: Atom<any>) {
     return function reactiveDragPosition(ref: HTMLElement, position: Atom<DragPosition|null>) {
         const mouseDownListener = (mouseDownEvent: MouseEvent) => {
+            // 判断是不是 left mouse down
+            if (mouseDownEvent.button !== 0) {
+                return
+            }
             if (!shouldRecord()) {
                 return
             }

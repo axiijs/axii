@@ -63,8 +63,10 @@ function GetPathToLastComponent(hostPath: LinkedNode<Host>) {
 
 function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     const [lastComponentHost, ...pathToGenerateId] = path as [ComponentHost, ...Host[]]
-    // // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-    return `${lastComponentHost?.type.name.toString()??'GLOBAL'}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
+    // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
+    // CAUTION 压缩工具可能使得 name 以 $ 开头
+    const componentName = lastComponentHost?.type.name.toString().replace(/^\$/, '_') ?? 'GLOBAL'
+    return `${componentName}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
 
 export function markOverwrite(obj:object) {
