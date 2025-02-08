@@ -185,8 +185,10 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
             // checkbox 也支持用 value ，这样容易统一 api
             if (value) {
+                (node as HTMLInputElement).checked = true
                 node.setAttribute('checked', 'true')
             } else {
+                (node as HTMLInputElement).checked = false
                 node.removeAttribute('checked')
             }
         } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'text' && value === undefined) {
