@@ -4,8 +4,11 @@ import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 import {createLinkedNode} from "./LinkedList";
 
+type FunctionNodeContext = {
+    onCleanup: (cleanup:()=> any) => void
+}
 // CAUTION 纯粹的动态结构，有变化就重算，未来考虑做 dom diff, 现在不做
-type FunctionNode = () => ChildNode|DocumentFragment|string|number|null|boolean
+type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|string|number|null|boolean
 /**
  * @internal
  */
@@ -28,7 +31,7 @@ export class FunctionHost implements Host{
 
         this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
             // CAUTION 每次都清空上一次的结果
-            const node = this.source()
+            const node = this.source({onCleanup})
             const newPlaceholder = document.createComment('computed node')
             insertBefore(newPlaceholder, this.placeholder)
             const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
