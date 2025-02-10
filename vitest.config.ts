@@ -29,5 +29,11 @@ export default {
       provider: 'playwright',
       headless: true
     },
+    coverage: {
+      enabled: true,
+      all: true,
+      reporter: ['text', 'json', 'html'],
+      include: ['src'],
+    },
   },
 }

@@ -54,11 +54,7 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     } else if( typeof source === 'string' || typeof source === 'number' || typeof source === 'boolean'){
         host = new PrimitiveHost(source, placeholder, context)
     } else if ( Array.isArray(source)  ) {
-        // if(isReactive(source) ) {
-        //     host = new ReactiveArrayHost(source, placeholder, context)
-        // } else {
         host = new StaticArrayHost(source, placeholder, context)
-        // }
     } else if (source === undefined || source === null) {
         host = new EmptyHost(context, placeholder)
     } else if (source instanceof RxList) {
