@@ -33,7 +33,7 @@ export default {
       enabled: true,
       all: true,
       provider: 'v8',
-      reporter: ['text', 'json', 'html'],
+      reporter: ['text', 'json', 'html', 'json-summary'],
       include: ['src'],
       exclude: ['src/util.ts', 'src/Form.tsx', 'src/common.ts', 'src/Host.ts', 'src/types.ts', 'src/propTypes.ts']
     },
