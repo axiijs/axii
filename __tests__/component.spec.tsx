@@ -489,7 +489,6 @@ describe('component data context', () => {
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data0')
         data('data1')
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data1')
-        console.log(rootEl.firstElementChild?.innerHTML)
         expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('data3')
     })
 })

@@ -107,7 +107,6 @@ describe('ref', () => {
         await wait(100)
         expect(position()).not.toBeNull()
         const last = position()
-        console.log(last)
         style({paddingTop: 100})
 
         await wait(100)

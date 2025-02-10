@@ -98,6 +98,7 @@ export class RxListHost implements Host{
                             insertAfter(host.hosts!.raw.at(index)!.placeholder, host.hosts!.raw.at(index-1)?.placeholder)
                         }
                         host.hosts!.raw.at(index)!.render()
+                      /* v8 ignore next 3 */
                     } else {
                         throw new Error('unknown trigger info')
                     }

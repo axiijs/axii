@@ -18,9 +18,6 @@ export function autoUnit(num: number|string) {
 export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 
 export function stringifyStyleValue(k:string, v: any): string {
-    if (v === undefined) {
-        return ''
-    }
     if(Array.isArray(v)) {
         // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
@@ -33,7 +30,7 @@ export function stringifyStyleValue(k:string, v: any): string {
         }
     }
     // number/string/StyleSize
-    return typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v) : v.toString()
+    return AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v||0) : v.toString()
 }
 
 
@@ -46,6 +43,7 @@ function setProperty(node: HTMLElement, name: string, value: any) {
         // name value 的类型不会写
         // @ts-ignore
         node[name] = value
+        /* v8 ignore next 5 */
     } catch (e) {
         /* eslint-disable no-console */
         console.error(e)
@@ -78,8 +76,6 @@ function captureEventProxy(this: ExtendedElement, e: Event) {
 }
 
 export type UnhandledPlaceholder = Comment
-
-const selectValueTmp = new WeakMap<ExtendedElement, any>()
 
 
 function isEventName(name: string) {
@@ -179,10 +175,12 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         // CAUTION 因为 select 如果 option 还没有渲染（比如 computed 的情况），那么设置 value 就没用，我们这里先存着，
         //  等 append option children 的时候再 set value 一下
         if (node.tagName === 'SELECT') {
-            selectValueTmp.set(node, value)
+            node.dataset['__value__'] = value
         } else if (node.tagName === 'OPTION') {
             // 当 option 的 value 发生变化的时候也要 reset 一下，因为可能这个时候与 select value 相等的 option 才出现
-            resetOptionParentSelectValue(node)
+            if (node.parentElement instanceof HTMLSelectElement) {
+                resetOptionParentSelectValue(node.parentElement)
+            }
         } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
             // checkbox 也支持用 value ，这样容易统一 api
             if (value) {
@@ -218,6 +216,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         setProperty(node, name, value === null ? '' : value)
         if (value === null || value === undefined) node.removeAttribute(name)
     } else {
+        /* v8 ignore next 4 */
         const ns = isSvg && (name !== (name = name.replace(/^xlink\:?/, '')))
         if (value == null || value === false) {
             if (ns) {
@@ -227,10 +226,10 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             } else {
                 node.removeAttribute(name)
             }
+            /* v8 ignore next 4 */
         } else if (typeof value !== 'function' && ns) {
             // xlink:href 元素，有 namespace 的
             node.setAttributeNS('http://www.w3.org/1999/xlink', name.toLowerCase(), value)
-
         } else {
             // svg 的 attrName 要从驼峰转换成连字符风格
             const attrName = (isSvg && svgForceDashStyleAttributes.test(name)) ? name.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : name
@@ -436,6 +435,7 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
         ref(null)
     } else if (typeof ref === 'object') {
         ref.current = null
+        /* v8 ignore next 3 */
     } else {
         assert(false, 'ref should be function or object with current property')
     }
@@ -446,11 +446,8 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
  */
 export function Fragment() {}
 
-function resetOptionParentSelectValue(targetOption: HTMLElement) {
-    const target = targetOption.parentElement
-    if (selectValueTmp.has(target as ExtendedElement)) {
-        (target as HTMLDataElement).value = selectValueTmp.get(target as ExtendedElement)
-    }
+function resetOptionParentSelectValue(select: HTMLSelectElement) {
+    select.value = select.dataset['__value__']!
 }
 
 /**
@@ -459,8 +456,8 @@ function resetOptionParentSelectValue(targetOption: HTMLElement) {
 export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
     const result = refEl.parentNode!.insertBefore!(newEl, refEl)
-    if ((newEl as Element) instanceof HTMLOptionElement) {
-        resetOptionParentSelectValue(newEl as HTMLElement)
+    if (refEl.parentElement instanceof HTMLSelectElement) {
+        resetOptionParentSelectValue(refEl.parentElement)
     }
 
     return result
@@ -472,8 +469,8 @@ export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | S
 export function insertAfter(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
     const result = refEl.parentNode!.insertBefore!(newEl, refEl.nextSibling)
-    if ((newEl as Element) instanceof HTMLOptionElement) {
-        resetOptionParentSelectValue(newEl as HTMLElement)
+    if (refEl.parentElement instanceof HTMLSelectElement) {
+        resetOptionParentSelectValue(refEl.parentElement)
     }
 
     return result

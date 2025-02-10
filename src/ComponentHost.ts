@@ -321,6 +321,7 @@ export class ComponentHost implements Host{
             ref.current = refValue
         }
     }
+    /* v8 ignore next 7 */
     attachThis(ref: RefObject|RefFn) {
         if (typeof ref === 'function') {
             ref(this)
@@ -471,6 +472,7 @@ export class ComponentHost implements Host{
             this.attachRef(this.refProp)
         }
         // for test use
+        /* v8 ignore next 3 */
         if (this.thisProp) {
             this.attachThis(this.thisProp)
         }

@@ -42,8 +42,21 @@ describe('rxList render', () => {
 
         show(false)
         await wait(1)
-        console.log(rootEl.firstElementChild!.outerHTML)
         expect(rootEl.firstElementChild!.children.length).toBe(0)
+
+    })
+
+    test('render simple array', () => {
+        const arr = [1,2,3]
+
+        function App() {
+            return <div>
+                {arr.map(item => new Text(item.toString()))}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.textContent).toBe('123')
 
     })
 })

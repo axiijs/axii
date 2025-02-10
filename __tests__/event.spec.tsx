@@ -19,7 +19,9 @@ describe('event transfer', () => {
     test('basic component & reactive frag',
         async () => {
 
-            const eventTransfer =createEventTransfer()
+            const eventTransfer =createEventTransfer(() =>{
+                return new CustomEvent('ccclick')
+            })
 
             let worldClicked = false
             const helloRef = {current:null}
@@ -27,7 +29,7 @@ describe('event transfer', () => {
             function App() {
                 return <div>
                     <div onClick={eventTransfer.source} ref={helloRef}>hello</div>
-                    <div ref={eventTransfer.target} onClick={() => worldClicked = true}>world</div>
+                    <div ref={eventTransfer.target} onCcclick={() => worldClicked = true}>world</div>
                 </div>
             }
 
@@ -67,6 +69,16 @@ describe('event transfer', () => {
         }
         root.render(<App/>)
         dispatchEvent(ref.current, new KeyboardEvent('keydown', {key:'a', altKey:false, ctrlKey:true, metaKey:true, shiftKey:true}))
+        expect(called).toBeFalsy()
+
+        dispatchEvent(ref.current, new KeyboardEvent('keydown', {key:'a', altKey:true, ctrlKey:false, metaKey:true, shiftKey:true}))
+        expect(called).toBeFalsy()
+
+        dispatchEvent(ref.current, new KeyboardEvent('keydown', {key:'a', altKey:true, ctrlKey:true, metaKey:false, shiftKey:true}))
+        expect(called).toBeFalsy()
+
+
+        dispatchEvent(ref.current, new KeyboardEvent('keydown', {key:'a', altKey:true, ctrlKey:true, metaKey:true, shiftKey:false}))
         expect(called).toBeFalsy()
 
         dispatchEvent(ref.current, new KeyboardEvent('keydown', {key:'a', altKey:true, ctrlKey:true, metaKey:true, shiftKey:true}))

@@ -65,6 +65,56 @@ describe('function render', () => {
         expect(ref.innerText).toBe('')
     })
 
+    test('function returns a function node', async ()=> {
+        const visible = atom(true)
+        const name = atom('world')
+        function App() {
+            return <div>
+                {() => visible() ? () => {
+                    const nameText = name()
+                    return <span>hello {nameText}</span>
+                } : null}
+            </div>
+        }
+        root.render(<App />)
+        const ref = rootEl.firstElementChild as HTMLElement
+        await wait(50)
+        expect(ref.innerText).toBe('hello world')
+        name('world2')
+        await wait(50)
+        expect(ref.innerText).toBe('hello world2')
+
+        visible(false)
+        await wait(50)
+        expect(ref.innerText).toBe('')
+    })
+
+    test('multiple trigger, should rerun only once', async () => {
+        const name = atom('world')
+        const trigger = atom(0)
+        let runs = 0
+        function App() {
+            return <div>
+                {() => {
+                    runs++
+                    trigger()
+                    return name()
+                }}
+            </div>
+        }
+        root.render(<App />)
+        const ref = rootEl.firstElementChild as HTMLElement
+        await wait(50)
+        expect(ref.innerText).toBe('world')
+        expect(runs).toBe(1)
+        
+        name('world2')
+        trigger(1)
+        await wait(50)
+        expect(ref.innerText).toBe('world2')
+        expect(runs).toBe(2)
+    })
+
     test('function with Fragment', async () => {
         const name = atom('world')
 

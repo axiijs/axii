@@ -47,7 +47,7 @@ class PrimitiveHost implements Host{
  * @internal
  */
 export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext) {
-    if (!(placeholder instanceof Comment)) throw new Error('incorrect placeholder type')
+    assert(placeholder instanceof Comment, 'incorrect placeholder type')
     let host:Host
     if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
         host = new StaticHost(source, placeholder, context)

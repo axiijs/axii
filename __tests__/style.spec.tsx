@@ -127,6 +127,15 @@ describe('component render', () => {
         const size3 = size2.clone()
         expect(size3.toString()).toBe('calc((1rem + 1px) / 2)')
         expect(size3.valueOf()).toBe('calc((1rem + 1px) / 2)')
+
+        const size4 = new StyleSize(2, 'rem')
+        const size5 = new StyleSize(1, 'rem')
+        size4.sub(size5)
+        expect(size4.toString()).toBe('1rem')
+
+        const size6 = new StyleSize(1, 'rem')
+        size6.add(size5)
+        expect(size6.toString()).toBe('2rem')
     })
 
     test('support object style classname by default', () => {
@@ -198,6 +207,46 @@ describe('complex style', () => {
         setAutoUnitType('em')
         const style = new StyleSize(1)
         expect(style.toString()).toBe('1em')
+    })
+
+    test('use string type as style content',() => {
+        const style = 'color: red'
+        const App = () => {
+            return <div style={style}>app</div>
+        }
+        root.render(<App />)
+        const app = rootEl.firstElementChild!
+        expect(getComputedStyle(app).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
+    })
+
+    test('remove style if value set to falsy value', () => {
+        const style = atom({color: 'red'})
+        const App = () => {
+            return <div style={style}>app</div>
+        }
+        root.render(<App />)
+        const app = rootEl.firstElementChild!
+        expect(getComputedStyle(app).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
+
+        style(undefined)
+        expect(getComputedStyle(app).getPropertyValue('color')).not.toBe('rgb(255, 0, 0)')
+    })
+
+    test('multiple value style prop should accept array', () => {
+        // boxShadow 可以用
+        const style = atom({
+            boxShadow: ['1px 1px 1px red', '2px 2px 2px blue'],
+            padding: ['1px', '2px'],
+            margin: [undefined, '2px']
+        })
+        const App = () => {
+            return <div style={style}>app</div>
+        }
+        root.render(<App />)
+        const app = rootEl.firstElementChild!
+        expect(getComputedStyle(app).getPropertyValue('box-shadow')).toBe('rgb(255, 0, 0) 1px 1px 1px 0px, rgb(0, 0, 255) 2px 2px 2px 0px')
+        expect(getComputedStyle(app).getPropertyValue('padding')).toBe('1px 2px')
+        expect(getComputedStyle(app).getPropertyValue('margin')).toBe('0px 2px')
     })
 
 })

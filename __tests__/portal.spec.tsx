@@ -2,7 +2,7 @@
 /** @jsx createElement */
 import {ContextProvider, createElement, createRoot, ModalContext, RenderContext} from "@framework";
 import {atom} from "data0";
-import {beforeEach, describe, expect, test} from "vitest";
+import {beforeEach, describe, expect, test, vi} from "vitest";
 
 
 describe('portal', () => {
@@ -54,5 +54,25 @@ describe('portal', () => {
         showPortal2(false)
         await wait(10)
         expect(portalContainer.innerText).toBe('portal content updated\napp context')
+    })
+
+    test('should warn if reuse content', async () => {
+        const warn = vi.spyOn(console, 'error')
+        const visible = atom(true)
+        function App({}, { createPortal }: RenderContext) {
+            const inner = <div>portal content</div>
+            return <div>
+                {() => visible() ? createPortal(inner, portalContainer) : null}
+            </div>
+        }
+
+        root.render(<App />)
+        expect(warn).toBeCalledTimes(0)
+        visible(false)
+        await wait(10)
+        visible(true)
+        await wait(10)
+        expect(warn).toBeCalledTimes(1)
+        expect(warn).toBeCalledWith('static portal content can only be rendered once. Use function content for content has reactive parts.')
     })
 })

@@ -198,7 +198,6 @@ describe('rxList render', () => {
 
         root.render(<App/>)
         expect(rootEl.firstElementChild!.children.length).toBe(5)
-        debugger
         arr.at(2).deleted(true)
         expect(rootEl.firstElementChild!.children.length).toBe(4)
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('1:0')
@@ -207,4 +206,63 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.children[3].innerHTML).toBe('5:3')
 
     })
+
+    test('use rxList to render select options and insert new items', () =>  {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+        ])
+
+        const newItem = {id:4, name:'d'}
+
+        function App() {
+            return <div>
+                <select value={newItem.id.toString()}>
+                    {arr.map((item) => <option value={item.id.toString()}>{item.name}</option>)}
+                </select>
+            </div>
+        }
+
+        root.render(<App/>)
+        const select = rootEl.querySelector('select')! as HTMLSelectElement
+        expect(select.children.length).toBe(3)
+        expect(select.children[0].innerHTML).toBe('a')
+        expect(select.children[1].innerHTML).toBe('b')
+        expect(select.children[2].innerHTML).toBe('c')
+        //
+        arr.push(newItem)
+        expect(select.children.length).toBe(4)
+        expect(select.children[3].innerHTML).toBe('d')
+        expect((select.children[3] as HTMLOptionElement).value).toBe('4')
+        expect(select.value).toBe('4')
+        // new item 已插入就应该被选中了
+        expect(select.selectedIndex).toBe(3)
+
+        // explicit key change
+        arr.set(3, {id:5, name:'e'})
+        expect(select.children.length).toBe(4)
+        expect(select.selectedIndex).toBe(-1)
+
+        arr.set(2, {id:4, name:'f'})
+        expect(select.selectedIndex).toBe(2)
+    })
+
+    test('render rxList as root', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+        ])
+
+        const host = root.render(arr.map(item => <span>{item.name}</span>) as unknown as Function) as RxListHost
+        expect(rootEl.children.length).toBe(3)
+        expect(rootEl.children[0].innerHTML).toBe('a')
+        expect(rootEl.children[1].innerHTML).toBe('b')
+        expect(rootEl.children[2].innerHTML).toBe('c')
+
+        expect(host.element.textContent).toBe('a')
+
+    })
+
 })

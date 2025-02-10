@@ -49,6 +49,7 @@ export class StaticArrayHost implements Host{
             })
             this.childHosts.forEach(host => host.render())
             insertBefore(frag, this.placeholder)
+            /* v8 ignore next 3 */
         } else {
             throw new Error('should never rerender')
         }

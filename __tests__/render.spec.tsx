@@ -2,13 +2,15 @@
 /** @jsx createElement */
 import {
     createElement,
-    createEventTransfer,
+    createEventTransfer, createHost,
     createRoot,
-    eventAlias, jsx, jsxDEV, jsxs,
+    eventAlias, jsx, jsxDEV, jsxs, PathContext,
     RenderContext, withCurrentRange,
     withPreventDefault, withStopPropagation
 } from "@framework";
 import {beforeEach, describe, expect, test} from "vitest";
+import {UnhandledPlaceholder} from "../src/DOM";
+import {atom} from "data0";
 
 
 describe('component render', () => {
@@ -110,6 +112,13 @@ describe('component render', () => {
         ref.current.addEventListener('custom', withPreventDefault((e:Event) => event1 = e))
         ref.current.addEventListener('custom', withStopPropagation((e:Event) => event2 = e))
         ref.current.addEventListener('custom', withCurrentRange((e:any, range:any) => passedInRange = range))
+        // 创建 selection
+        const range = document.createRange()
+        range.selectNodeContents(ref.current)
+        const selection = document.getSelection()
+        selection!.removeAllRanges()
+        selection!.addRange(range)
+
         ref.current.dispatchEvent(new CustomEvent('custom', {
             cancelable:true,
             detail: 'custom event',
@@ -117,7 +126,17 @@ describe('component render', () => {
         }))
         expect(event1.defaultPrevented).toBeTruthy()
         expect(event2.bubbling).toBeFalsy()
+        expect(passedInRange).toBeDefined()
+
+        // remove selection
+        selection!.removeAllRanges()
+        ref.current.dispatchEvent(new CustomEvent('custom', {
+            cancelable:true,
+            detail: 'custom event',
+            bubbles: true
+        }))
         expect(passedInRange).toBeUndefined()
+
     })
 
     test('jsx runtime', () => {
@@ -148,6 +167,132 @@ describe('component render', () => {
         expect(rootEl.firstElementChild!.firstElementChild).instanceOf(HTMLSelectElement)
         // 判断是否选中了1
         expect((rootEl.firstElementChild!.firstElementChild as HTMLSelectElement).selectedIndex).toBe(0)
+    })
+
+    test('should not render illegal children', () => {
+
+        expect(() => createHost(undefined, undefined as unknown as UnhandledPlaceholder, undefined as unknown as PathContext)).toThrowError('incorrect placeholder type')
+
+        function App() {
+            return <div>
+                {{name: 'world'}}
+            </div>
+        }
+        expect(() => root.render(<App/>)).toThrowError('unknown child type [object Object]')
+    })
+
+    test('dangerouslySetInnerHTML', () => {
+        function App() {
+            return <div dangerouslySetInnerHTML={'<div>dangerouslySetInnerHTML</div>'}/>
+        }
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.innerHTML).toBe('<div>dangerouslySetInnerHTML</div>')
+    })
+
+    test('render disabled form element', () => {
+        const disabled = atom(true)
+        function App() {
+            return <div>
+                <input disabled={disabled}/>
+            </div>
+        }
+        root.render(<App/>)
+        const children = rootEl.firstElementChild!.children
+        expect(children[0]).instanceOf(HTMLInputElement)
+        expect((children[0] as HTMLInputElement).disabled).toBeTruthy()
+
+        disabled(false)
+        expect((children[0] as HTMLInputElement).disabled).toBeFalsy()
+    })
+
+    test('render input checkbox with checked or value prop', () => {
+        const checked = atom(true)
+        function App() {
+            return <div>
+                <input type="checkbox" checked={checked}/>
+                <input type="checkbox" value={checked}/>
+            </div>
+        }
+        root.render(<App/>)
+        const children = rootEl.firstElementChild!.children
+        expect(children[0]).instanceOf(HTMLInputElement)
+        expect((children[0] as HTMLInputElement).checked).toBeTruthy()
+        expect((children[1] as HTMLInputElement).checked).toBeTruthy()
+
+        checked(false)
+        expect((children[0] as HTMLInputElement).checked).toBeFalsy()
+        expect((children[1] as HTMLInputElement).checked).toBeFalsy()
+    })
+
+    test('render input with undefined value', () => {
+        const value = atom(undefined)
+        function App() {
+            return <div>
+                <input value={value}/>
+            </div>
+        }
+        root.render(<App/>)
+        const children = rootEl.firstElementChild!.children
+        expect(children[0]).instanceOf(HTMLInputElement)
+        expect((children[0] as HTMLInputElement).value).toBe('')
+
+        value('world')
+        expect((children[0] as HTMLInputElement).value).toBe('world')
+    })
+
+    test('support using class as className key', () => {
+        function App() {
+            return <div class="class">class</div>
+        }
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.className).toBe('class')
+    })
+
+    test('should throw if using wrong type as className', () => {
+        function App() {
+            return <div className={12}>class</div>
+        }
+        expect(() => root.render(<App/>)).toThrowError('className can only be string or {[k:string]:boolean}')
+    })
+
+    test('should throw if using wrong type as style', () => {
+        function App() {
+            return <div style={12}>style</div>
+        }
+        expect(() => root.render(<App/>)).toThrowError('style can only be string or object.')
+    })
+
+    test('render contenteditable element', () => {
+        const editable = atom(true)
+        function App() {
+            return <div contenteditable={editable}>contenteditable</div>
+        }
+        root.render(<App/>)
+        const el = rootEl.firstElementChild! as HTMLElement
+        expect(el.isContentEditable).toBeTruthy()
+        expect(el.getAttribute('contenteditable')).toBe('true')
+        editable(false)
+        expect(el.isContentEditable).toBeFalsy()
+        expect(el.getAttribute('contenteditable')).toBe('false')
+    })
+
+    test('only last value is useful when using multiple value props', () => {
+        function App() {
+            return <div>
+                <input value={['1','2','3']}/>
+            </div>
+        }
+        root.render(<App/>)
+        const input = rootEl.firstElementChild!.firstElementChild as HTMLInputElement
+        expect(input.value).toBe('3')
+    })
+
+    test('set uuid as attribute', () => {
+        function App() {
+            return <div uuid="123">uuid</div>
+        }
+        root.render(<App/>)
+        expect((rootEl.firstElementChild! as HTMLElement).dataset.uuid).toBe('123')
     })
 
 })

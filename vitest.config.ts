@@ -23,6 +23,13 @@ export default {
   },
   plugins: [tsconfigPaths()],
   test: {
+    pool:'threads',
+    poolOptions: {
+      threads: {
+        maxThreads:1
+        // Threads related options here
+      }
+    },
     browser: {
       enabled: true,
       name: 'chromium',

@@ -90,6 +90,7 @@ export const onSelf = eventAlias(e => e.target === e.currentTarget)
 export function createEventTransfer(transform?: (e: Event) => Event|null|undefined ){
     let targetRef: HTMLElement|undefined
     function target(el: HTMLElement) {
+        /* v8 ignore next 3 */
         if (targetRef !== undefined) {
             throw new Error('event transfer can only have one target')
         }
@@ -107,6 +108,7 @@ export function createEventTransfer(transform?: (e: Event) => Event|null|undefin
             }
 
             if (targetEvent) targetRef.dispatchEvent(targetEvent)
+            /* v8 ignore next 3 */
         } else {
             console.warn('target is not ready')
         }
