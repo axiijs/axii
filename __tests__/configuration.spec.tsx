@@ -122,6 +122,26 @@ describe('component configuration', () => {
         expect(rootEl.querySelector('div')!.textContent).toBe('hello world')
     })
 
+    test('rewrite function can receive origin prop', () => {
+        const innerStyle = {color:'red'}
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                <div as="inner" style={innerStyle}  />
+            </div>
+        }
+
+
+        let originStyle:any
+        root.render(<App
+            $inner:style_ = {(origin:any) => {
+                originStyle = origin
+                return { color: 'blue'}
+            }}
+        />)
+        expect(originStyle).toEqual(innerStyle)
+        expect((rootEl.firstElementChild!.firstElementChild! as HTMLElement).style.color).toBe('blue')
+    })
+
     test('use $self to merge props', () => {
         function App(props:any, {createElement}: RenderContext) {
             const {children, ...otherProps} = props

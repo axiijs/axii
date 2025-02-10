@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
-import {createElement, createRoot, RenderContext} from "@framework";
+import {createElement, createRoot, RenderContext, setAutoUnitType} from "@framework";
 import {Atom, atom, RxList} from "data0";
 import {StyleSize} from "../src/DOM.js";
 
@@ -117,6 +117,37 @@ describe('component render', () => {
         expect(sizeA.toString()).toBe('calc(1rem + (2rem - 1px))')
     })
 
+    test('more StyleSize', () => {
+        const base = new StyleSize(1, 'rem')
+        const size1 = base.add(1, 'px')
+        const size2 = size1.div(2)
+        expect(size2.toString()).toBe('calc((1rem + 1px) / 2)')
+
+
+        const size3 = size2.clone()
+        expect(size3.toString()).toBe('calc((1rem + 1px) / 2)')
+        expect(size3.valueOf()).toBe('calc((1rem + 1px) / 2)')
+    })
+
+    test('support object style classname by default', () => {
+        function App({}, {createElement}: RenderContext) {
+            const classnames = {
+                'class1': true,
+                'class2': false,
+                'class3': true
+            }
+            return <div className={[classnames, 'class4']}>app</div>
+        }
+
+        root.render(<App />)
+        const app = rootEl.firstElementChild!
+        expect(app.classList.contains('class1')).toBeTruthy()
+        expect(app.classList.contains('class2')).toBeFalsy()
+        expect(app.classList.contains('class3')).toBeTruthy()
+        expect(app.classList.contains('class4')).toBeTruthy()
+
+    })
+
 })
 
 describe('complex style', () => {
@@ -161,4 +192,13 @@ describe('complex style', () => {
         expect(getComputedStyle(app.children[1]).getPropertyValue('color')).toBe('rgb(0, 0, 255)')
         expect(getComputedStyle(app.children[2]).getPropertyValue('color')).toBe('rgb(0, 0, 255)')
     })
+
+
+    test('set global auto unit type', () => {
+        setAutoUnitType('em')
+        const style = new StyleSize(1)
+        expect(style.toString()).toBe('1em')
+    })
+
 })
+

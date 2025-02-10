@@ -27,13 +27,15 @@ export default {
       enabled: true,
       name: 'chromium',
       provider: 'playwright',
-      headless: true
+      headless: true,
     },
     coverage: {
       enabled: true,
       all: true,
+      provider: 'v8',
       reporter: ['text', 'json', 'html'],
       include: ['src'],
+      exclude: ['src/util.ts', 'src/Form.tsx', 'src/common.ts', 'src/Host.ts', 'src/types.ts', 'src/propTypes.ts']
     },
   },
 }

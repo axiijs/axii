@@ -1,4 +1,4 @@
-export { createElement, Fragment, createElementNS, dispatchEvent, setAutoUnitType, autoUnit, StyleSize, jsx, jsxs, jsxDEV } from './DOM'
+export { createElement, Fragment, dispatchEvent, setAutoUnitType, autoUnit, StyleSize, jsx, jsxs, jsxDEV } from './DOM'
 export { default as PropTypes, type TypeChecker } from './propTypes.js'
 export { createRoot } from './render.js'
 export { createHost } from './createHost.js'

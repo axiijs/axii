@@ -171,25 +171,6 @@ class StyleManager {
         // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
         return key !== '@keyframes' && isPlainObject(styleObject)
     }
-    separateStyleObject(styleObject: StyleObject, transitionPropertyNames: string[]): [StyleObject?, StyleObject?, StyleObject?] {
-        // 把 value 不是 plainObject 的属性分离出来
-        let pureValueStyleObject: StyleObject | undefined = undefined
-        let otherStyleObject: StyleObject | undefined = undefined
-        let transitionStyleObject: StyleObject | undefined = undefined
-        for (const key in styleObject) {
-            if (this.isNestedStyleObject(key, styleObject[key]) || (key === 'animation' && styleObject['keyframes'])) {
-                if (!otherStyleObject) otherStyleObject = {}
-                otherStyleObject[key] = styleObject[key]
-            } else if (transitionPropertyNames.includes(key)) {
-                if (!transitionStyleObject) transitionStyleObject = {}
-                transitionStyleObject[key] = styleObject[key]
-            } else {
-                if (!pureValueStyleObject) pureValueStyleObject = {}
-                pureValueStyleObject[key] = styleObject[key]
-            }
-        }
-        return [pureValueStyleObject, otherStyleObject, transitionStyleObject]
-    }
     stringifyKeyFrameObject(keyframeObject: StyleObject): string {
         return Object.entries(keyframeObject).map(([key, value]) => {
             return `${key} {
@@ -368,13 +349,16 @@ export class StaticHost implements Host {
     updateAttribute(el: ExtendedElement, key: string, value: any, path: number[], isSVG: boolean) {
 
         if (key === 'style' ) {
-
             return StaticHost.styleManager.update(this.pathContext.hostPath, path, value, el)
         } else {
             const final = Array.isArray(value) ?
                 value.map(v => isAtomLike(v) ? v() : v) :
                 isAtomLike(value) ? value() : value
-            setAttribute(el, key, final, isSVG)
+            if (/^data-/.test(key)) {
+                el.dataset[key.slice(5)] = final
+            } else {
+                setAttribute(el, key, final, isSVG)
+            }
         }
     }
     collectRefHandles() {
@@ -435,19 +419,26 @@ export class StaticHost implements Host {
                     animatingElements.add(el)
                 }
             })
-            // 执行完了所有的 update style 任务，这里用 await 是因为修改该 style 用到了 nextFrame 等异步行为
-            await Promise.all(this.detachStyledChildren?.map(({ el, style: value, path }) => {
-                return this.updateAttribute(el, 'style', value, path, el instanceof SVGElement)
-            }) || [])
+
 
             const transformingElementsArray = Array.from(transformingElements)
             const animatingElementsArray = Array.from(animatingElements)
-            await Promise.all([
+            const promises = [
                 ...transformingElementsArray.map(el => eventToPromise(el, 'transitionrun')),
                 ...transformingElementsArray.map(el => eventToPromise(el, 'transitionend')),
                 ...animatingElementsArray.map(el => eventToPromise(el, 'animationrun')),
                 ...animatingElementsArray.map(el => eventToPromise(el, 'animationend')),
-            ])
+            ]
+
+            // 出发 transition 和 animation
+            this.detachStyledChildren?.forEach(({ el, style: value, path }) => {
+                const final = Array.isArray(value) ?
+                    value.map(v => isAtomLike(v) ? v() : v) :
+                    isAtomLike(value) ? value() : value
+                setAttribute(el, 'style', final, el instanceof SVGElement)
+            })
+
+            await Promise.all(promises)
         }
         removeNodesBetween(this.element!, this.placeholder, true)
     }
@@ -456,6 +447,8 @@ export class StaticHost implements Host {
 
 function eventToPromise(el: HTMLElement, event: string) {
     return new Promise(resolve => {
-        el.addEventListener(event, resolve, { once: true })
+        el.addEventListener(event, () => {
+            resolve(true)
+        }, { once: true })
     })
 }

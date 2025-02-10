@@ -1,8 +1,23 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
-import {createElement, createRoot, reactiveSize, RenderContext, SizeObject} from "@framework";
+import {
+    createElement,
+    createReactivePosition,
+    createRoot,
+    PositionObject,
+    reactiveMouseIn,
+    reactiveSize,
+    RenderContext,
+    SizeObject
+} from "@framework";
 import {atom} from "data0";
+
+function wait(time: number) {
+    return new Promise(resolve => {
+        setTimeout(resolve, time)
+    })
+}
 
 describe('ref', () => {
 
@@ -23,10 +38,12 @@ describe('ref', () => {
     test('create reactive size state', async () => {
         let size: any
         const innerText = atom('hello world')
-        function App({}, {createElement, createStateFromRef}: RenderContext) {
+        let spanRef
+        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
             size = createStateFromRef<SizeObject>(reactiveSize)
+            spanRef = createRef()
             return (
-                <div ref={size.ref}>{innerText}</div>
+                <span ref={[size.ref, spanRef]}>{innerText}</span>
             )
         }
 
@@ -38,16 +55,12 @@ describe('ref', () => {
         expect(size()!.width).not.toBeNull()
         expect(size()!.height).not.toBeNull()
 
-        // TODO happy-dom ResizeObeserver not working
-        //
-        // const last = rectRef.current
-        // innerText('hello world 2')
-        // await window.happyDOM.waitUntilComplete()
-        //
-        // console.log(window.document.body.clientWidth)
-        // console.log(window.document.body.innerHTML)
-        //
-        // expect(rectRef.current.width).not.toEqual(last.width)
+        const last = size()
+        innerText('hello world 2222')
+
+        await wait(100)
+        expect(spanRef!.current.innerText === 'hello world 2222')
+        expect(size().width).not.toEqual(last.width)
     })
 
 
@@ -73,6 +86,53 @@ describe('ref', () => {
 
         root.destroy()
         expect(lastAppRef.cleanupsOfExternalTarget.size).toBe(0)
+
+    })
+
+
+    test('create reactive position', async () => {
+        let position: any
+        const style = atom({})
+        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+            position = createStateFromRef<PositionObject>(createReactivePosition({type:'interval', duration:50}))
+            return (
+                <div style={style} >
+                    <span ref={position.ref}>Hello World</span>
+                </div>
+            )
+        }
+
+        root.render(<App/>)
+
+        await wait(100)
+        expect(position()).not.toBeNull()
+        const last = position()
+        console.log(last)
+        style({paddingTop: 100})
+
+        await wait(100)
+        expect(position().top).not.toEqual(last.top)
+    })
+
+    test('reactive mouse in state', async () => {
+        let container
+        let mouseIn:any
+        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+            mouseIn = createStateFromRef<boolean>(reactiveMouseIn)
+            container = createRef()
+            return (
+                <div ref={[mouseIn.ref, container]} >
+                    Hello World
+                </div>
+            )
+        }
+        root.render(<App/>)
+
+        container!.current.dispatchEvent(new MouseEvent('mouseenter'))
+        expect(mouseIn()).toBe(true)
+
+        container!.current.dispatchEvent(new MouseEvent('mouseleave'))
+        expect(mouseIn()).toBe(false)
 
     })
 

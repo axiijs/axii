@@ -148,22 +148,23 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     }
 
     if (name === 'className') {
-        const classNames = Array.isArray(value) ? value : [value]
-        let classNameValue = ''
-        classNames.forEach((className) => {
+        const classNameOptions = Array.isArray(value) ? value : [value]
+        const classNames:string[] = []
+        classNameOptions.forEach((className) => {
             if (typeof className === 'object') {
                 for(const name in className) {
-                    if (className[name]) classNameValue = `${classNameValue} ${name}`
+                    if (className[name]) {
+                        classNames.push(name)
+                    }
                 }
             } else if (typeof className === 'string') {
                 // 只能是 string
-                classNameValue = `${classNameValue} ${className}`
+                classNames.push(className)
             } else {
                 assert(false, 'className can only be string or {[k:string]:boolean}')
             }
         })
-
-        node.setAttribute('class', classNameValue)
+        node.setAttribute('class', classNames.join(' '))
         return
     }
 
@@ -443,8 +444,7 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
 /**
  * @category Basic
  */
-export function Fragment() {
-}
+export function Fragment() {}
 
 function resetOptionParentSelectValue(targetOption: HTMLElement) {
     const target = targetOption.parentElement
@@ -479,13 +479,6 @@ export function insertAfter(newEl: Comment | HTMLElement | DocumentFragment | SV
     return result
 }
 
-
-
-
-export function createElementNS(type: string, props: AttributesArg, ...children: any[]) {
-    return createElement(type, {_isSVG: true, ...(props || {})}, children)
-}
-
 export function createSVGElement(type: string, props: AttributesArg, ...children: any[]) {
     return createElement(type, {_isSVG: true, ...(props || {})}, children)
 }
@@ -503,7 +496,7 @@ type Unit = 'px' | 'rem' | 'em' | '%'
  * @category Common Utility
  */
 export class StyleSize {
-    constructor(public value: number|string, public unit: Unit|'mixed' = 'px') {
+    constructor(public value: number|string, public unit: Unit|'mixed' = autoUnitType) {
         if (typeof value === 'string') {
             this.unit = 'mixed'
         }
@@ -570,12 +563,11 @@ export class StyleSize {
 
 // for jsx-dev-runtime
 export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+    return createElement(type, rawProps, ...children)
+}
+export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     return createElement(type, rawProps, children)
 }
-
-export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return createElement(type, rawProps, [children])
-}
 export function jsxDEV(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return Array.isArray(children) ? createElement(type, rawProps, children) : createElement(type, rawProps, children ? [children] : [])
+    return Array.isArray(children) ? createElement(type, rawProps, ...children) : createElement(type, rawProps, children)
 }

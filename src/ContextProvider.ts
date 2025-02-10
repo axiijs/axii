@@ -20,7 +20,7 @@ export function ContextProvider({contextType, value, children}: ContextProviderP
 export function createContext<T>(name: string) {
     const contextType = {
         name,
-        Provider({value, children}: ContextProviderProps, {context}: RenderContext) {
+        Provider({value, children}: Omit<ContextProviderProps, 'contextType'>, {context}: RenderContext) {
             context.set(contextType, value)
             return children
         },

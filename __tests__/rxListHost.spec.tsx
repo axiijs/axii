@@ -1,8 +1,9 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
-import {createElement, createRoot} from "@framework";
+import {ComponentHost, createElement, createRoot, StaticHost} from "@framework";
 import {atom, RxList, RxMap} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
+import {RxListHost} from "../src/RxListHost";
 
 
 describe('rxList render', () => {
@@ -26,7 +27,7 @@ describe('rxList render', () => {
             </div>
         }
 
-        root.render(<App/>)
+        const host = root.render(<App/>) as ComponentHost
 
         expect(rootEl.firstElementChild!.children.length).toBe(0)
         arr.push(1,2,3)
@@ -69,6 +70,9 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.children[4].innerHTML).toBe('999')
         expect(rootEl.firstElementChild!.children[5].innerHTML).toBe('3')
         expect(rootEl.firstElementChild!.children[6].innerHTML).toBe('4')
+
+        const rxListHost = (host.innerHost as StaticHost).reactiveHosts![0] as RxListHost
+        expect((rxListHost.element as HTMLElement).innerHTML).toBe('0')
 
     })
 

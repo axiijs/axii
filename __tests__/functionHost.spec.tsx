@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
 /** @jsxFrag Fragment */
-import {createElement, createRoot, Fragment} from "@framework";
+import {ComponentHost, createElement, createRef, createRoot, Fragment, StaticHost} from "@framework";
 import {RxList, atom} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 
@@ -23,6 +23,47 @@ describe('function render', () => {
         root = createRoot(rootEl)
     })
 
+
+    test('function host element and parentElement', async() => {
+        const name = atom('world')
+        const ref = createRef()
+        function App() {
+            return <div>
+                {() => {
+                    const nameText = name()
+                    return <span>hello {nameText}</span>
+                }}
+            </div>
+        }
+
+        const host = root.render(<App ref={ref}/>)
+        await wait(50)
+        expect((((host as ComponentHost).innerHost as StaticHost)!.reactiveHosts![0].element as HTMLElement).innerText).toBe('hello world')
+    })
+
+    test('function returns a atom', async() => {
+        const name = atom('world')
+        const visible = atom(true)
+        function App() {
+            return <div>
+                {() => visible() ? name : null}
+            </div>
+        }
+        root.render(<App />)
+        const ref = rootEl.firstElementChild as HTMLElement
+        await wait(50)
+        expect(ref.innerText).toBe('world')
+        name('world2')
+        expect(ref.innerText).toBe('world2')
+        name(undefined)
+        expect(ref.innerText).toBe('undefined')
+        name({name: 'world3'})
+        expect(ref.innerText).toBe('[object Object]')
+
+        visible(false)
+        await wait(50)
+        expect(ref.innerText).toBe('')
+    })
 
     test('function with Fragment', async () => {
         const name = atom('world')

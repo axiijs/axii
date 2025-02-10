@@ -1,10 +1,25 @@
 /** @vitest-environment happy-dom */
 /** @jsx createElement */
-import {bindProps, createElement, createRoot, JSXElement, PropTypes, RenderContext} from "@framework";
+import {
+    bindProps,
+    createContext,
+    createElement,
+    createRef,
+    createRoot,
+    JSXElement,
+    PropTypes,
+    RenderContext
+} from "@framework";
 import {type Atom, atom, computed, RxList} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import {ComponentHost} from "../src/ComponentHost.js";
 
+
+function wait(time: number) {
+    return new Promise(resolve => {
+        setTimeout(resolve, time)
+    })
+}
 
 describe('component render', () => {
 
@@ -191,7 +206,7 @@ describe('component render', () => {
             </div>
         }
 
-        root.render(<App/>)
+        const host = root.render(<App/>)
         expect((rootEl.firstElementChild!.children[0] as HTMLElement).innerText).toBe('anonymous')
 
         visible(false)
@@ -209,6 +224,9 @@ describe('component render', () => {
         innerText('bravo')
         await wait(10)
         expect((rootEl.firstElementChild!.children[0] as HTMLElement).innerText).toBe('bravo')
+
+        host.destroy()
+        expect(rootEl.innerHTML).toBe('')
     })
 
     test('computed in Component should destroy when component destroyed', async () => {
@@ -326,6 +344,28 @@ describe('component ref', () => {
         expect((root.host as ComponentHost).refs.container2.innerHTML).toBe('app2')
     })
 
+    test('use ref to get component ref', async () => {
+        const ref = createRef()
+        const visible = atom(true)
+        function Child() {
+            return <div>child</div>
+        }
+        function App(props:any, {createElement}: RenderContext) {
+            return <div>
+                {() => visible() ? <Child ref={ref}></Child> : null}
+            </div>
+        }
+
+        root.render(<App/>)
+        await wait(10)
+        expect(ref.current).not.toBeNull()
+        visible(false)
+        await wait(10)
+        expect(ref.current).toBe(null)
+
+
+    })
+
     test('use ref to get dom ref', () => {
         let innerRef: HTMLElement|undefined
         let innerRef2: JSXElement|undefined
@@ -340,6 +380,26 @@ describe('component ref', () => {
         expect(innerRef!.innerHTML).toBe('app')
         expect(innerRef?.isConnected).toBe(true)
         expect(innerRef).toBe(innerRef2)
+    })
+
+    test('use createRef/createRxRef in context to get dom ref', () => {
+        let innerRef: any
+        let innerRef2: any
+        function App(props:any, {createElement, createRef, createRxRef}: RenderContext) {
+            innerRef = createRef()
+            innerRef2 = createRxRef()
+            return <div>
+                <span ref={[innerRef, innerRef2]}>app</span>
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(innerRef.current).toBeDefined()
+        expect(innerRef.current.innerHTML).toBe('app')
+        expect(innerRef.current.isConnected).toBe(true)
+        expect(innerRef2.current).toBeDefined()
+        expect(innerRef2.current.innerHTML).toBe('app')
+        expect(innerRef2.current.isConnected).toBe(true)
     })
 
     test('ref should be set to null when element removed', () => {
@@ -399,22 +459,29 @@ describe('component data context', () => {
 
     test('pass data context to children', () => {
         const data = atom('data0')
-        const ContextType = Symbol('ContextType')
+        const CustomContext = createContext('ContextType')
 
         function Child2(props:any, {createElement, context}: RenderContext) {
-            return <div>{context.get(ContextType).data}</div>
+            return <div>{context.get(CustomContext).data}</div>
         }
 
         function Child(props:any, {createElement}: RenderContext) {
-            return <div>
+            return <div>ContextType
                 <Child2 />
             </div>
         }
 
+        function Child3(props:any, {createElement, context}: RenderContext) {
+            return <div>{context.get(CustomContext)}</div>
+        }
+
         function App(props:any, {createElement, context}: RenderContext) {
-            context.set(ContextType, {data})
+            context.set(CustomContext, {data})
             return <div>
                 <Child />
+                <CustomContext.Provider value={'data3'}>
+                    <Child3 />
+                </CustomContext.Provider>
             </div>
         }
 
@@ -422,6 +489,8 @@ describe('component data context', () => {
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data0')
         data('data1')
         expect(rootEl.firstElementChild!.children[0].children[0].innerHTML).toBe('data1')
+        console.log(rootEl.firstElementChild?.innerHTML)
+        expect(rootEl.firstElementChild!.children[1].innerHTML).toBe('data3')
     })
 })
 
@@ -474,6 +543,46 @@ describe('component propTypes', () => {
         expect(innerProps.name).toBe('hello')
         expect(innerProps.value).toBe('rewrite')
         expect(innerProps.another).toEqual([4,5,6])
+    })
+
+
+})
+
+describe('component lifecycle', () => {
+    let root: ReturnType<typeof createRoot>
+    let rootEl: HTMLElement
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        rootEl = document.createElement('div')
+        document.body.appendChild(rootEl)
+        root = createRoot(rootEl)
+    })
+    test('useLayoutEffect', async () => {
+        let innerBoundingInfo:any
+        function App({}, {useLayoutEffect, createElement, createRef}: RenderContext) {
+            const ref = createRef()
+            useLayoutEffect(() => {
+                innerBoundingInfo= ref.current.getBoundingClientRect()
+            })
+            return <div ref={ref}>app</div>
+        }
+
+        root.render(<App/>)
+        expect(innerBoundingInfo?.width).toBeTruthy()
+    })
+
+    test('call user onCleanup callback when destroy', () => {
+        let cleanupCalled = false
+        function App({}, {onCleanup}: RenderContext) {
+            onCleanup(() => {
+                cleanupCalled = true
+            })
+            return <div>app</div>
+        }
+
+        root.render(<App/>)
+        root.destroy()
+        expect(cleanupCalled).toBeTruthy()
     })
 
 })

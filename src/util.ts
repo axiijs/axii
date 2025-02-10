@@ -16,38 +16,7 @@ export function each(obj: PlainObject, fn: (v: any, k: string) => any) {
 export function nextJob(fn: Function) {
   Promise.resolve().then(() => fn())
 }
-/**
- * @internal
- */
-export function debounce(fn: Function, delay: number) {
-  let timeoutHandle: number | null
-  return (...argv: any[]) => {
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle)
-      timeoutHandle = null
-    }
 
-    timeoutHandle = window.setTimeout(() => {
-      fn(...argv)
-    }, delay)
-  }
-}
-/**
- * @internal
- */
-export function idleThrottle(fn: Function, timeout = 100) {
-  let hasCallback: number | null
-  let lastArgv : any[]
-  return (...argv: any[]) => {
-    if (!hasCallback) {
-      hasCallback = window.requestIdleCallback(() => {
-        fn(...lastArgv)
-        hasCallback = null
-      }, {timeout})
-    }
-    lastArgv = argv
-  }
-}
 /**
  * @internal
  */
@@ -71,14 +40,6 @@ export function removeNodesBetween(start: ChildNode, endNode: ChildNode|Comment,
  */
 export const isPlainObject = (val: unknown): val is object => val?.constructor === Object
 
-const hasOwnProperty = Object.prototype.hasOwnProperty
-/**
- * @internal
- */
-export const hasOwn = (
-    val: object,
-    key: string | symbol
-) => hasOwnProperty.call(val, key)
 
 /**
  * @internal
@@ -116,6 +77,7 @@ export function shallowEqual(a:any,b:any) {
 /**
  * @internal
  */
+/* v8 ignore next */
 export function nextFrames(fns: ((time: number) => void)[]) {
     if (!fns.length) return Promise.resolve()
 
@@ -133,16 +95,6 @@ export function nextFrames(fns: ((time: number) => void)[]) {
     })
 }
 
-// export function nextFrames(fns: ((time: number) => void)[]) {
-//     let i = 0
-//     const next = (time: number) => {
-//         if (i < fns.length) {
-//             fns[i++](time)
-//             setTimeout(next, 500)
-//         }
-//     }
-//     setTimeout(next, 17)
-// }
 /**
  * @category Common Utility
  */

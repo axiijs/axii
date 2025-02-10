@@ -1,10 +1,11 @@
-import {atom, Atom, isReactive, ManualCleanup, reactive, ReactiveEffect} from "data0";
+import {atom, Atom, isReactive, ManualCleanup, ReactiveEffect} from "data0";
 import {
     AttributesArg,
     createElement,
     createSVGElement,
     ExtendedElement,
-    Fragment, insertBefore,
+    Fragment,
+    insertBefore,
     JSXElementType,
     RefFn,
     RefObject,
@@ -64,14 +65,14 @@ export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
     static reusedNodes = new Map<any, ComponentHost>()
     type: Component
-    innerHost?: Host
+    public innerHost?: Host
     innerReusedHosts: ReusableHost[] = []
     props: Props
     public layoutEffects = new Set<EffectHandle>()
     public effects = new Set<EffectHandle>()
     public destroyCallback = new Set<Exclude<ReturnType<EffectHandle>, void>>()
     public layoutEffectDestroyHandles = new Set<Exclude<ReturnType<EffectHandle>, void>>()
-    public refs: {[k:string]: any} = reactive({})
+    public refs: {[k:string]: any} = {}
     public itemConfig : {[k:string]:ConfigItem} = {}
     public children: any
     public frame?: ManualCleanup[] = []
@@ -138,9 +139,6 @@ export class ComponentHost implements Host{
     }
     get typeId() {
         return ComponentHost.typeIds.get(this.type)!
-    }
-    get parentElement() {
-        return this.placeholder.parentElement
     }
     // CAUTION innerHost 可能是动态的，所以 element 也可能会变，因此每次都要实时去读
     get element() : HTMLElement|Comment|SVGElement|Text {
@@ -464,7 +462,6 @@ export class ComponentHost implements Host{
         const node = this.type(normalizedProps, this.renderContext)
         this.frame = getFrame()
         // CAUTION collect effects end
-
         // 就用当前 component 的 placeholder
         this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
         this.innerHost.render()
@@ -603,7 +600,6 @@ export class ReusableHost implements Host{
             insertBefore(this.placeholder, this.reusePlaceholder!)
             // debugger
             this.innerHost.render()
-            this.element = this.innerHost.element
             this.rendered = true
         } else {
             const frag = document.createDocumentFragment()

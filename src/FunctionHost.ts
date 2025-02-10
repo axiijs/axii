@@ -1,4 +1,4 @@
-import {Atom, autorun, Notifier} from "data0";
+import {autorun, Notifier} from "data0";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
@@ -15,14 +15,11 @@ type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|
 export class FunctionHost implements Host{
     stopAutoRender!: () => any
     fragmentParent = document.createDocumentFragment()
-    innerHost?: Atom<Host>
+    innerHost: Host|null = null
     constructor(public source: FunctionNode, public placeholder:Comment, public pathContext: PathContext) {
     }
-    get parentElement() {
-        return this.placeholder.parentElement || this.fragmentParent
-    }
     get element() : HTMLElement|Comment|Text|SVGElement{
-        return this.innerHost?.().element || this.placeholder
+        return this.innerHost?.element || this.placeholder
     }
     render(): void {
 
@@ -40,7 +37,9 @@ export class FunctionHost implements Host{
             host.render()
             resumeCollectChild()
             Notifier.instance.resetTracking()
+            this.innerHost = host
             onCleanup(() => {
+                this.innerHost = null
                 host.destroy(false, false)
             })
         }, (recompute) => {
@@ -56,6 +55,7 @@ export class FunctionHost implements Host{
         if (!parentHandleComputed) {
             this.stopAutoRender()
         }
+        // 这里不需要处理 innerHost 是因为在 stopAutoRender 的时候就会触发 innerHost 的 destroy
         if (!parentHandle) {
             this.placeholder.remove()
         }
