@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://axii.dev/logos/axii-logo-bg-black.svg" height="100" alt="Axii" />
+  <img src="https://axii.dev/logos/axii-logo-bg-black.svg" height="220" alt="Axii" />
 </p>
 
 <p align="center">
