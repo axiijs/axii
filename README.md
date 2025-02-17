@@ -16,16 +16,16 @@
   </a>
 </p>
 
-# An Incremental Reactive Frontend Framework
+# 🚀 An Incremental Reactive Frontend Framework
 
-This is a brand-new frontend framework that relies on an "incremental update" reactive data structure to truly build a high-performance data logic layer. The official infrastructure provided makes it convenient whether you are creating a component library or developing an application.
+This is a brand-new frontend framework that relies on an "incremental update" reactive data structure to truly build a high-performance data logic layer. 🚀 The official infrastructure provided makes it convenient whether you are creating a component library or developing an application.
 
-## Feature Overview
+## 🌟 Feature Overview
 
-- **Incremental updates for excellent performance**  
-  When dependencies change, a full recalculation is no longer performed. Whether the change is in reactive data or DOM updates, it uses the most efficient incremental computation, updating only the minimal part that changed. This is particularly notable for complex operations on arrays or collections, significantly reducing the computational overhead.
+- **Incremental updates for excellent performance** ⚡  
+  When dependencies change, a full recalculation is no longer performed. Whether the change is in reactive data or DOM updates, it uses the most efficient incremental computation, updating only the minimal part that changed. 🔧 This is particularly notable for complex operations on arrays or collections, significantly reducing the computational overhead.
 
-- **No Virtual DOM, no diff process**  
+- **No Virtual DOM, no diff process** 
   By recognizing reactive data to make precise updates directly to the **DOM**, it bypasses the traditional Virtual DOM comparison process, making it more efficient and straightforward.
 
 - **Rich reactive data structures**  
@@ -50,7 +50,7 @@ This is a brand-new frontend framework that relies on an "incremental update" re
 - **Portal Rendering**  
   Allows component content to be rendered under different root nodes, ideal for scenarios such as modals and dialogs.
 
-## Installation
+## 🛠 Installation
 
 Use the following command to create a new project. It comes with sample code to help you get started quickly:
 
@@ -60,7 +60,7 @@ cd myapp
 npm run dev
 ```
 
-## Quick Start Example
+## ⚡ Quick Start Example
 
 Below is a simple example showing how to use reactive atomic data and bind it to a DOM property:
 
@@ -86,7 +86,7 @@ createRoot(root).render(<App />)
 
 Here, `title` is a mutable atomic data. Any assignment to `title` will automatically update the parts that depend on it, with no manual coordination required.
 
-## Reactive Collections Example
+## 🍃 Reactive Collections Example
 
 If you need frequent operations on lists or structures like Map/Set, you can also use the built-in `RxList`, `RxMap`, `RxSet`, which offer superior performance:
 
@@ -112,9 +112,9 @@ function ListApp({}, {createElement}) {
 createRoot(document.getElementById('root')).render(<ListApp />)
 ```
 
-Whenever the `items` list changes, that change will be mapped to the DOM *incrementally* without triggering a complete re-render of the list.
+Whenever the `items` list changes, that change will be mapped to the DOM *incrementally* without triggering a complete re-render of the list. 🍀
 
-## More Advanced Capabilities
+## 🔬 More Advanced Capabilities
 
 - **Component AOP**  
   In the parent component, you can directly use syntax like `$child:props` to "penetrate" the corresponding DOM or subcomponent in the child component for configuration. This approach allows you to maintain the encapsulation of child components while injecting additional styles, properties, or event bindings.
@@ -128,7 +128,7 @@ Whenever the `items` list changes, that change will be mapped to the DOM *increm
 - **Context Mechanism & Portal Support**  
   You can provide context to any child component, avoiding deeply nested props. You can also render any component under any root node, accommodating various layout and modal needs.
 
-## Learn More
+## 📚 Learn More
 
 Check out [https://axii.dev](https://axii.dev) for detailed documentation in both Chinese and English, covering:
 
@@ -140,10 +140,10 @@ Check out [https://axii.dev](https://axii.dev) for detailed documentation in bot
 
 We provide progressively organized examples and explanations in the documentation, which we believe will help you better understand and utilize the unique ideas of this framework.
 
-## Contributing
+## 🤝 Contributing
 
 We welcome you to submit [Issues](https://github.com/axiijs/axii/issues) or [Pull Requests](https://github.com/axiijs/axii/pulls) on GitHub to help polish this new incremental reactive frontend framework. Your ideas and suggestions are extremely important to us!
 
-## License
+## 📄 License
 
 This project is licensed under the [MIT License](./LICENSE). You are free to fork and develop upon it, and we look forward to your creative input and feedback!
