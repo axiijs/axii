@@ -16,9 +16,9 @@
   </a>
 </p>
 
-# 🚀 An Incremental Reactive Frontend Framework
+# 🚀 Axii - An Incremental Reactive Frontend Framework
 
-This is a brand-new frontend framework that relies on an "incremental update" reactive data structure to truly build a high-performance data logic layer. 🚀 The official infrastructure provided makes it convenient whether you are creating a component library or developing an application.
+Axii /ˈæksɪ:/ is a brand-new frontend framework that relies on an "incremental update" reactive data structure to truly build a high-performance data logic layer. 🚀 The official infrastructure provided makes it convenient whether you are creating a component library or developing an application.
 
 ## 🌟 Feature Overview
 
