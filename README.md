@@ -7,11 +7,11 @@
     https://axii.dev
   </a>
   <span>|</span>
-  <a href="https://github.com/axiijs/axii/README.md">
+  <a href="https://github.com/axiijs/axii/blob/main/README.md">
     English
   </a>
   <span>|</span>
-  <a href="https://github.com/axiijs/axii/README.zh_cn.md">
+  <a href="https://github.com/axiijs/axii/blob/main/README-zh_CN.md">
     中文
   </a>
 </p>
