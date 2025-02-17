@@ -1,8 +1,8 @@
-<p style="text-align: center;background: #000;padding: 20px;">
-  <img src="https://axii.dev/logos/axii-logo-white.svg" height="100" alt="Axii" />
+<p align="center">
+  <img src="https://axii.dev/logos/axii-logo-bg-black.svg" height="100" alt="Axii" />
 </p>
 
-<p style="text-align: center;">
+<p align="center">
   <a href="https://axii.dev">
     https://axii.dev
   </a>
