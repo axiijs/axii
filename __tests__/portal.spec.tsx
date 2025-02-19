@@ -1,4 +1,3 @@
-/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {ContextProvider, createElement, createRoot, ModalContext, RenderContext} from "@framework";
 import {atom} from "data0";

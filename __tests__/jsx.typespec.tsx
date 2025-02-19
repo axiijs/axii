@@ -1,6 +1,3 @@
-/**
- * @vitest-environment jsdom
- */
 import {ComponentNode, createElement, createRoot} from "@framework";
 import { assertType } from 'vitest'
 

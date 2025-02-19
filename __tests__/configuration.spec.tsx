@@ -1,4 +1,3 @@
-/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
 import {atom, Component, createElement, createRoot, N_ATTR, PropTypes, RenderContext} from "@framework";

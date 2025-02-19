@@ -1,4 +1,3 @@
-/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {ComponentHost, createElement, createRoot, StaticHost} from "@framework";
 import {atom, RxList, RxMap} from "data0";

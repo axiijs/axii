@@ -1,4 +1,4 @@
-import {atom, Atom, isReactive, ManualCleanup, ReactiveEffect} from "data0";
+import {Atom, isReactive, ManualCleanup, ReactiveEffect} from "data0";
 import {
     AttributesArg,
     createElement,
@@ -336,47 +336,6 @@ export class ComponentHost implements Host{
           ref.current = null
        }
     }
-    cleanupsOfExternalTarget = new Set<() => void>()
-    createStateFromRef = <T>(transform:StateTransformer<T>, externalTarget?: any):StateFromRef<T> =>  {
-        let lastCleanup: (() => void)|undefined = undefined
-
-        const ref = (target:any) => {
-            if (externalTarget && lastCleanup) {
-                this.cleanupsOfExternalTarget.delete(lastCleanup)
-            }
-
-            lastCleanup?.()
-
-            if (target !== null) {
-                lastCleanup = transform(target, stateValue)
-
-                if (externalTarget && lastCleanup) {
-                    this.cleanupsOfExternalTarget.add(lastCleanup)
-                }
-
-            } else {
-                // target 为 Null，表示清理
-                lastCleanup = undefined
-                stateValue(null)
-            }
-        }
-
-        const stateValue:StateFromRef<T> = new Proxy(atom<T|null>(null), {
-            get: (target, key) => {
-                if(key === 'ref') {
-                    return ref
-                }
-                return target[key as keyof typeof target]
-            }
-        }) as StateFromRef<T>
-
-
-        if (externalTarget) {
-            stateValue.ref(externalTarget)
-        }
-
-        return stateValue
-    }
     expose = (value:any, name?: string) => {
         if (typeof value === 'object' && name === undefined) {
             // kv 形式的 expose
@@ -442,7 +401,6 @@ export class ComponentHost implements Host{
             createPortal: this.createPortal,
             createRef: this.createRef,
             createRxRef: this.createRxRef,
-            createStateFromRef: this.createStateFromRef,
             onCleanup: this.onCleanup,
             expose: this.expose,
             reusable: this.reusable,
@@ -511,9 +469,6 @@ export class ComponentHost implements Host{
         this.innerHost!.destroy(parentHandle, parentHandleComputed)
         this.layoutEffectDestroyHandles.forEach(handle => handle())
         this.destroyCallback.forEach(callback => callback())
-
-        this.cleanupsOfExternalTarget.forEach(cleanup => cleanup())
-        this.cleanupsOfExternalTarget.clear()
 
         this.innerReusedHosts.forEach(host => host.destroyReusable())
 

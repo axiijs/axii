@@ -1,4 +1,3 @@
-/** @vitest-environment happy-dom */
 /** @jsx createElement */
 /** @jsxFrag Fragment */
 import {ComponentHost, createElement, createRef, createRoot, Fragment, StaticHost} from "@framework";

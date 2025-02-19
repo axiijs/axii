@@ -1,5 +1,3 @@
-// import '../scripts/test.setup.js'
-/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {createElement, createRoot} from "@framework";
 import {atom, RxList} from "data0";

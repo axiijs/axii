@@ -1,4 +1,3 @@
-/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {createElement, createRoot} from "@framework";
 import {atom} from "data0";

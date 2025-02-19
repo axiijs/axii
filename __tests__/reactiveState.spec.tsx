@@ -1,15 +1,13 @@
-/** @vitest-environment happy-dom */
 /** @jsx createElement */
 import {beforeEach, describe, expect, test} from "vitest";
 import {
     createElement,
-    createReactivePosition,
+    RxDOMRect,
+    RxDOMSize,
     createRoot,
-    PositionObject,
-    reactiveMouseIn,
-    reactiveSize,
-    RenderContext,
-    SizeObject
+    RectObject,
+    RxDOMHovered,
+    RenderContext, RxDOMFocused, createRef, RxDOMScrollPosition,
 } from "@framework";
 import {atom} from "data0";
 
@@ -36,14 +34,14 @@ describe('ref', () => {
     })
 
     test('create reactive size state', async () => {
-        let size: any
+        let rxSize: any
         const innerText = atom('hello world')
         let spanRef
         function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
-            size = createStateFromRef<SizeObject>(reactiveSize)
+            rxSize = new RxDOMSize()
             spanRef = createRef()
             return (
-                <span ref={[size.ref, spanRef]}>{innerText}</span>
+                <span ref={[rxSize.ref, spanRef]}>{innerText}</span>
             )
         }
 
@@ -51,41 +49,76 @@ describe('ref', () => {
 
         // await window.happyDOM.waitUntilComplete()
 
-        expect(size()).not.toBeNull()
-        expect(size()!.width).not.toBeNull()
-        expect(size()!.height).not.toBeNull()
+        expect(rxSize.value()).not.toBeNull()
+        expect(rxSize.value()!.width).not.toBeNull()
+        expect(rxSize.value()!.height).not.toBeNull()
 
-        const last = size()
+        const last = rxSize.value()
         innerText('hello world 2222')
 
         await wait(100)
         expect(spanRef!.current.innerText === 'hello world 2222')
-        expect(size().width).not.toEqual(last.width)
+        expect(rxSize.value().width).not.toEqual(last.width)
     })
 
-
-    test('createRxRectRef with manual handled', async () => {
-        const appRef = atom<any>(null)
-
-        function App({}, {createElement,  createStateFromRef}: RenderContext) {
-
-            const portalRectRef = createStateFromRef<SizeObject>(reactiveSize, portalContainer)
-
+    test('create reactive rect state of window', async () => {
+        let rxSize: any
+        const innerText = atom('hello world')
+        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+            rxSize = new RxDOMRect(atom<RectObject>(null), {type:'interval', duration:50})
+            rxSize.ref(window)
             return (
-                <div>{portalRectRef()?.width}</div>
+                <span>{innerText}</span>
             )
         }
 
-        root.render(<App __this={appRef}/>)
+        root.render(<App />)
+
+        await wait(100)
+        expect(rxSize.value()).not.toBeNull()
+        root.destroy()
+        expect(rxSize.value()).toBeNull()
+    })
+
+    test('create reactive size state of window', async () => {
+        let rxSize: any
+        const innerText = atom('hello world')
+        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+            rxSize = new RxDOMSize()
+            rxSize.ref(window)
+            return (
+                <span>{innerText}</span>
+            )
+        }
+
+        root.render(<App />)
+
+        expect(rxSize.value()).not.toBeNull()
+        root.destroy()
+        expect(rxSize.value()).toBeNull()
+    })
+
+
+    test('create RxSize with manual handled', async () => {
+        let portalSize: any
+        function App({}, {createElement,  createStateFromRef}: RenderContext) {
+
+            portalSize = new RxDOMSize()
+            portalSize.ref(portalContainer)
+
+            return (
+                <div>{portalSize.value()?.width}</div>
+            )
+        }
+
+        root.render(<App />)
 
         // expect(rootEl.innerText).toBe('0')
         // 在浏览器中跑 vitest，应该有值
         expect(rootEl.innerText).not.toBe('0')
-        const lastAppRef = appRef()
-        expect(lastAppRef.cleanupsOfExternalTarget.size).toBe(1)
-
         root.destroy()
-        expect(lastAppRef.cleanupsOfExternalTarget.size).toBe(0)
+        expect(portalSize.value()).toBeNull()
+        expect(portalSize.abort).toBeUndefined()
 
     })
 
@@ -94,10 +127,11 @@ describe('ref', () => {
         let position: any
         const style = atom({})
         function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
-            position = createStateFromRef<PositionObject>(createReactivePosition({type:'interval', duration:50}))
+            const rxPosition = new RxDOMRect(atom<RectObject>(null), {type:'interval', duration:50})
+            position = rxPosition.value
             return (
                 <div style={style} >
-                    <span ref={position.ref}>Hello World</span>
+                    <span ref={rxPosition.ref}>Hello World</span>
                 </div>
             )
         }
@@ -117,10 +151,11 @@ describe('ref', () => {
         let container
         let mouseIn:any
         function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
-            mouseIn = createStateFromRef<boolean>(reactiveMouseIn)
+            const rxHovered = new RxDOMHovered()
+            mouseIn = rxHovered.value
             container = createRef()
             return (
-                <div ref={[mouseIn.ref, container]} >
+                <div ref={[rxHovered.ref, container]} >
                     Hello World
                 </div>
             )
@@ -133,6 +168,78 @@ describe('ref', () => {
         container!.current.dispatchEvent(new MouseEvent('mouseleave'))
         expect(mouseIn()).toBe(false)
 
+    })
+
+
+    test('create reactive size state inside function node', async () => {
+        let rxSize: any
+        const innerText = atom('hello world')
+        const visible = atom(true)
+        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+            rxSize = new RxDOMSize()
+            return (
+                <div>
+                    {() => visible() ? <span ref={[rxSize.ref]}>{innerText}</span> : null}
+                </div>
+            )
+        }
+
+        root.render(<App />)
+        expect(rxSize.value()).not.toBeNull()
+
+        visible(false)
+        await wait(100)
+        expect(rxSize.value()).toBeNull()
+
+    })
+
+    test('create reactive focused state', async () => {
+        let focused: any
+        const ref = createRef()
+        const innerText = atom('hello world')
+        function App({}, {createElement, createRef}: RenderContext) {
+            focused = new RxDOMFocused()
+            return (
+                <div>
+                    <input ref={[focused.ref, ref]} />
+                    <span>{innerText}</span>
+                </div>
+            )
+        }
+
+        root.render(<App />)
+        expect(focused.value()).toBe(false)
+
+        ref.current.focus()
+        await wait(100)
+        expect(focused.value()).toBe(true)
+
+        ref.current.blur()
+        await wait(100)
+        expect(focused.value()).toBe(false)
+    })
+
+    test('create reactive scroll position', async () => {
+        let scroll: any
+        const containerRef = createRef()
+        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+            scroll = new RxDOMScrollPosition()
+            return (
+                <div ref={[scroll.ref, containerRef]} style={{height:100, overflow:'auto'}}>
+                    <div style={{height:200}}></div>
+                </div>
+            )
+        }
+
+        root.render(<App />)
+
+        expect(scroll.value()).not.toBeNull()
+        expect(scroll.value().scrollTop).toBe(0)
+        containerRef.current.scrollTop = 100
+        await wait(100)
+        expect(scroll.value().scrollTop).toBe(100)
+        root.destroy()
+        expect(scroll.value()).toBeNull()
     })
 
 })

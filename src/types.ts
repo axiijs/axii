@@ -86,7 +86,6 @@ export type RenderContext = {
     createPortal: CreatePortalFn
     createRef: CreateRefFn,
     createRxRef: CreateRxRefFn,
-    createStateFromRef: CreateStateFromRefFn,
     expose: ExposeFn,
     reusable: ReuseFn
 }
