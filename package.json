@@ -9,7 +9,7 @@
     "test": "vitest",
     "coverage": "vitest --coverage",
     "badge": "coverage-badges --style=flat",
-    "release": "node scripts/release.js"
+    "release": "release-it"
   },
   "author": "sskyy<skyking_H@hotmail.com>",
   "license": "MIT",
@@ -40,16 +40,39 @@
     "@playwright/test": "^1.49.1",
     "@testing-library/user-event": "^14.5.2",
     "@types/node": "^22.9.3",
+    "@vitest/browser": "^3.0.5",
     "@vitest/coverage-v8": "^3.0.5",
     "coverage-badges-cli": "^2.1.0",
     "typescript": "5.6",
     "vite": "^5.4.11",
     "vite-plugin-dts": "^4.0.3",
     "vite-tsconfig-paths": "^4.3.1",
-    "vitest": "^3.0.5",
-    "@vitest/browser": "^3.0.5"
+    "vitest": "^3.0.5"
   },
   "peerDependencies": {
     "data0": "^1.8.0"
+  },
+  "release-it": {
+    "plugins": {
+      "@release-it/conventional-changelog": {
+        "preset": "conventionalcommits"
+      }
+    },
+    "git": {
+      "commitMessage": "chore(release): v${version}",
+      "tagName": "v${version}",
+      "push": true,
+      "requireCleanWorkingDir": true
+    },
+    "npm": {
+      "publish": true
+    },
+    "hooks": {
+      "before:init": "npm run test && npm run build"
+    }
+  },
+  "dependencies": {
+    "@release-it/conventional-changelog": "^10.0.0",
+    "release-it": "^18.1.2"
   }
 }
