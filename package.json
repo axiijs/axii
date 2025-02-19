@@ -6,7 +6,7 @@
   "scripts": {
     "start": "vite",
     "build": "vite build --config vite.prod.config.ts && node scripts/type.js",
-    "test": "vitest",
+    "test": "vitest run",
     "coverage": "vitest --coverage",
     "badge": "coverage-badges --style=flat",
     "release": "release-it"
