@@ -213,6 +213,8 @@ ${selector} {
             } else if (this.isNestedStyleObject(key, valueStyleObject[key])) {
                 nestedStyleEntries.push([key, valueStyleObject[key]])
                 delete valueStyleObject[key]
+            } else if(valueStyleObject[key] === null|| valueStyleObject[key] === undefined) {
+                delete valueStyleObject[key]
             }
         }
 
