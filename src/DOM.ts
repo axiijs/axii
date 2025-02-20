@@ -30,7 +30,7 @@ export function stringifyStyleValue(k:string, v: any): string {
         }
     }
     // number/string/StyleSize
-    return AUTO_ADD_UNIT_ATTR.test(k) ? autoUnit(v||0) : v.toString()
+    return (!(v instanceof StyleSize) && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v||0) : v.toString()
 }
 
 

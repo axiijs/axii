@@ -354,20 +354,24 @@ export class RxDOMDragPosition extends RxDOMState<HTMLElement, DragPosition>{
             }, {signal: innerAbortController.signal})
 
             this.boundary.addEventListener('mouseup', () => {
+                this.value(null)
                 innerAbortController!.abort()
             }, {signal: innerAbortController.signal})
 
             this.boundary.addEventListener('mouseleave', () => {
+                this.value(null)
                 innerAbortController!.abort()
             }, { signal: innerAbortController.signal})
 
             window.addEventListener('blur', () => {
+                this.value(null)
                 innerAbortController!.abort()
             }, { signal: innerAbortController.signal})
 
         }, {signal: abortController.signal})
 
         this.abort = () => {
+            this.value(null)
             abortController.abort()
         }
     }
