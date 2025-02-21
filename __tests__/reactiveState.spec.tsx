@@ -37,7 +37,7 @@ describe('ref', () => {
         let rxSize: any
         const innerText = atom('hello world')
         let spanRef
-        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+        function App({}, {createElement,  createRef}: RenderContext) {
             rxSize = new RxDOMSize()
             spanRef = createRef()
             return (
@@ -64,7 +64,7 @@ describe('ref', () => {
     test('create reactive rect state of window', async () => {
         let rxSize: any
         const innerText = atom('hello world')
-        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+        function App({}, {createElement,  createRef}: RenderContext) {
             rxSize = new RxDOMRect(atom<RectObject>(null), {type:'interval', duration:50})
             rxSize.ref(window)
             return (
@@ -83,7 +83,7 @@ describe('ref', () => {
     test('create reactive size state of window', async () => {
         let rxSize: any
         const innerText = atom('hello world')
-        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+        function App({}, {createElement,  createRef}: RenderContext) {
             rxSize = new RxDOMSize()
             rxSize.ref(window)
             return (
@@ -101,7 +101,7 @@ describe('ref', () => {
 
     test('create RxSize with manual handled', async () => {
         let portalSize: any
-        function App({}, {createElement,  createStateFromRef}: RenderContext) {
+        function App({}, {createElement}: RenderContext) {
 
             portalSize = new RxDOMSize()
             portalSize.ref(portalContainer)
@@ -124,11 +124,10 @@ describe('ref', () => {
 
 
     test('create reactive position', async () => {
-        let position: any
+        let rxPosition: RxDOMRect
         const style = atom({})
-        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
-            const rxPosition = new RxDOMRect(atom<RectObject>(null), {type:'interval', duration:50})
-            position = rxPosition.value
+        function App({}, {createElement, createRef}: RenderContext) {
+            rxPosition = new RxDOMRect(atom<RectObject>(null), {type:'interval', duration:50})
             return (
                 <div style={style} >
                     <span ref={rxPosition.ref}>Hello World</span>
@@ -139,18 +138,18 @@ describe('ref', () => {
         root.render(<App/>)
 
         await wait(100)
-        expect(position()).not.toBeNull()
-        const last = position()
+        expect(rxPosition!.value()).not.toBeNull()
+        const last = rxPosition!.value()!
         style({paddingTop: 100})
 
         await wait(100)
-        expect(position().top).not.toEqual(last.top)
+        expect(rxPosition!.value().top).not.toEqual(last.top)
     })
 
     test('reactive mouse in state', async () => {
         let container
         let mouseIn:any
-        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+        function App({}, {createElement, createRef}: RenderContext) {
             const rxHovered = new RxDOMHovered()
             mouseIn = rxHovered.value
             container = createRef()
@@ -175,7 +174,7 @@ describe('ref', () => {
         let rxSize: any
         const innerText = atom('hello world')
         const visible = atom(true)
-        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+        function App({}, {createElement,  createRef}: RenderContext) {
             rxSize = new RxDOMSize()
             return (
                 <div>
@@ -222,7 +221,7 @@ describe('ref', () => {
     test('create reactive scroll position', async () => {
         let scroll: any
         const containerRef = createRef()
-        function App({}, {createElement, createStateFromRef, createRef}: RenderContext) {
+        function App({}, {createElement,  createRef}: RenderContext) {
             scroll = new RxDOMScrollPosition()
             return (
                 <div ref={[scroll.ref, containerRef]} style={{height:100, overflow:'auto'}}>
