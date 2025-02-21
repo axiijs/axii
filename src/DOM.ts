@@ -2,7 +2,7 @@
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 
-export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|padding|border|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap)/
+export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|padding|borderWidth|fontSize|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap)$/
 let autoUnitType: 'px' | 'rem' | 'em' = 'px'
 export function setAutoUnitType(type: 'px' | 'rem' | 'em') {
     autoUnitType = type
