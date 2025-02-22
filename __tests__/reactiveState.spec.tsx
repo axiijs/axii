@@ -143,7 +143,7 @@ describe('ref', () => {
         style({paddingTop: 100})
 
         await wait(100)
-        expect(rxPosition!.value().top).not.toEqual(last.top)
+        expect(rxPosition!.value()?.top).not.toEqual(last.top)
     })
 
     test('reactive mouse in state', async () => {
