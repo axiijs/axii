@@ -25,35 +25,26 @@
 
 Axii /ˈæksɪ:/ is a brand-new frontend framework that relies on an "incremental update" reactive data structure to truly build a high-performance data logic layer. 🚀 The official infrastructure provided makes it convenient whether you are creating a component library or developing an application.
 
-## 🌟 Feature Overview
+## ✨ Feature Overview
 
-- **Incremental updates for excellent performance** ⚡  
-  When dependencies change, a full recalculation is no longer performed. Whether the change is in reactive data or DOM updates, it uses the most efficient incremental computation, updating only the minimal part that changed. 🔧 This is particularly notable for complex operations on arrays or collections, significantly reducing the computational overhead.
+- **Simple Mental Model**
+  - Uses React-style JSX, but functions execute only once, creating real DOM elements instead of Virtual DOM.
+  - Binds updates to elements by recognizing reactive data structures. No special syntax, no framework-specific hooks, no compiler magic.
 
-- **No Virtual DOM, no diff process** 
-  By recognizing reactive data to make precise updates directly to the **DOM**, it bypasses the traditional Virtual DOM comparison process, making it more efficient and straightforward.
+- **Superior Performance**
+  - Precisely updates DOM nodes and attributes. Component functions never re-execute.
+  - Reactive data automatically performs incremental computations, resulting in theoretically minimal changes. Significantly reduces computational overhead, especially during complex operations on arrays or collections.
+  - Rich reactive structures like `RxList` / `RxMap` / `RxSet` / `RxTime` suitable for various scenarios.
 
-- **Rich reactive data structures**  
-  - An `atom` for atomic types that is simple to use  
-  - Collection types like `RxList` / `RxMap` / `RxSet` provide near-native insert, delete, update, and query APIs, and automatically maintain reactive behavior  
-  - A special reactive data structure `RxTime` for time-based operations  
-  - Dynamically monitor various DOM states (scroll, size, position, etc.) and make them reactive  
+- **Powerful Abstraction Tools**
+  - Reactive wrappers for DOM position, size, scroll, and other states commonly used in complex interactions.
+  - [Component AOP](https://axii.dev/playground/2-advanced/3-component_AOP) mechanism greatly reduces the workload of maintaining reusable components while providing extremely flexible capabilities.
+  - Style-logic separation implemented through Component AOP can maintain logical integrity outside component function scope. Styles with logical capabilities can be quickly generated from design tools like Figma.
 
-- **Component model oriented toward composition and extension**  
-  - By default, components support reactive passing of atomic values and collection types; you can also use the `as="xxx"` notation for "penetrating" configuration of the DOM or child components  
-  - Provides an "AOP-like" mechanism that allows the parent component to directly "patch" the internal DOM or properties of the child component, eliminating the hassle of multiple levels of props passing  
+- **Infrastructure Ready for Large Applications**
+  - Official [routing system](https://axii.dev/playground/3-common_util/1-router), [data request management system](https://axii.dev/playground/3-common_util/2-action), and even a full-featured [state machine system](https://axii.dev/playground/3-common_util/3-statemachine).
+  - Official [headless component system](https://ui.axii.dev/list.html?theme=inc), and [interesting theme system](https://ui.axii.dev/forms?theme=fallout).
 
-- **Flexible side-effect management**  
-  - Native support for `useEffect` and `useLayoutEffect`  
-  - More elegant side-effect management via `ManualCleanup`, which automatically calls `destroy` when the component is unmounted  
-  - Convenient reactive observation functions such as `autorun`, `once`, etc.  
-
-- **Simple selection and context support**  
-  - Built-in optimization for common interactions like single-select or multi-select, preventing widespread re-rendering caused by changes in selection state  
-  - A Context mechanism enables data to be passed down the component tree without explicit props at each level  
-
-- **Portal Rendering**  
-  Allows component content to be rendered under different root nodes, ideal for scenarios such as modals and dialogs.
 
 ## 🛠 Installation
 
@@ -119,19 +110,6 @@ createRoot(document.getElementById('root')).render(<ListApp />)
 
 Whenever the `items` list changes, that change will be mapped to the DOM *incrementally* without triggering a complete re-render of the list. 🍀
 
-## 🔬 More Advanced Capabilities
-
-- **Component AOP**  
-  In the parent component, you can directly use syntax like `$child:props` to "penetrate" the corresponding DOM or subcomponent in the child component for configuration. This approach allows you to maintain the encapsulation of child components while injecting additional styles, properties, or event bindings.
-
-- **DOM State Reactivity**  
-  Built-in reactive wrappers for DOM measurements, scroll position, drag position, etc. Monitoring and modifying these properties will automatically trigger detection and updates.
-
-- **Side-effect Management**  
-  In addition to common hooks such as `useEffect` and `useLayoutEffect`, the framework also provides `autorun`, `once`, and other function-based interfaces, as well as inheritance from `ManualCleanup` to achieve more flexible cleanup logic.
-
-- **Context Mechanism & Portal Support**  
-  You can provide context to any child component, avoiding deeply nested props. You can also render any component under any root node, accommodating various layout and modal needs.
 
 ## 📚 Learn More
 
