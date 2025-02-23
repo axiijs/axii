@@ -78,6 +78,40 @@ describe('ref', () => {
         expect(rxSize.value()).not.toBeNull()
         root.destroy()
         expect(rxSize.value()).toBeNull()
+
+        root.destroy()
+        expect(rxSize.value()).toBeNull()
+    })
+
+    test('create reactive rect state of element', async () => {
+        const container1 = createRef()
+        const container2 = createRef()
+        let rect1:RxDOMRect
+        function App({}, {createElement,  createRef}: RenderContext) {
+            rect1 = new RxDOMRect(atom<RectObject>(null), [{event:'scroll', target:container1}, {event:'scroll', target:container2}])
+            return <div style={{height: 100, overflow: 'auto'}} ref={container1}>
+                <div style={{height:200, overflow: 'auto'}} ref={container2}>
+                    <div style={{height:300, overflow: 'auto'}} ref={rect1.ref}></div>
+                </div>
+            </div>
+        }
+
+        root.render(<App />)
+        expect(rect1!.value()).not.toBeNull()
+        const lastTop = rect1!.value()!.top
+        container1.current.scrollTop = 100
+        await wait(20)
+        const lastTop2 = rect1!.value()!.top
+        expect(lastTop2).not.toEqual(lastTop)
+
+
+        container2.current.scrollTop = 100
+        await wait(20)
+        const lastTop3 = rect1!.value()!.top
+        expect(lastTop3).not.toEqual(lastTop2)
+
+        root.destroy()
+        expect(rect1!.value()).toBeNull()
     })
 
     test('create reactive size state of window', async () => {
@@ -167,6 +201,9 @@ describe('ref', () => {
         container!.current.dispatchEvent(new MouseEvent('mouseleave'))
         expect(mouseIn()).toBe(false)
 
+        root.destroy()
+        expect(mouseIn()).toBeNull()
+
     })
 
 
@@ -216,6 +253,9 @@ describe('ref', () => {
         ref.current.blur()
         await wait(100)
         expect(focused.value()).toBe(false)
+
+        root.destroy()
+        expect(focused.value()).toBeNull()
     })
 
     test('create reactive scroll position', async () => {

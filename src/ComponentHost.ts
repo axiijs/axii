@@ -425,10 +425,7 @@ export class ComponentHost implements Host{
         this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
         this.innerHost.render()
 
-        // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
-        if (this.refProp) {
-            this.attachRef(this.refProp)
-        }
+
         // for test use
         /* v8 ignore next 3 */
         if (this.thisProp) {
@@ -445,10 +442,15 @@ export class ComponentHost implements Host{
         if (this.pathContext.root.attached) {
             this.runLayoutEffect()
         } else {
-            this.deleteLayoutEffectCallback = this.pathContext.root.on('attach', this.runLayoutEffect)
+            this.pathContext.root.on('attach', this.runLayoutEffect, {once: true})
         }
     }
     runLayoutEffect = () => {
+        // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
+        if (this.refProp) {
+            this.attachRef(this.refProp)
+        }
+
         this.layoutEffects.forEach(layoutEffect => {
             const handle = layoutEffect()
             if (typeof handle === 'function') this.layoutEffectDestroyHandles.add(handle)

@@ -303,7 +303,7 @@ export class StaticHost implements Host {
             if (this.pathContext.root.attached) {
                 this.attachRefs()
             } else {
-                this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs)
+                this.pathContext.root.on('attach', this.attachRefs, {once: true})
             }
         }
     }

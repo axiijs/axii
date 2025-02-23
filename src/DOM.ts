@@ -338,10 +338,11 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         container.appendChild(tempFragment)
     }
 
+    // Process props after children for proper Select/Option behavior
     if (rawProps) {
-        // Process props after children for proper Select/Option behavior
         if (refProp) {
-            refHandles.push({handle: refProp, path: [], el: container as HTMLElement})
+            // ref handles should be attached before children
+            refHandles.unshift({handle: refProp, path: [], el: container as HTMLElement})
         }
 
         if (detachStyleProp) {

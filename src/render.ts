@@ -4,7 +4,7 @@ import {PathContext, Host} from "./Host";
 
 
 type EventCallback = (e: any) => void
-
+type EventOptions = {once?: boolean}
 /**
  * @category Basic
  */
@@ -15,7 +15,7 @@ export type Root = {
     attached: boolean
     render: (componentOrEl: JSX.Element|ComponentNode|Function) => Host,
     destroy: () => void,
-    on: (event: string, callback: EventCallback) => () => void,
+    on: (event: string, callback: EventCallback, options?: EventOptions) => () => void,
     dispatch: (event: string, arg?: any) => void
 }
 
@@ -56,14 +56,19 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             root.attached = false
         },
         // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
-        on(event: string, callback: EventCallback) {
+        on(event: string, callback: EventCallback, options?: EventOptions) {
             let callbacks = eventCallbacks.get(event)
             if (!callbacks) {
                 eventCallbacks.set(event, (callbacks = new Set()))
             }
-            callbacks.add(callback)
+            const savedCallback = options?.once ? (arg: any) => {
+                callback(arg)
+                callbacks!.delete(savedCallback)
+            }: callback
+
+            callbacks.add(savedCallback)
             return () => {
-                callbacks!.delete(callback)
+                callbacks!.delete(savedCallback)
             }
         },
         dispatch(event: string, arg?: any) {

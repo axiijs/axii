@@ -53,7 +53,7 @@ export type RectObject = {
  * @category Reactive State Utility
  */
 type PositionRecalculateEvent = {
-    target: HTMLElement,
+    target: RefObject,
     event: string
 }
 
@@ -118,19 +118,20 @@ export class RxDOMRect extends RxDOMState<HTMLElement|Window, RectObject>{
                 return rect
             }
 
+            assignRect()
+
             if (Array.isArray(this.options)) {
-                const unlisten:Array<() => any>= []
+                const abortController = new AbortController()
                 this.options.forEach(event => {
                     const listener = () => assignRect()
-                    event.target.addEventListener(event.event, listener)
-                    unlisten.push(() => event.target.removeEventListener(event.event, listener))
+                    event.target.current.addEventListener(event.event, listener, {signal: abortController.signal})
                 })
 
                 this.abort = () => {
                     this.value(null)
-                    unlisten.forEach(fn => fn())
+                    abortController.abort()
                 }
-
+            /* v8 ignore next 16 */
             } else if (this.options === 'requestAnimationFrame') {
                 const id = window.requestAnimationFrame(assignRect)
                 this.abort = () => {
@@ -251,7 +252,7 @@ export class RxDOMFocused extends RxDOMState<HTMLElement, boolean>{
         document.addEventListener('focusin', () => this.value(true), {signal: abortController.signal})
         document.addEventListener('focusout', () => this.value(false), {signal: abortController.signal})
         this.abort = () => {
-            this.value(false)
+            this.value(null)
             abortController.abort()
         }
     }
@@ -332,7 +333,8 @@ export type DragPosition = {
  * @category Reactive State Utility
  */
 export class RxDOMDragPosition extends RxDOMState<HTMLElement, DragPosition>{
-    constructor(public value: Atom<DragPosition|null> = atom(null), public container?: RefObject, public boundary: HTMLElement = document.body) {
+    /* v8 ignore next 43 */
+    constructor(public value: Atom<DragPosition|null> = atom(null), public container?: RefObject, public boundary: RefObject = {current:document.body}) {
         super();
     }
     listen() {
@@ -343,7 +345,7 @@ export class RxDOMDragPosition extends RxDOMState<HTMLElement, DragPosition>{
 
             const innerAbortController = new AbortController()
 
-            this.boundary.addEventListener('mousemove', (e) => {
+            this.boundary.current.addEventListener('mousemove', (e: MouseEvent) => {
                 this.value({
                     containerRect,
                     startX: mouseDownEvent.clientX - targetRect.left,
@@ -353,12 +355,12 @@ export class RxDOMDragPosition extends RxDOMState<HTMLElement, DragPosition>{
                 })
             }, {signal: innerAbortController.signal})
 
-            this.boundary.addEventListener('mouseup', () => {
+            this.boundary.current.addEventListener('mouseup', () => {
                 this.value(null)
                 innerAbortController!.abort()
             }, {signal: innerAbortController.signal})
 
-            this.boundary.addEventListener('mouseleave', () => {
+            this.boundary.current.addEventListener('mouseleave', () => {
                 this.value(null)
                 innerAbortController!.abort()
             }, { signal: innerAbortController.signal})
