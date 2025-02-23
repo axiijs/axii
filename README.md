@@ -16,6 +16,11 @@
   </a>
 </p>
 
+<p align="center">
+  <img alt="Axii NPM Package Version" src="https://img.shields.io/npm/v/axii?style=flat-square">
+  <img alt="Axii Test Coverage" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgithub.com%2Faxiijs%2Faxii%2Fraw%2Fmain%2Fcoverage-summary.json&query=%24.total.lines.pct&style=flat-square&label=coverage&color=%2340ba18">
+</p>
+
 # 🚀 Axii - An Incremental Reactive Frontend Framework
 
 Axii /ˈæksɪ:/ is a brand-new frontend framework that relies on an "incremental update" reactive data structure to truly build a high-performance data logic layer. 🚀 The official infrastructure provided makes it convenient whether you are creating a component library or developing an application.
