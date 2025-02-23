@@ -79,8 +79,6 @@ describe('ref', () => {
         root.destroy()
         expect(rxSize.value()).toBeNull()
 
-        root.destroy()
-        expect(rxSize.value()).toBeNull()
     })
 
     test('create reactive rect state of element', async () => {

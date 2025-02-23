@@ -68,7 +68,7 @@
       "publish": true
     },
     "hooks": {
-      "before:init": "npm run test && npm run coverage && npm run build"
+      "before:init": "npm test && npm run coverage && npm run build"
     }
   }
 }
