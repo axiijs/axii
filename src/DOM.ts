@@ -24,6 +24,10 @@ export function stringifyStyleValue(k:string, v: any): string {
             // attr like box-shadow
             // 这里不可能是 StyleSize 所以不用 toString
             return v.join(',')
+
+        } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string') {
+            // [12, 'px'] => 12px
+            return `${v[0]}${v[1]}`
         } else {
             // padding/margin/transform|translate|scale|rotate|skew
             return v.map((i:any) => stringifyStyleValue(k, i)).join(' ')

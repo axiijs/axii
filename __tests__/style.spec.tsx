@@ -248,5 +248,19 @@ describe('complex style', () => {
         expect(getComputedStyle(app).getPropertyValue('margin')).toBe('0px 2px')
     })
 
+    test('accept array of number and string unit as size value', () => {
+        const style = atom({
+            padding: [1, 'px'],
+            margin: [2, 'px']
+        })
+        const App = () => {
+            return <div style={style}>app</div>
+        }
+        root.render(<App />)
+        const app = rootEl.firstElementChild!
+        expect(getComputedStyle(app).getPropertyValue('padding')).toBe('1px')
+        expect(getComputedStyle(app).getPropertyValue('margin')).toBe('2px')
+    })
+
 })
 
