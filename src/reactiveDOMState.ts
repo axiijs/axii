@@ -245,12 +245,12 @@ export class RxDOMFocused extends RxDOMState<HTMLElement, boolean>{
     listen() {
         const abortController = new AbortController()
 
-        if (document.activeElement === this.element || this.element?.contains(document.activeElement)) {
+        if (document.activeElement === this.element || this.element!.contains(document.activeElement)) {
             this.value(true)
         }
 
-        document.addEventListener('focusin', () => this.value(true), {signal: abortController.signal})
-        document.addEventListener('focusout', () => this.value(false), {signal: abortController.signal})
+        this.element!.addEventListener('focusin', () => this.value(true), {signal: abortController.signal})
+        this.element!.addEventListener('focusout', () => this.value(false), {signal: abortController.signal})
         this.abort = () => {
             this.value(null)
             abortController.abort()
