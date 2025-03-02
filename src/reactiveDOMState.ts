@@ -327,6 +327,8 @@ export type DragPosition = {
     startY: number,
     clientX: number,
     clientY: number,
+    mouseDownEvent: MouseEvent,
+    mouseMoveEvent: MouseEvent
 }
 
 /**
@@ -345,13 +347,15 @@ export class RxDOMDragPosition extends RxDOMState<HTMLElement, DragPosition>{
 
             const innerAbortController = new AbortController()
 
-            this.boundary.current.addEventListener('mousemove', (e: MouseEvent) => {
+            this.boundary.current.addEventListener('mousemove', (mouseMoveEvent: MouseEvent) => {
                 this.value({
                     containerRect,
                     startX: mouseDownEvent.clientX - targetRect.left,
                     startY: mouseDownEvent.clientY - targetRect.top,
-                    clientX: e.clientX,
-                    clientY: e.clientY,
+                    clientX: mouseMoveEvent.clientX,
+                    clientY: mouseMoveEvent.clientY,
+                    mouseDownEvent,
+                    mouseMoveEvent
                 })
             }, {signal: innerAbortController.signal})
 
