@@ -321,7 +321,7 @@ export class RxDOMScrollPosition extends RxDOMState<HTMLElement, ScrollPosition>
 /**
  * @category Reactive State Utility
  */
-export type DragPosition = {
+export type DragState = {
     containerRect?: DOMRect,
     startX: number,
     startY: number,
@@ -331,13 +331,24 @@ export type DragPosition = {
     mouseMoveEvent: MouseEvent
 }
 
+
+export type DragOptions = {
+    container?: RefObject,
+    boundary?: RefObject,
+    onDragEnd?: (event: CustomEvent<DragState>) => void
+}
+
 /**
  * @category Reactive State Utility
  */
-export class RxDOMDragPosition extends RxDOMState<HTMLElement, DragPosition>{
+export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
+    public container: RefObject | undefined;
+    public boundary: RefObject;
     /* v8 ignore next 43 */
-    constructor(public value: Atom<DragPosition|null> = atom(null), public container?: RefObject, public boundary: RefObject = {current:document.body}) {
+    constructor(public value: Atom<DragState|null> = atom(null), public options: DragOptions = {}) {
         super();
+        this.container = options.container
+        this.boundary = options.boundary || {current: document.body}
     }
     listen() {
         const abortController = new AbortController()
@@ -359,20 +370,18 @@ export class RxDOMDragPosition extends RxDOMState<HTMLElement, DragPosition>{
                 })
             }, {signal: innerAbortController.signal})
 
-            this.boundary.current.addEventListener('mouseup', () => {
+            const dragEnd = () => {
+                const lastState = this.value()!
                 this.value(null)
                 innerAbortController!.abort()
-            }, {signal: innerAbortController.signal})
+                this.options.onDragEnd?.(new CustomEvent('rxdragend', {detail: lastState}))
+            }
 
-            this.boundary.current.addEventListener('mouseleave', () => {
-                this.value(null)
-                innerAbortController!.abort()
-            }, { signal: innerAbortController.signal})
+            this.boundary.current.addEventListener('mouseup', dragEnd, {signal: innerAbortController.signal})
 
-            window.addEventListener('blur', () => {
-                this.value(null)
-                innerAbortController!.abort()
-            }, { signal: innerAbortController.signal})
+            this.boundary.current.addEventListener('mouseleave', dragEnd, { signal: innerAbortController.signal})
+
+            window.addEventListener('blur', dragEnd, { signal: innerAbortController.signal})
 
         }, {signal: abortController.signal})
 
