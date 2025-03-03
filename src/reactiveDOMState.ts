@@ -374,7 +374,7 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
                 const lastState = this.value()!
                 this.value(null)
                 innerAbortController!.abort()
-                this.options.onDragEnd?.(new CustomEvent('rxdragend', {detail: lastState}))
+                this.options.onDragEnd?.(new CustomEvent('rxdomdragend', {detail: lastState}))
             }
 
             this.boundary.current.addEventListener('mouseup', dragEnd, {signal: innerAbortController.signal})
