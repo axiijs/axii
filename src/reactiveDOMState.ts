@@ -320,7 +320,10 @@ export class RxDOMScrollPosition extends RxDOMState<HTMLElement, ScrollPosition>
 
 
 
-type ListenerTarget = Pick<HTMLElement, 'addEventListener' | 'removeEventListener'|'dispatchEvent'>
+type ListenerTarget<T> = {
+    addEventListener: (type: string, listener: (event: T) => void, options?: AddEventListenerOptions) => void
+    removeEventListener: (type: string, listener: (event: T) => void, options?: EventListenerOptions) => void
+}
 
 /**
  * @category Reactive State Utility
@@ -347,17 +350,14 @@ export type DragOptions = {
 export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
     public container: RefObject | undefined;
     public boundary: RefObject;
-    public eventBus: ListenerTarget;
-    public addEventListener: ListenerTarget['addEventListener']
-    public removeEventListener: ListenerTarget['removeEventListener']
+    public eventBus = (new Comment('bus')) as unknown as ListenerTarget<CustomEvent<DragState>> & {dispatchEvent: (event: Event) => void}
+    public addEventListener = this.eventBus.addEventListener.bind(this.eventBus)
+    public removeEventListener = this.eventBus.removeEventListener.bind(this.eventBus)
     /* v8 ignore next 43 */
     constructor(public value: Atom<DragState|null> = atom(null), public options: DragOptions = {}) {
         super();
         this.container = options.container
         this.boundary = options.boundary || {current: document.body}
-        this.eventBus = new Comment('bus')
-        this.addEventListener = this.eventBus.addEventListener.bind(this.eventBus)
-        this.removeEventListener = this.eventBus.removeEventListener.bind(this.eventBus)
     }
     listen() {
         const abortController = new AbortController()
