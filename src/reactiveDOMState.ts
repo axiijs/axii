@@ -409,8 +409,8 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
 }
 
 
-export class RxDOMEventListener extends ManualCleanup {
-    constructor(public target: ListenerTarget, public event: string, public listener: EventListener, public options?: AddEventListenerOptions) {
+export class RxDOMEventListener<T> extends ManualCleanup {
+    constructor(public target: ListenerTarget<T>, public event: string, public listener: (event: T) => void, public options?: AddEventListenerOptions) {
         super();
         this.target.addEventListener(event, listener, options)
     }
