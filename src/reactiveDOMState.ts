@@ -318,6 +318,10 @@ export class RxDOMScrollPosition extends RxDOMState<HTMLElement, ScrollPosition>
     }
 }
 
+
+
+type ListenerTarget = Pick<HTMLElement, 'addEventListener' | 'removeEventListener'|'dispatchEvent'>
+
 /**
  * @category Reactive State Utility
  */
@@ -335,7 +339,6 @@ export type DragState = {
 export type DragOptions = {
     container?: RefObject,
     boundary?: RefObject,
-    onDragEnd?: (event: CustomEvent<DragState>) => void
 }
 
 /**
@@ -344,11 +347,17 @@ export type DragOptions = {
 export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
     public container: RefObject | undefined;
     public boundary: RefObject;
+    public eventBus: ListenerTarget;
+    public addEventListener: ListenerTarget['addEventListener']
+    public removeEventListener: ListenerTarget['removeEventListener']
     /* v8 ignore next 43 */
     constructor(public value: Atom<DragState|null> = atom(null), public options: DragOptions = {}) {
         super();
         this.container = options.container
         this.boundary = options.boundary || {current: document.body}
+        this.eventBus = new Comment('bus')
+        this.addEventListener = this.eventBus.addEventListener.bind(this.eventBus)
+        this.removeEventListener = this.eventBus.removeEventListener.bind(this.eventBus)
     }
     listen() {
         const abortController = new AbortController()
@@ -357,6 +366,8 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
             const targetRect = this.element!.getBoundingClientRect()
 
             const innerAbortController = new AbortController()
+
+            let started = false
 
             this.boundary.current.addEventListener('mousemove', (mouseMoveEvent: MouseEvent) => {
                 this.value({
@@ -368,13 +379,18 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
                     mouseDownEvent,
                     mouseMoveEvent
                 })
+
+                if (!started) {
+                    started = true
+                    this.eventBus.dispatchEvent(new CustomEvent('dragstart', {detail: this.value.raw}))
+                }
             }, {signal: innerAbortController.signal})
 
             const dragEnd = () => {
                 const lastState = this.value()!
                 this.value(null)
                 innerAbortController!.abort()
-                this.options.onDragEnd?.(new CustomEvent('rxdomdragend', {detail: lastState}))
+                this.eventBus.dispatchEvent(new CustomEvent('dragend', {detail: lastState}))
             }
 
             this.boundary.current.addEventListener('mouseup', dragEnd, {signal: innerAbortController.signal})
@@ -391,6 +407,18 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
         }
     }
 }
+
+
+export class RxDOMEventListener extends ManualCleanup {
+    constructor(public target: ListenerTarget, public event: string, public listener: EventListener, public options?: AddEventListenerOptions) {
+        super();
+        this.target.addEventListener(event, listener, options)
+    }
+    destroy() {
+        this.target.removeEventListener(this.event, this.listener, this.options)
+    }
+}
+
 
 /**
  * @category Common Utility
