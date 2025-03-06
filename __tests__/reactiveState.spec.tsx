@@ -9,7 +9,7 @@ import {
     RxDOMHovered,
     RenderContext, RxDOMFocused, createRef, RxDOMScrollPosition,
 } from "@framework";
-import {atom} from "data0";
+import {atom, RxList} from "data0";
 
 function wait(time: number) {
     return new Promise(resolve => {
@@ -81,7 +81,7 @@ describe('ref', () => {
 
     })
 
-    test('create reactive rect state of element', async () => {
+    test('create reactive rect state of element using events', async () => {
         const container1 = createRef()
         const container2 = createRef()
         let rect1:RxDOMRect
@@ -110,6 +110,30 @@ describe('ref', () => {
 
         root.destroy()
         expect(rect1!.value()).toBeNull()
+    })
+
+    test('create reactive rect state of element using signal', async () => {
+        const signal = atom(false)
+        const content = new RxList<any>(['hello world'])
+        let rxSize: any
+        function App({}, {createElement}: RenderContext) {
+            rxSize = new RxDOMRect(atom<RectObject>(null), {type:'signal', signal})
+            return <span ref={rxSize.ref}>{content}</span>
+        }
+
+        root.render(<App />)
+        const lastSize = rxSize.value()
+        expect(lastSize).not.toBeNull()
+        signal(false)
+
+        content.push('hello world 2')
+        const lastSize2 = rxSize.value()
+        expect(lastSize2).toEqual(lastSize)
+
+        signal(true)
+        await wait(100)
+        const lastSize3 = rxSize.value()
+        expect(lastSize3).not.toEqual(lastSize2)
     })
 
     test('create reactive size state of window', async () => {

@@ -1,4 +1,4 @@
-import {atom, Atom, ManualCleanup} from "data0";
+import {atom, Atom, autorun, ManualCleanup} from "data0";
 import {assert, shallowEqual} from "./util";
 import {RefObject} from "./DOM";
 
@@ -64,10 +64,19 @@ type PositionRecalculateInterval = {
     type: 'interval',
     duration: number
 }
+
 /**
  * @category Reactive State Utility
  */
-type ReactivePositionOptions = 'requestAnimationFrame' | 'requestIdleCallback' | 'manual' | PositionRecalculateInterval |PositionRecalculateEvent[]
+type PositionRecalculateSignal = {
+    type: 'signal',
+    signal: Atom<any>
+}
+
+/**
+ * @category Reactive State Utility
+ */
+type ReactivePositionOptions = 'requestAnimationFrame' | 'requestIdleCallback' | 'manual' | PositionRecalculateInterval |PositionRecalculateEvent[] | PositionRecalculateSignal
 
 /**
  * @category Reactive State Utility
@@ -150,7 +159,19 @@ export class RxDOMRect extends RxDOMState<HTMLElement|Window, RectObject>{
                     this.value(null)
                     window.clearInterval(id)
                 }
-                /* v8 ignore next 3 */
+            }else if((this.options as PositionRecalculateSignal).type === 'signal') {
+
+                const stop = autorun(() => {
+                    const shouldrun = (this.options as PositionRecalculateSignal).signal()
+                    if (shouldrun) {
+                        assignRect()
+                    }
+                })
+                this.abort = () => {
+                    this.value(null)
+                    stop()
+                }
+            /* v8 ignore next 3 */
             } else {
                 assert(false, `invalid options.position, ${this.options}`)
             }
