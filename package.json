@@ -50,7 +50,7 @@
     "vitest": "^3.0.5"
   },
   "peerDependencies": {
-    "data0": "^1.9.1"
+    "data0": "^1.9.2"
   },
   "release-it": {
     "plugins": {
