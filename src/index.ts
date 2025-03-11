@@ -15,3 +15,4 @@ export {ContextProvider, type ContextProviderProps, createContext} from "./Conte
 
 export * from 'data0'
 export { ManualCleanup as AutoCleanup } from 'data0'
+export * from './lazy.js'
