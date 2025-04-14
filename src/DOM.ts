@@ -447,9 +447,16 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
 }
 
 /**
+ * Fragment component for JSX
+ * This function doesn't actually get called directly with props during runtime.
+ * Its presence enables TypeScript to recognize the Fragment syntax.
+ * 
  * @category Basic
  */
-export function Fragment() {}
+export function Fragment(props: any = {}): DocumentFragment {
+    // During actual JSX transformation, the fragment special case is handled by createElement
+    return document.createDocumentFragment();
+}
 
 function resetOptionParentSelectValue(select: HTMLSelectElement) {
     select.value = select.dataset['__value__']!

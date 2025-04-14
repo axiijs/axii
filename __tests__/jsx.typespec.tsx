@@ -1,4 +1,5 @@
-import {ComponentNode, createElement, createRoot} from "@framework";
+/** @jsx createElement @jsxFrag Fragment */
+import {ComponentNode, createElement, createRoot, Fragment} from "@framework";
 import { assertType } from 'vitest'
 
 const el = <div></div>
@@ -36,4 +37,11 @@ assertType<JSX.Element>(<Child
     $main:onClick={()=>{}}
     $main={{onClick:true}}
 />)
+
+// Fragment is a valid JSX element constructor
+const fragmentElement = <><div>Fragment content</div></>
+assertType<JSX.Element>(fragmentElement)
+
+// Verify Fragment is properly exported
+const isFragmentFunction = typeof Fragment === 'function'
 
