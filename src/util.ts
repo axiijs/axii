@@ -109,3 +109,16 @@ export function nextTick(fn: Function) {
 export function sequencePromises(fns: (() => Promise<any>)[]) {
     return fns.reduce((prev, fn) => prev.then(() => fn()), Promise.resolve())
 }
+
+/**
+ * 将字符串转换为驼峰命名
+ * @category Common Utility
+ * @example
+ * camelize('hello-world') // => 'helloWorld'
+ * camelize('hello_world') // => 'helloWorld'
+ * camelize('hello world') // => 'helloWorld'
+ */
+export function camelize(str: string): string {
+  return str.replace(/[-_\s]+(.)?/g, (_, c) => c ? c.toUpperCase() : '')
+}
+
