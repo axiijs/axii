@@ -98,13 +98,12 @@ describe('ref', () => {
         expect(rect1!.value()).not.toBeNull()
         const lastTop = rect1!.value()!.top
         container1.current.scrollTop = 100
-        await wait(20)
+        await wait(30)
         const lastTop2 = rect1!.value()!.top
         expect(lastTop2).not.toEqual(lastTop)
 
-
         container2.current.scrollTop = 100
-        await wait(20)
+        await wait(30)
         const lastTop3 = rect1!.value()!.top
         expect(lastTop3).not.toEqual(lastTop2)
 
