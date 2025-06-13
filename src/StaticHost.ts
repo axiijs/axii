@@ -11,7 +11,7 @@ import {
 import {Host, PathContext} from "./Host";
 import {autorun, isAtom, isReactive} from "data0";
 import {createHost} from "./createHost";
-import {assert, isPlainObject, removeNodesBetween} from "./util";
+import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
@@ -357,7 +357,9 @@ export class StaticHost implements Host {
                 value.map(v => isAtomLike(v) ? v() : v) :
                 isAtomLike(value) ? value() : value
             if (/^data-/.test(key)) {
-                el.dataset[key.slice(5)] = final
+                // 使用 dataset 的时候 key 要进行驼峰化
+                // ref: https://developer.mozilla.org/zh-CN/docs/Web/API/HTMLElement/dataset#%E5%90%8D%E7%A7%B0%E8%BD%AC%E6%8D%A2
+                el.dataset[camelize(key.slice(5))] = final
             } else {
                 setAttribute(el, key, final, isSVG)
             }

@@ -93,4 +93,15 @@ describe('static host render', () => {
         root.render(<App/>)
         expect((rootEl.firstElementChild!.firstElementChild! as HTMLElement).dataset.arr).toBe('0,1,2,3')
     })
+
+    test('camelize ^data-* attribute to use dataset correctly', () => {
+        const value = 'hello-world'
+        function App() {
+            return <div>
+                <div data-foo-bar={value}>visible</div>
+            </div>
+        }
+        root.render(<App/>)
+        expect((rootEl.firstElementChild!.firstElementChild! as HTMLElement).dataset.fooBar).toBe('hello-world')
+    })
 })
