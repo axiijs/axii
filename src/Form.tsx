@@ -14,9 +14,6 @@ export type FormProps = {
     children: any
 };
 
-/**
- * @internal
- */
 export type FormContextValue = {
     name: string
     register: (name: string, instance: FormItemInstance, multiple?: boolean) => void
@@ -26,24 +23,18 @@ export type FormContextValue = {
     clear: () => void,
     reset: () => void
 }
-/**
- * @internal
- */
+
 export const FormContext = createContext<FormContextValue>('Form')
-/**
- * @internal
- */
+
 export type FormItemInstance = {
     reset: () => void
     clear: () => void
     value: any
 }
+
 // TODO 如何支持 multiple form
 // TODO 如何支持 item 多 value
 // TODO  如何只是 dirty/touched/untouched 等状态，和 error/waring 等自定义状态
-/**
- * @internal
- */
 export function Form({name, children, onChange, onSubmit, onClear, onReset, values}: FormProps, {
     createElement,
     context
