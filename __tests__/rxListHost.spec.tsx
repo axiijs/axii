@@ -167,6 +167,7 @@ describe('rxList render', () => {
                 {arr.map((item, index) => <div>{item.id}:{index()}</div>)}
             </div>
         }
+        debugger
 
         root.render(<App/>)
         arr.splice(2,1)
