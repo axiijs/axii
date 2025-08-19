@@ -57,7 +57,7 @@ export class StaticArrayHost implements Host{
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (!parentHandle) {
             removeNodesBetween(this.element, this.placeholder, true)
-            this.childHosts!.forEach(host => host.destroy(true, parentHandleComputed))
         }
+        this.childHosts!.forEach(host => host.destroy(true, parentHandleComputed))
     }
 }
