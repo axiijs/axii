@@ -80,9 +80,6 @@ export type RenderContext = {
     },
     context: DataContext,
     pathContext: PathContext,
-    /**
-     * @internal
-     */
     createPortal: CreatePortalFn
     createRef: CreateRefFn,
     createRxRef: CreateRxRefFn,
