@@ -79,10 +79,10 @@ export type RenderContext = {
         [k: string]: HTMLElement
     },
     context: DataContext,
+    pathContext: PathContext,
     /**
      * @internal
      */
-    pathContext: PathContext,
     createPortal: CreatePortalFn
     createRef: CreateRefFn,
     createRxRef: CreateRxRefFn,
