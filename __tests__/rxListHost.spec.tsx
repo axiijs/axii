@@ -167,7 +167,6 @@ describe('rxList render', () => {
                 {arr.map((item, index) => <div>{item.id}:{index()}</div>)}
             </div>
         }
-        debugger
 
         root.render(<App/>)
         arr.splice(2,1)
@@ -263,6 +262,34 @@ describe('rxList render', () => {
 
         expect(host.element.textContent).toBe('a')
 
+    })
+
+    test('rxList swap items', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+        ])
+
+        
+        root.render(arr.map(item => <span>{item.name}</span>) as unknown as Function) as RxListHost
+        expect(rootEl.children.length).toBe(3)
+        expect(rootEl.children[0].innerHTML).toBe('a')
+        expect(rootEl.children[1].innerHTML).toBe('b')
+        expect(rootEl.children[2].innerHTML).toBe('c')
+
+        arr.swap(0, 1)
+        expect(rootEl.children[0].innerHTML).toBe('b')
+        expect(rootEl.children[1].innerHTML).toBe('a')
+        expect(rootEl.children[2].innerHTML).toBe('c')
+
+        arr.swap(1, 2)
+        expect(rootEl.children[0].innerHTML).toBe('b')
+        expect(rootEl.children[1].innerHTML).toBe('c')
+        expect(rootEl.children[2].innerHTML).toBe('a')
+
+        arr.swap(0, 2)
+        expect(rootEl.children[0].innerHTML).toBe('a')
     })
 
 })

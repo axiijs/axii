@@ -83,6 +83,20 @@ export class RxListHost implements Host{
                             }
                         }
 
+                    } else if(method === 'reorder') {
+                        const placeholders = (new Array(host.hosts!.length.raw)).fill(1).map((_, index) => document.createComment(`rx list item reorder placeholder ${index}`))
+                        const placeholderFragment = document.createDocumentFragment()
+                        placeholders.forEach(placeholder => {
+                            placeholderFragment.appendChild(placeholder)
+                        })
+                        insertBefore(placeholderFragment, host.placeholder.parentElement!.firstChild! as HTMLElement)
+
+                        // FIXME 需要优化一下移动算法。
+                        host.hosts!.raw.forEach((childHost, index) => {
+                            insertBefore(childHost.element, placeholders[index],  childHost.placeholder)
+                            placeholders[index].remove()
+                        })
+
                     } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
                         // explicit key change
                         const oldHost = methodResult as Host

@@ -464,16 +464,24 @@ function resetOptionParentSelectValue(select: HTMLSelectElement) {
 
 /**
  * @internal
+ * If endEl is provided, insert all elements from newEl to endEl
  */
-export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
+export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement, endEl?: HTMLElement | Comment | Text | SVGElement) {
+    // 有 endEl 就一定是个已经存在的序列
+    const originNext = endEl ? newEl.nextSibling : undefined
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
     const result = refEl.parentNode!.insertBefore!(newEl, refEl)
     if (refEl.parentElement instanceof HTMLSelectElement) {
         resetOptionParentSelectValue(refEl.parentElement)
     }
 
+    if (originNext) {
+        insertBefore(originNext! as Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl, endEl === originNext ? undefined : endEl)
+    }
+
     return result
 }
+
 
 /**
  * @internal
