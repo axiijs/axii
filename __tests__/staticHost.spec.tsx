@@ -8,8 +8,9 @@ import {beforeEach, describe, expect, test} from "vitest";
 //     })
 // }
 
-describe('static host render', () => {
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(() => resolve(), ms))
 
+describe('static host render', () => {
     let root: ReturnType<typeof createRoot>
     let rootEl: HTMLElement
     beforeEach(() => {
@@ -17,6 +18,7 @@ describe('static host render', () => {
         rootEl = document.createElement('div')
         document.body.appendChild(rootEl)
         root = createRoot(rootEl)
+        document.adoptedStyleSheets = []
     })
 
     test('element should remove after transition done', async () => {
@@ -50,22 +52,21 @@ describe('static host render', () => {
     })
 
     test('render animated element', async () => {
-
-            let ref = createRef()
-            function App() {
-                const animationStyle = {
-                    'animation': '@self 1s infinite',
-                    '@keyframes' : {
-                        '0%': {opacity: 0},
-                        '100%': {opacity: 1}
-                    }
+        let ref = createRef()
+        function App() {
+            const animationStyle = {
+                'animation': '@self 1s infinite',
+                '@keyframes' : {
+                    '0%': {opacity: 0},
+                    '100%': {opacity: 1}
                 }
-                return <div>
-                    <div ref={ref} style={[animationStyle]}>visible</div>
-                </div>
             }
-            root.render(<App/>)
-            expect((rootEl.firstElementChild!.firstElementChild! as HTMLElement).getAnimations().length).toBe(1)
+            return <div>
+                <div ref={ref} style={[animationStyle]}>visible</div>
+            </div>
+        }
+        root.render(<App/>)
+        expect((rootEl.firstElementChild!.firstElementChild! as HTMLElement).getAnimations().length).toBe(1)
         const opacity = getComputedStyle(rootEl.firstElementChild!.firstElementChild! as HTMLElement).opacity
         await new Promise(resolve => setTimeout(resolve, 100))
         const currentOpacity = getComputedStyle(rootEl.firstElementChild!.firstElementChild! as HTMLElement).opacity
@@ -103,5 +104,21 @@ describe('static host render', () => {
         }
         root.render(<App/>)
         expect((rootEl.firstElementChild!.firstElementChild! as HTMLElement).dataset.fooBar).toBe('hello-world')
+    })
+
+    test('cleanup dynamic style sheets after host destroyed', async () => {
+        const shown = atom(true)
+        function App() {
+            return <div>
+                {() => shown() ? <div style={{ background: 'red', '&:hover': { background: 'blue' }}}>inner</div> : null}
+                test
+            </div>
+        }
+        root.render(<App />)
+        expect(Array.from(document.adoptedStyleSheets).length).toBe(1)
+
+        shown(false)
+        await sleep(50)
+        expect(Array.from(document.adoptedStyleSheets).length).toBe(0)
     })
 })

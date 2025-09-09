@@ -92,6 +92,7 @@ class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
     public elToStyleId = new WeakMap<HTMLElement, string>()
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
+    public hostToStyleIds = new WeakMap<Host, Set<string>>()
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
         const pathToLastComponent = GetPathToLastComponent(hostPath)
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
@@ -125,6 +126,26 @@ class StyleManager {
         styleSheet.replaceSync(this.generateStyleContent(`.${id}`, styleObject).join('\n'))
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
         return styleSheet
+    }
+    collect(hostPath: LinkedNode<Host>, id: string) {
+      const host = hostPath.node
+      const ids = this.hostToStyleIds.get(host) ?? new Set()
+      ids.add(id)
+      this.hostToStyleIds.set(host, ids)
+    }
+    cleanup(hostPath: LinkedNode<Host>) {
+      const host = hostPath.node
+      const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
+      const styleSheetsToDelete = new Set<CSSStyleSheet>(
+        ids.map(id => this.styleScripts.get(id)!)
+      )
+      ids.forEach(id => {
+        this.styleScripts.delete(id);
+      })
+      this.hostToStyleIds.delete(host)
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => {
+        return !styleSheetsToDelete.has(sheet);
+      });
     }
     update(hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
         // style 中有嵌套写法/animation/at-rules 等原生不能识别的，都会当做 unhandledAttr 走到这里。当然也包括 atom 和 function
@@ -161,6 +182,7 @@ class StyleManager {
             }
 
             this.styleScripts.set(styleSheetIdWithItorNum, styleSheet)
+            this.collect(hostPath, styleSheetIdWithItorNum)
         })
 
         if (!allStatic) {
@@ -397,6 +419,8 @@ export class StaticHost implements Host {
         })
 
         this.removeElements(parentHandle)
+
+        StaticHost.styleManager.cleanup(this.pathContext.hostPath)
     }
     async removeElements(parentHandle?: boolean) {
         if (parentHandle) return
