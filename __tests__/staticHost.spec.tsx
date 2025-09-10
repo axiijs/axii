@@ -9,6 +9,15 @@ import {beforeEach, describe, expect, test} from "vitest";
 // }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(() => resolve(), ms))
+function logDocumentAdoptedStyleSheets() {
+  console.log(
+    Array.from(document.adoptedStyleSheets)
+      .map(s => Array.from(s.cssRules)
+        .map(rule => rule.cssText)
+        .join('\n'))
+      .join('--------\n')
+  )
+}
 
 describe('static host render', () => {
     let root: ReturnType<typeof createRoot>
@@ -118,7 +127,35 @@ describe('static host render', () => {
         expect(Array.from(document.adoptedStyleSheets).length).toBe(1)
 
         shown(false)
-        await sleep(50)
+        await sleep(10)
+        expect(Array.from(document.adoptedStyleSheets).length).toBe(0)
+    })
+
+    test('cleanup stylesheet by ref counting', async () => {
+        const shown1 = atom(true)
+        const shown2 = atom(true)
+
+        function Comp({ children }: any) {
+          return <div style={{ background: 'red', '&:hover': { background: 'blue' }}}>{children}</div>
+        }
+
+        function App() {
+            return <div>
+                {() => shown1() ? <Comp>1</Comp> : null}
+                {() => shown2() ? <Comp>2</Comp> : null}
+            </div>
+        }
+        root.render(<App />)
+        expect(Array.from(document.adoptedStyleSheets).length).toBe(1)
+        
+        shown1(false)
+        await sleep(10)
+        // 按照引用计数，这里 style 还有引用，故而不该被删除
+        expect(Array.from(document.adoptedStyleSheets).length).toBe(1)
+
+        shown2(false)
+        await sleep(10)
+        // 这里删除 style sheet
         expect(Array.from(document.adoptedStyleSheets).length).toBe(0)
     })
 })

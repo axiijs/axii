@@ -93,6 +93,7 @@ class StyleManager {
     public elToStyleId = new WeakMap<HTMLElement, string>()
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
     public hostToStyleIds = new WeakMap<Host, Set<string>>()
+    public idToRefCount = new Map<string, number>()
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
         const pathToLastComponent = GetPathToLastComponent(hostPath)
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
@@ -111,7 +112,6 @@ class StyleManager {
         } else {
             return staticId
         }
-
     }
     stringifyStyleObject(styleObject: { [k: string]: any }): string {
         return Object.entries(styleObject).map(([key, value]) => {
@@ -127,25 +127,50 @@ class StyleManager {
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
         return styleSheet
     }
+    deleteStyleSheet(id: string): CSSStyleSheet | null {
+        const styleSheet = this.styleScripts.get(id)
+        if (styleSheet) {
+            const index = document.adoptedStyleSheets.indexOf(styleSheet)
+            document.adoptedStyleSheets.splice(index, 1)
+            this.styleScripts.delete(id)
+            return styleSheet
+        }
+        return null
+    }
     collect(hostPath: LinkedNode<Host>, id: string) {
-      const host = hostPath.node
-      const ids = this.hostToStyleIds.get(host) ?? new Set()
-      ids.add(id)
-      this.hostToStyleIds.set(host, ids)
+        const host = hostPath.node
+        const ids = this.hostToStyleIds.get(host) ?? new Set()
+        ids.add(id)
+        this.hostToStyleIds.set(host, ids)
+        this.updateRefCount(id, +1)
     }
     cleanup(hostPath: LinkedNode<Host>) {
-      const host = hostPath.node
-      const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
-      const styleSheetsToDelete = new Set<CSSStyleSheet>(
-        ids.map(id => this.styleScripts.get(id)!)
-      )
-      ids.forEach(id => {
-        this.styleScripts.delete(id);
-      })
-      this.hostToStyleIds.delete(host)
-      document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => {
-        return !styleSheetsToDelete.has(sheet);
-      });
+        const host = hostPath.node
+        const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
+        const styleSheetsToDelete = new Set<CSSStyleSheet>()
+        ids.forEach(id => {
+            const count = this.updateRefCount(id, -1)
+            if (count <= 0) {
+                const styleSheet = this.styleScripts.get(id)
+                if (styleSheet) {
+                    styleSheetsToDelete.add(styleSheet)
+                }
+                this.styleScripts.delete(id);
+            }
+        })
+        this.hostToStyleIds.delete(host)
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => {
+            return !styleSheetsToDelete.has(sheet);
+        });
+    }
+    updateRefCount(id: string, delta: number): number {
+        const count = (this.idToRefCount.get(id) ?? 0) + delta
+        if (count <= 0) {
+            this.idToRefCount.delete(id)
+        } else {
+            this.idToRefCount.set(id, count)
+        }
+        return count
     }
     update(hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
         // style 中有嵌套写法/animation/at-rules 等原生不能识别的，都会当做 unhandledAttr 走到这里。当然也包括 atom 和 function
@@ -162,8 +187,8 @@ class StyleManager {
             const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
 
             const styleSheetIdWithItorNum = `${styleSheetId}F${index}I${styleItorNum}`
-            let styleSheet:any
-            if( styleItorNum === 0) {
+            let styleSheet: CSSStyleSheet | null = null
+            if (styleItorNum === 0) {
                 // const content = this.generateStyleContent(`.${styleSheetIdWithItorNum}`, typeof styleObject === 'function' ? styleObject() : styleObject)
                 styleSheet = this.styleScripts.get(styleSheetIdWithItorNum) || this.createStyleSheet(styleSheetIdWithItorNum, typeof styleObject === 'function' ? styleObject() : styleObject)
                 el.classList.add(styleSheetIdWithItorNum)
@@ -173,16 +198,20 @@ class StyleManager {
                     styleSheet = this.createStyleSheet(styleSheetIdWithItorNum, evaluatedStyleObject)
                     el.classList.add(styleSheetIdWithItorNum)
 
-                    // 移除之前的
-                    // TODO 如何防止 css 爆炸？应该从 document 上也移除？
-                    const lastId = `${styleSheetId}F${index}I${styleItorNum-1}`
-                    document.adoptedStyleSheets.splice(document.adoptedStyleSheets.indexOf(this.styleScripts.get(lastId)!), 1)
+                    // 移除之前的 id
+                    // 更新引用计数，归零时清除 StyleSheet
+                    const lastId = `${styleSheetId}F${index}I${styleItorNum - 1}`
                     el.classList.remove(lastId)
+                    const count = this.updateRefCount(lastId, -1)
+                    if (count <= 0) {
+                        this.deleteStyleSheet(lastId)
+                    }
                 }
             }
-
-            this.styleScripts.set(styleSheetIdWithItorNum, styleSheet)
-            this.collect(hostPath, styleSheetIdWithItorNum)
+            if (styleSheet) {
+                this.styleScripts.set(styleSheetIdWithItorNum, styleSheet)
+                this.collect(hostPath, styleSheetIdWithItorNum)
+            }
         })
 
         if (!allStatic) {
