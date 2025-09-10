@@ -448,8 +448,9 @@ export class StaticHost implements Host {
         })
 
         this.removeElements(parentHandle)
-
-        StaticHost.styleManager.cleanup(this.pathContext.hostPath)
+          .finally(() => {
+              StaticHost.styleManager.cleanup(this.pathContext.hostPath)
+          })
     }
     async removeElements(parentHandle?: boolean) {
         if (parentHandle) return
