@@ -93,6 +93,7 @@ class StyleManager {
     public elToStyleId = new WeakMap<HTMLElement, string>()
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
     public hostToStyleIds = new WeakMap<Host, Set<string>>()
+    public hostMountCount = new WeakMap<Host, number>()
     public idToRefCount = new Map<string, number>()
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
         const pathToLastComponent = GetPathToLastComponent(hostPath)
@@ -143,6 +144,25 @@ class StyleManager {
         ids.add(id)
         this.hostToStyleIds.set(host, ids)
         this.updateRefCount(id, +1)
+    }
+    mount(hostPath: LinkedNode<Host>) {
+        if (!hostPath) return // robustness for ReusableHost
+        const host = hostPath.node
+        const count = ((this.hostMountCount.get(host) ?? 0) + 1)
+        this.hostMountCount.set(host, count)
+        return count
+    }
+    unmount(hostPath: LinkedNode<Host>) {
+        if (!hostPath) return // robustness for ReusableHost
+        const host = hostPath.node
+        const count = ((this.hostMountCount.get(host) ?? 0) - 1)
+        if (count > 0) {
+            this.hostMountCount.set(host, count)
+            return count
+        }
+
+        this.cleanup(hostPath)
+        this.hostMountCount.delete(host)
     }
     cleanup(hostPath: LinkedNode<Host>) {
         const host = hostPath.node
@@ -357,6 +377,7 @@ export class StaticHost implements Host {
                 this.pathContext.root.on('attach', this.attachRefs, {once: true})
             }
         }
+        StaticHost.styleManager.mount(this.pathContext.hostPath)
     }
     collectInnerHost() {
         const result = this.source as ExtendedElement
@@ -449,7 +470,7 @@ export class StaticHost implements Host {
 
         this.removeElements(parentHandle)
           .finally(() => {
-              StaticHost.styleManager.cleanup(this.pathContext.hostPath)
+              StaticHost.styleManager.unmount(this.pathContext.hostPath)
           })
     }
     async removeElements(parentHandle?: boolean) {
