@@ -218,14 +218,12 @@ class StyleManager {
                     styleSheet = this.createStyleSheet(styleSheetIdWithItorNum, evaluatedStyleObject)
                     el.classList.add(styleSheetIdWithItorNum)
 
-                    // 移除之前的 id
-                    // 更新引用计数，归零时清除 StyleSheet
+                    // 移除之前的 classId
                     const lastId = `${styleSheetId}F${index}I${styleItorNum - 1}`
                     el.classList.remove(lastId)
-                    const count = this.updateRefCount(lastId, -1)
-                    if (count <= 0) {
-                        this.deleteStyleSheet(lastId)
-                    }
+                    // 更新引用计数，但归零时并不会立即清除 styleSheet，因为它可能被 cloneNode 用到
+                    // 如果现在清除，cloneNode 的样式会失效
+                    this.updateRefCount(lastId, -1)
                 }
             }
             if (styleSheet) {
