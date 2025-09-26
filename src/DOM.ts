@@ -140,7 +140,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 node.style.cssText = style
             } else  if (typeof style === 'object') {
                 each(style, (v, k) => {
-                  // @ts-ignore
+                    // @ts-ignore
                     node.style[k] = stringifyStyleValue(k, v)
                 })
             } else {
