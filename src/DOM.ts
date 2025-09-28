@@ -18,6 +18,8 @@ export function autoUnit(num: number|string) {
 export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 
 export function stringifyStyleValue(k:string, v: any): string {
+    // 当值是 falsy 的时候 设置 style[k] 为 ''，用来清除 inline style
+    if (v === undefined || v === null) return ''
     if(Array.isArray(v)) {
         // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
@@ -30,7 +32,8 @@ export function stringifyStyleValue(k:string, v: any): string {
             return `${v[0]}${v[1]}`
         } else {
             // padding/margin/transform|translate|scale|rotate|skew
-            return v.map((i:any) => stringifyStyleValue(k, i)).join(' ')
+            // 支持 undefined 值自动 fallback 到 0 值
+            return v.map((i:any) => stringifyStyleValue(k, i ?? 0)).join(' ')
         }
     }
     // number/string/StyleSize

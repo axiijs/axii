@@ -18,7 +18,7 @@ import {assert} from "./util";
 import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
-import {markOverwrite} from "./StaticHost";
+import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 
 
 function ensureArray(o: any) {
@@ -56,6 +56,12 @@ export function mergeProp(key:string, originValue:any, value: any) {
 
 export type StateTransformer<T> = (target:any, value:Atom<T|null>) => ((() => void)|undefined)
 export type StateFromRef<T> = Atom<T|null> & { ref:(target:any) => any }
+
+interface PropsWithConfig {
+  props: Props,
+  itemConfig: Record<string, ConfigItem>,
+  componentProp: Props,
+}
 
 const INNER_CONFIG_PROP = '__config__'
 /**
@@ -97,7 +103,7 @@ export class ComponentHost implements Host{
         this.children = children
     }
 
-    parseItemConfigFromProp(itemConfig: any, key:string, value:any) {
+    parseItemConfigFromProp(itemConfig: any, key:string, value:any, props: Props) {
         if (key[0] === '$') {
             const [itemName, itemProp] = key.slice(1).split(':')
             if (!itemConfig[itemName]) itemConfig[itemName] = {}
@@ -130,7 +136,10 @@ export class ComponentHost implements Host{
                 if (!itemConfig[itemName].props) itemConfig[itemName].props = {}
                 // style 要特殊标记一下，用去表示是外部覆盖的
                 if (itemProp === 'style') {
-                    markOverwrite(value)
+                    markAopProp(value)
+                    // 传递一下来自 AOP 的标记
+                    if (isDynamicProp(props)) markDynamicProp(value)
+                    if (isBoundProp(props)) markBoundProp(value)
                 }
                 itemConfig[itemName].props![itemProp] = mergeProp(itemProp, itemConfig[itemName].props![itemProp], value)
             }
@@ -353,18 +362,20 @@ export class ComponentHost implements Host{
     evaluateBoundProps(inputProps:Props, renderContext:RenderContext) {
         return (this.type.boundProps || []).map(b => {
             if (typeof b === 'function') {
-                return b(inputProps, renderContext!)
+                // 由于在这里提前展开了函数，在 StyleManager#update 里拿到的已经是 object
+                // 故而 StyleManager 不知道这个东西是不是 dynamic 的，应该在这里标记一下
+                return markDynamicProp(markBoundProp(b(inputProps, renderContext!)))
             }
-            return b
+            return markBoundProp(b)
         })
     }
-    parseAndMergeProps(last: {props:Props, itemConfig: ConfigItem, componentProp: Props}, current: Props) {
+    parseAndMergeProps(last: PropsWithConfig, current: Props): PropsWithConfig {
         // CAUTION 为了性能直接 assign，外部调用时要自己保证 last 是一个新的对象
         Object.entries(current).forEach(([key, value]) => {
             if( key === INNER_CONFIG_PROP) {
                 // 透传过来的 config 这里不处理，外部已经处理了
             } else if (key[0] === '$')  {
-                last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, key, value)
+                last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, key, value, current)
             } else {
                 last.props[key] = mergeProp(key, last.props[key], value)
             }
@@ -372,7 +383,7 @@ export class ComponentHost implements Host{
 
         return last
     }
-    getFinalPropsAndItemConfig() {
+    getFinalPropsAndItemConfig(): PropsWithConfig {
         const inputPropsWithDefaultValue = this.type.propTypes ? this.normalizePropsByPropTypes(this.type.propTypes, this.inputProps) : this.inputProps
         const evaluatedProps = this.evaluateBoundProps(inputPropsWithDefaultValue, this.renderContext!)
 
@@ -380,7 +391,7 @@ export class ComponentHost implements Host{
         //  它需要和 inputProps 里面通用的引用，例如 form 状态。
         //  boundProps 优先级最低，inputProps 第二高，configProps 最高，是最上层穿透过来的。
         const allProps = evaluatedProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
-        return allProps.reduce((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {}})
+        return allProps.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {} })
     }
     render(): void {
         if (this.element !== this.placeholder) {

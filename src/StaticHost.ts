@@ -69,18 +69,41 @@ function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     return `${componentName}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
 
-export function markOverwrite(obj:object) {
-    Object.defineProperty(obj, '__overwrite', {
+export function markBoundProp(obj: object) {
+    Object.defineProperty(obj, '__bound', {
         value: true,
         enumerable: false
     })
     return obj
 }
 
-export function isOverwrite(obj:any) {
-    return obj['__overwrite']
+export function markAopProp(obj: object) {
+    Object.defineProperty(obj, '__aop', {
+        value: true,
+        enumerable: false
+    })
+    return obj
 }
 
+export function markDynamicProp(obj: object) {
+    Object.defineProperty(obj, '__dynamic', {
+        value: true,
+        enumerable: false
+    })
+    return obj
+}
+
+export function isBoundProp(obj: any) {
+    return !!obj['__bound']
+}
+
+export function isAopProp(obj: any) {
+    return !!obj['__aop']
+}
+
+export function isDynamicProp(obj: any) {
+    return !!obj['__dynamic']
+}
 
 // class name 中的字母含义
 // P path
@@ -197,48 +220,103 @@ class StyleManager {
         const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
 
         const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
-        // 1. 如果是第一次，就全部生成
-        // 2. 如果是第二次，只对动态的部分重新生成
-        //  2.1. 动态生成的时候是先 add 一个新的，然后删除老的。
-        let allStatic = true
-        styleObjects.forEach((styleObject, index) => {
-            const isStatic = (typeof styleObject !== 'function') && !isOverwrite(styleObject)
-            allStatic = allStatic && isStatic
-            const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isStatic ? null : el)
-
-            const styleSheetIdWithItorNum = `${styleSheetId}F${index}I${styleItorNum}`
-            let styleSheet: CSSStyleSheet | null = null
-            if (styleItorNum === 0) {
-                // const content = this.generateStyleContent(`.${styleSheetIdWithItorNum}`, typeof styleObject === 'function' ? styleObject() : styleObject)
-                styleSheet = this.styleScripts.get(styleSheetIdWithItorNum) || this.createStyleSheet(styleSheetIdWithItorNum, typeof styleObject === 'function' ? styleObject() : styleObject)
-                el.classList.add(styleSheetIdWithItorNum)
-            } else {
-                if (typeof styleObject === 'function') {
-                    const evaluatedStyleObject = styleObject()
-                    styleSheet = this.createStyleSheet(styleSheetIdWithItorNum, evaluatedStyleObject)
-                    el.classList.add(styleSheetIdWithItorNum)
-
-                    // 移除之前的 classId
-                    const lastId = `${styleSheetId}F${index}I${styleItorNum - 1}`
-                    el.classList.remove(lastId)
-                    // 更新引用计数，但归零时并不会立即清除 styleSheet，因为它可能被 cloneNode 用到
-                    // 如果现在清除，cloneNode 的样式会失效
-                    this.updateRefCount(lastId, -1)
-                }
-            }
-            if (styleSheet) {
-                this.styleScripts.set(styleSheetIdWithItorNum, styleSheet)
-                this.collect(hostPath, styleSheetIdWithItorNum)
+        const splitStyleObjects = styleObjects.map((styleObject, index) => {
+            const isDynamic = typeof styleObject === 'function' || isDynamicProp(styleObject)
+            const isBound = isBoundProp(styleObject)
+            const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isDynamic ? el : null)
+            const styleSheetIdWithIndex = `${styleSheetId}F${index}`
+            const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
+            const evaluatedStyleObject: StyleObject = typeof styleObject === 'function' ? styleObject() : styleObject
+            // 分离普通和嵌套样式
+            const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
+            return {
+              index,
+              isDynamic,
+              isBound,
+              styleSheetId,
+              styleSheetIdWithIndex,
+              styleSheetIdWithItorNum,
+              evaluatedStyleObject,
+              simpleStyles,
+              nestedStyles
             }
         })
+        // 是否应该更新 itor？
+        // 如果使用了 itor-based style id，就要更新
+        let shouldUpdateItor = false
+        const stylePatches: StyleObject[] = []
+        splitStyleObjects.forEach(so => {
+            // 如果是 boundProps，优先使用 stylesheet，因为 boundProps 通常是组件级别的基础样式
+            // 如果包含 nested style，只能使用 stylesheet，因为依赖于 CSS selector
+            const shouldUseStyleSheet = so.isBound || Object.keys(so.nestedStyles).length > 0;
+            if (shouldUseStyleSheet) {
+                // 如果样式是动态的，则使用 itor 滚动 classname
+                // 这里「动态」意味着它可能是
+                // - Atom 或者 function
+                // - 来自 boundProps 并且是通过 function evaluate 获得
+                const shouldUseRollingStyleId = so.isDynamic
+                const finalStyleSheetId = shouldUseRollingStyleId ? so.styleSheetIdWithItorNum : so.styleSheetIdWithIndex
+                if (styleItorNum === 0 || shouldUseRollingStyleId) {
+                    shouldUpdateItor = true
 
-        if (!allStatic) {
+                    // 如果是第一次应用样式，或者需要滚动生成样式，则生成 stylesheet
+                    const styleSheet = this.styleScripts.get(finalStyleSheetId) ?? this.createStyleSheet(finalStyleSheetId, so.evaluatedStyleObject)
+                    el.classList.add(finalStyleSheetId)
+                    // 保存 stylesheet，更新引用计数
+                    this.styleScripts.set(finalStyleSheetId, styleSheet)
+                    this.collect(hostPath, finalStyleSheetId)
+                    if (shouldUseRollingStyleId) {
+                        const lastStyleSheetId = `${so.styleSheetIdWithIndex}I${styleItorNum - 1}`
+                        // 如果是滚动生成样式，则移除上一个 classname
+                        el.classList.remove(lastStyleSheetId)
+                        // 更新引用计数，但归零时并不会立即清除 stylesheet，因为它可能还被 cloneNode 用到
+                        // 如果现在清除，cloneNode 的样式会瞬间失效
+                        // TODO: 如果一个组件一直不 destroy，这里就会一直不清除 stylesheet
+                        // 后面可以考虑加上一个长度为 2 的 buffer
+                        this.updateRefCount(lastStyleSheetId, -1)
+                    }
+                }
+            } else {
+                // 收集普通样式，最后统一赋值
+                stylePatches.push(so.simpleStyles)
+                // nestedStyles 肯定是空的，这里就不用管了
+            }
+        })
+        if (shouldUpdateItor) {
             this.elToStyleIdItorNum.set(el, styleItorNum + 1)
+            if (__DEV__) {
+              // DEV: 把 styleItorNum 打到 DOM 节点上方便调试
+              el.setAttribute('data-axii-style-itor-num', String(styleItorNum + 1))
+            }
         }
+        setAttribute(el, 'style', stylePatches, el instanceof SVGElement)
     }
     isNestedStyleObject(key: string, styleObject: any): boolean {
         // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
         return key !== '@keyframes' && isPlainObject(styleObject)
+    }
+    splitStyleObject(styleObject: StyleObject): { simpleStyles: StyleObject, nestedStyles: StyleObject } {
+        if (typeof styleObject === 'string') {
+          return { simpleStyles: styleObject, nestedStyles: {} }
+        }
+        // 处理 null 或 undefined 的情况，返回空字符串来清除样式
+        if (styleObject === null || styleObject === undefined) {
+          return { simpleStyles: '' as any, nestedStyles: {} }
+        }
+
+        const simpleStyles: StyleObject = {}
+        const nestedStyles: StyleObject = {}
+        for (const key in styleObject) {
+            // 除了值是 PlainObject 的情况，@keyframes 和 animation 也是依赖 CSS selector 的
+            // 因此也被按照 nested style 处理
+            if (key === '@keyframes' || key === 'animation' || this.isNestedStyleObject(key, styleObject[key])) {
+                nestedStyles[key] = styleObject[key]
+            } else {
+                simpleStyles[key] = styleObject[key]
+            }
+        }
+        
+        return { simpleStyles, nestedStyles }
     }
     stringifyKeyFrameObject(keyframeObject: StyleObject): string {
         return Object.entries(keyframeObject).map(([key, value]) => {
