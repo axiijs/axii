@@ -299,6 +299,10 @@ class StyleManager {
         if (typeof styleObject === 'string') {
           return { simpleStyles: styleObject, nestedStyles: {} }
         }
+        // 处理 null 或 undefined 的情况，返回空字符串来清除样式
+        if (styleObject === null || styleObject === undefined) {
+          return { simpleStyles: '' as any, nestedStyles: {} }
+        }
 
         const simpleStyles: StyleObject = {}
         const nestedStyles: StyleObject = {}
