@@ -57,6 +57,12 @@ export function mergeProp(key:string, originValue:any, value: any) {
 export type StateTransformer<T> = (target:any, value:Atom<T|null>) => ((() => void)|undefined)
 export type StateFromRef<T> = Atom<T|null> & { ref:(target:any) => any }
 
+interface PropsWithConfig {
+  props: Props,
+  itemConfig: Record<string, ConfigItem>,
+  componentProp: Props,
+}
+
 const INNER_CONFIG_PROP = '__config__'
 /**
  * @internal
@@ -363,7 +369,7 @@ export class ComponentHost implements Host{
             return markBoundProp(b)
         })
     }
-    parseAndMergeProps(last: {props:Props, itemConfig: ConfigItem, componentProp: Props}, current: Props) {
+    parseAndMergeProps(last: PropsWithConfig, current: Props): PropsWithConfig {
         // CAUTION 为了性能直接 assign，外部调用时要自己保证 last 是一个新的对象
         Object.entries(current).forEach(([key, value]) => {
             if( key === INNER_CONFIG_PROP) {
@@ -377,7 +383,7 @@ export class ComponentHost implements Host{
 
         return last
     }
-    getFinalPropsAndItemConfig() {
+    getFinalPropsAndItemConfig(): PropsWithConfig {
         const inputPropsWithDefaultValue = this.type.propTypes ? this.normalizePropsByPropTypes(this.type.propTypes, this.inputProps) : this.inputProps
         const evaluatedProps = this.evaluateBoundProps(inputPropsWithDefaultValue, this.renderContext!)
 
@@ -385,7 +391,7 @@ export class ComponentHost implements Host{
         //  它需要和 inputProps 里面通用的引用，例如 form 状态。
         //  boundProps 优先级最低，inputProps 第二高，configProps 最高，是最上层穿透过来的。
         const allProps = evaluatedProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
-        return allProps.reduce((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {}})
+        return allProps.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {} })
     }
     render(): void {
         if (this.element !== this.placeholder) {
