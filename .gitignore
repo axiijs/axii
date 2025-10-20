@@ -30,3 +30,4 @@ coverage
 package-lock.json
 playground
 __tests__/__screenshots__
+/.history
