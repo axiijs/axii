@@ -23,7 +23,7 @@ export default {
     },
   },
   plugins: [dts({
-    tsConfigFilePath: resolve(__dirname, 'tsconfig.prod.json'),
+    tsconfigPath: resolve(__dirname, 'tsconfig.prod.json'),
     rollupTypes: true,
     include: ['src/**/*.ts', 'src/**/*.tsx', 'global.d.ts'],
     bundledPackages: ['data0']

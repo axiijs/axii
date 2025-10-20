@@ -15,7 +15,7 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "removeComments": false,
-    "lib": ["esnext", "dom"],
+    "lib": ["esnext", "dom", "es2023"],
     "types": ["node"],
     "rootDir": ".",
     "paths": {
