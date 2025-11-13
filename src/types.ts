@@ -86,13 +86,19 @@ export type RenderContext = {
     expose: ExposeFn,
     reusable: ReuseFn
 }
+
+export type StaticBoundProps = Record<string, any>
+export type DynamicBoundProps = (props: Props, renderContext: RenderContext) => Record<string, any>
+export type BoundProps = (StaticBoundProps | DynamicBoundProps)[]
+
 /**
  * @category Basic
  */
 export type Component = {
     (props: any, injectHandles: RenderContext): JSXElement,
     propTypes?: PropTypes,
-    boundProps?: ({[k: string]: any}|((props: Props, renderContext: RenderContext) => ({[k: string]: any})))[],
+    boundProps?: BoundProps
+    postBoundProps?: BoundProps
 }
 
 

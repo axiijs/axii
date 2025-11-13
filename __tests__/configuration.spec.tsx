@@ -200,6 +200,96 @@ describe('component configuration', () => {
         expect(innerProps2.value.overwrite2).toBe('from root')
     })
 
+    test('postBoundProps should apply after AOP props', () => {
+        const innerProps = {value:undefined} as any
+
+        function GrandChild({propRef, ...props}:any, {createElement}: RenderContext) {
+            propRef.value = props
+            return <div>
+                hello world
+            </div>
+        }
+
+        const Child:Component = ({propRef}, {createElement}: RenderContext) => {
+            return <GrandChild propRef={propRef} as="grandChild"/>
+        }
+
+        Child.boundProps = [{
+            '$grandChild:style': {
+                color: 'red'
+            },
+            '$grandChild:order': 1
+        }]
+
+        Child.postBoundProps = [{
+            '$grandChild:style': {
+                fontSize: 20
+            },
+            '$grandChild:order': 4
+        }]
+
+        function App({}, {createElement}: RenderContext) {
+            return <div>
+                <Child as="child" propRef={innerProps} $grandChild:style={{padding:10}} $grandChild:order={2}/>
+            </div>
+        }
+
+        root.render(<App $child={{'$grandChild:style': {margin:5}, '$grandChild:order': 3}}/>)
+
+        // 顺序应该是: boundProps -> inputProps -> configProps -> postBoundProps
+        expect(innerProps.value.style).toMatchObject([{color:'red'}, {padding:10}, {margin:5}, {fontSize: 20}])
+        expect(innerProps.value.order).toBe(4)
+    })
+
+    test('postBoundProps function should receive props after AOP', () => {
+        const innerProps = {value:undefined} as any
+        const receivedProps = {value:undefined} as any
+
+        function GrandChild({propRef, ...props}:any, {createElement}: RenderContext) {
+            propRef.value = props
+            return <div>
+                hello world
+            </div>
+        }
+
+        const Child:Component = ({propRef, baseCounter}, {createElement}: RenderContext) => {
+            return <GrandChild propRef={propRef} as="grandChild"/>
+        }
+
+        Child.boundProps = [{
+            baseCounter: 10,
+            '$grandChild:fromBound': 'bound-value',
+        }]
+
+        Child.postBoundProps = [(props: any) => {
+            // postBoundProps 函数应该能拿到 AOP 之后的所有 props
+            receivedProps.value = {...props}
+            // 基于 AOP 之后的 props 值来计算新的配置
+            return {
+                '$grandChild:fromPost': 'post-value',
+                '$grandChild:counter': props.baseCounter + 100
+            }
+        }]
+
+        function App({}, {createElement}: RenderContext) {
+            return <div>
+                <Child as="child" propRef={innerProps} baseCounter={20} $grandChild:fromInput="input-value"/>
+            </div>
+        }
+
+        root.render(<App $child={{baseCounter: 50, '$grandChild:fromAOP': 'aop-value'}}/>)
+
+        // postBoundProps 函数应该能看到 boundProps、inputProps 和 AOP props 的值
+        expect(receivedProps.value.baseCounter).toBe(50) // AOP 的值会覆盖前面的
+
+        // 最终的 props 应该包含 postBoundProps 基于 AOP 后 props 计算出的值
+        expect(innerProps.value.fromBound).toBe('bound-value')
+        expect(innerProps.value.fromInput).toBe('input-value')
+        expect(innerProps.value.fromAOP).toBe('aop-value')
+        expect(innerProps.value.fromPost).toBe('post-value')
+        expect(innerProps.value.counter).toBe(150) // 50 + 100，基于 AOP 后的 baseCounter
+    })
+
     test('configure component rewrite element', () => {
         let childOuterProps:any = null
         let nativeAttrs:any = {}
