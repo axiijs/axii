@@ -4,6 +4,11 @@ import {createElement, createRoot, RenderContext, setAutoUnitType} from "@framew
 import {Atom, atom, RxList} from "data0";
 import {StyleSize} from "../src/DOM.js";
 
+function wait(time: number) {
+    return new Promise(resolve => {
+        setTimeout(resolve, time)
+    })
+}
 
 describe('component render', () => {
 
@@ -260,6 +265,33 @@ describe('complex style', () => {
         const app = rootEl.firstElementChild!
         expect(getComputedStyle(app).getPropertyValue('padding')).toBe('1px')
         expect(getComputedStyle(app).getPropertyValue('margin')).toBe('2px')
+    })
+
+    test('handle css vars properly with inline style objects', async () => {
+        const style = atom({
+            '--main-color': 'rgb(255, 0, 0)',
+            color: 'var(--main-color)'
+        })
+
+        const App = () => {
+            return <div style={style}>app</div>
+        }
+        root.render(<App />)
+        const app = rootEl.firstElementChild! as HTMLDivElement
+        expect(app.style.getPropertyValue('color')).toBe('var(--main-color)')
+
+        expect(getComputedStyle(app).getPropertyValue('color')).toBe('rgb(255, 0, 0)')
+        expect(getComputedStyle(app).getPropertyValue('--main-color')).toBe('rgb(255, 0, 0)')
+        expect(app.style.getPropertyValue('--main-color')).toBe('rgb(255, 0, 0)')
+
+        style({
+            ...style(),
+            '--main-color': 'rgb(0, 255, 0)'
+        })
+        await(10)
+        expect(getComputedStyle(app).getPropertyValue('color')).toBe('rgb(0, 255, 0)')
+        expect(getComputedStyle(app).getPropertyValue('--main-color')).toBe('rgb(0, 255, 0)')
+        expect(app.style.getPropertyValue('--main-color')).toBe('rgb(0, 255, 0)')
     })
 
 })

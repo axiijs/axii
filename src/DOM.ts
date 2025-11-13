@@ -140,8 +140,12 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 node.style.cssText = style
             } else  if (typeof style === 'object') {
                 each(style, (v, k) => {
-                    // @ts-ignore
-                    node.style[k] = stringifyStyleValue(k, v)
+                    if (k[0] === '-' && k[1] === '-') {
+                        node.style.setProperty(k, v)
+                    }else {
+                        // @ts-ignore
+                        node.style[k] = stringifyStyleValue(k, v)
+                    }
                 })
             } else {
                 assert(false, 'style can only be string or object.')
