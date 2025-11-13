@@ -369,6 +369,14 @@ export class ComponentHost implements Host{
             return markBoundProp(b)
         })
     }
+    evaluatePostBoundProps(inputProps:Props, renderContext:RenderContext) {
+        return (this.type.postBoundProps || []).map(b => {
+            if (typeof b === 'function') {
+                return markDynamicProp(markBoundProp(b(inputProps, renderContext!)))
+            }
+            return markBoundProp(b)
+        })
+    }
     parseAndMergeProps(last: PropsWithConfig, current: Props): PropsWithConfig {
         // CAUTION 为了性能直接 assign，外部调用时要自己保证 last 是一个新的对象
         Object.entries(current).forEach(([key, value]) => {
@@ -385,13 +393,19 @@ export class ComponentHost implements Host{
     }
     getFinalPropsAndItemConfig(): PropsWithConfig {
         const inputPropsWithDefaultValue = this.type.propTypes ? this.normalizePropsByPropTypes(this.type.propTypes, this.inputProps) : this.inputProps
-        const evaluatedProps = this.evaluateBoundProps(inputPropsWithDefaultValue, this.renderContext!)
+        const evaluatedBoundProps = this.evaluateBoundProps(inputPropsWithDefaultValue, this.renderContext!)
 
         // CAUTION boundProps 的优先级是低于 inputProps，但这里 boundProps 还是可以拿到 inputProps 的值是因为
         //  它需要和 inputProps 里面通用的引用，例如 form 状态。
-        //  boundProps 优先级最低，inputProps 第二高，configProps 最高，是最上层穿透过来的。
-        const allProps = evaluatedProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
-        return allProps.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {} })
+        // 优先级：postBoundProps > configProps(AOP props) > boundProps > inputProps
+        const allPropsBeforePostBound = evaluatedBoundProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
+        const resultBeforePostBound = allPropsBeforePostBound.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {} })
+        
+        // 在 AOP props 之后，再评估和应用 postBoundProps
+        // CAUTION postBoundProps 的函数参数应该能拿到 AOP 之后的 props，所以传入 resultBeforePostBound.props
+        const propsAfterAOP = resultBeforePostBound.props
+        const evaluatedPostBoundProps = this.evaluatePostBoundProps(propsAfterAOP, this.renderContext!)
+        return evaluatedPostBoundProps.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), resultBeforePostBound)
     }
     render(): void {
         if (this.element !== this.placeholder) {
