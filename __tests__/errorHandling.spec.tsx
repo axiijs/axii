@@ -24,6 +24,7 @@ import {
     type PathContext,
     RxList,
     atom,
+    Fragment,
 } from "@framework";
 import {axiiDevtools, createCodeFrame, createCodeFrameMiddleware} from "../src/vitePlugin.js";
 import {ReusableHost} from "../src/ComponentHost.js";
@@ -340,10 +341,10 @@ describe('error handling examples', () => {
                 source: parentSource,
             },
         ])
-        expect(container.unhandledChildren).toEqual([
+        expect(container.inlineFunctionChildren).toEqual([
             {
-                placeholder: expect.any(Comment),
                 child: dynamicChild,
+                container: container.firstElementChild,
                 path: [0, 0],
                 source: parentSource,
             },
@@ -449,8 +450,8 @@ describe('error handling examples', () => {
             }, {once: true})
         })
         const list = new RxList([
-            <span>first</span>,
-            <span>second</span>,
+            <Fragment><span>first</span><span>!</span></Fragment>,
+            <Fragment><span>second</span><span>!</span></Fragment>,
         ])
         root.render(list as unknown as JSX.Element)
 

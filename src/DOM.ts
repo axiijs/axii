@@ -68,6 +68,7 @@ export interface ExtendedElement extends HTMLElement {
     }
     listenerBoundArgs?: any[]
     unhandledChildren?: UnhandledChildInfo[]
+    inlineFunctionChildren?: InlineFunctionChildInfo[]
     unhandledAttr?: UnhandledAttrInfo[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
@@ -261,6 +262,13 @@ export type UnhandledChildInfo = {
     source?: AxiiSource
 }
 
+export type InlineFunctionChildInfo = {
+    child: any,
+    container: ParentNode,
+    path: number[]
+    source?: AxiiSource
+}
+
 export type UnhandledAttrInfo = {
     el: ExtendedElement,
     key: string,
@@ -314,6 +322,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     // Initialize arrays only if needed
     const unhandledAttr: UnhandledAttrInfo[] = []
     const unhandledChildren: UnhandledChildInfo[] = []
+    const inlineFunctionChildren: InlineFunctionChildInfo[] = []
     const refHandles: RefHandleInfo[] = []
     const detachStyledChildren: DetachStyledInfo[] = []
 
@@ -321,6 +330,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
     if (type !== Fragment && children.length === 1 && (typeof children[0] === 'string' || typeof children[0]  === 'number')) {
         (container as HTMLElement).textContent = children[0].toString()
+    } else if (type !== Fragment && children.length === 1 && typeof children[0] === 'function') {
+        inlineFunctionChildren.push({child: children[0], container, path: [0], source: debugSource})
     } else if (children.length) {
     // if (children.length) {
         const tempFragment = document.createDocumentFragment()
@@ -342,6 +353,14 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                         source: c.source ?? childElement.__axiiSource ?? debugSource,
                     })))
                     childElement.unhandledChildren = undefined
+                }
+                if (childElement.inlineFunctionChildren?.length) {
+                    inlineFunctionChildren.push(...childElement.inlineFunctionChildren.map(c => ({
+                        ...c,
+                        path: [index, ...c.path],
+                        source: c.source ?? childElement.__axiiSource ?? debugSource,
+                    })))
+                    childElement.inlineFunctionChildren = undefined
                 }
                 if (childElement.unhandledAttr?.length) {
                     unhandledAttr.push(...childElement.unhandledAttr.map(c => ({
@@ -396,6 +415,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     const containerElement = container as ExtendedElement
     if (debugSource) containerElement.__axiiSource = debugSource
     if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
+    if (inlineFunctionChildren.length) containerElement.inlineFunctionChildren = inlineFunctionChildren
     if (unhandledAttr.length) containerElement.unhandledAttr = unhandledAttr
     if (refHandles.length) containerElement.refHandles = refHandles
     if (detachStyledChildren.length) containerElement.detachStyledChildren = detachStyledChildren

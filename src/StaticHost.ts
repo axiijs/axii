@@ -2,6 +2,7 @@ import {
     createElement,
     DetachStyledInfo,
     ExtendedElement,
+    InlineFunctionChildInfo,
     insertBefore,
     RefHandleInfo,
     setAttribute,
@@ -403,11 +404,12 @@ class InlineFunctionTextBinding {
 
     constructor(
         public source: FunctionNode,
-        public placeholder: Comment,
+        public placeholder: Comment | null,
         public pathContext: PathContext,
         public ownerHost: StaticHost,
+        container?: ParentNode,
     ) {
-        this.container = placeholder.parentNode
+        this.container = placeholder?.parentNode ?? container ?? null
     }
 
     render() {
@@ -447,13 +449,13 @@ class InlineFunctionTextBinding {
             this.stopAutoRender?.()
             this.cleanupRendered()
         }
-        this.placeholder.remove()
+        this.placeholder?.remove()
     }
 
     private renderNode(node: ReturnType<FunctionNode>, pauseCollectChild: () => void, resumeCollectChild: () => void) {
         if (node === null || node === undefined) {
             const hadInnerHost = this.cleanupRendered()
-            if (!hadInnerHost) this.placeholder.remove()
+            if (!hadInnerHost) this.placeholder?.remove()
             return
         }
 
@@ -466,13 +468,14 @@ class InlineFunctionTextBinding {
                 this.textNode = document.createTextNode(text)
                 this.insertStandaloneNode(this.textNode)
             }
-            if (!hadInnerHost) this.placeholder.remove()
+            if (!hadInnerHost) this.placeholder?.remove()
             return
         }
 
         this.cleanupRendered()
-        this.insertStandaloneNode(this.placeholder)
-        const host = createHost(node, this.placeholder, {
+        const placeholder = this.getPlaceholder()
+        this.insertStandaloneNode(placeholder)
+        const host = createHost(node, placeholder, {
             ...this.pathContext,
             hostPath: createLinkedNode<Host>(this.ownerHost, this.pathContext.hostPath)
         })
@@ -485,7 +488,7 @@ class InlineFunctionTextBinding {
     }
 
     private insertStandaloneNode(node: ChildNode) {
-        if (this.placeholder.parentNode) {
+        if (this.placeholder?.parentNode) {
             this.placeholder.parentNode.insertBefore(node, this.placeholder)
             return
         }
@@ -510,18 +513,27 @@ class InlineFunctionTextBinding {
         }
         return false
     }
+
+    private getPlaceholder() {
+        if (!this.placeholder) {
+            this.placeholder = document.createComment('unhandledChild')
+        }
+        return this.placeholder
+    }
 }
 
 function isPrimitiveText(node: ReturnType<FunctionNode>): node is string | number | boolean {
     return typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean'
 }
 
-function canInlineFunctionTextBinding(child: unknown, placeholder: Comment): child is FunctionNode {
+function canInlineFunctionTextBinding(child: unknown, placeholder?: Comment, container?: ParentNode): child is FunctionNode {
     return typeof child === 'function' &&
         !isAtom(child) &&
         !isReactive(child) &&
-        placeholder.parentNode instanceof Element &&
-        placeholder.parentNode.childNodes.length === 1
+        (
+            placeholder?.parentNode instanceof Element && placeholder.parentNode.childNodes.length === 1 ||
+            !placeholder?.parentNode && container instanceof Element && container.childNodes.length === 0
+        )
 }
 
 // 添加全局配置对象
@@ -595,32 +607,46 @@ export class StaticHost implements Host {
     collectInnerHost() {
         const result = this.source as ExtendedElement
 
-        const { unhandledChildren } = result
+        const { unhandledChildren, inlineFunctionChildren } = result
 
-        if (unhandledChildren) {
+        if (unhandledChildren || inlineFunctionChildren) {
             const reactiveHosts: Host[] = []
             const inlineFunctionTextBindings: InlineFunctionTextBinding[] = []
 
-            unhandledChildren.forEach(({ placeholder, child, path, source }) => {
+            const collectChild = ({ placeholder, child, path, source, container }: {
+                placeholder?: Comment,
+                child: unknown,
+                path: number[],
+                source?: InlineFunctionChildInfo['source'],
+                container?: InlineFunctionChildInfo['container'],
+            }, lazyPlaceholder?: boolean) => {
                 const childPathContext = {
                     ...this.pathContext,
                     hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath),
                     elementPath: path,
-                    debugSource: source ?? child.__axiiSource ?? this.pathContext.debugSource,
+                    debugSource: source ?? (child as any).__axiiSource ?? this.pathContext.debugSource,
                 }
 
-                if (canInlineFunctionTextBinding(child, placeholder)) {
-                    inlineFunctionTextBindings.push(new InlineFunctionTextBinding(child, placeholder, childPathContext, this))
+                if (canInlineFunctionTextBinding(child, placeholder, container)) {
+                    inlineFunctionTextBindings.push(new InlineFunctionTextBinding(child, placeholder ?? null, childPathContext, this, container))
                     return
                 }
 
-                reactiveHosts.push(createHost(child, placeholder, childPathContext))
-            });
+                if (lazyPlaceholder) {
+                    placeholder = document.createComment('unhandledChild')
+                    container!.appendChild(placeholder)
+                }
+                reactiveHosts.push(createHost(child, placeholder!, childPathContext))
+            }
+
+            unhandledChildren?.forEach(childInfo => collectChild(childInfo));
+            inlineFunctionChildren?.forEach(childInfo => collectChild(childInfo, true));
 
             if (reactiveHosts.length) this.reactiveHosts = reactiveHosts
             if (inlineFunctionTextBindings.length) this.inlineFunctionTextBindings = inlineFunctionTextBindings
 
             result.unhandledChildren = undefined
+            result.inlineFunctionChildren = undefined
         }
     }
     collectReactiveAttr() {

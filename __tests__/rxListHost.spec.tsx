@@ -156,6 +156,68 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.textContent).toBe('bcAA')
     })
 
+    test('rxList renders inline primitive function items without unhandled child comments', () => {
+        const arr = new RxList<any>([
+            {id: 1, name: atom('a')},
+            {id: 2, name: atom('b')},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <div>{() => item.name()}</div>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const container = rootEl.firstElementChild!
+        const firstNode = container.children[0]
+
+        expect(container.textContent).toBe('ab')
+        expect(commentTexts(container.children[0])).not.toContain('unhandledChild')
+        expect(commentTexts(container.children[1])).not.toContain('unhandledChild')
+
+        arr.push({id: 3, name: atom('c')})
+        expect(container.textContent).toBe('abc')
+        expect(commentTexts(container.children[2])).not.toContain('unhandledChild')
+
+        arr.unshift({id: 0, name: atom('z')})
+        expect(container.textContent).toBe('zabc')
+        expect(container.children[1]).toBe(firstNode)
+        expect(commentTexts(container.children[0])).not.toContain('unhandledChild')
+
+        arr.splice(2, 1, {id: 4, name: atom('x')}, {id: 5, name: atom('y')})
+        expect(container.textContent).toBe('zaxyc')
+        expect(commentTexts(container.children[2])).not.toContain('unhandledChild')
+        expect(commentTexts(container.children[3])).not.toContain('unhandledChild')
+
+        arr.set(1, {id: 6, name: atom('A')})
+        expect(container.textContent).toBe('zAxyc')
+        expect(commentTexts(container.children[1])).not.toContain('unhandledChild')
+    })
+
+    test('rxList inline primitive function items still reuse nodes when reordered', () => {
+        const arr = new RxList<any>([
+            {id: 1, name: atom('a')},
+            {id: 2, name: atom('b')},
+            {id: 3, name: atom('c')},
+            {id: 4, name: atom('d')},
+        ])
+
+        root.render(arr.map(item => <div>{() => item.name()}</div>) as unknown as Function)
+        const nodes = Array.from(rootEl.children)
+
+        expect(commentTexts(rootEl)).not.toContain('unhandledChild')
+
+        arr.reposition(0, 2)
+        expect(rootEl.textContent).toBe('bcad')
+        expect(rootEl.children[2]).toBe(nodes[0])
+
+        arr.swap(1, 3)
+        expect(rootEl.textContent).toBe('bdac')
+        expect(rootEl.children[3]).toBe(nodes[2])
+        expect(commentTexts(rootEl)).not.toContain('unhandledChild')
+    })
+
     test('function child primitive output reuses text node without computed placeholder', async () => {
         const label = atom('a')
 
@@ -472,6 +534,58 @@ describe('rxList render', () => {
 
         expect(rootEl.firstElementChild!.children.length).toBe(6)
         expect(rootEl.firstElementChild!.textContent).toBe('c!b!a!')
+    })
+
+    test('rxList keeps non-compact fragment ranges through rebuild and delete', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+            {id:4, name:'d'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <Fragment><span>{item.name}</span><span>!</span></Fragment>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const container = rootEl.firstElementChild!
+        const nodes = Array.from(container.children)
+
+        expect(commentTexts(container)).toContain('rx list item')
+
+        arr.sortSelf((a, b) => b.name.localeCompare(a.name))
+        expect(container.textContent).toBe('d!c!b!a!')
+        expect(Array.from(container.children)).toEqual([
+            nodes[6], nodes[7], nodes[4], nodes[5], nodes[2], nodes[3], nodes[0], nodes[1],
+        ])
+
+        arr.splice(1, 1)
+        expect(container.textContent).toBe('d!b!a!')
+        expect(commentTexts(container)).toContain('rx list item')
+    })
+
+    test('rxList explicit set keeps non-compact fragment ranges', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <Fragment><span>{item.name}</span><span>!</span></Fragment>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const container = rootEl.firstElementChild!
+
+        arr.set(1, {id:3, name:'c'})
+
+        expect(container.textContent).toBe('a!c!')
+        expect(commentTexts(container)).toContain('rx list item')
     })
 
     test('rxList reposition moves child ranges from reorder metadata', () => {

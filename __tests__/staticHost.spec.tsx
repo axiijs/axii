@@ -116,6 +116,7 @@ describe('static host render', () => {
 
     test('inline single function child primitive text without function host comment', async () => {
         const label = atom<string | null>('a')
+        const createComment = vi.spyOn(document, 'createComment')
 
         const host = root.render(<span>{() => label()}</span>) as StaticHost
         const span = rootEl.firstElementChild!
@@ -126,6 +127,7 @@ describe('static host render', () => {
         expect(textNode?.nodeType).toBe(Node.TEXT_NODE)
         expect(span.textContent).toBe('a')
         expect(commentTexts(span)).not.toContain('unhandledChild')
+        expect(createComment).not.toHaveBeenCalledWith('unhandledChild')
 
         label('b')
         await sleep(1)
@@ -137,6 +139,7 @@ describe('static host render', () => {
         await sleep(1)
         expect(span.childNodes.length).toBe(0)
         expect(commentTexts(span)).not.toContain('unhandledChild')
+        createComment.mockRestore()
     })
 
     test('inline single function child can fall back to generic host output', async () => {
