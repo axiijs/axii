@@ -1,9 +1,15 @@
 /** @jsx createElement */
-import {ComponentHost, createElement, createRoot, StaticHost} from "@framework";
+/** @jsxFrag Fragment */
+import {ComponentHost, createElement, createRoot, Fragment, StaticHost} from "@framework";
 import {atom, RxList, RxMap} from "data0";
-import {beforeEach, describe, expect, test} from "vitest";
+import {beforeEach, describe, expect, test, vi} from "vitest";
 import {RxListHost} from "../src/RxListHost";
 
+function wait(time: number) {
+    return new Promise(resolve => {
+        setTimeout(resolve, time)
+    })
+}
 
 describe('rxList render', () => {
 
@@ -290,6 +296,109 @@ describe('rxList render', () => {
 
         arr.swap(0, 2)
         expect(rootEl.children[0].innerHTML).toBe('a')
+    })
+
+    test('rxList sort reuses existing dom nodes', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'c'},
+            {id:3, name:'b'},
+        ])
+
+        root.render(arr.map(item => <span>{item.name}</span>) as unknown as Function)
+
+        const aNode = rootEl.children[0]
+        const cNode = rootEl.children[1]
+        const bNode = rootEl.children[2]
+
+        arr.sortSelf((a, b) => b.name.localeCompare(a.name))
+
+        expect(rootEl.children.length).toBe(3)
+        expect(rootEl.children[0]).toBe(cNode)
+        expect(rootEl.children[1]).toBe(bNode)
+        expect(rootEl.children[2]).toBe(aNode)
+        expect(rootEl.textContent).toBe('cba')
+    })
+
+    test('rxList sort rebuilds large reorder ranges without temporary comments', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+            {id:4, name:'d'},
+        ])
+
+        root.render(arr.map(item => <span>{item.name}</span>) as unknown as Function)
+
+        const nodes = Array.from(rootEl.children)
+        const createComment = vi.spyOn(document, 'createComment')
+
+        arr.sortSelf((a, b) => b.name.localeCompare(a.name))
+
+        expect(createComment).not.toHaveBeenCalled()
+        expect(Array.from(rootEl.children)).toEqual([nodes[3], nodes[2], nodes[1], nodes[0]])
+        expect(rootEl.textContent).toBe('dcba')
+        createComment.mockRestore()
+    })
+
+    test('rxList reorder moves fragment child ranges', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <Fragment><span>{item.name}</span><span>!</span></Fragment>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect(rootEl.firstElementChild!.textContent).toBe('a!b!c!')
+
+        arr.swap(0, 2)
+
+        expect(rootEl.firstElementChild!.children.length).toBe(6)
+        expect(rootEl.firstElementChild!.textContent).toBe('c!b!a!')
+    })
+
+    test('rxList reorder keeps component and function children reactive', async () => {
+        const arr = new RxList<any>([
+            {id:1, name:atom('a')},
+            {id:2, name:atom('b')},
+        ])
+
+        function Item({item}: { item: { name: ReturnType<typeof atom<string>> } }) {
+            return <span>{() => item.name()}</span>
+        }
+
+        root.render(arr.map(item => <Item item={item}/>) as unknown as Function)
+        expect(rootEl.textContent).toBe('ab')
+
+        arr.swap(0, 1)
+        expect(rootEl.textContent).toBe('ba')
+
+        arr.at(0)!.name('B')
+        await wait(1)
+        expect(rootEl.textContent).toBe('Ba')
+    })
+
+    test('rxList reorder does not create temporary comment placeholders', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+        ])
+
+        root.render(arr.map(item => <span>{item.name}</span>) as unknown as Function)
+
+        const createComment = vi.spyOn(document, 'createComment')
+        arr.swap(0, 2)
+
+        expect(createComment).not.toHaveBeenCalled()
+        expect(rootEl.textContent).toBe('cba')
+        createComment.mockRestore()
     })
 
 })

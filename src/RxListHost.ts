@@ -99,18 +99,7 @@ export class RxListHost implements Host{
                             }
 
                         } else if(method === 'reorder') {
-                            const placeholders = (new Array(host.hosts!.length.raw)).fill(1).map((_, index) => document.createComment(`rx list item reorder placeholder ${index}`))
-                            const placeholderFragment = document.createDocumentFragment()
-                            placeholders.forEach(placeholder => {
-                                placeholderFragment.appendChild(placeholder)
-                            })
-                            insertBefore(placeholderFragment, host.placeholder.parentElement!.firstChild! as HTMLElement)
-
-                            // FIXME 需要优化一下移动算法。
-                            host.hosts!.raw.forEach((childHost, index) => {
-                                insertBefore(childHost.element, placeholders[index],  childHost.placeholder)
-                                placeholders[index].remove()
-                            })
+                            reorderHostRanges(host.hosts!.raw, argv![0] as Order[], host.placeholder)
 
                         } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
                             // explicit key change
@@ -155,4 +144,104 @@ export class RxListHost implements Host{
 function summarizePatchArg(arg: unknown) {
     if (arg && typeof arg === 'object') return Object.getPrototypeOf(arg)?.constructor?.name ?? 'object'
     return String(arg)
+}
+
+type Order = [number, number]
+
+function reorderHostRanges(hosts: Host[], newOrder: Order[], placeholder: Comment) {
+    if (hosts.length < 2 || newOrder.length === 0) return
+
+    if (isTwoItemSwap(newOrder)) {
+        swapTwoHostRanges(hosts, newOrder, placeholder)
+        return
+    }
+
+    const oldIndexesByTargetIndex = hosts.map((_, index) => index)
+    newOrder.forEach(([oldIndex, newIndex]) => {
+        oldIndexesByTargetIndex[newIndex] = oldIndex
+    })
+
+    const stableTargetIndexes = findStableTargetIndexes(oldIndexesByTargetIndex)
+    if (hosts.length - stableTargetIndexes.size > hosts.length / 2) {
+        rebuildHostRanges(hosts, placeholder)
+        return
+    }
+
+    let refEl: Host['element'] | Comment = placeholder
+
+    for (let targetIndex = hosts.length - 1; targetIndex >= 0; targetIndex--) {
+        const childHost = hosts[targetIndex]!
+        if (!stableTargetIndexes.has(targetIndex)) {
+            insertBefore(childHost.element, refEl, childHost.placeholder)
+        }
+        refEl = childHost.element
+    }
+}
+
+function isTwoItemSwap(newOrder: Order[]) {
+    return newOrder.length === 2 &&
+        newOrder[0]![0] === newOrder[1]![1] &&
+        newOrder[0]![1] === newOrder[1]![0] &&
+        newOrder[0]![0] !== newOrder[0]![1]
+}
+
+function swapTwoHostRanges(hosts: Host[], newOrder: Order[], placeholder: Comment) {
+    const firstTargetIndex = Math.min(newOrder[0]![1], newOrder[1]![1])
+    const secondTargetIndex = Math.max(newOrder[0]![1], newOrder[1]![1])
+    const firstHost = hosts[firstTargetIndex]!
+    const secondHost = hosts[secondTargetIndex]!
+
+    insertBefore(firstHost.element, secondHost.element, firstHost.placeholder)
+    if (secondTargetIndex > firstTargetIndex + 1) {
+        insertBefore(secondHost.element, hosts[secondTargetIndex + 1]?.element || placeholder, secondHost.placeholder)
+    }
+}
+
+function rebuildHostRanges(hosts: Host[], placeholder: Comment) {
+    const fragment = document.createDocumentFragment()
+    hosts.forEach(host => appendHostRange(fragment, host))
+    insertBefore(fragment, placeholder)
+}
+
+function appendHostRange(fragment: DocumentFragment, host: Host) {
+    let node: ChildNode | null = host.element
+    while (node) {
+        const next: ChildNode | null = node.nextSibling
+        fragment.appendChild(node)
+        if (node === host.placeholder) break
+        node = next
+    }
+}
+
+function findStableTargetIndexes(oldIndexesByTargetIndex: number[]) {
+    const tailPositions: number[] = []
+    const previousPositions = new Array<number>(oldIndexesByTargetIndex.length).fill(-1)
+
+    oldIndexesByTargetIndex.forEach((oldIndex, targetIndex) => {
+        let low = 0
+        let high = tailPositions.length
+
+        while (low < high) {
+            const mid = (low + high) >> 1
+            if (oldIndexesByTargetIndex[tailPositions[mid]!] < oldIndex) {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+
+        if (low > 0) {
+            previousPositions[targetIndex] = tailPositions[low - 1]!
+        }
+        tailPositions[low] = targetIndex
+    })
+
+    const stableIndexes = new Set<number>()
+    let current = tailPositions[tailPositions.length - 1]
+    while (current !== undefined && current !== -1) {
+        stableIndexes.add(current)
+        current = previousPositions[current]
+    }
+
+    return stableIndexes
 }
