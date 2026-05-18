@@ -19,10 +19,12 @@ export class RxListHost implements Host{
 
     renderNewHosts(hosts: Host[]|RxList<Host>) {
         const frag = document.createDocumentFragment()
-        hosts.forEach(host => {
+        const hostArray = hosts instanceof RxList ? hosts.raw : hosts
+        for (let i = 0; i < hostArray.length; i++) {
+            const host = hostArray[i]!
             frag.appendChild(host.placeholder)
             host.render()
-        })
+        }
         return frag
     }
 

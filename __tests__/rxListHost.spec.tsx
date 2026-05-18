@@ -156,6 +156,26 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.textContent).toBe('bcAA')
     })
 
+    test('rxList host initial render does not subscribe every mapped index', () => {
+        const arr = new RxList<number>([1, 2, 3])
+
+        function App() {
+            return <div>
+                {arr.map((item) => <div>{item}</div>)}
+            </div>
+        }
+
+        const host = root.render(<App/>) as ComponentHost
+        const rxListHost = (host.innerHost as StaticHost).reactiveHosts![0] as RxListHost
+
+        expect(rootEl.firstElementChild!.textContent).toBe('123')
+        expect(rxListHost.hosts!.indexKeyDeps.size).toBe(0)
+
+        arr.push(4)
+        expect(rootEl.firstElementChild!.textContent).toBe('1234')
+        expect(rxListHost.hosts!.indexKeyDeps.size).toBe(0)
+    })
+
     test('rxList renders inline primitive function items without unhandled child comments', () => {
         const arr = new RxList<any>([
             {id: 1, name: atom('a')},
