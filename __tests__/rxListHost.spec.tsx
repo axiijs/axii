@@ -363,6 +363,96 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.textContent).toBe('c!b!a!')
     })
 
+    test('rxList reposition moves child ranges from reorder metadata', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+            {id:4, name:'d'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <Fragment><span>{item.name}</span><span>!</span></Fragment>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const firstRangeNode = rootEl.firstElementChild!.children[0]
+        expect(rootEl.firstElementChild!.textContent).toBe('a!b!c!d!')
+
+        arr.reposition(0, 2)
+
+        expect(rootEl.firstElementChild!.children.length).toBe(8)
+        expect(rootEl.firstElementChild!.children[4]).toBe(firstRangeNode)
+        expect(rootEl.firstElementChild!.textContent).toBe('b!c!a!d!')
+    })
+
+    test('rxList reposition moves multiple child ranges forward and backward', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+            {id:4, name:'d'},
+            {id:5, name:'e'},
+            {id:6, name:'f'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <Fragment><span>{item.name}</span><span>!</span></Fragment>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const bNode = rootEl.firstElementChild!.children[2]
+        const cNode = rootEl.firstElementChild!.children[4]
+        expect(rootEl.firstElementChild!.textContent).toBe('a!b!c!d!e!f!')
+
+        arr.reposition(1, 4, 2)
+
+        expect(rootEl.firstElementChild!.textContent).toBe('a!d!e!f!b!c!')
+        expect(rootEl.firstElementChild!.children[8]).toBe(bNode)
+        expect(rootEl.firstElementChild!.children[10]).toBe(cNode)
+
+        const bNodeAfterForwardMove = rootEl.firstElementChild!.children[8]
+        const cNodeAfterForwardMove = rootEl.firstElementChild!.children[10]
+        arr.reposition(4, 0, 2)
+
+        expect(rootEl.firstElementChild!.textContent).toBe('b!c!a!d!e!f!')
+        expect(rootEl.firstElementChild!.children[0]).toBe(bNodeAfterForwardMove)
+        expect(rootEl.firstElementChild!.children[2]).toBe(cNodeAfterForwardMove)
+    })
+
+    test('rxList reposition moves child ranges at head and tail boundaries', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+            {id:4, name:'d'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <Fragment><span>{item.name}</span><span>!</span></Fragment>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const aNode = rootEl.firstElementChild!.children[0]
+        const dNode = rootEl.firstElementChild!.children[6]
+
+        arr.reposition(0, 3)
+
+        expect(rootEl.firstElementChild!.textContent).toBe('b!c!d!a!')
+        expect(rootEl.firstElementChild!.children[6]).toBe(aNode)
+
+        arr.reposition(2, 0)
+
+        expect(rootEl.firstElementChild!.textContent).toBe('d!b!c!a!')
+        expect(rootEl.firstElementChild!.children[0]).toBe(dNode)
+    })
+
     test('rxList reorder keeps component and function children reactive', async () => {
         const arr = new RxList<any>([
             {id:1, name:atom('a')},

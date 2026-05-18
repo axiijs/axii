@@ -43,6 +43,7 @@ export class RxListHost implements Host{
             function applyPatch(_, triggerInfos) {
                 triggerInfos.forEach((triggerInfo) => {
                     const {method, argv, key, methodResult, type} = triggerInfo
+                    const reorderInfo = (triggerInfo as { reorderInfo?: ReorderPatchInfo }).reorderInfo
                     try {
                         withReactiveTrace({
                             type: 'rx-list-patch',
@@ -99,7 +100,7 @@ export class RxListHost implements Host{
                             }
 
                         } else if(method === 'reorder') {
-                            reorderHostRanges(host.hosts!.raw, argv![0] as Order[], host.placeholder)
+                            reorderHostRanges(host.hosts!.raw, argv![0] as Order[], host.placeholder, reorderInfo as ReorderPatchInfo | undefined)
 
                         } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
                             // explicit key change
@@ -147,9 +148,18 @@ function summarizePatchArg(arg: unknown) {
 }
 
 type Order = [number, number]
+type ReorderPatchInfo = {
+    kind: 'swap' | 'move' | 'sort' | 'reorder',
+    newStart?: number,
+    limit?: number,
+}
 
-function reorderHostRanges(hosts: Host[], newOrder: Order[], placeholder: Comment) {
+function reorderHostRanges(hosts: Host[], newOrder: Order[], placeholder: Comment, reorderInfo?: ReorderPatchInfo) {
     if (hosts.length < 2 || newOrder.length === 0) return
+
+    if (reorderInfo?.kind === 'move' && moveHostRanges(hosts, reorderInfo, placeholder)) {
+        return
+    }
 
     if (isTwoItemSwap(newOrder)) {
         swapTwoHostRanges(hosts, newOrder, placeholder)
@@ -176,6 +186,18 @@ function reorderHostRanges(hosts: Host[], newOrder: Order[], placeholder: Commen
         }
         refEl = childHost.element
     }
+}
+
+function moveHostRanges(hosts: Host[], reorderInfo: ReorderPatchInfo, placeholder: Comment) {
+    const {newStart, limit} = reorderInfo
+    if (newStart === undefined || limit === undefined || limit < 1) return false
+
+    const firstMovedHost = hosts[newStart]
+    const lastMovedHost = hosts[newStart + limit - 1]
+    if (!firstMovedHost || !lastMovedHost) return false
+
+    insertBefore(firstMovedHost.element, hosts[newStart + limit]?.element || placeholder, lastMovedHost.placeholder)
+    return true
 }
 
 function isTwoItemSwap(newOrder: Order[]) {
