@@ -1,6 +1,6 @@
 /** @jsx createElement */
-import {atom, createElement, createRef, createRoot, StaticHostConfig} from "@framework";
-import {beforeEach, describe, expect, test} from "vitest";
+import {atom, createElement, createRef, createRoot, StaticHost, StaticHostConfig} from "@framework";
+import {beforeEach, describe, expect, test, vi} from "vitest";
 
 // function eventToPromise(el: HTMLElement, event: string) {
 //     return new Promise(resolve => {
@@ -9,6 +9,16 @@ import {beforeEach, describe, expect, test} from "vitest";
 // }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(() => resolve(), ms))
+function commentTexts(root: Node) {
+    const comments: string[] = []
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT)
+    let node = walker.nextNode()
+    while (node) {
+        comments.push(node.textContent ?? '')
+        node = walker.nextNode()
+    }
+    return comments
+}
 function logDocumentAdoptedStyleSheets() {
   console.log(
     Array.from(document.adoptedStyleSheets)
@@ -102,6 +112,64 @@ describe('static host render', () => {
         }
         root.render(<App/>)
         expect((rootEl.firstElementChild!.firstElementChild! as HTMLElement).dataset.arr).toBe('0,1,2,3')
+    })
+
+    test('inline single function child primitive text without function host comment', async () => {
+        const label = atom<string | null>('a')
+
+        const host = root.render(<span>{() => label()}</span>) as StaticHost
+        const span = rootEl.firstElementChild!
+        const textNode = span.firstChild
+
+        expect(host.reactiveHosts).toBeUndefined()
+        expect(host.inlineFunctionTextBindings?.length).toBe(1)
+        expect(textNode?.nodeType).toBe(Node.TEXT_NODE)
+        expect(span.textContent).toBe('a')
+        expect(commentTexts(span)).not.toContain('unhandledChild')
+
+        label('b')
+        await sleep(1)
+        expect(span.firstChild).toBe(textNode)
+        expect(span.textContent).toBe('b')
+        expect(commentTexts(span)).not.toContain('unhandledChild')
+
+        label(null)
+        await sleep(1)
+        expect(span.childNodes.length).toBe(0)
+        expect(commentTexts(span)).not.toContain('unhandledChild')
+    })
+
+    test('inline single function child can fall back to generic host output', async () => {
+        const rich = atom(false)
+
+        root.render(<span>{() => rich() ? <strong>rich</strong> : 'plain'}</span>)
+        const span = rootEl.firstElementChild!
+
+        expect(span.textContent).toBe('plain')
+        expect(commentTexts(span)).not.toContain('unhandledChild')
+
+        rich(true)
+        await sleep(1)
+        expect(span.firstElementChild?.tagName).toBe('STRONG')
+        expect(span.textContent).toBe('rich')
+
+        rich(false)
+        await sleep(1)
+        expect(span.firstChild?.nodeType).toBe(Node.TEXT_NODE)
+        expect(span.textContent).toBe('plain')
+        expect(commentTexts(span)).not.toContain('unhandledChild')
+    })
+
+    test('inline single function child runs user cleanup on destroy', () => {
+        const cleanup = vi.fn()
+
+        root.render(<span>{({onCleanup}: any) => {
+                onCleanup(cleanup)
+                return 'text'
+            }}</span>)
+        root.destroy()
+
+        expect(cleanup).toHaveBeenCalledTimes(1)
     })
 
     test('camelize ^data-* attribute to use dataset correctly', () => {

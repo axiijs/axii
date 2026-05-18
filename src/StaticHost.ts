@@ -9,7 +9,7 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
-import {autorun, isAtom, isReactive} from "data0";
+import {autorun, isAtom, isReactive, Notifier} from "data0";
 import {createHost} from "./createHost";
 import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
@@ -390,6 +390,140 @@ ${this.stringifyStyleObject(valueStyleObject)}
 
 type StyleObject = { [k: string]: any }
 
+type FunctionNodeContext = {
+    onCleanup: (cleanup:()=> any) => void
+}
+type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|string|number|null|boolean|undefined
+
+class InlineFunctionTextBinding {
+    stopAutoRender?: () => any
+    textNode: Text|null = null
+    innerHost: Host|null = null
+    container: ParentNode|null
+
+    constructor(
+        public source: FunctionNode,
+        public placeholder: Comment,
+        public pathContext: PathContext,
+        public ownerHost: StaticHost,
+    ) {
+        this.container = placeholder.parentNode
+    }
+
+    render() {
+        let scheduleRecompute = false
+
+        this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
+            withReactiveTrace({
+                type: 'function-node',
+                operation: 'render',
+                hostType: 'StaticHost',
+                elementPath: this.pathContext.elementPath,
+                source: this.pathContext.debugSource,
+            }, () => {
+                let cleanup: (() => any) | undefined
+                const node = this.source({onCleanup: (fn) => cleanup = fn})
+                this.renderNode(node, pauseCollectChild, resumeCollectChild)
+                onCleanup(() => cleanup?.())
+            })
+        }, (recompute) => {
+            if (scheduleRecompute) return
+            scheduleRecompute = true
+            queueMicrotask(() => {
+                withReactiveTrace({
+                    type: 'function-node-recompute',
+                    operation: 'recompute',
+                    hostType: 'StaticHost',
+                    elementPath: this.pathContext.elementPath,
+                    source: this.pathContext.debugSource,
+                }, recompute)
+                scheduleRecompute = false
+            })
+        })
+    }
+
+    destroy(parentHandleComputed?: boolean) {
+        if (!parentHandleComputed) {
+            this.stopAutoRender?.()
+            this.cleanupRendered()
+        }
+        this.placeholder.remove()
+    }
+
+    private renderNode(node: ReturnType<FunctionNode>, pauseCollectChild: () => void, resumeCollectChild: () => void) {
+        if (node === null || node === undefined) {
+            const hadInnerHost = this.cleanupRendered()
+            if (!hadInnerHost) this.placeholder.remove()
+            return
+        }
+
+        if (isPrimitiveText(node)) {
+            const text = node.toString()
+            const hadInnerHost = this.cleanupInnerHost()
+            if (this.textNode) {
+                this.textNode.data = text
+            } else {
+                this.textNode = document.createTextNode(text)
+                this.insertStandaloneNode(this.textNode)
+            }
+            if (!hadInnerHost) this.placeholder.remove()
+            return
+        }
+
+        this.cleanupRendered()
+        this.insertStandaloneNode(this.placeholder)
+        const host = createHost(node, this.placeholder, {
+            ...this.pathContext,
+            hostPath: createLinkedNode<Host>(this.ownerHost, this.pathContext.hostPath)
+        })
+        Notifier.instance.pauseTracking()
+        pauseCollectChild()
+        host.render()
+        resumeCollectChild()
+        Notifier.instance.resetTracking()
+        this.innerHost = host
+    }
+
+    private insertStandaloneNode(node: ChildNode) {
+        if (this.placeholder.parentNode) {
+            this.placeholder.parentNode.insertBefore(node, this.placeholder)
+            return
+        }
+
+        this.container?.appendChild(node)
+    }
+
+    private cleanupRendered() {
+        const hadInnerHost = this.cleanupInnerHost()
+        if (this.textNode) {
+            this.textNode.remove()
+            this.textNode = null
+        }
+        return hadInnerHost
+    }
+
+    private cleanupInnerHost() {
+        if (this.innerHost) {
+            this.innerHost.destroy(false, false)
+            this.innerHost = null
+            return true
+        }
+        return false
+    }
+}
+
+function isPrimitiveText(node: ReturnType<FunctionNode>): node is string | number | boolean {
+    return typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean'
+}
+
+function canInlineFunctionTextBinding(child: unknown, placeholder: Comment): child is FunctionNode {
+    return typeof child === 'function' &&
+        !isAtom(child) &&
+        !isReactive(child) &&
+        placeholder.parentNode instanceof Element &&
+        placeholder.parentNode.childNodes.length === 1
+}
+
 // 添加全局配置对象
 export const StaticHostConfig = {
     autoGenerateTestId: false
@@ -406,6 +540,7 @@ export class StaticHost implements Host {
     //  只有有 diff 算发以后才会出现引用变化的情况，现在我们还没有实现。所以现在其实永远不会重 render
     computed = undefined
     reactiveHosts?: Host[]
+    inlineFunctionTextBindings?: InlineFunctionTextBinding[]
     attrAutoruns?: (() => void)[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
@@ -439,6 +574,7 @@ export class StaticHost implements Host {
         if (this.detachStyledChildren?.length) {
             this.forceHandleElement = true
         }
+        this.inlineFunctionTextBindings?.forEach(binding => binding.render())
         this.reactiveHosts?.forEach(host => host.render())
         //
         insertBefore(this.element, this.placeholder)
@@ -462,14 +598,27 @@ export class StaticHost implements Host {
         const { unhandledChildren } = result
 
         if (unhandledChildren) {
-            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) =>
-                createHost(child, placeholder, {
+            const reactiveHosts: Host[] = []
+            const inlineFunctionTextBindings: InlineFunctionTextBinding[] = []
+
+            unhandledChildren.forEach(({ placeholder, child, path, source }) => {
+                const childPathContext = {
                     ...this.pathContext,
                     hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath),
                     elementPath: path,
                     debugSource: source ?? child.__axiiSource ?? this.pathContext.debugSource,
-                })
-            );
+                }
+
+                if (canInlineFunctionTextBinding(child, placeholder)) {
+                    inlineFunctionTextBindings.push(new InlineFunctionTextBinding(child, placeholder, childPathContext, this))
+                    return
+                }
+
+                reactiveHosts.push(createHost(child, placeholder, childPathContext))
+            });
+
+            if (reactiveHosts.length) this.reactiveHosts = reactiveHosts
+            if (inlineFunctionTextBindings.length) this.inlineFunctionTextBindings = inlineFunctionTextBindings
 
             result.unhandledChildren = undefined
         }
@@ -549,6 +698,7 @@ export class StaticHost implements Host {
 
         this.removeAttachListener?.()
 
+        this.inlineFunctionTextBindings?.forEach(binding => binding.destroy(parentHandleComputed))
         this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
 
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {

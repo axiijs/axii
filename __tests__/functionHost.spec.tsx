@@ -32,6 +32,7 @@ describe('function render', () => {
                     const nameText = name()
                     return <span>hello {nameText}</span>
                 }}
+                <i/>
             </div>
         }
 

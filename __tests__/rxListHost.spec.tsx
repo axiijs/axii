@@ -203,7 +203,7 @@ describe('rxList render', () => {
 
         expect(container.firstElementChild?.tagName).toBe('STRONG')
         expect(container.textContent).toBe('rich')
-        expect(commentTexts(container)).toContain('computed node')
+        expect(commentTexts(container)).not.toContain('computed node')
 
         showText(true)
         await wait(1)
