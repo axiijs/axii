@@ -103,6 +103,48 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.children[2].innerHTML).toBe('4')
     })
 
+    test('rxList host skips item effects without breaking child reactivity', async () => {
+        const arr = new RxList([
+            {id: 1, name: atom('a')},
+            {id: 2, name: atom('b')},
+        ])
+
+        function Item({item}: { item: { name: ReturnType<typeof atom<string>> } }) {
+            return <span>{() => item.name()}</span>
+        }
+
+        function App() {
+            return <div>
+                {arr.map((item) => <Item item={item}/>)}
+            </div>
+        }
+
+        const host = root.render(<App/>) as ComponentHost
+        const rxListHost = (host.innerHost as StaticHost).reactiveHosts![0] as RxListHost
+
+        expect(rootEl.firstElementChild!.textContent).toBe('ab')
+        expect(rxListHost.hosts!.effectFramesArray).toEqual([[], []])
+
+        arr.at(0)!.name('A')
+        await wait(1)
+        expect(rootEl.firstElementChild!.textContent).toBe('Ab')
+        expect(rxListHost.hosts!.effectFramesArray).toEqual([[], []])
+
+        arr.push({id: 3, name: atom('c')})
+        expect(rootEl.firstElementChild!.textContent).toBe('Abc')
+        expect(rxListHost.hosts!.effectFramesArray).toEqual([[], [], []])
+
+        const firstNode = rootEl.firstElementChild!.children[0]
+        arr.reposition(0, 2)
+        expect(rootEl.firstElementChild!.textContent).toBe('bcA')
+        expect(rootEl.firstElementChild!.children[2]).toBe(firstNode)
+        expect(rxListHost.hosts!.effectFramesArray).toEqual([[], [], []])
+
+        arr.at(2)!.name('AA')
+        await wait(1)
+        expect(rootEl.firstElementChild!.textContent).toBe('bcAA')
+    })
+
     test('chained list', () => {
 
         const map1 = new RxMap<string, string>({})

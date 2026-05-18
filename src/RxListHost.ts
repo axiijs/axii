@@ -31,7 +31,7 @@ export class RxListHost implements Host{
 
         this.hosts = this.source.map((item) => {
             return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-        })
+        }, { ignoreIndex: true, skipItemEffect: true })
 
         this.hostRenderComputed = computed(
             function computation(this:Computed) {
