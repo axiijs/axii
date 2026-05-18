@@ -11,6 +11,17 @@ function wait(time: number) {
     })
 }
 
+function commentTexts(root: Node) {
+    const comments: string[] = []
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT)
+    let node = walker.nextNode()
+    while (node) {
+        comments.push(node.textContent ?? '')
+        node = walker.nextNode()
+    }
+    return comments
+}
+
 describe('rxList render', () => {
 
     let root: ReturnType<typeof createRoot>
@@ -143,6 +154,64 @@ describe('rxList render', () => {
         arr.at(2)!.name('AA')
         await wait(1)
         expect(rootEl.firstElementChild!.textContent).toBe('bcAA')
+    })
+
+    test('function child primitive output reuses text node without computed placeholder', async () => {
+        const label = atom('a')
+
+        function App() {
+            return <div>
+                <span>{() => label()}</span>
+            </div>
+        }
+
+        root.render(<App/>)
+        const span = rootEl.querySelector('span')!
+        const textNode = span.firstChild
+
+        expect(textNode?.nodeType).toBe(Node.TEXT_NODE)
+        expect(span.textContent).toBe('a')
+        expect(commentTexts(span)).not.toContain('computed node')
+
+        label('b')
+        await wait(1)
+
+        expect(span.firstChild).toBe(textNode)
+        expect(span.textContent).toBe('b')
+        expect(commentTexts(span)).not.toContain('computed node')
+    })
+
+    test('function child can switch between primitive fast path and generic host path', async () => {
+        const showText = atom(true)
+
+        function App() {
+            return <div>
+                {() => showText() ? 'plain' : <strong>rich</strong>}
+            </div>
+        }
+
+        root.render(<App/>)
+        const container = rootEl.firstElementChild!
+        const textNode = container.firstChild
+
+        expect(textNode?.nodeType).toBe(Node.TEXT_NODE)
+        expect(container.textContent).toBe('plain')
+        expect(commentTexts(container)).not.toContain('computed node')
+
+        showText(false)
+        await wait(1)
+
+        expect(container.firstElementChild?.tagName).toBe('STRONG')
+        expect(container.textContent).toBe('rich')
+        expect(commentTexts(container)).toContain('computed node')
+
+        showText(true)
+        await wait(1)
+
+        expect(container.firstChild?.nodeType).toBe(Node.TEXT_NODE)
+        expect(container.firstChild).not.toBe(textNode)
+        expect(container.textContent).toBe('plain')
+        expect(commentTexts(container)).not.toContain('computed node')
     })
 
     test('chained list', () => {

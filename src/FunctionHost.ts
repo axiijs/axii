@@ -17,10 +17,11 @@ export class FunctionHost implements Host{
     stopAutoRender!: () => any
     fragmentParent = document.createDocumentFragment()
     innerHost: Host|null = null
+    textNode: Text|null = null
     constructor(public source: FunctionNode, public placeholder:Comment, public pathContext: PathContext) {
     }
     get element() : HTMLElement|Comment|Text|SVGElement{
-        return this.innerHost?.element || this.placeholder
+        return this.innerHost?.element || this.textNode || this.placeholder
     }
     render(): void {
 
@@ -35,21 +36,10 @@ export class FunctionHost implements Host{
                 elementPath: this.pathContext.elementPath,
                 source: this.pathContext.debugSource,
             }, () => {
-                // CAUTION 每次都清空上一次的结果
-                const node = this.source({onCleanup})
-                const newPlaceholder = document.createComment('computed node')
-                insertBefore(newPlaceholder, this.placeholder)
-                const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-                Notifier.instance.pauseTracking()
-                pauseCollectChild()
-                host.render()
-                resumeCollectChild()
-                Notifier.instance.resetTracking()
-                this.innerHost = host
-                onCleanup(() => {
-                    this.innerHost = null
-                    host.destroy(false, false)
-                })
+                let cleanup: (() => any) | undefined
+                const node = this.source({onCleanup: (fn) => cleanup = fn})
+                this.renderNode(node, pauseCollectChild, resumeCollectChild)
+                onCleanup(() => cleanup?.())
             })
         }, (recompute) => {
             if (scheduleRecompute) return
@@ -69,10 +59,57 @@ export class FunctionHost implements Host{
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
             this.stopAutoRender()
+            this.cleanupRendered()
         }
-        // 这里不需要处理 innerHost 是因为在 stopAutoRender 的时候就会触发 innerHost 的 destroy
         if (!parentHandle) {
             this.placeholder.remove()
         }
     }
+
+    private renderNode(node: ReturnType<FunctionNode>, pauseCollectChild: () => void, resumeCollectChild: () => void) {
+        if (node === null || node === undefined) {
+            this.cleanupRendered()
+            return
+        }
+
+        if (isPrimitiveText(node)) {
+            const text = node.toString()
+            if (this.textNode) {
+                this.textNode.data = text
+            } else {
+                this.cleanupRendered()
+                this.textNode = document.createTextNode(text)
+                insertBefore(this.textNode, this.placeholder)
+            }
+            return
+        }
+
+        this.cleanupRendered()
+
+        const newPlaceholder = document.createComment('computed node')
+        insertBefore(newPlaceholder, this.placeholder)
+        const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+        Notifier.instance.pauseTracking()
+        pauseCollectChild()
+        host.render()
+        resumeCollectChild()
+        Notifier.instance.resetTracking()
+        this.innerHost = host
+    }
+
+    private cleanupRendered() {
+        if (this.innerHost) {
+            this.innerHost.destroy(false, false)
+            this.innerHost = null
+        }
+
+        if (this.textNode) {
+            this.textNode.remove()
+            this.textNode = null
+        }
+    }
+}
+
+function isPrimitiveText(node: ReturnType<FunctionNode>): node is string | number | boolean {
+    return typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean'
 }
