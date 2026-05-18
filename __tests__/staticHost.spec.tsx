@@ -163,6 +163,55 @@ describe('static host render', () => {
         expect(commentTexts(span)).not.toContain('unhandledChild')
     })
 
+    test('inline single function child coalesces primitive text updates and stops on destroy', async () => {
+        const label = atom('a')
+        const extraTrigger = atom(0)
+        let runs = 0
+
+        root.render(<span>{() => {
+            runs++
+            extraTrigger()
+            return label()
+        }}</span>)
+        const span = rootEl.firstElementChild!
+
+        expect(span.textContent).toBe('a')
+        expect(runs).toBe(1)
+
+        label('b')
+        extraTrigger(1)
+        await sleep(1)
+        expect(span.textContent).toBe('b')
+        expect(runs).toBe(2)
+
+        root.destroy()
+        label('c')
+        extraTrigger(2)
+        await sleep(1)
+        expect(runs).toBe(2)
+    })
+
+    test('inline single function child preserves nested effect ownership for structural output', async () => {
+        const visible = atom(true)
+        const label = atom('a')
+
+        root.render(<span>{() => visible() ? <strong>{() => label()}</strong> : null}</span>)
+        const span = rootEl.firstElementChild!
+
+        expect(span.firstElementChild?.tagName).toBe('STRONG')
+        expect(span.textContent).toBe('a')
+
+        visible(false)
+        await sleep(1)
+        expect(span.childNodes.length).toBe(0)
+
+        label('b')
+        visible(true)
+        await sleep(1)
+        expect(span.firstElementChild?.tagName).toBe('STRONG')
+        expect(span.textContent).toBe('b')
+    })
+
     test('inline single function child runs user cleanup on destroy', () => {
         const cleanup = vi.fn()
 

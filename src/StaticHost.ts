@@ -10,13 +10,13 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
-import {autorun, isAtom, isReactive, Notifier} from "data0";
+import {autorun, isAtom, isReactive, Notifier, ReactiveEffect} from "data0";
 import {createHost} from "./createHost";
 import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
-import {reportAxiiError, withReactiveTrace} from "./diagnostics";
+import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
@@ -396,6 +396,44 @@ type FunctionNodeContext = {
 }
 type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|string|number|null|boolean|undefined
 
+class ScheduledReactiveEffect extends ReactiveEffect {
+    private hasRun = false
+    private scheduled = false
+
+    callGetter(): any {
+        return this.getter?.()
+    }
+
+    run(...args: any[]): any {
+        if (!this.hasRun) {
+            this.hasRun = true
+            return super.run(...args)
+        }
+
+        if (this.scheduled) return
+        this.scheduled = true
+        queueMicrotask(() => {
+            this.scheduled = false
+            if (this.active) super.run()
+        })
+    }
+}
+
+function withFunctionNodeTrace<T>(
+    operation: 'render' | 'recompute',
+    pathContext: PathContext,
+    fn: () => T,
+): T {
+    if (!isAxiiDiagnosticsEnabled()) return fn()
+    return withReactiveTrace({
+        type: operation === 'render' ? 'function-node' : 'function-node-recompute',
+        operation,
+        hostType: 'StaticHost',
+        elementPath: pathContext.elementPath,
+        source: pathContext.debugSource,
+    }, fn)
+}
+
 class InlineFunctionTextBinding {
     stopAutoRender?: () => any
     textNode: Text|null = null
@@ -413,16 +451,27 @@ class InlineFunctionTextBinding {
     }
 
     render() {
+        if (this.source.length === 0) {
+            this.renderZeroArgPrimitive()
+            return
+        }
+        this.renderGeneric()
+    }
+
+    private renderZeroArgPrimitive() {
+        const effect = new ScheduledReactiveEffect(() => {
+            const node = this.source(undefined as unknown as FunctionNodeContext)
+            this.renderNode(node, pauseCurrentEffectChildCollection, resumeCurrentEffectChildCollection)
+        })
+        effect.run()
+        this.stopAutoRender = () => effect.destroy()
+    }
+
+    private renderGeneric() {
         let scheduleRecompute = false
 
         this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
-            withReactiveTrace({
-                type: 'function-node',
-                operation: 'render',
-                hostType: 'StaticHost',
-                elementPath: this.pathContext.elementPath,
-                source: this.pathContext.debugSource,
-            }, () => {
+            withFunctionNodeTrace('render', this.pathContext, () => {
                 let cleanup: (() => any) | undefined
                 const node = this.source({onCleanup: (fn) => cleanup = fn})
                 this.renderNode(node, pauseCollectChild, resumeCollectChild)
@@ -432,13 +481,7 @@ class InlineFunctionTextBinding {
             if (scheduleRecompute) return
             scheduleRecompute = true
             queueMicrotask(() => {
-                withReactiveTrace({
-                    type: 'function-node-recompute',
-                    operation: 'recompute',
-                    hostType: 'StaticHost',
-                    elementPath: this.pathContext.elementPath,
-                    source: this.pathContext.debugSource,
-                }, recompute)
+                withFunctionNodeTrace('recompute', this.pathContext, recompute)
                 scheduleRecompute = false
             })
         })
@@ -534,6 +577,14 @@ function canInlineFunctionTextBinding(child: unknown, placeholder?: Comment, con
             placeholder?.parentNode instanceof Element && placeholder.parentNode.childNodes.length === 1 ||
             !placeholder?.parentNode && container instanceof Element && container.childNodes.length === 0
         )
+}
+
+function pauseCurrentEffectChildCollection() {
+    ReactiveEffect.activeScopes.at(-1)?.pauseCollectChild()
+}
+
+function resumeCurrentEffectChildCollection() {
+    ReactiveEffect.activeScopes.at(-1)?.resumeCollectChild()
 }
 
 // 添加全局配置对象
