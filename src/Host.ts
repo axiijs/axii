@@ -1,6 +1,7 @@
 import {computed} from "data0";
 import {Root} from "./render";
 import {LinkedNode} from "./LinkedList";
+import type {AxiiSource} from "./diagnostics";
 /**
  * @internal
  */
@@ -24,4 +25,5 @@ export type PathContext = {
     // hostPath: Host[],
     hostPath: LinkedNode<Host>,
     elementPath: number[],
+    debugSource?: AxiiSource,
 }

@@ -1,5 +1,6 @@
 import {Atom, computed, destroyComputed} from "data0";
 import {Host, PathContext} from "./Host";
+import {withReactiveTrace} from "./diagnostics";
 
 
 function stringValue(v: any) {
@@ -33,7 +34,15 @@ export class AtomHost implements Host{
 
     render(): void {
         this.computed = computed(() => {
+            withReactiveTrace({
+                type: 'atom-text',
+                operation: 'update-text',
+                hostType: 'AtomHost',
+                elementPath: this.pathContext.elementPath,
+                source: this.pathContext.debugSource,
+            }, () => {
                 this.replace(this.source())
+            })
             },
             undefined,
             true,

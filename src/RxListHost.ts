@@ -3,6 +3,7 @@ import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Compute
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {createLinkedNode} from "./LinkedList";
+import {reportAxiiError, withReactiveTrace} from "./diagnostics";
 /**
  * @internal
  */
@@ -40,81 +41,100 @@ export class RxListHost implements Host{
                 return null
             },
             function applyPatch(_, triggerInfos) {
-                triggerInfos.forEach(({method, argv, key, methodResult, type}) => {
-                    if (method === 'splice') {
-                        // 这里的 this.hosts 是已经插入好的。
-                        // CAUTION 因为 hosts 中的元素可能也是一个一个插进来的。例如 groupBy 中的 patch。
-                        //  我们的下一个元素可能也是新的还没渲染，所以要一直往后找到第一个已经渲染过的元素。
-                        let insertBeforeHost:Host|null = null
-                        const newHosts = argv!.slice(2)!
+                triggerInfos.forEach((triggerInfo) => {
+                    const {method, argv, key, methodResult, type} = triggerInfo
+                    try {
+                        withReactiveTrace({
+                            type: 'rx-list-patch',
+                            operation: 'apply-patch',
+                            hostType: 'RxListHost',
+                            elementPath: host.pathContext.elementPath,
+                            source: host.pathContext.debugSource,
+                            method: method ?? String(type),
+                            key: key as string | number | undefined,
+                            argvSummary: argv ? argv.map(summarizePatchArg).join(',') : undefined,
+                            createdCount: method === 'splice' ? argv!.slice(2).length : undefined,
+                            deletedCount: Array.isArray(methodResult) ? methodResult.length : methodResult ? 1 : 0,
+                        }, () => {
+                        if (method === 'splice') {
+                            // 这里的 this.hosts 是已经插入好的。
+                            // CAUTION 因为 hosts 中的元素可能也是一个一个插进来的。例如 groupBy 中的 patch。
+                            //  我们的下一个元素可能也是新的还没渲染，所以要一直往后找到第一个已经渲染过的元素。
+                            let insertBeforeHost:Host|null = null
+                            const newHosts = argv!.slice(2)!
 
-                        let startIndex = argv![0] + newHosts.length
-                        while(startIndex < host.hosts!.data.length){
-                            if (host.hosts!.data[startIndex]!.placeholder.parentNode) {
-                                insertBeforeHost = host.hosts!.data[startIndex]
-                                break;
+                            let startIndex = argv![0] + newHosts.length
+                            while(startIndex < host.hosts!.data.length){
+                                if (host.hosts!.data[startIndex]!.placeholder.parentNode) {
+                                    insertBeforeHost = host.hosts!.data[startIndex]
+                                    break;
+                                }
+                                startIndex++
                             }
-                            startIndex++
-                        }
 
-                        if (newHosts.length) {
-                            const newHostsFrag =  host.renderNewHosts(newHosts)
-                            insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
-                        }
+                            if (newHosts.length) {
+                                const newHostsFrag =  host.renderNewHosts(newHosts)
+                                insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
+                            }
 
 
-                        const deletedHosts = methodResult as Host[]
+                            const deletedHosts = methodResult as Host[]
 
-                        // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点强制要求自己来清理。那么直接清空 parent，这样比较快。
-                        if (deletedHosts.length) {
+                            // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点强制要求自己来清理。那么直接清空 parent，这样比较快。
+                            if (deletedHosts.length) {
 
-                            const removeAllElementByParent = host.hosts!.data.length===0 &&
-                                !host.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
-                                !deletedHosts[0].element.previousSibling &&  // 删除的Host 是父 Host 的第一个，说明从头删到了尾
-                                deletedHosts.every(inner => !inner.forceHandleElement)
+                                const removeAllElementByParent = host.hosts!.data.length===0 &&
+                                    !host.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
+                                    !deletedHosts[0].element.previousSibling &&  // 删除的Host 是父 Host 的第一个，说明从头删到了尾
+                                    deletedHosts.every(inner => !inner.forceHandleElement)
 
-                            if(removeAllElementByParent) {
-                                const parent = host.placeholder.parentNode!
-                                parent.replaceChildren(host.placeholder)
+                                if(removeAllElementByParent) {
+                                    const parent = host.placeholder.parentNode!
+                                    parent.replaceChildren(host.placeholder)
 
-                                deletedHosts.forEach((host: Host) => host.destroy(true))
+                                    deletedHosts.forEach((host: Host) => host.destroy(true))
+                                } else {
+                                    deletedHosts.forEach((host: Host) => host.destroy())
+                                }
+                            }
+
+                        } else if(method === 'reorder') {
+                            const placeholders = (new Array(host.hosts!.length.raw)).fill(1).map((_, index) => document.createComment(`rx list item reorder placeholder ${index}`))
+                            const placeholderFragment = document.createDocumentFragment()
+                            placeholders.forEach(placeholder => {
+                                placeholderFragment.appendChild(placeholder)
+                            })
+                            insertBefore(placeholderFragment, host.placeholder.parentElement!.firstChild! as HTMLElement)
+
+                            // FIXME 需要优化一下移动算法。
+                            host.hosts!.raw.forEach((childHost, index) => {
+                                insertBefore(childHost.element, placeholders[index],  childHost.placeholder)
+                                placeholders[index].remove()
+                            })
+
+                        } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
+                            // explicit key change
+                            const oldHost = methodResult as Host
+                            oldHost?.destroy()
+
+                            // 会回收之前 placeholder，完全重新执行
+                            const index = key as number
+                            // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
+                            // placeholder 一定是最后一个元素
+                            if (index === 0) {
+                                insertBefore(host.hosts!.raw.at(index)!.placeholder, host.placeholder.parentElement!.firstChild! as HTMLElement)
                             } else {
-                                deletedHosts.forEach((host: Host) => host.destroy())
+                                insertAfter(host.hosts!.raw.at(index)!.placeholder, host.hosts!.raw.at(index-1)?.placeholder)
                             }
-                        }
-
-                    } else if(method === 'reorder') {
-                        const placeholders = (new Array(host.hosts!.length.raw)).fill(1).map((_, index) => document.createComment(`rx list item reorder placeholder ${index}`))
-                        const placeholderFragment = document.createDocumentFragment()
-                        placeholders.forEach(placeholder => {
-                            placeholderFragment.appendChild(placeholder)
-                        })
-                        insertBefore(placeholderFragment, host.placeholder.parentElement!.firstChild! as HTMLElement)
-
-                        // FIXME 需要优化一下移动算法。
-                        host.hosts!.raw.forEach((childHost, index) => {
-                            insertBefore(childHost.element, placeholders[index],  childHost.placeholder)
-                            placeholders[index].remove()
-                        })
-
-                    } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
-                        // explicit key change
-                        const oldHost = methodResult as Host
-                        oldHost?.destroy()
-
-                        // 会回收之前 placeholder，完全重新执行
-                        const index = key as number
-                        // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
-                        // placeholder 一定是最后一个元素
-                        if (index === 0) {
-                            insertBefore(host.hosts!.raw.at(index)!.placeholder, host.placeholder.parentElement!.firstChild! as HTMLElement)
+                            host.hosts!.raw.at(index)!.render()
+                          /* v8 ignore next 3 */
                         } else {
-                            insertAfter(host.hosts!.raw.at(index)!.placeholder, host.hosts!.raw.at(index-1)?.placeholder)
+                            throw new Error('unknown trigger info')
                         }
-                        host.hosts!.raw.at(index)!.render()
-                      /* v8 ignore next 3 */
-                    } else {
-                        throw new Error('unknown trigger info')
+                        })
+                    } catch (error) {
+                        reportAxiiError(error)
+                        throw error
                     }
                 })
             },
@@ -130,4 +150,9 @@ export class RxListHost implements Host{
         this.hosts!.forEach(host => host.destroy(fromParentDestroy))
         if (!fromParentDestroy) this.placeholder.remove()
     }
+}
+
+function summarizePatchArg(arg: unknown) {
+    if (arg && typeof arg === 'object') return Object.getPrototypeOf(arg)?.constructor?.name ?? 'object'
+    return String(arg)
 }

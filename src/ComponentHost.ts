@@ -19,6 +19,7 @@ import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
+import {assertRangeReachable, withReactiveTrace} from "./diagnostics";
 
 
 function ensureArray(o: any) {
@@ -420,21 +421,29 @@ export class ComponentHost implements Host{
         // CAUTION collect effects start
         const getFrame = ReactiveEffect.collectEffect()
 
-        const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
-        this.itemConfig = itemConfig
-        this.props = componentProps
-        // 这里要再 coerce props，因为 boundProps 可能 return fixed value
-        const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+        withReactiveTrace({
+            type: 'component-render',
+            operation: 'render',
+            hostType: 'ComponentHost',
+            elementPath: this.pathContext.elementPath,
+            source: this.pathContext.debugSource,
+        }, () => {
+            const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
+            this.itemConfig = itemConfig
+            this.props = componentProps
+            // 这里要再 coerce props，因为 boundProps 可能 return fixed value
+            const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
 
-        normalizedProps.children = this.children
-        this.props = normalizedProps
+            normalizedProps.children = this.children
+            this.props = normalizedProps
 
-        const node = this.type(normalizedProps, this.renderContext)
-        this.frame = getFrame()
-        // CAUTION collect effects end
-        // 就用当前 component 的 placeholder
-        this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-        this.innerHost.render()
+            const node = this.type(normalizedProps, this.renderContext!)
+            this.frame = getFrame()
+            // CAUTION collect effects end
+            // 就用当前 component 的 placeholder
+            this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            this.innerHost.render()
+        })
 
 
         // for test use
@@ -573,6 +582,13 @@ export class ReusableHost implements Host{
             this.rendered = true
         } else {
             const frag = document.createDocumentFragment()
+            assertRangeReachable({
+                ownerHost: this,
+                start: this.innerHost.element,
+                end: this.innerHost.placeholder,
+                boundaryKind: 'reusable-range',
+                operation: 'move',
+            })
             let start = this.innerHost.element
             while(start !== this.innerHost.placeholder) {
                 const next = start.nextSibling as HTMLElement|Comment|Text|SVGElement
@@ -590,6 +606,13 @@ export class ReusableHost implements Host{
         // do nothing
         if (!parentHandle) {
             const frag = document.createDocumentFragment()
+            assertRangeReachable({
+                ownerHost: this,
+                start: this.innerHost.element,
+                end: this.innerHost.placeholder,
+                boundaryKind: 'reusable-range',
+                operation: 'destroy',
+            })
             let start = this.innerHost.element
             while(start !== this.innerHost.placeholder) {
                 const next = start.nextSibling as HTMLElement|Comment|Text|SVGElement

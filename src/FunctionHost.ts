@@ -3,6 +3,7 @@ import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 import {createLinkedNode} from "./LinkedList";
+import {withReactiveTrace} from "./diagnostics";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -27,26 +28,40 @@ export class FunctionHost implements Host{
         let scheduleRecompute = false
 
         this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
-            // CAUTION 每次都清空上一次的结果
-            const node = this.source({onCleanup})
-            const newPlaceholder = document.createComment('computed node')
-            insertBefore(newPlaceholder, this.placeholder)
-            const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-            Notifier.instance.pauseTracking()
-            pauseCollectChild()
-            host.render()
-            resumeCollectChild()
-            Notifier.instance.resetTracking()
-            this.innerHost = host
-            onCleanup(() => {
-                this.innerHost = null
-                host.destroy(false, false)
+            withReactiveTrace({
+                type: 'function-node',
+                operation: 'render',
+                hostType: 'FunctionHost',
+                elementPath: this.pathContext.elementPath,
+                source: this.pathContext.debugSource,
+            }, () => {
+                // CAUTION 每次都清空上一次的结果
+                const node = this.source({onCleanup})
+                const newPlaceholder = document.createComment('computed node')
+                insertBefore(newPlaceholder, this.placeholder)
+                const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                Notifier.instance.pauseTracking()
+                pauseCollectChild()
+                host.render()
+                resumeCollectChild()
+                Notifier.instance.resetTracking()
+                this.innerHost = host
+                onCleanup(() => {
+                    this.innerHost = null
+                    host.destroy(false, false)
+                })
             })
         }, (recompute) => {
             if (scheduleRecompute) return
             scheduleRecompute = true
             queueMicrotask(() => {
-                recompute()
+                withReactiveTrace({
+                    type: 'function-node-recompute',
+                    operation: 'recompute',
+                    hostType: 'FunctionHost',
+                    elementPath: this.pathContext.elementPath,
+                    source: this.pathContext.debugSource,
+                }, recompute)
                 scheduleRecompute = false
             })
         })

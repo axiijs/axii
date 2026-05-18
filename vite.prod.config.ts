@@ -12,18 +12,22 @@ export default {
   build: {
     lib: {
       // Could also be a dictionary or array of multiple entry points
-      entry: resolve(__dirname, 'src/index.ts'),
+      entry: {
+        axii: resolve(__dirname, 'src/index.ts'),
+        'vite-plugin': resolve(__dirname, 'src/vitePlugin.ts'),
+      },
       name: 'axii',
       // the proper extensions will be added
-      fileName: 'axii',
+      formats: ['es', 'cjs'],
+      fileName: (format: string, entryName: string) => format === 'es' ? `${entryName}.js` : `${entryName}.cjs`,
     },
     sourcemap: true,
     rollupOptions: {
-      external: ['data0'],
+      external: ['data0', 'node:fs/promises'],
     },
   },
   plugins: [dts({
-    tsConfigFilePath: resolve(__dirname, 'tsconfig.prod.json'),
+    tsconfigPath: resolve(__dirname, 'tsconfig.prod.json'),
     rollupTypes: true,
     include: ['src/**/*.ts', 'src/**/*.tsx', 'global.d.ts'],
     bundledPackages: ['data0']

@@ -2,6 +2,7 @@ import {AttributesArg, Fragment, JSXElementType, RefObject} from "./DOM";
 import {PathContext} from "./Host";
 import {DataContext, StateTransformer, StateFromRef} from './ComponentHost.js'
 import {PropTypes} from "./propTypes.js";
+import type {AxiiSource} from "./diagnostics";
 
 export type Props = {
     [k: string]: any,
@@ -100,6 +101,7 @@ export type ComponentNode = {
     type: Component,
     props : Props,
     children: any
+    __axiiSource?: AxiiSource
 }
 
 export { type FixedCompatiblePropsType, type PropTypes, type PropType, type PropsType } from './propTypes.js'

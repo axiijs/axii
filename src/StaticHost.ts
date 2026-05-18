@@ -15,6 +15,7 @@ import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
+import {reportAxiiError, withReactiveTrace} from "./diagnostics";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
@@ -299,7 +300,7 @@ class StyleManager {
         if (typeof styleObject === 'string') {
           return { simpleStyles: styleObject, nestedStyles: {} }
         }
-        // 处理 null 或 undefined 的情况，返回空字符串来清除样式
+        // Falsy style values clear inline styles instead of leaving stale rules behind.
         if (styleObject === null || styleObject === undefined) {
           return { simpleStyles: '' as any, nestedStyles: {} }
         }
@@ -461,11 +462,12 @@ export class StaticHost implements Host {
         const { unhandledChildren } = result
 
         if (unhandledChildren) {
-            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path }) =>
+            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) =>
                 createHost(child, placeholder, {
                     ...this.pathContext,
                     hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath),
-                    elementPath: path
+                    elementPath: path,
+                    debugSource: source ?? child.__axiiSource ?? this.pathContext.debugSource,
                 })
             );
 
@@ -481,7 +483,7 @@ export class StaticHost implements Host {
 
         if(unhandledAttr) {
             this.attrAutoruns = []
-            unhandledAttr.forEach(({ el, key, value, path }) => {
+            unhandledAttr.forEach(({ el, key, value, path, source }) => {
                 // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
                 if (!el.hasAttribute('data-testid')) {
                     this.generateTestId(el, path)
@@ -489,7 +491,16 @@ export class StaticHost implements Host {
                 // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
                 if (!key.includes(':')) {
                     this.attrAutoruns!.push(autorun(() => {
-                        this.updateAttribute(el, key, value, path, isSVG)
+                        withReactiveTrace({
+                            type: 'static-attr',
+                            operation: 'update-attr',
+                            hostType: 'StaticHost',
+                            elementPath: path,
+                            source: source ?? this.pathContext.debugSource,
+                            attrName: key,
+                        }, () => {
+                            this.updateAttribute(el, key, value, path, isSVG)
+                        })
                     }, true))
                 }
             })
@@ -544,12 +555,23 @@ export class StaticHost implements Host {
             createElement.detachRef(handle)
         })
 
-        this.removeElements(parentHandle)
-          .finally(() => {
-              StaticHost.styleManager.unmount(this.pathContext.hostPath)
-          })
+        const unmountStyle = () => {
+            StaticHost.styleManager.unmount(this.pathContext.hostPath)
+        }
+
+        try {
+            const removeResult = this.removeElements(parentHandle)
+            if (removeResult instanceof Promise) {
+                removeResult.catch(reportAxiiError).finally(unmountStyle)
+            } else {
+                unmountStyle()
+            }
+        } catch (error) {
+            unmountStyle()
+            throw error
+        }
     }
-    async removeElements(parentHandle?: boolean) {
+    removeElements(parentHandle?: boolean): void | Promise<void> {
         if (parentHandle) return
 
         if (this.detachStyledChildren?.length) {
@@ -593,9 +615,17 @@ export class StaticHost implements Host {
                 setAttribute(el, 'style', final, el instanceof SVGElement)
             })
 
-            await Promise.all(promises)
+            return Promise.all(promises).then(() => {
+                removeNodesBetween(this.element!, this.placeholder, true, {
+                    ownerHost: this,
+                    operation: 'destroy',
+                })
+            })
         }
-        removeNodesBetween(this.element!, this.placeholder, true)
+        removeNodesBetween(this.element!, this.placeholder, true, {
+            ownerHost: this,
+            operation: 'destroy',
+        })
     }
 }
 

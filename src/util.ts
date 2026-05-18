@@ -1,3 +1,5 @@
+import {assertRangeReachable, isAxiiDiagnosticsEnabled, type RangeBoundaryContext} from "./diagnostics";
+
 type PlainObject = {
   [k: string] : any
 }
@@ -20,8 +22,20 @@ export function nextJob(fn: Function) {
 /**
  * @internal
  */
-export function removeNodesBetween(start: ChildNode, endNode: ChildNode|Comment, includeEnd = false) {
-  if (start.parentElement !== endNode.parentElement) {
+export function removeNodesBetween(
+    start: ChildNode,
+    endNode: ChildNode|Comment,
+    includeEnd = false,
+    context?: Omit<RangeBoundaryContext, 'start' | 'end'>
+) {
+  if (isAxiiDiagnosticsEnabled()) {
+    assertRangeReachable({
+      ...context,
+      start,
+      end: endNode,
+      operation: context?.operation ?? 'destroy',
+    })
+  } else if (start.parentElement !== endNode.parentElement) {
     throw new Error('placeholder and element parentElement not same')
   }
 

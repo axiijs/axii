@@ -21,17 +21,22 @@
     ".": {
       "types": "./dist/axii.d.ts",
       "import": "./dist/axii.js",
-      "require": "./dist/axii.umd.cjs"
+      "require": "./dist/axii.cjs"
     },
     "./jsx-runtime": {
       "types": "./dist/axii.d.ts",
       "import": "./dist/axii.js",
-      "require": "./dist/axii.umd.cjs"
+      "require": "./dist/axii.cjs"
     },
     "./jsx-dev-runtime": {
       "types": "./dist/axii.d.ts",
       "import": "./dist/axii.js",
-      "require": "./dist/axii.umd.cjs"
+      "require": "./dist/axii.cjs"
+    },
+    "./vite-plugin": {
+      "types": "./dist/vite-plugin.d.ts",
+      "import": "./dist/vite-plugin.js",
+      "require": "./dist/vite-plugin.cjs"
     }
   },
   "type": "module",
