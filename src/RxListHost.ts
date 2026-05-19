@@ -1,9 +1,12 @@
-import {insertAfter, insertBefore, UnhandledPlaceholder} from './DOM'
+import {insertBefore, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {createLinkedNode} from "./LinkedList";
 import {reportAxiiError, withReactiveTrace} from "./diagnostics";
+
+const compactListHosts = new WeakSet<Host>()
+
 /**
  * @internal
  */
@@ -24,6 +27,7 @@ export class RxListHost implements Host{
             const host = hostArray[i]!
             frag.appendChild(host.placeholder)
             host.render()
+            compactHostIfPossible(host)
         }
         return frag
     }
@@ -68,7 +72,7 @@ export class RxListHost implements Host{
 
                             let startIndex = argv![0] + newHosts.length
                             while(startIndex < host.hosts!.data.length){
-                                if (host.hosts!.data[startIndex]!.placeholder.parentNode) {
+                                if (isHostMounted(host.hosts!.data[startIndex]!)) {
                                     insertBeforeHost = host.hosts!.data[startIndex]
                                     break;
                                 }
@@ -95,9 +99,9 @@ export class RxListHost implements Host{
                                     const parent = host.placeholder.parentNode!
                                     parent.replaceChildren(host.placeholder)
 
-                                    deletedHosts.forEach((host: Host) => host.destroy(true))
+                                    deletedHosts.forEach((host: Host) => destroyListItemHost(host, true))
                                 } else {
-                                    deletedHosts.forEach((host: Host) => host.destroy())
+                                    deletedHosts.forEach((host: Host) => destroyListItemHost(host))
                                 }
                             }
 
@@ -107,18 +111,15 @@ export class RxListHost implements Host{
                         } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
                             // explicit key change
                             const oldHost = methodResult as Host
-                            oldHost?.destroy()
+                            oldHost && destroyListItemHost(oldHost)
 
                             // 会回收之前 placeholder，完全重新执行
                             const index = key as number
-                            // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
-                            // placeholder 一定是最后一个元素
-                            if (index === 0) {
-                                insertBefore(host.hosts!.raw.at(index)!.placeholder, host.placeholder.parentElement!.firstChild! as HTMLElement)
-                            } else {
-                                insertAfter(host.hosts!.raw.at(index)!.placeholder, host.hosts!.raw.at(index-1)?.placeholder)
-                            }
-                            host.hosts!.raw.at(index)!.render()
+                            const newHost = host.hosts!.raw.at(index)!
+                            const insertBeforeHost = findMountedHostAfter(host.hosts!.raw, index + 1)
+                            insertBefore(newHost.placeholder, insertBeforeHost?.element || host.placeholder)
+                            newHost.render()
+                            compactHostIfPossible(newHost)
                           /* v8 ignore next 3 */
                         } else {
                             throw new Error('unknown trigger info')
@@ -139,7 +140,7 @@ export class RxListHost implements Host{
             destroyComputed(this.hostRenderComputed)
         }
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
-        this.hosts!.forEach(host => host.destroy(fromParentDestroy))
+        this.hosts!.forEach(host => destroyListItemHost(host, fromParentDestroy))
         if (!fromParentDestroy) this.placeholder.remove()
     }
 }
@@ -154,6 +155,55 @@ type ReorderPatchInfo = {
     kind: 'swap' | 'move' | 'sort' | 'reorder',
     newStart?: number,
     limit?: number,
+}
+
+function compactHostIfPossible(host: Host) {
+    const source = (host as { source?: unknown }).source
+    if (
+        (source instanceof HTMLElement || source instanceof SVGElement) &&
+        (host.element instanceof HTMLElement || host.element instanceof SVGElement) &&
+        !host.forceHandleElement &&
+        host.placeholder.parentNode === host.element.parentNode &&
+        host.element.nextSibling === host.placeholder
+    ) {
+        host.placeholder.remove()
+        compactListHosts.add(host)
+    }
+}
+
+function isCompactHost(host: Host) {
+    return compactListHosts.has(host)
+}
+
+function isHostMounted(host: Host) {
+    return isCompactHost(host) ? !!host.element.parentNode : !!host.placeholder.parentNode
+}
+
+function findMountedHostAfter(hosts: Host[], startIndex: number) {
+    for (let i = startIndex; i < hosts.length; i++) {
+        const host = hosts[i]!
+        if (isHostMounted(host)) return host
+    }
+    return null
+}
+
+function destroyListItemHost(host: Host, fromParentDestroy?: boolean, parentHandleComputed?: boolean) {
+    if (!isCompactHost(host)) {
+        host.destroy(fromParentDestroy, parentHandleComputed)
+        return
+    }
+
+    host.destroy(true, parentHandleComputed)
+    compactListHosts.delete(host)
+    if (!fromParentDestroy) host.element.remove()
+}
+
+function hostRangeEnd(host: Host) {
+    return isCompactHost(host) ? undefined : host.placeholder
+}
+
+function insertHostRangeBefore(host: Host, refEl: Host['element'] | Comment) {
+    insertBefore(host.element, refEl, hostRangeEnd(host))
 }
 
 function reorderHostRanges(hosts: Host[], newOrder: Order[], placeholder: Comment, reorderInfo?: ReorderPatchInfo) {
@@ -184,7 +234,7 @@ function reorderHostRanges(hosts: Host[], newOrder: Order[], placeholder: Commen
     for (let targetIndex = hosts.length - 1; targetIndex >= 0; targetIndex--) {
         const childHost = hosts[targetIndex]!
         if (!stableTargetIndexes.has(targetIndex)) {
-            insertBefore(childHost.element, refEl, childHost.placeholder)
+            insertHostRangeBefore(childHost, refEl)
         }
         refEl = childHost.element
     }
@@ -195,10 +245,13 @@ function moveHostRanges(hosts: Host[], reorderInfo: ReorderPatchInfo, placeholde
     if (newStart === undefined || limit === undefined || limit < 1) return false
 
     const firstMovedHost = hosts[newStart]
-    const lastMovedHost = hosts[newStart + limit - 1]
-    if (!firstMovedHost || !lastMovedHost) return false
+    if (!firstMovedHost || !hosts[newStart + limit - 1]) return false
 
-    insertBefore(firstMovedHost.element, hosts[newStart + limit]?.element || placeholder, lastMovedHost.placeholder)
+    const fragment = document.createDocumentFragment()
+    for (let index = newStart; index < newStart + limit; index++) {
+        appendHostRange(fragment, hosts[index]!)
+    }
+    insertBefore(fragment, hosts[newStart + limit]?.element || placeholder)
     return true
 }
 
@@ -215,9 +268,9 @@ function swapTwoHostRanges(hosts: Host[], newOrder: Order[], placeholder: Commen
     const firstHost = hosts[firstTargetIndex]!
     const secondHost = hosts[secondTargetIndex]!
 
-    insertBefore(firstHost.element, secondHost.element, firstHost.placeholder)
+    insertHostRangeBefore(firstHost, secondHost.element)
     if (secondTargetIndex > firstTargetIndex + 1) {
-        insertBefore(secondHost.element, hosts[secondTargetIndex + 1]?.element || placeholder, secondHost.placeholder)
+        insertHostRangeBefore(secondHost, hosts[secondTargetIndex + 1]?.element || placeholder)
     }
 }
 
@@ -228,6 +281,11 @@ function rebuildHostRanges(hosts: Host[], placeholder: Comment) {
 }
 
 function appendHostRange(fragment: DocumentFragment, host: Host) {
+    if (isCompactHost(host)) {
+        fragment.appendChild(host.element)
+        return
+    }
+
     if (host.element.nextSibling === host.placeholder) {
         fragment.appendChild(host.element)
         fragment.appendChild(host.placeholder)

@@ -215,6 +215,61 @@ describe('rxList render', () => {
         expect(commentTexts(container.children[1])).not.toContain('unhandledChild')
     })
 
+    test('rxList single element items do not retain per-item placeholders', () => {
+        const arr = new RxList<any>([
+            {id: 1, name: 'a'},
+            {id: 2, name: 'b'},
+            {id: 3, name: 'c'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <span>{item.name}</span>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const container = rootEl.firstElementChild!
+        const nodes = Array.from(container.children)
+
+        expect(container.textContent).toBe('abc')
+        expect(commentTexts(container)).not.toContain('rx list item')
+
+        arr.push({id: 4, name: 'd'})
+        expect(container.textContent).toBe('abcd')
+        expect(commentTexts(container)).not.toContain('rx list item')
+
+        arr.splice(1, 1, {id: 5, name: 'e'}, {id: 6, name: 'f'})
+        expect(container.textContent).toBe('aefcd')
+        expect(container.children[0]).toBe(nodes[0])
+        expect(container.children[3]).toBe(nodes[2])
+        expect(commentTexts(container)).not.toContain('rx list item')
+
+        arr.set(2, {id: 7, name: 'g'})
+        expect(container.textContent).toBe('aegcd')
+        expect(container.children[3]).toBe(nodes[2])
+        expect(commentTexts(container)).not.toContain('rx list item')
+
+        arr.sortSelf((a, b) => b.name.localeCompare(a.name))
+        expect(container.textContent).toBe('gedca')
+        expect(commentTexts(container)).not.toContain('rx list item')
+    })
+
+    test('rxList compact element item cleans ref when removed', () => {
+        const arr = new RxList<any>([
+            {id: 1, name: 'a'},
+        ])
+        const ref = { current: null as HTMLElement | null }
+
+        root.render(arr.map(item => <span ref={ref}>{item.name}</span>) as unknown as Function)
+        expect(ref.current?.textContent).toBe('a')
+        expect(commentTexts(rootEl)).not.toContain('rx list item')
+
+        arr.splice(0, 1)
+        expect(ref.current).toBe(null)
+        expect(rootEl.textContent).toBe('')
+    })
+
     test('rxList inline primitive function items still reuse nodes when reordered', () => {
         const arr = new RxList<any>([
             {id: 1, name: atom('a')},
