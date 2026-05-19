@@ -228,6 +228,12 @@ function rebuildHostRanges(hosts: Host[], placeholder: Comment) {
 }
 
 function appendHostRange(fragment: DocumentFragment, host: Host) {
+    if (host.element.nextSibling === host.placeholder) {
+        fragment.appendChild(host.element)
+        fragment.appendChild(host.placeholder)
+        return
+    }
+
     let node: ChildNode | null = host.element
     while (node) {
         const next: ChildNode | null = node.nextSibling

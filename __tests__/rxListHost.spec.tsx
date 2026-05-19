@@ -534,6 +534,31 @@ describe('rxList render', () => {
         createComment.mockRestore()
     })
 
+    test('rxList sort compact rows remain patchable after range rebuild', () => {
+        const arr = new RxList<any>([
+            {id:1, name:'a'},
+            {id:2, name:'b'},
+            {id:3, name:'c'},
+            {id:4, name:'d'},
+            {id:5, name:'e'},
+        ])
+
+        root.render(arr.map(item => <span>{item.name}</span>) as unknown as Function)
+        const nodes = Array.from(rootEl.children)
+
+        arr.sortSelf((a, b) => b.name.localeCompare(a.name))
+        expect(Array.from(rootEl.children)).toEqual([nodes[4], nodes[3], nodes[2], nodes[1], nodes[0]])
+        expect(rootEl.textContent).toBe('edcba')
+
+        arr.splice(1, 1)
+        expect(rootEl.textContent).toBe('ecba')
+        expect(Array.from(rootEl.children)).toEqual([nodes[4], nodes[2], nodes[1], nodes[0]])
+
+        arr.reposition(3, 0)
+        expect(rootEl.textContent).toBe('aecb')
+        expect(rootEl.children[0]).toBe(nodes[0])
+    })
+
     test('rxList reorder moves fragment child ranges', () => {
         const arr = new RxList<any>([
             {id:1, name:'a'},
