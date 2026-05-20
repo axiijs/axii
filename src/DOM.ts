@@ -68,6 +68,7 @@ export interface ExtendedElement extends HTMLElement {
     }
     listenerBoundArgs?: any[]
     unhandledChildren?: UnhandledChildInfo[]
+    inlineFunctionChild?: InlineFunctionChildInfo
     inlineFunctionChildren?: InlineFunctionChildInfo[]
     unhandledAttr?: UnhandledAttrInfo[]
     refHandles?: RefHandleInfo[]
@@ -87,6 +88,8 @@ function captureEventProxy(this: ExtendedElement, e: Event) {
 
 export type UnhandledPlaceholder = Comment
 
+const ROOT_ELEMENT_PATH: number[] = []
+const FIRST_CHILD_ELEMENT_PATH: number[] = [0]
 
 function isEventName(name: string) {
     return name[0] === 'o' && name[1] === 'n'
@@ -319,19 +322,19 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             ? document.createElementNS('http://www.w3.org/2000/svg', type as string) as SVGElement
             : document.createElement(type as string)) as HTMLElement
 
-    // Initialize arrays only if needed
-    const unhandledAttr: UnhandledAttrInfo[] = []
-    const unhandledChildren: UnhandledChildInfo[] = []
-    const inlineFunctionChildren: InlineFunctionChildInfo[] = []
-    const refHandles: RefHandleInfo[] = []
-    const detachStyledChildren: DetachStyledInfo[] = []
+    let unhandledAttr: UnhandledAttrInfo[] | undefined
+    let unhandledChildren: UnhandledChildInfo[] | undefined
+    let inlineFunctionChild: InlineFunctionChildInfo | undefined
+    let inlineFunctionChildren: InlineFunctionChildInfo[] | undefined
+    let refHandles: RefHandleInfo[] | undefined
+    let detachStyledChildren: DetachStyledInfo[] | undefined
 
     // Process children in a single pass using DocumentFragment
     const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
     if (type !== Fragment && children.length === 1 && (typeof children[0] === 'string' || typeof children[0]  === 'number')) {
         (container as HTMLElement).textContent = children[0].toString()
     } else if (type !== Fragment && children.length === 1 && typeof children[0] === 'function') {
-        inlineFunctionChildren.push({child: children[0], container, path: [0], source: debugSource})
+        inlineFunctionChild = {child: children[0], container, path: FIRST_CHILD_ELEMENT_PATH, source: debugSource}
     } else if (children.length) {
     // if (children.length) {
         const tempFragment = document.createDocumentFragment()
@@ -347,15 +350,24 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 // Handle extended element properties
                 const childElement = child as ExtendedElement
                 if (childElement.unhandledChildren?.length) {
-                    unhandledChildren.push(...childElement.unhandledChildren.map(c => ({
+                    ;(unhandledChildren ??= []).push(...childElement.unhandledChildren.map(c => ({
                         ...c,
                         path: [index, ...c.path],
                         source: c.source ?? childElement.__axiiSource ?? debugSource,
                     })))
                     childElement.unhandledChildren = undefined
                 }
+                if (childElement.inlineFunctionChild) {
+                    const c = childElement.inlineFunctionChild
+                    ;(inlineFunctionChildren ??= []).push({
+                        ...c,
+                        path: [index, ...c.path],
+                        source: c.source ?? childElement.__axiiSource ?? debugSource,
+                    })
+                    childElement.inlineFunctionChild = undefined
+                }
                 if (childElement.inlineFunctionChildren?.length) {
-                    inlineFunctionChildren.push(...childElement.inlineFunctionChildren.map(c => ({
+                    ;(inlineFunctionChildren ??= []).push(...childElement.inlineFunctionChildren.map(c => ({
                         ...c,
                         path: [index, ...c.path],
                         source: c.source ?? childElement.__axiiSource ?? debugSource,
@@ -363,7 +375,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     childElement.inlineFunctionChildren = undefined
                 }
                 if (childElement.unhandledAttr?.length) {
-                    unhandledAttr.push(...childElement.unhandledAttr.map(c => ({
+                    ;(unhandledAttr ??= []).push(...childElement.unhandledAttr.map(c => ({
                         ...c,
                         path: [index, ...c.path],
                         source: c.source ?? childElement.__axiiSource ?? debugSource,
@@ -371,17 +383,17 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     childElement.unhandledAttr = undefined
                 }
                 if (childElement.refHandles?.length) {
-                    refHandles.push(...childElement.refHandles.map(c => ({...c, path: [index, ...c.path]})))
+                    ;(refHandles ??= []).push(...childElement.refHandles.map(c => ({...c, path: [index, ...c.path]})))
                     childElement.refHandles = undefined
                 }
                 if (childElement.detachStyledChildren?.length) {
-                    detachStyledChildren.push(...childElement.detachStyledChildren.map(c => ({...c, path: [index, ...c.path]})))
+                    ;(detachStyledChildren ??= []).push(...childElement.detachStyledChildren.map(c => ({...c, path: [index, ...c.path]})))
                     childElement.detachStyledChildren = undefined
                 }
             } else {
                 const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
                 tempFragment.appendChild(placeholder)
-                unhandledChildren.push({placeholder, child, path: [index], source: debugSource})
+                ;(unhandledChildren ??= []).push({placeholder, child, path: [index], source: debugSource})
             }
         })
         
@@ -392,18 +404,18 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     if (rawProps) {
         if (refProp) {
             // ref handles should be attached before children
-            refHandles.unshift({handle: refProp, path: [], el: container as HTMLElement})
+            ;(refHandles ??= []).unshift({handle: refProp, path: ROOT_ELEMENT_PATH, el: container as HTMLElement})
         }
 
         if (detachStyleProp) {
-            detachStyledChildren.push({el: container as HTMLElement, style: detachStyleProp, path: []})
+            ;(detachStyledChildren ??= []).push({el: container as HTMLElement, style: detachStyleProp, path: ROOT_ELEMENT_PATH})
         }
 
         // Process remaining props
         for (const key in rawRestProps) {
             const value = rawRestProps[key]
             if (!createElement.isValidAttribute(key, value)) {
-                unhandledAttr.push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
+                ;(unhandledAttr ??= []).push({el: container as ExtendedElement, key, value, path: ROOT_ELEMENT_PATH, source: debugSource})
             } else {
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
             }
@@ -414,11 +426,12 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     // Attach metadata to container only if necessary
     const containerElement = container as ExtendedElement
     if (debugSource) containerElement.__axiiSource = debugSource
-    if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
-    if (inlineFunctionChildren.length) containerElement.inlineFunctionChildren = inlineFunctionChildren
-    if (unhandledAttr.length) containerElement.unhandledAttr = unhandledAttr
-    if (refHandles.length) containerElement.refHandles = refHandles
-    if (detachStyledChildren.length) containerElement.detachStyledChildren = detachStyledChildren
+    if (unhandledChildren?.length) containerElement.unhandledChildren = unhandledChildren
+    if (inlineFunctionChild) containerElement.inlineFunctionChild = inlineFunctionChild
+    if (inlineFunctionChildren?.length) containerElement.inlineFunctionChildren = inlineFunctionChildren
+    if (unhandledAttr?.length) containerElement.unhandledAttr = unhandledAttr
+    if (refHandles?.length) containerElement.refHandles = refHandles
+    if (detachStyledChildren?.length) containerElement.detachStyledChildren = detachStyledChildren
 
     return container as (HTMLElement | DocumentFragment | SVGElement)
 }

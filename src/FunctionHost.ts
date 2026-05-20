@@ -1,8 +1,7 @@
 import {autorun, Notifier} from "data0";
-import {Host, PathContext} from "./Host";
+import {createChildPathContext, Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
-import {createLinkedNode} from "./LinkedList";
 import {withReactiveTrace} from "./diagnostics";
 
 type FunctionNodeContext = {
@@ -88,7 +87,7 @@ export class FunctionHost implements Host{
 
         const newPlaceholder = document.createComment('computed node')
         insertBefore(newPlaceholder, this.placeholder)
-        const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+        const host = createHost(node, newPlaceholder, createChildPathContext(this.pathContext, this))
         Notifier.instance.pauseTracking()
         pauseCollectChild()
         host.render()

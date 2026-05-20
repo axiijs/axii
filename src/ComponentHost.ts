@@ -11,13 +11,13 @@ import {
     RefObject,
     UnhandledPlaceholder
 } from "./DOM";
-import {Host, PathContext} from "./Host";
+import {createChildPathContext, getHostPath, Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
 import {assert} from "./util";
 import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
-import {createLinkedNode, LinkedNode} from "./LinkedList";
+import {LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {assertRangeReachable, withReactiveTrace} from "./diagnostics";
 
@@ -25,6 +25,11 @@ import {assertRangeReachable, withReactiveTrace} from "./diagnostics";
 function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
+
+function hasElementListeners(node: ExtendedElement) {
+    return !!node._listeners || !!node._captureListeners
+}
+
 /**
  * @category Common Utility
  */
@@ -75,12 +80,12 @@ export class ComponentHost implements Host{
     public innerHost?: Host
     innerReusedHosts: ReusableHost[] = []
     props: Props
-    public layoutEffects = new Set<EffectHandle>()
-    public effects = new Set<EffectHandle>()
-    public destroyCallback = new Set<Exclude<ReturnType<EffectHandle>, void>>()
-    public layoutEffectDestroyHandles = new Set<Exclude<ReturnType<EffectHandle>, void>>()
+    public layoutEffects?: Set<EffectHandle> = new Set()
+    public effects?: Set<EffectHandle> = new Set()
+    public destroyCallback?: Set<Exclude<ReturnType<EffectHandle>, void>> = new Set()
+    public layoutEffectDestroyHandles?: Set<Exclude<ReturnType<EffectHandle>, void>> = new Set()
     public refs: {[k:string]: any} = {}
-    public itemConfig : {[k:string]:ConfigItem} = {}
+    public itemConfig: {[k:string]:ConfigItem} = {}
     public children: any
     public frame?: ManualCleanup[] = []
     public name: string
@@ -257,16 +262,16 @@ export class ComponentHost implements Host{
             createSVGElement(finalType as string, finalProps, ...finalChildren) :
             createElement(finalType, finalProps, ...finalChildren)
 
-        if (!(typeof finalType === 'function')) {
+        if (!(typeof finalType === 'function') && hasElementListeners(node as ExtendedElement)) {
             // const contextComponentProps = this.pathContext.hostPath
             //     .filter(h => h instanceof ComponentHost)
             //     .map(h => (h as ComponentHost).props).reverse();
 
             const contextComponentProps: any[] = []
-            let start: LinkedNode<Host>|null = this.pathContext.hostPath
+            let start: LinkedNode<Host>|null = getHostPath(this.pathContext)
             while(start){
-                if (start instanceof ComponentHost) {
-                    contextComponentProps.push(start.props)
+                if (start.node instanceof ComponentHost) {
+                    contextComponentProps.push(start.node.props)
                 }
                 start = start.prev
             }
@@ -288,11 +293,11 @@ export class ComponentHost implements Host{
     }
     // 处理视图相关的 effect
     useLayoutEffect = (callback: EffectHandle) => {
-        this.layoutEffects.add(callback)
+        this.layoutEffects!.add(callback)
     }
     // 处理纯业务相关的 effect，例如建立长连接等
     useEffect = (callback: EffectHandle) => {
-        this.effects.add(callback)
+        this.effects!.add(callback)
     }
     createRef = createRef
     createRxRef = createRxRef
@@ -358,7 +363,7 @@ export class ComponentHost implements Host{
         return value
     }
     onCleanup = (callback: () => any) => {
-        this.destroyCallback.add(callback)
+        this.destroyCallback!.add(callback)
     }
     evaluateBoundProps(inputProps:Props, renderContext:RenderContext) {
         return (this.type.boundProps || []).map(b => {
@@ -409,7 +414,7 @@ export class ComponentHost implements Host{
             useLayoutEffect: this.useLayoutEffect,
             useEffect: this.useEffect,
             pathContext: this.pathContext,
-            context: new DataContext(this.pathContext.hostPath),
+            context: new DataContext(getHostPath(this.pathContext)),
             createPortal: this.createPortal,
             createRef: this.createRef,
             createRxRef: this.createRxRef,
@@ -441,7 +446,7 @@ export class ComponentHost implements Host{
             this.frame = getFrame()
             // CAUTION collect effects end
             // 就用当前 component 的 placeholder
-            this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            this.innerHost = createHost(node, this.placeholder, createChildPathContext(this.pathContext, this))
             this.innerHost.render()
         })
 
@@ -452,10 +457,10 @@ export class ComponentHost implements Host{
             this.attachThis(this.thisProp)
         }
 
-        this.effects.forEach(effect => {
+        this.effects?.forEach(effect => {
             const handle = effect()
             // 也支持 async function return promise，只不过不做处理
-            if (typeof handle === 'function') this.destroyCallback.add(handle)
+            if (typeof handle === 'function') this.destroyCallback!.add(handle)
         })
 
         // 已经 root attach 了，动态生成的节点，需要手动触发 layoutEffect。因为没有 attach 事件了。
@@ -471,9 +476,9 @@ export class ComponentHost implements Host{
             this.attachRef(this.refProp)
         }
 
-        this.layoutEffects.forEach(layoutEffect => {
+        this.layoutEffects?.forEach(layoutEffect => {
             const handle = layoutEffect()
-            if (typeof handle === 'function') this.layoutEffectDestroyHandles.add(handle)
+            if (typeof handle === 'function') this.layoutEffectDestroyHandles!.add(handle)
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
@@ -488,9 +493,9 @@ export class ComponentHost implements Host{
             )
         }
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
-        this.innerHost!.destroy(parentHandle, parentHandleComputed)
-        this.layoutEffectDestroyHandles.forEach(handle => handle())
-        this.destroyCallback.forEach(callback => callback())
+        this.innerHost?.destroy(parentHandle, parentHandleComputed)
+        this.layoutEffectDestroyHandles?.forEach(handle => handle())
+        this.destroyCallback?.forEach(callback => callback())
 
         this.innerReusedHosts.forEach(host => host.destroyReusable())
 
@@ -500,6 +505,22 @@ export class ComponentHost implements Host{
         }
 
         this.deleteLayoutEffectCallback?.()
+        this.releaseReferences()
+    }
+
+    private releaseReferences() {
+        this.innerHost = undefined
+        this.innerReusedHosts = []
+        this.layoutEffects = undefined
+        this.effects = undefined
+        this.destroyCallback = undefined
+        this.layoutEffectDestroyHandles = undefined
+        this.refs = {}
+        this.itemConfig = {}
+        this.children = undefined
+        this.frame = undefined
+        this.renderContext = undefined
+        this.deleteLayoutEffectCallback = undefined
     }
 }
 
@@ -528,7 +549,7 @@ type ConfigItem = {
 
 export class DataContext{
     public valueByType: Map<any, any>
-    constructor(public hostPath: LinkedNode<Host>) {
+    constructor(public hostPath: LinkedNode<Host>|null) {
         this.valueByType = new Map<any, any>()
     }
     get(contextType:any) {

@@ -54,6 +54,28 @@ describe('component render', () => {
         expect(rootEl.firstElementChild!.children[0]).instanceOf(SVGElement)
     })
 
+    test('root destroy dispatches detach before releasing host', () => {
+        let detachCalled = false
+        let hostVisibleDuringDetach = false
+
+        function App() {
+            return <div>app</div>
+        }
+
+        root.render(<App/>)
+        root.on('detach', () => {
+            detachCalled = true
+            hostVisibleDuringDetach = !!root.host
+        })
+
+        root.destroy()
+
+        expect(detachCalled).toBe(true)
+        expect(hostVisibleDuringDetach).toBe(true)
+        expect(root.host).toBeUndefined()
+        expect(rootEl.innerHTML).toBe('')
+    })
+
 
     test('event alias', () => {
         let called = false

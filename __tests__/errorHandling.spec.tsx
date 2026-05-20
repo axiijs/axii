@@ -166,7 +166,7 @@ describe('error handling examples', () => {
                 },
             ])
             expect(axiiError.hostStack.at(-1)).toEqual({
-                type: 'StaticHost',
+                type: 'SimpleElementHost',
                 elementPath: [],
                 source: divSource,
             })

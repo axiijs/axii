@@ -1,11 +1,24 @@
 import {insertBefore, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
-import {PathContext, Host} from "./Host";
+import {createChildPathContext, PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
-import {createLinkedNode} from "./LinkedList";
 import {reportAxiiError, withReactiveTrace} from "./diagnostics";
+import {
+    trackRetainedCompactListHostCreated,
+    trackRetainedCompactListHostDestroyed
+} from "./retainedDiagnostics";
 
 const compactListHosts = new WeakSet<Host>()
+const compactPlaceholders = new WeakMap<Document, Comment>()
+
+function getCompactPlaceholder(ownerDocument: Document) {
+    let placeholder = compactPlaceholders.get(ownerDocument)
+    if (!placeholder) {
+        placeholder = ownerDocument.createComment('compact rx list item')
+        compactPlaceholders.set(ownerDocument, placeholder)
+    }
+    return placeholder
+}
 
 /**
  * @internal
@@ -36,7 +49,7 @@ export class RxListHost implements Host{
         const host = this
 
         this.hosts = this.source.map((item) => {
-            return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            return createHost(item, document.createComment('rx list item'), createChildPathContext(this.pathContext, this))
         }, { ignoreIndex: true, skipItemEffect: true })
 
         this.hostRenderComputed = computed(
@@ -100,6 +113,8 @@ export class RxListHost implements Host{
                                     parent.replaceChildren(host.placeholder)
 
                                     deletedHosts.forEach((host: Host) => destroyListItemHost(host, true))
+                                } else if (removeCompactHostRange(deletedHosts)) {
+                                    deletedHosts.forEach((host: Host) => destroyListItemHost(host, true))
                                 } else {
                                     deletedHosts.forEach((host: Host) => destroyListItemHost(host))
                                 }
@@ -140,8 +155,10 @@ export class RxListHost implements Host{
             destroyComputed(this.hostRenderComputed)
         }
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
-        this.hosts!.forEach(host => destroyListItemHost(host, fromParentDestroy))
+        this.hosts?.forEach(host => destroyListItemHost(host, fromParentDestroy))
         if (!fromParentDestroy) this.placeholder.remove()
+        this.hosts = undefined
+        this.hostRenderComputed = undefined
     }
 }
 
@@ -166,8 +183,11 @@ function compactHostIfPossible(host: Host) {
         host.placeholder.parentNode === host.element.parentNode &&
         host.element.nextSibling === host.placeholder
     ) {
+        const ownerDocument = host.placeholder.ownerDocument
         host.placeholder.remove()
+        host.placeholder = getCompactPlaceholder(ownerDocument)
         compactListHosts.add(host)
+        trackRetainedCompactListHostCreated()
     }
 }
 
@@ -195,7 +215,24 @@ function destroyListItemHost(host: Host, fromParentDestroy?: boolean, parentHand
 
     host.destroy(true, parentHandleComputed)
     compactListHosts.delete(host)
+    trackRetainedCompactListHostDestroyed()
     if (!fromParentDestroy) host.element.remove()
+}
+
+function removeCompactHostRange(hosts: Host[]) {
+    if (hosts.length < 2 || hosts.some(host => !isCompactHost(host) || host.forceHandleElement)) return false
+
+    const first = hosts[0]!.element
+    const last = hosts.at(-1)!.element
+    const parent = first.parentNode
+    if (!parent || parent !== last.parentNode) return false
+
+    const range = first.ownerDocument.createRange()
+    range.setStartBefore(first)
+    range.setEndAfter(last)
+    range.deleteContents()
+    range.detach()
+    return true
 }
 
 function hostRangeEnd(host: Host) {

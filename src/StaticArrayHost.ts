@@ -1,8 +1,7 @@
 import { insertBefore} from "./DOM";
-import {PathContext, Host} from "./Host";
+import {createChildPathContext, PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {removeNodesBetween} from "./util";
-import {createLinkedNode} from "./LinkedList";
 
 
 /**
@@ -42,7 +41,7 @@ export class StaticArrayHost implements Host{
                     // 其他未知节点了
                     const newPlaceholder: Comment = document.createComment('array item')
                     frag.appendChild(newPlaceholder)
-                    const newHost = createHost(item, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                    const newHost = createHost(item, newPlaceholder, createChildPathContext(this.pathContext, this))
                     this.childHosts.push(newHost)
                     if (index === 0) this.firstChild = newHost
                 }

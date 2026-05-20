@@ -78,6 +78,27 @@ describe('component render', () => {
         expect(getComputedStyle(lastP).getPropertyValue('color')).toBe('rgb(0, 128, 0)')
     })
 
+    test('dynamic nested style cleans up after starting without managed style', () => {
+        const baseStyleSheetCount = document.adoptedStyleSheets.length
+        const style = atom<any>({color: 'red'})
+
+        function DynamicStyleApp() {
+            return <div style={style}>app</div>
+        }
+
+        root.render(<DynamicStyleApp />)
+        const app = rootEl.firstElementChild!
+        expect(app.classList.length).toBe(0)
+        expect(document.adoptedStyleSheets.length).toBe(baseStyleSheetCount)
+
+        style({'&:hover': {color: 'blue'}})
+        expect(app.classList.length).toBe(1)
+        expect(document.adoptedStyleSheets.length).toBe(baseStyleSheetCount + 1)
+
+        root.destroy()
+        expect(document.adoptedStyleSheets.length).toBe(baseStyleSheetCount)
+    })
+
     // TODO happy-dom media query not working
     // test('at-rule style', () => {
     //     root.render(<App />)

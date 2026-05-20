@@ -52,6 +52,28 @@ describe('component render', () => {
         expect(rootEl.firstElementChild!.children[0].innerHTML).toBe('hello world')
     })
 
+    test('component element listener bound args are stored only for event targets', () => {
+        let eventArgs: any[] | undefined
+        function App({}, {createElement}: RenderContext) {
+            return <div>
+                <span>plain</span>
+                <button onClick={(event: MouseEvent, ...args: any[]) => eventArgs = [event, ...args]}>click</button>
+            </div>
+        }
+
+        root.render(<App/>)
+        const plain = rootEl.querySelector('span') as any
+        const button = rootEl.querySelector('button') as any
+
+        expect(plain.listenerBoundArgs).toBeUndefined()
+        expect(button.listenerBoundArgs).toHaveLength(2)
+
+        button.dispatchEvent(new MouseEvent('click', {bubbles: true}))
+        expect(eventArgs?.[0]).toBeInstanceOf(MouseEvent)
+        expect(eventArgs?.[1]).toBe(button.listenerBoundArgs[0])
+        expect(eventArgs?.[2]).toBe(button.listenerBoundArgs[1])
+    })
+
     test('component with computed inside function node', () => {
         const insideAtom = atom(1)
         function Child() {
@@ -581,6 +603,41 @@ describe('component lifecycle', () => {
         root.render(<App/>)
         root.destroy()
         expect(cleanupCalled).toBeTruthy()
+    })
+
+    test('component destroy runs cleanups before releasing retained references', () => {
+        let cleanupCalled = false
+        let layoutCleanupCalled = false
+        let effectCleanupCalled = false
+
+        function App({}, {createRef, onCleanup, useLayoutEffect, useEffect}: RenderContext) {
+            const ref = createRef()
+            onCleanup(() => {
+                cleanupCalled = true
+            })
+            useLayoutEffect(() => {
+                return () => {
+                    layoutCleanupCalled = true
+                }
+            })
+            useEffect(() => {
+                return () => {
+                    effectCleanupCalled = true
+                }
+            })
+            return <div ref={ref}>app</div>
+        }
+
+        const host = root.render(<App/>) as ComponentHost
+        root.destroy()
+
+        expect(cleanupCalled).toBe(true)
+        expect(layoutCleanupCalled).toBe(true)
+        expect(effectCleanupCalled).toBe(true)
+        expect(host.innerHost).toBeUndefined()
+        expect(host.frame).toBeUndefined()
+        expect(host.renderContext).toBeUndefined()
+        expect(host.refs).toEqual({})
     })
 
 })

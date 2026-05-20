@@ -4,6 +4,7 @@ import {ComponentHost, createElement, createRoot, Fragment, StaticHost} from "@f
 import {atom, RxList, RxMap} from "data0";
 import {beforeEach, describe, expect, test, vi} from "vitest";
 import {RxListHost} from "../src/RxListHost";
+import {getHostPath} from "../src/Host";
 
 function wait(time: number) {
     return new Promise(resolve => {
@@ -228,16 +229,20 @@ describe('rxList render', () => {
             </div>
         }
 
-        root.render(<App/>)
+        const host = root.render(<App/>) as ComponentHost
+        const rxListHost = (host.innerHost as StaticHost).reactiveHosts![0] as RxListHost
         const container = rootEl.firstElementChild!
         const nodes = Array.from(container.children)
 
         expect(container.textContent).toBe('abc')
         expect(commentTexts(container)).not.toContain('rx list item')
+        expect(rxListHost.hosts!.data[0]!.placeholder).toBe(rxListHost.hosts!.data[1]!.placeholder)
+        expect(rxListHost.hosts!.data[0]!.placeholder.parentNode).toBeNull()
 
         arr.push({id: 4, name: 'd'})
         expect(container.textContent).toBe('abcd')
         expect(commentTexts(container)).not.toContain('rx list item')
+        expect(rxListHost.hosts!.data[3]!.placeholder).toBe(rxListHost.hosts!.data[0]!.placeholder)
 
         arr.splice(1, 1, {id: 5, name: 'e'}, {id: 6, name: 'f'})
         expect(container.textContent).toBe('aefcd')
@@ -255,6 +260,29 @@ describe('rxList render', () => {
         expect(commentTexts(container)).not.toContain('rx list item')
     })
 
+    test('rxList simple rows keep host paths lazy until requested', () => {
+        const arr = new RxList<any>([
+            {id: 1, name: 'a'},
+            {id: 2, name: 'b'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <span>{item.name}</span>)}
+            </div>
+        }
+
+        const host = root.render(<App/>) as ComponentHost
+        const rxListHost = (host.innerHost as StaticHost).reactiveHosts![0] as RxListHost
+        const rowHost = rxListHost.hosts!.data[0]! as StaticHost
+
+        expect('hostPath' in rowHost.pathContext).toBe(false)
+
+        const hostPath = getHostPath(rowHost.pathContext)
+        expect(hostPath!.node).toBe(rxListHost)
+        expect(rowHost.pathContext.hostPath).toBe(hostPath)
+    })
+
     test('rxList compact element item cleans ref when removed', () => {
         const arr = new RxList<any>([
             {id: 1, name: 'a'},
@@ -268,6 +296,30 @@ describe('rxList render', () => {
         arr.splice(0, 1)
         expect(ref.current).toBe(null)
         expect(rootEl.textContent).toBe('')
+    })
+
+    test('rxList host releases retained list state after destroy', () => {
+        const arr = new RxList<any>([
+            {id: 1, name: 'a'},
+            {id: 2, name: 'b'},
+        ])
+
+        function App() {
+            return <div>
+                {arr.map(item => <span>{item.name}</span>)}
+            </div>
+        }
+
+        const host = root.render(<App/>) as ComponentHost
+        const rxListHost = (host.innerHost as StaticHost).reactiveHosts![0] as RxListHost
+
+        expect(rxListHost.hosts?.data.length).toBe(2)
+        expect(rxListHost.hostRenderComputed).toBeDefined()
+
+        root.destroy()
+
+        expect(rxListHost.hosts).toBeUndefined()
+        expect(rxListHost.hostRenderComputed).toBeUndefined()
     })
 
     test('rxList inline primitive function items still reuse nodes when reordered', () => {

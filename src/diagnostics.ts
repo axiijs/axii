@@ -1,4 +1,4 @@
-import type {Host} from "./Host";
+import {getHostPath, type Host} from "./Host";
 
 export type AxiiErrorCode = 'AXII_DOM_BOUNDARY_BROKEN'
 
@@ -364,7 +364,7 @@ export function createDomBoundaryError(context: RangeBoundaryContext, detail: st
 
 function collectHostStack(ownerHost?: Host): HostFrame[] {
     const frames: HostFrame[] = []
-    const hostPath = ownerHost?.pathContext.hostPath
+    const hostPath = ownerHost ? getHostPath(ownerHost.pathContext) : null
     let current = hostPath ?? null
     while (current) {
         frames.unshift(createHostFrame(current.node))

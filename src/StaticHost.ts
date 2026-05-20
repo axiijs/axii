@@ -9,14 +9,21 @@ import {
     stringifyStyleValue,
     UnhandledPlaceholder
 } from "./DOM";
-import {Host, PathContext} from "./Host";
+import {createChildPathContext, getHostPath, Host, PathContext} from "./Host";
 import {autorun, isAtom, isReactive, Notifier, ReactiveEffect} from "data0";
 import {createHost} from "./createHost";
 import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
-import {createLinkedNode, LinkedNode} from "./LinkedList";
+import {LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
+import {LightReactiveBindingEffect, ProbeReactiveEffect, ReactiveDep} from "./LightReactiveBinding";
+import {
+    trackRetainedHostStyleStateCreated,
+    trackRetainedHostStyleStateDestroyed,
+    trackRetainedStyleIdCreated,
+    trackRetainedStyleIdDestroyed
+} from "./retainedDiagnostics";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
@@ -151,6 +158,7 @@ class StyleManager {
         const styleSheet = new CSSStyleSheet()
         styleSheet.replaceSync(this.generateStyleContent(`.${id}`, styleObject).join('\n'))
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
+        trackRetainedStyleIdCreated()
         return styleSheet
     }
     deleteStyleSheet(id: string): CSSStyleSheet | null {
@@ -159,25 +167,33 @@ class StyleManager {
             const index = document.adoptedStyleSheets.indexOf(styleSheet)
             document.adoptedStyleSheets.splice(index, 1)
             this.styleScripts.delete(id)
+            trackRetainedStyleIdDestroyed()
             return styleSheet
         }
         return null
     }
     collect(hostPath: LinkedNode<Host>, id: string) {
         const host = hostPath.node
+        const hadHostStyleState = this.hostToStyleIds.has(host)
         const ids = this.hostToStyleIds.get(host) ?? new Set()
         ids.add(id)
         this.hostToStyleIds.set(host, ids)
+        if (!hadHostStyleState) trackRetainedHostStyleStateCreated()
         this.updateRefCount(id, +1)
     }
-    mount(hostPath: LinkedNode<Host>) {
+    mount(hostPath: LinkedNode<Host>|null) {
         if (!hostPath) return // robustness for ReusableHost
         const host = hostPath.node
         const count = ((this.hostMountCount.get(host) ?? 0) + 1)
         this.hostMountCount.set(host, count)
         return count
     }
-    unmount(hostPath: LinkedNode<Host>) {
+    hasHostState(hostPath: LinkedNode<Host>|null) {
+        if (!hostPath) return false // robustness for ReusableHost
+        const host = hostPath.node
+        return this.hostMountCount.has(host) || this.hostToStyleIds.has(host)
+    }
+    unmount(hostPath: LinkedNode<Host>|null) {
         if (!hostPath) return // robustness for ReusableHost
         const host = hostPath.node
         const count = ((this.hostMountCount.get(host) ?? 0) - 1)
@@ -189,7 +205,8 @@ class StyleManager {
         this.cleanup(hostPath)
         this.hostMountCount.delete(host)
     }
-    cleanup(hostPath: LinkedNode<Host>) {
+    cleanup(hostPath: LinkedNode<Host>|null) {
+        if (!hostPath) return
         const host = hostPath.node
         const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
         const styleSheetsToDelete = new Set<CSSStyleSheet>()
@@ -201,9 +218,10 @@ class StyleManager {
                     styleSheetsToDelete.add(styleSheet)
                 }
                 this.styleScripts.delete(id);
+                trackRetainedStyleIdDestroyed()
             }
         })
-        this.hostToStyleIds.delete(host)
+        if (this.hostToStyleIds.delete(host)) trackRetainedHostStyleStateDestroyed()
         document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => {
             return !styleSheetsToDelete.has(sheet);
         });
@@ -419,6 +437,12 @@ class ScheduledReactiveEffect extends ReactiveEffect {
     }
 }
 
+class ImmediateReactiveEffect extends ReactiveEffect {
+    callGetter(): any {
+        return this.getter?.()
+    }
+}
+
 function withFunctionNodeTrace<T>(
     operation: 'render' | 'recompute',
     pathContext: PathContext,
@@ -434,20 +458,34 @@ function withFunctionNodeTrace<T>(
     }, fn)
 }
 
-class InlineFunctionTextBinding {
+class InlineFunctionTextBinding extends LightReactiveBindingEffect {
     stopAutoRender?: () => any
     textNode: Text|null = null
     innerHost: Host|null = null
     container: ParentNode|null
+    protected retainedDiagnosticType = 'InlineFunctionTextBinding'
+    private childPathContext?: PathContext
+    private lightScheduled = false
 
     constructor(
         public source: FunctionNode,
         public placeholder: Comment | null,
-        public pathContext: PathContext,
-        public ownerHost: StaticHost,
+        public ownerHost: Host,
         container?: ParentNode,
+        private path: number[] = ownerHost.pathContext.elementPath,
+        private sourceInfo?: InlineFunctionChildInfo['source'],
     ) {
+        super()
         this.container = placeholder?.parentNode ?? container ?? null
+    }
+
+    private getPathContext() {
+        return this.childPathContext ?? (this.childPathContext = createChildPathContext(
+            this.ownerHost.pathContext,
+            this.ownerHost,
+            this.path,
+            this.sourceInfo ?? this.ownerHost.pathContext.debugSource,
+        ))
     }
 
     render() {
@@ -459,19 +497,59 @@ class InlineFunctionTextBinding {
     }
 
     private renderZeroArgPrimitive() {
+        let firstNode: ReturnType<FunctionNode>
         const effect = new ScheduledReactiveEffect(() => {
-            const node = this.source(undefined as unknown as FunctionNodeContext)
-            this.renderNode(node, pauseCurrentEffectChildCollection, resumeCurrentEffectChildCollection)
+            firstNode = this.source(undefined as unknown as FunctionNodeContext)
+            this.renderNode(firstNode, pauseCurrentEffectChildCollection, resumeCurrentEffectChildCollection)
         })
         effect.run()
+
+        if (isLightTextBindingNode(firstNode!) && effect.deps.length === 1) {
+            const dep = effect.deps[0]!
+            effect.destroy()
+            this.renderLightAtomPrimitive(dep)
+            return
+        }
+
         this.stopAutoRender = () => effect.destroy()
+    }
+
+    private renderLightAtomPrimitive(dep: ReactiveDep) {
+        this.startLightBinding(dep)
+    }
+
+    run() {
+        if (!this.lightActive || this.lightScheduled) return
+        this.lightScheduled = true
+        queueMicrotask(() => {
+            this.lightScheduled = false
+            if (!this.lightActive) return
+
+            let node: ReturnType<FunctionNode>
+            const probeEffect = new ProbeReactiveEffect(() => {
+                node = this.source(undefined as unknown as FunctionNodeContext)
+            })
+            probeEffect.run()
+            const canStayLight = isLightTextBindingNode(node!) &&
+                probeEffect.deps.length === 1 &&
+                probeEffect.deps[0] === this.lightDep
+            probeEffect.destroy()
+
+            if (!canStayLight) {
+                this.stopLightBinding()
+                this.renderZeroArgPrimitive()
+                return
+            }
+
+            this.renderNode(node!, pauseCurrentEffectChildCollection, resumeCurrentEffectChildCollection)
+        })
     }
 
     private renderGeneric() {
         let scheduleRecompute = false
 
         this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
-            withFunctionNodeTrace('render', this.pathContext, () => {
+            withFunctionNodeTrace('render', this.getPathContext(), () => {
                 let cleanup: (() => any) | undefined
                 const node = this.source({onCleanup: (fn) => cleanup = fn})
                 this.renderNode(node, pauseCollectChild, resumeCollectChild)
@@ -481,7 +559,7 @@ class InlineFunctionTextBinding {
             if (scheduleRecompute) return
             scheduleRecompute = true
             queueMicrotask(() => {
-                withFunctionNodeTrace('recompute', this.pathContext, recompute)
+                withFunctionNodeTrace('recompute', this.getPathContext(), recompute)
                 scheduleRecompute = false
             })
         })
@@ -489,7 +567,11 @@ class InlineFunctionTextBinding {
 
     destroy(parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
-            this.stopAutoRender?.()
+            if (this.lightActive) {
+                this.stopLightBinding()
+            } else {
+                this.stopAutoRender?.()
+            }
             this.cleanupRendered()
         }
         this.placeholder?.remove()
@@ -518,10 +600,7 @@ class InlineFunctionTextBinding {
         this.cleanupRendered()
         const placeholder = this.getPlaceholder()
         this.insertStandaloneNode(placeholder)
-        const host = createHost(node, placeholder, {
-            ...this.pathContext,
-            hostPath: createLinkedNode<Host>(this.ownerHost, this.pathContext.hostPath)
-        })
+        const host = createHost(node, placeholder, this.getPathContext())
         Notifier.instance.pauseTracking()
         pauseCollectChild()
         host.render()
@@ -565,8 +644,146 @@ class InlineFunctionTextBinding {
     }
 }
 
+function isLightAttributeValue(value: unknown) {
+    return value === null ||
+        value === undefined ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+}
+
+type AttributeBindingHost = Pick<StaticHost, 'pathContext' | 'resolveAttributeValue' | 'applyResolvedAttribute' | 'updateAttribute'>
+
+class LightReactiveAttributeBinding extends LightReactiveBindingEffect {
+    private stopAutoRender?: () => void
+    private lightRunning = false
+    protected retainedDiagnosticType = 'LightReactiveAttributeBinding'
+
+    constructor(
+        private host: AttributeBindingHost,
+        private el: ExtendedElement,
+        private key: string,
+        private value: any,
+        private path: number[],
+        private isSVG: boolean,
+        private source?: InlineFunctionChildInfo['source'],
+    ) {
+        super()
+    }
+
+    render() {
+        if (this.key === 'style') {
+            this.renderFull()
+            return
+        }
+
+        let firstValue: unknown
+        const effect = new ImmediateReactiveEffect(() => {
+            firstValue = this.host.resolveAttributeValue(this.value)
+            this.updateResolvedAttribute(firstValue)
+        })
+        effect.run()
+
+        if (this.canUseLightBinding(firstValue, effect.deps)) {
+            const dep = effect.deps[0]!
+            effect.destroy()
+            this.renderLight(dep)
+            return
+        }
+
+        this.stopAutoRender = () => effect.destroy()
+    }
+
+    private renderFull() {
+        const effect = new ImmediateReactiveEffect(() => {
+            this.updateRawAttribute()
+        })
+        effect.run()
+        this.stopAutoRender = () => effect.destroy()
+    }
+
+    destroy() {
+        if (this.lightActive) {
+            this.stopLightBinding()
+            return
+        }
+        this.stopAutoRender?.()
+    }
+
+    private canUseLightBinding(value: unknown, deps: ReactiveEffect['deps']) {
+        return this.key !== 'style' &&
+            !Array.isArray(this.value) &&
+            isLightAttributeValue(value) &&
+            deps.length === 1
+    }
+
+    private renderLight(dep: ReactiveDep) {
+        this.startLightBinding(dep)
+    }
+
+    run() {
+        if (!this.lightActive || this.lightRunning) return
+        this.lightRunning = true
+        try {
+            if (isAtom(this.value)) {
+                this.updateResolvedAttribute(this.host.resolveAttributeValue(this.value))
+                return
+            }
+
+            let nextValue: unknown
+            const probeEffect = new ProbeReactiveEffect(() => {
+                nextValue = this.host.resolveAttributeValue(this.value)
+            })
+            probeEffect.run()
+            const canStayLight = this.canUseLightBinding(nextValue, probeEffect.deps) &&
+                probeEffect.deps[0] === this.lightDep
+            probeEffect.destroy()
+
+            if (!canStayLight) {
+                this.stopLightBinding()
+                this.render()
+                return
+            }
+
+            this.updateResolvedAttribute(nextValue)
+        } finally {
+            this.lightRunning = false
+        }
+    }
+
+    private updateResolvedAttribute(value: unknown) {
+        withReactiveTrace({
+            type: 'static-attr',
+            operation: 'update-attr',
+            hostType: 'StaticHost',
+            elementPath: this.path,
+            source: this.source ?? this.host.pathContext.debugSource,
+            attrName: this.key,
+        }, () => {
+            this.host.applyResolvedAttribute(this.el, this.key, value, this.isSVG)
+        })
+    }
+
+    private updateRawAttribute() {
+        withReactiveTrace({
+            type: 'static-attr',
+            operation: 'update-attr',
+            hostType: 'StaticHost',
+            elementPath: this.path,
+            source: this.source ?? this.host.pathContext.debugSource,
+            attrName: this.key,
+        }, () => {
+            this.host.updateAttribute(this.el, this.key, this.value, this.path, this.isSVG)
+        })
+    }
+}
+
 function isPrimitiveText(node: ReturnType<FunctionNode>): node is string | number | boolean {
     return typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean'
+}
+
+function isLightTextBindingNode(node: ReturnType<FunctionNode>): node is string | number | boolean | null | undefined {
+    return node === null || node === undefined || isPrimitiveText(node)
 }
 
 function canInlineFunctionTextBinding(child: unknown, placeholder?: Comment, container?: ParentNode): child is FunctionNode {
@@ -577,6 +794,150 @@ function canInlineFunctionTextBinding(child: unknown, placeholder?: Comment, con
             placeholder?.parentNode instanceof Element && placeholder.parentNode.childNodes.length === 1 ||
             !placeholder?.parentNode && container instanceof Element && container.childNodes.length === 0
         )
+}
+
+function isSimpleInlineFunctionChild(
+    source: ExtendedElement,
+    inlineFunctionChild: InlineFunctionChildInfo | undefined,
+    inlineFunctionChildren: InlineFunctionChildInfo[] | undefined,
+) {
+    if (inlineFunctionChild) {
+        return !inlineFunctionChildren?.length &&
+            inlineFunctionChild.container === source &&
+            inlineFunctionChild.path.length === 1 &&
+            inlineFunctionChild.path[0] === 0 &&
+            canInlineFunctionTextBinding(inlineFunctionChild.child, undefined, source)
+    }
+
+    return !inlineFunctionChildren ||
+        inlineFunctionChildren.length === 1 &&
+        inlineFunctionChildren[0]!.container === source &&
+        inlineFunctionChildren[0]!.path.length === 1 &&
+        inlineFunctionChildren[0]!.path[0] === 0 &&
+        canInlineFunctionTextBinding(inlineFunctionChildren[0]!.child, undefined, source)
+}
+
+function isSimpleRootDynamicAttr(source: ExtendedElement) {
+    const { unhandledAttr } = source
+    if (!unhandledAttr?.length) return true
+    if (StaticHostConfig.autoGenerateTestId) return false
+    if (unhandledAttr.length !== 1) return false
+
+    const attr = unhandledAttr[0]!
+    return attr.el === source &&
+        attr.path.length === 0 &&
+        attr.key !== 'style' &&
+        !attr.key.includes(':')
+}
+
+function isSimpleElementHostShape(source: HTMLElement | SVGElement | DocumentFragment) {
+    if (source instanceof DocumentFragment) return false
+    const element = source as ExtendedElement
+    return !element.unhandledChildren?.length &&
+        isSimpleRootDynamicAttr(element) &&
+        !element.refHandles?.length &&
+        !element.detachStyledChildren?.length &&
+        isSimpleInlineFunctionChild(element, element.inlineFunctionChild, element.inlineFunctionChildren)
+}
+
+/**
+ * @internal
+ */
+export class SimpleElementHost implements Host {
+    public element: HTMLElement | SVGElement | Comment = this.placeholder
+    private textBinding?: InlineFunctionTextBinding
+    private attrBinding?: LightReactiveAttributeBinding
+
+    constructor(public source: HTMLElement | SVGElement, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+    }
+
+    render(): void {
+        assert(this.element === this.placeholder, 'should never rerender')
+        this.element = this.source
+
+        const element = this.source as ExtendedElement
+        const inlineFunctionChild = element.inlineFunctionChild ?? element.inlineFunctionChildren?.[0]
+        if (inlineFunctionChild) {
+            this.textBinding = new InlineFunctionTextBinding(
+                inlineFunctionChild.child,
+                null,
+                this,
+                this.source,
+                inlineFunctionChild.path,
+                inlineFunctionChild.source,
+            )
+            this.textBinding.render()
+            element.inlineFunctionChild = undefined
+            element.inlineFunctionChildren = undefined
+        }
+
+        const dynamicAttr = element.unhandledAttr?.[0]
+        if (dynamicAttr) {
+            this.attrBinding = new LightReactiveAttributeBinding(
+                this,
+                dynamicAttr.el,
+                dynamicAttr.key,
+                dynamicAttr.value,
+                dynamicAttr.path,
+                this.source instanceof SVGElement,
+                dynamicAttr.source,
+            )
+            this.attrBinding.render()
+            element.unhandledAttr = undefined
+        }
+
+        insertBefore(this.element, this.placeholder)
+    }
+
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        if (!parentHandleComputed) {
+            this.attrBinding?.destroy()
+        }
+        this.textBinding?.destroy(parentHandleComputed)
+        this.attrBinding = undefined
+        this.textBinding = undefined
+
+        const source = this.source as ExtendedElement
+        source.inlineFunctionChild = undefined
+        source.inlineFunctionChildren = undefined
+        source.unhandledAttr = undefined
+
+        if (!parentHandle) {
+            removeNodesBetween(this.element, this.placeholder, true, {
+                ownerHost: this,
+                operation: 'destroy',
+            })
+        }
+    }
+
+    resolveAttributeValue(value: any) {
+        return Array.isArray(value) ?
+            value.map(v => isAtomLike(v) ? v() : v) :
+            isAtomLike(value) ? value() : value
+    }
+
+    applyResolvedAttribute(el: ExtendedElement, key: string, value: any, isSVG: boolean) {
+        if (/^data-/.test(key)) {
+            el.dataset[camelize(key.slice(5))] = value
+        } else {
+            setAttribute(el, key, value, isSVG)
+        }
+    }
+
+    updateAttribute(el: ExtendedElement, key: string, value: any, path: number[], isSVG: boolean) {
+        const final = this.resolveAttributeValue(value)
+        this.applyResolvedAttribute(el, key, final, isSVG)
+    }
+}
+
+/**
+ * @internal
+ */
+export function createStaticHost(source: HTMLElement | SVGElement | DocumentFragment, placeholder: UnhandledPlaceholder, pathContext: PathContext): Host {
+    if (isSimpleElementHostShape(source)) {
+        return new SimpleElementHost(source as HTMLElement | SVGElement, placeholder, pathContext)
+    }
+    return new StaticHost(source, placeholder, pathContext)
 }
 
 function pauseCurrentEffectChildCollection() {
@@ -604,7 +965,7 @@ export class StaticHost implements Host {
     computed = undefined
     reactiveHosts?: Host[]
     inlineFunctionTextBindings?: InlineFunctionTextBinding[]
-    attrAutoruns?: (() => void)[]
+    attrBindings?: LightReactiveAttributeBinding | LightReactiveAttributeBinding[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
     parentElement: HTMLElement
@@ -653,14 +1014,17 @@ export class StaticHost implements Host {
                 this.pathContext.root.on('attach', this.attachRefs, {once: true})
             }
         }
-        StaticHost.styleManager.mount(this.pathContext.hostPath)
+        const hostPath = this.pathContext.hostPath ?? null
+        if (StaticHost.styleManager.hasHostState(hostPath)) {
+            StaticHost.styleManager.mount(hostPath)
+        }
     }
     collectInnerHost() {
         const result = this.source as ExtendedElement
 
-        const { unhandledChildren, inlineFunctionChildren } = result
+        const { unhandledChildren, inlineFunctionChild, inlineFunctionChildren } = result
 
-        if (unhandledChildren || inlineFunctionChildren) {
+        if (unhandledChildren || inlineFunctionChild || inlineFunctionChildren) {
             const reactiveHosts: Host[] = []
             const inlineFunctionTextBindings: InlineFunctionTextBinding[] = []
 
@@ -671,15 +1035,8 @@ export class StaticHost implements Host {
                 source?: InlineFunctionChildInfo['source'],
                 container?: InlineFunctionChildInfo['container'],
             }, lazyPlaceholder?: boolean) => {
-                const childPathContext = {
-                    ...this.pathContext,
-                    hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath),
-                    elementPath: path,
-                    debugSource: source ?? (child as any).__axiiSource ?? this.pathContext.debugSource,
-                }
-
                 if (canInlineFunctionTextBinding(child, placeholder, container)) {
-                    inlineFunctionTextBindings.push(new InlineFunctionTextBinding(child, placeholder ?? null, childPathContext, this, container))
+                    inlineFunctionTextBindings.push(new InlineFunctionTextBinding(child, placeholder ?? null, this, container, path, source ?? (child as any).__axiiSource))
                     return
                 }
 
@@ -687,16 +1044,24 @@ export class StaticHost implements Host {
                     placeholder = document.createComment('unhandledChild')
                     container!.appendChild(placeholder)
                 }
+                const childPathContext = createChildPathContext(
+                    this.pathContext,
+                    this,
+                    path,
+                    source ?? (child as any).__axiiSource ?? this.pathContext.debugSource,
+                )
                 reactiveHosts.push(createHost(child, placeholder!, childPathContext))
             }
 
             unhandledChildren?.forEach(childInfo => collectChild(childInfo));
+            if (inlineFunctionChild) collectChild(inlineFunctionChild, true)
             inlineFunctionChildren?.forEach(childInfo => collectChild(childInfo, true));
 
             if (reactiveHosts.length) this.reactiveHosts = reactiveHosts
             if (inlineFunctionTextBindings.length) this.inlineFunctionTextBindings = inlineFunctionTextBindings
 
             result.unhandledChildren = undefined
+            result.inlineFunctionChild = undefined
             result.inlineFunctionChildren = undefined
         }
     }
@@ -708,7 +1073,6 @@ export class StaticHost implements Host {
         const { unhandledAttr } = result
 
         if(unhandledAttr) {
-            this.attrAutoruns = []
             unhandledAttr.forEach(({ el, key, value, path, source }) => {
                 // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
                 if (!el.hasAttribute('data-testid')) {
@@ -716,39 +1080,46 @@ export class StaticHost implements Host {
                 }
                 // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
                 if (!key.includes(':')) {
-                    this.attrAutoruns!.push(autorun(() => {
-                        withReactiveTrace({
-                            type: 'static-attr',
-                            operation: 'update-attr',
-                            hostType: 'StaticHost',
-                            elementPath: path,
-                            source: source ?? this.pathContext.debugSource,
-                            attrName: key,
-                        }, () => {
-                            this.updateAttribute(el, key, value, path, isSVG)
-                        })
-                    }, true))
+                    const binding = new LightReactiveAttributeBinding(this, el, key, value, path, isSVG, source)
+                    binding.render()
+                    this.addAttrBinding(binding)
                 }
             })
             result.unhandledAttr = undefined
         }
     }
+    private addAttrBinding(binding: LightReactiveAttributeBinding) {
+        const attrBindings = this.attrBindings
+        if (!attrBindings) {
+            this.attrBindings = binding
+        } else if (Array.isArray(attrBindings)) {
+            attrBindings.push(binding)
+        } else {
+            this.attrBindings = [attrBindings, binding]
+        }
+    }
     updateAttribute(el: ExtendedElement, key: string, value: any, path: number[], isSVG: boolean) {
 
         if (key === 'style' ) {
-            return StaticHost.styleManager.update(this.pathContext.hostPath, path, value, el)
+            return StaticHost.styleManager.update(getHostPath(this.pathContext)!, path, value, el)
         } else {
-            const final = Array.isArray(value) ?
-                value.map(v => isAtomLike(v) ? v() : v) :
-                isAtomLike(value) ? value() : value
+            const final = this.resolveAttributeValue(value)
+            this.applyResolvedAttribute(el, key, final, isSVG)
+        }
+    }
+    resolveAttributeValue(value: any) {
+        return Array.isArray(value) ?
+            value.map(v => isAtomLike(v) ? v() : v) :
+            isAtomLike(value) ? value() : value
+    }
+    applyResolvedAttribute(el: ExtendedElement, key: string, value: any, isSVG: boolean) {
             if (/^data-/.test(key)) {
                 // 使用 dataset 的时候 key 要进行驼峰化
                 // ref: https://developer.mozilla.org/zh-CN/docs/Web/API/HTMLElement/dataset#%E5%90%8D%E7%A7%B0%E8%BD%AC%E6%8D%A2
-                el.dataset[camelize(key.slice(5))] = final
+                el.dataset[camelize(key.slice(5))] = value
             } else {
-                setAttribute(el, key, final, isSVG)
+                setAttribute(el, key, value, isSVG)
             }
-        }
     }
     collectRefHandles() {
         this.refHandles = (this.source as ExtendedElement).refHandles
@@ -760,7 +1131,7 @@ export class StaticHost implements Host {
         // 增加全局开关控制
         if (!StaticHostConfig.autoGenerateTestId) return
         
-        const testId = generateGlobalElementStaticId(this.pathContext.hostPath, elementPath)
+        const testId = generateGlobalElementStaticId(getHostPath(this.pathContext)!, elementPath)
         setAttribute(el, 'data-testid', testId)
     }
     attachRefs = () => {
@@ -770,7 +1141,7 @@ export class StaticHost implements Host {
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         if (!parentHandleComputed) {
-            this.attrAutoruns?.forEach(stopAutorun => stopAutorun())
+            this.destroyAttrBindings()
         }
 
         this.removeAttachListener?.()
@@ -783,21 +1154,57 @@ export class StaticHost implements Host {
         })
 
         const unmountStyle = () => {
-            StaticHost.styleManager.unmount(this.pathContext.hostPath)
+            const hostPath = this.pathContext.hostPath ?? null
+            if (StaticHost.styleManager.hasHostState(hostPath)) {
+                StaticHost.styleManager.unmount(hostPath)
+            }
+        }
+
+        const finishDestroy = () => {
+            unmountStyle()
+            this.releaseReferences()
         }
 
         try {
             const removeResult = this.removeElements(parentHandle)
             if (removeResult instanceof Promise) {
-                removeResult.catch(reportAxiiError).finally(unmountStyle)
+                removeResult.catch(reportAxiiError).finally(finishDestroy)
             } else {
-                unmountStyle()
+                finishDestroy()
             }
         } catch (error) {
-            unmountStyle()
+            finishDestroy()
             throw error
         }
     }
+
+    private releaseReferences() {
+        this.reactiveHosts = undefined
+        this.inlineFunctionTextBindings = undefined
+        this.attrBindings = undefined
+        this.refHandles = undefined
+        this.detachStyledChildren = undefined
+        this.removeAttachListener = undefined
+
+        const source = this.source as ExtendedElement
+        source.unhandledChildren = undefined
+        source.inlineFunctionChild = undefined
+        source.inlineFunctionChildren = undefined
+        source.unhandledAttr = undefined
+        source.refHandles = undefined
+        source.detachStyledChildren = undefined
+    }
+
+    private destroyAttrBindings() {
+        const attrBindings = this.attrBindings
+        if (!attrBindings) return
+        if (Array.isArray(attrBindings)) {
+            attrBindings.forEach(binding => binding.destroy())
+        } else {
+            attrBindings.destroy()
+        }
+    }
+
     removeElements(parentHandle?: boolean): void | Promise<void> {
         if (parentHandle) return
 

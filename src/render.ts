@@ -50,10 +50,11 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             return root.host
         },
         destroy() {
-            eventCallbacks.clear()
             root.dispatch('detach')
             root.host?.destroy()
+            root.host = undefined
             root.attached = false
+            eventCallbacks.clear()
         },
         // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
         on(event: string, callback: EventCallback, options?: EventOptions) {
