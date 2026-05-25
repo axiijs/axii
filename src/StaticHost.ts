@@ -10,7 +10,7 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {createChildPathContext, getHostPath, Host, PathContext} from "./Host";
-import {autorun, isAtom, isReactive, Notifier, ReactiveEffect} from "data0";
+import {autorun, isAtom, Notifier, ReactiveEffect} from "data0";
 import {createHost} from "./createHost";
 import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
@@ -25,21 +25,21 @@ import {
     trackRetainedStyleIdDestroyed
 } from "./retainedDiagnostics";
 
-// CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
+// CAUTION 覆盖原来的判断，避免读取 atom/function 动态属性时把依赖泄漏到上层 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
 createElement.isValidAttribute = function (name: string, value: any) {
     if (name.startsWith('on')) return true
 
-    if (Array.isArray(value) && value.some(isReactiveValue)) {
+    if (Array.isArray(value) && value.some(isDynamicAttributeValue)) {
         return false
-    } else if (isReactiveValue(value)) {
+    } else if (isDynamicAttributeValue(value)) {
         return false
     }
     return originalIsValidAttribute(name, value)
 }
 
-function isReactiveValue(v: any) {
-    return isReactive(v) || isAtom(v) || typeof v === 'function'
+function isDynamicAttributeValue(v: any) {
+    return isAtom(v) || typeof v === 'function'
 }
 
 function isAtomLike(v: any) {
@@ -789,7 +789,6 @@ function isLightTextBindingNode(node: ReturnType<FunctionNode>): node is string 
 function canInlineFunctionTextBinding(child: unknown, placeholder?: Comment, container?: ParentNode): child is FunctionNode {
     return typeof child === 'function' &&
         !isAtom(child) &&
-        !isReactive(child) &&
         (
             placeholder?.parentNode instanceof Element && placeholder.parentNode.childNodes.length === 1 ||
             !placeholder?.parentNode && container instanceof Element && container.childNodes.length === 0

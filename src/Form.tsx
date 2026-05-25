@@ -44,13 +44,15 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
 
     const register = (name: string, instance: FormItemInstance, multiple?: boolean) => {
         if (multiple) {
-            if (!values.get(name)) {
-                values.set(name, new RxList([]))
+            let valuesList = values.get(name) as RxList<any> | undefined
+            if (!valuesList) {
+                valuesList = new RxList([])
+                values.set(name, valuesList)
             }
             if (!instances[name]) {
                 instances[name] = []
             }
-            values.get(name).push(instance.value)
+            valuesList.push(instance.value);
             (instances[name] as Array<FormItemInstance>).push(instance)
 
         } else {
