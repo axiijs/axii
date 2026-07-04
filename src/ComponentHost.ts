@@ -19,6 +19,7 @@ import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
+import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 
 
 function ensureArray(o: any) {
@@ -439,32 +440,40 @@ export class ComponentHost implements Host{
             reusable: this.reusable,
         }
 
-        // CAUTION collect effects start
-        const getFrame = ReactiveEffect.collectEffect()
-        let node: ReturnType<Component>|null = null
-        try {
-            const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
-            this.itemConfig = itemConfig
-            // 这里要再 coerce props，因为 boundProps 可能 return fixed value
-            const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+        withReactiveTrace({
+            type: 'component-render',
+            operation: 'render',
+            hostType: 'ComponentHost',
+            elementPath: this.pathContext.elementPath,
+            source: this.pathContext.debugSource,
+        }, () => {
+            // CAUTION collect effects start
+            const getFrame = ReactiveEffect.collectEffect()
+            let node: ReturnType<Component>|null = null
+            try {
+                const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
+                this.itemConfig = itemConfig
+                // 这里要再 coerce props，因为 boundProps 可能 return fixed value
+                const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
 
-            normalizedProps.children = this.children
-            this.props = normalizedProps
+                normalizedProps.children = this.children
+                this.props = normalizedProps
 
-            node = this.type(normalizedProps, this.renderContext)
-        } catch (e) {
-            // 组件 render 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空，
-            // 否则保持向上抛出的行为。
-            if (!this.pathContext.root.dispatch('error', e)) throw e
-        } finally {
-            // CAUTION 无论组件是否抛错，都必须弹出 collect frame，
-            //  否则 collect frame 栈会错位，后续渲染收集的 effect 会泄漏到错误的 frame 里。
-            this.frame = getFrame()
-        }
-        // CAUTION collect effects end
-        // 就用当前 component 的 placeholder
-        this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-        this.innerHost.render()
+                node = this.type(normalizedProps, this.renderContext!)
+            } catch (e) {
+                // 组件 render 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空，
+                // 否则保持向上抛出的行为。
+                if (!this.pathContext.root.dispatch('error', e)) throw e
+            } finally {
+                // CAUTION 无论组件是否抛错，都必须弹出 collect frame，
+                //  否则 collect frame 栈会错位，后续渲染收集的 effect 会泄漏到错误的 frame 里。
+                this.frame = getFrame()
+            }
+            // CAUTION collect effects end
+            // 就用当前 component 的 placeholder
+            this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            this.innerHost.render()
+        })
 
 
         // for test use
@@ -609,6 +618,17 @@ export class ReusableHost implements Host{
             this.rendered = true
         } else {
             const frag = document.createDocumentFragment()
+            // CAUTION 手写 nextSibling 循环在区间被外部破坏时会 appendChild(null) 直接 TypeError，
+            //  开发期先做可达性校验，把它变成可解释的 AxiiError。
+            if (isAxiiDiagnosticsEnabled()) {
+                assertRangeReachable({
+                    ownerHost: this,
+                    start: this.innerHost.element,
+                    end: this.innerHost.placeholder,
+                    boundaryKind: 'reusable-range',
+                    operation: 'move',
+                })
+            }
             let start = this.innerHost.element
             while(start !== this.innerHost.placeholder) {
                 const next = start.nextSibling as HTMLElement|Comment|Text|SVGElement
@@ -626,6 +646,15 @@ export class ReusableHost implements Host{
         // do nothing
         if (!parentHandle) {
             const frag = document.createDocumentFragment()
+            if (isAxiiDiagnosticsEnabled()) {
+                assertRangeReachable({
+                    ownerHost: this,
+                    start: this.innerHost.element,
+                    end: this.innerHost.placeholder,
+                    boundaryKind: 'reusable-range',
+                    operation: 'destroy',
+                })
+            }
             let start = this.innerHost.element
             while(start !== this.innerHost.placeholder) {
                 const next = start.nextSibling as HTMLElement|Comment|Text|SVGElement

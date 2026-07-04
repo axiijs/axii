@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
+import type {AxiiSource} from "./diagnostics";
 
 export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
 let autoUnitType: 'px' | 'rem' | 'em' = 'px'
@@ -70,6 +71,8 @@ export interface ExtendedElement extends HTMLElement {
     unhandledAttr?: UnhandledAttrInfo[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
+    // 开发期 JSX source（文件/行/列），由 jsxDEV 写入
+    __axiiSource?: AxiiSource
 }
 
 function eventProxy(this: ExtendedElement, e: Event) {
@@ -271,18 +274,19 @@ export type AttributesArg = {
 
 export type JSXElementType = string | typeof Fragment | Component
 
-type UnhandledChildInfo = {
+export type UnhandledChildInfo = {
     placeholder: UnhandledPlaceholder,
     child: any,
     path: number[]
+    source?: AxiiSource
 }
 
-type UnhandledAttrInfo = {
+export type UnhandledAttrInfo = {
     el: ExtendedElement,
     key: string,
     value: any,
     path: number[]
-
+    source?: AxiiSource
 }
 
 export type RefHandleInfo = {
@@ -299,12 +303,26 @@ export type DetachStyledInfo = {
 
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    const {_isSVG, ref:refProp, detachStyle: detachStyleProp, children: childrenProp, ...rawRestProps} = rawProps || {}
+    const {
+        _isSVG,
+        ref: refProp,
+        detachStyle: detachStyleProp,
+        children: childrenProp,
+        // CAUTION __source/__self 既可能来自 jsxDEV，也可能来自 Babel classic dev transform，
+        //  两条链路都在这里收敛，绝不能作为普通 attr 落到 DOM/组件 props 上。
+        __source,
+        __self,
+        ...rawRestProps
+    } = rawProps || {}
+    const debugSource = __source as AxiiSource | undefined
 
     // Early return for component nodes
     if (typeof type !== 'string' && type !== Fragment) {
         const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
-        return {type, props: rawProps||{}, children} as ComponentNode
+        const props = rawProps ? {...rawProps} : {}
+        delete props.__source
+        delete props.__self
+        return {type, props, children, __axiiSource: debugSource} as ComponentNode
     }
 
     // Create container with proper type assertion
@@ -339,11 +357,20 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 // Handle extended element properties
                 const childElement = child as ExtendedElement
                 if (childElement.unhandledChildren?.length) {
-                    unhandledChildren.push(...childElement.unhandledChildren.map(c => ({...c, path: [index, ...c.path]})))
+                    // 动态节点自身没有 JSX source，继承最近的父元素 source
+                    unhandledChildren.push(...childElement.unhandledChildren.map(c => ({
+                        ...c,
+                        path: [index, ...c.path],
+                        source: c.source ?? childElement.__axiiSource ?? debugSource,
+                    })))
                     childElement.unhandledChildren = undefined
                 }
                 if (childElement.unhandledAttr?.length) {
-                    unhandledAttr.push(...childElement.unhandledAttr.map(c => ({...c, path: [index, ...c.path]})))
+                    unhandledAttr.push(...childElement.unhandledAttr.map(c => ({
+                        ...c,
+                        path: [index, ...c.path],
+                        source: c.source ?? childElement.__axiiSource ?? debugSource,
+                    })))
                     childElement.unhandledAttr = undefined
                 }
                 if (childElement.refHandles?.length) {
@@ -357,7 +384,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             } else {
                 const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
                 tempFragment.appendChild(placeholder)
-                unhandledChildren.push({placeholder, child, path: [index]})
+                unhandledChildren.push({placeholder, child, path: [index], source: debugSource})
             }
         })
         
@@ -379,7 +406,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         for (const key in rawRestProps) {
             const value = rawRestProps[key]
             if (!createElement.isValidAttribute(key, value)) {
-                unhandledAttr.push({el: container as ExtendedElement, key, value, path: []})
+                unhandledAttr.push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
             } else {
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
             }
@@ -389,6 +416,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     // Attach metadata to container only if necessary
     const containerElement = container as ExtendedElement
+    if (debugSource) containerElement.__axiiSource = debugSource
     if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
     if (unhandledAttr.length) containerElement.unhandledAttr = unhandledAttr
     if (refHandles.length) containerElement.refHandles = refHandles
@@ -611,6 +639,15 @@ export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesAr
 export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     return createElement(type, rawProps, children)
 }
-export function jsxDEV(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return Array.isArray(children) ? createElement(type, rawProps, ...children) : createElement(type, rawProps, children)
+// React automatic dev runtime 签名：jsxDEV(type, props, key, isStaticChildren, source, self)
+export function jsxDEV(
+    type: JSXElementType,
+    {children, ...rawProps}: AttributesArg,
+    _key?: string,
+    _isStaticChildren?: boolean,
+    source?: AxiiSource,
+    self?: unknown
+): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+    const props = source || self ? {...rawProps, __source: source, __self: self} : rawProps
+    return Array.isArray(children) ? createElement(type, props, ...children) : createElement(type, props, children)
 }

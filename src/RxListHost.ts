@@ -1,8 +1,9 @@
 import {insertAfter, insertBefore, UnhandledPlaceholder} from './DOM'
-import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
+import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed, type TriggerInfo} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {createLinkedNode} from "./LinkedList";
+import {reportAxiiError, summarizeArgv, withReactiveTrace} from "./diagnostics";
 /**
  * @internal
  */
@@ -40,7 +41,32 @@ export class RxListHost implements Host{
                 return null
             },
             function applyPatch(_, triggerInfos) {
-                triggerInfos.forEach(({method, argv, key, methodResult, type}) => {
+                triggerInfos.forEach((triggerInfo) => {
+                    const {method, argv, key, methodResult, type} = triggerInfo
+                    // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled rejection，
+                    //  所以出错时必须先 reportAxiiError 输出结构化报告，再继续抛出保持可观测。
+                    try {
+                        withReactiveTrace({
+                            type: 'rx-list-patch',
+                            operation: 'apply-patch',
+                            hostType: 'RxListHost',
+                            elementPath: host.pathContext.elementPath,
+                            source: host.pathContext.debugSource,
+                            method: method ?? String(type),
+                            key: key as PropertyKey | undefined,
+                            argvSummary: argv ? summarizeArgv(argv) : undefined,
+                            createdCount: method === 'splice' ? argv!.length - 2 : undefined,
+                            deletedCount: Array.isArray(methodResult) ? methodResult.length : methodResult ? 1 : 0,
+                        }, () => {
+                            applyTriggerInfo(triggerInfo)
+                        })
+                    } catch (error) {
+                        reportAxiiError(error)
+                        throw error
+                    }
+                })
+
+                function applyTriggerInfo({method, argv, key, methodResult, type}: TriggerInfo) {
                     if (method === 'splice') {
                         // 这里的 this.hosts 是已经插入好的。
                         // CAUTION 因为 hosts 中的元素可能也是一个一个插进来的。例如 groupBy 中的 patch。
@@ -130,7 +156,7 @@ export class RxListHost implements Host{
                     } else {
                         throw new Error('unknown trigger info')
                     }
-                })
+                }
             },
             true
         )

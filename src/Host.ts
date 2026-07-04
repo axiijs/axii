@@ -1,6 +1,7 @@
 import {computed} from "data0";
 import {Root} from "./render";
 import {LinkedNode} from "./LinkedList";
+import type {AxiiSource} from "./diagnostics";
 /**
  * @internal
  */
@@ -24,4 +25,6 @@ export type PathContext = {
     // hostPath: Host[],
     hostPath: LinkedNode<Host>,
     elementPath: number[],
+    // 开发期 JSX source（文件/行/列），用于错误报告中的源码定位
+    debugSource?: AxiiSource,
 }
