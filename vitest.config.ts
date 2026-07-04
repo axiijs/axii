@@ -1,5 +1,10 @@
 import {fileURLToPath, URL } from 'url'
+import {existsSync} from 'fs'
 import tsconfigPaths from 'vite-tsconfig-paths'
+
+// Use the sibling data0 checkout when available (original dev setup),
+// otherwise fall back to the npm-installed data0 so the repo is self-contained.
+const siblingData0 = fileURLToPath(new URL('../data0/src/index.ts', import.meta.url))
 
 export default {
   esbuild: {
@@ -12,7 +17,7 @@ export default {
   resolve: {
     alias: {
       '@framework': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
-      'data0': fileURLToPath(new URL('../data0/src/index.ts', import.meta.url))
+      ...(existsSync(siblingData0) ? {'data0': siblingData0} : {})
     }
   },
   server: {
@@ -23,6 +28,8 @@ export default {
   },
   plugins: [tsconfigPaths()],
   test: {
+    // node-environment specs (run via vitest.node.config.ts) can't run in the browser
+    exclude: ['**/node_modules/**', '__tests__/node/**'],
     pool:'threads',
     poolOptions: {
       threads: {
