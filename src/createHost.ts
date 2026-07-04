@@ -62,7 +62,7 @@ const HOST_TYPE_NAMES = [
  * @internal
  */
 export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext) {
-    assert(placeholder instanceof Comment, 'incorrect placeholder type')
+    assert(placeholder instanceof Comment || placeholder instanceof Text, 'incorrect placeholder type')
     let host:Host
     let typeIndex: number
     // CAUTION 按出现频率排序分支：函数（响应式文本/结构）和元素是最常见的动态 child

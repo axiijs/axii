@@ -23,7 +23,7 @@ export class FunctionHost implements Host{
     cleanups?: (() => any)[]
     sourceContext?: FunctionNodeContext
     destroyed = false
-    constructor(public source: FunctionNode, public placeholder:Comment, public pathContext: PathContext) {
+    constructor(public source: FunctionNode, public placeholder:Comment|Text, public pathContext: PathContext) {
     }
     get element() : HTMLElement|Comment|Text|SVGElement{
         return this.textNode || this.innerHost?.element || this.placeholder
@@ -73,17 +73,28 @@ export class FunctionHost implements Host{
                 return
             }
             this.destroyInnerHost()
-            this.textNode = document.createTextNode(text)
-            // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它。
-            //  直接用 parentNode.insertBefore，跳过 DOM.ts insertBefore 的 select/option 处理
-            //  （文本节点不影响 select 的 value）。
-            this.placeholder.parentNode!.insertBefore(this.textNode, this.placeholder)
+            if (this.placeholder instanceof Text) {
+                // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
+                this.placeholder.nodeValue = text
+                this.textNode = this.placeholder
+            } else {
+                this.textNode = document.createTextNode(text)
+                // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它。
+                //  直接用 parentNode.insertBefore，跳过 DOM.ts insertBefore 的 select/option 处理
+                //  （文本节点不影响 select 的 value）。
+                this.placeholder.parentNode!.insertBefore(this.textNode, this.placeholder)
+            }
             return
         }
 
         // 结构路径：重建子树
         if (this.textNode) {
-            this.textNode.remove()
+            if (this.textNode === this.placeholder) {
+                // 占位符复用为文本节点的情况：内容清空，节点保留在 DOM 中做锚点
+                this.textNode.nodeValue = ''
+            } else {
+                this.textNode.remove()
+            }
             this.textNode = null
         }
         this.destroyInnerHost()
@@ -118,10 +129,10 @@ export class FunctionHost implements Host{
         this.runCleanups()
         this.destroyInnerHost(parentHandle)
         if (!parentHandle) {
-            if (this.textNode) {
+            if (this.textNode && this.textNode !== this.placeholder) {
                 this.textNode.remove()
-                this.textNode = null
             }
+            this.textNode = null
             this.placeholder.remove()
         }
     }

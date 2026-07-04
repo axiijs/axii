@@ -15,7 +15,7 @@ function stringValue(v: any) {
 export class AtomHost implements Host{
     effect?: LightBindingEffect
     element: Text|Comment = this.placeholder
-    constructor(public source: Atom, public placeholder:Comment, public pathContext: PathContext) {
+    constructor(public source: Atom, public placeholder:Comment|Text, public pathContext: PathContext) {
     }
     get parentElement() {
         // CAUTION 这里必须用 parentNode，因为可能是在数组下，这个父节点是 staticArrayHost 创建的 frag
@@ -24,9 +24,14 @@ export class AtomHost implements Host{
 
     replace(value: any) {
         if (this.element === this.placeholder) {
-            const textNode = document.createTextNode(stringValue(value))
-            this.parentElement!.replaceChild(textNode, this.placeholder)
-            this.element = textNode
+            if (this.placeholder instanceof Text) {
+                // 占位符本身就是 Text 节点（创建于 createElement 的函数/atom child 快速路径），直接复用
+                this.placeholder.nodeValue = stringValue(value)
+            } else {
+                const textNode = document.createTextNode(stringValue(value))
+                this.parentElement!.replaceChild(textNode, this.placeholder)
+                this.element = textNode
+            }
         } else {
             this.element.nodeValue = stringValue(value)
         }

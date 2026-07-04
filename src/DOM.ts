@@ -84,7 +84,9 @@ function captureEventProxy(this: ExtendedElement, e: Event) {
     return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
-export type UnhandledPlaceholder = Comment
+// CAUTION 大多数占位符是 Comment。函数/atom 类型的 child 用 Text 节点做占位符（乐观策略）：
+//  它们绝大多数渲染为文本，此时占位符自身就能当 Text 节点用，省一次节点创建和插入。
+export type UnhandledPlaceholder = Comment | Text
 
 
 function isEventName(name: string) {
@@ -388,7 +390,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     childElement.detachStyledChildren = undefined
                 }
             } else {
-                const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
+                // 函数/atom child 大概率渲染为文本，直接用 Text 节点当占位符
+                const placeholder: UnhandledPlaceholder = typeof child === 'function' ?
+                    document.createTextNode('') :
+                    document.createComment('unhandledChild')
                 container.appendChild(placeholder)
                 if (unhandledChildren) {
                     unhandledChildren.push({placeholder, child, path: [index]})
