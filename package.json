@@ -2,7 +2,7 @@
   "name": "axii",
   "version": "3.9.2",
   "description": "",
-  "main": "index.js",
+  "main": "./dist/axii.umd.cjs",
   "scripts": {
     "start": "vite",
     "build": "vite build --config vite.prod.config.ts && node scripts/type.js",
