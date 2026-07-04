@@ -664,7 +664,8 @@ export class StaticHost implements Host {
 
 // 所有 CompactElementHost 共享的占位符，永远不会插入文档，
 //  只是为了满足 Host 接口的 placeholder 字段。
-const COMPACT_SHARED_PLACEHOLDER = document.createComment('compact host shared placeholder')
+// CAUTION 延迟创建：模块顶层不能碰 document，否则 node 环境 import 直接崩（SSR/工具链场景）。
+let COMPACT_SHARED_PLACEHOLDER: Comment|undefined
 
 /**
  * @internal
@@ -675,7 +676,7 @@ const COMPACT_SHARED_PLACEHOLDER = document.createComment('compact host shared p
  */
 export class CompactElementHost extends StaticHost {
     constructor(source: HTMLElement | SVGElement, pathContext: PathContext) {
-        super(source, COMPACT_SHARED_PLACEHOLDER, pathContext)
+        super(source, COMPACT_SHARED_PLACEHOLDER ??= document.createComment('compact host shared placeholder'), pathContext)
         this.element = source
     }
     render(): void {
