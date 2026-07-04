@@ -1,6 +1,7 @@
-import {Atom, computed, destroyComputed} from "data0";
+import {Atom} from "data0";
 import {Host, PathContext} from "./Host";
-import {trackHostDestroyed} from "./diagnostics.js";
+import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./diagnostics.js";
+import {LightBindingEffect} from "./LightBindingEffect.js";
 
 
 function stringValue(v: any) {
@@ -12,8 +13,7 @@ function stringValue(v: any) {
  * @internal
  */
 export class AtomHost implements Host{
-    stopAutoRun: () => void = () => {}
-    computed: Atom<any>
+    effect?: LightBindingEffect
     element: Text|Comment = this.placeholder
     constructor(public source: Atom, public placeholder:Comment, public pathContext: PathContext) {
     }
@@ -33,21 +33,18 @@ export class AtomHost implements Host{
     }
 
     render(): void {
-        this.computed = computed(() => {
-                this.replace(this.source())
-            },
-            undefined,
-            true,
-            undefined,
-            // CAUTION 是给富文本编辑器 contenteditable 来跳过 dom 变换的，
-            this.pathContext.skipIndicator
-        )
-
+        // CAUTION skipIndicator 是给富文本编辑器 contenteditable 来跳过 dom 变换的
+        this.effect = new LightBindingEffect(() => {
+            this.replace(this.source())
+        }, this.pathContext.skipIndicator)
+        trackLightBindingCreated(this.effect, 'AtomTextBinding')
+        this.effect.run()
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         trackHostDestroyed(this)
+        if (this.effect) trackLightBindingDestroyed(this.effect)
         if (!parentHandleComputed) {
-            destroyComputed(this.computed)
+            this.effect?.destroy()
         }
         if (!parentHandle) {
             this.element.remove()

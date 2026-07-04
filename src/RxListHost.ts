@@ -1,149 +1,252 @@
 import {insertAfter, insertBefore, UnhandledPlaceholder} from './DOM'
-import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed} from "data0";
+import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed, TriggerInfo} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {createLinkedNode} from "./LinkedList";
 import {trackHostDestroyed} from "./diagnostics.js";
+
+type ReorderInfo = {
+    kind: string,
+    affectedRange: [number, number] | null,
+    movedCount: number,
+    oldIndexToNewIndex: Map<number, number>,
+}
+
 /**
  * @internal
+ *
+ * 直接订阅 source RxList 的 patch（splice/reorder/explicit key change），
+ * 用普通数组维护每个 item 对应的 Host。
+ *
+ * 相比旧实现（this.source.map(...) 再订阅派生 RxList 的 patch），少了一整层
+ * 派生 RxList：不再为每一行分配/运行/销毁一个 data0 Computed（map 的行级 effect），
+ * 也不再让每个 patch 经过两次 trigger 分发。
  */
 export class RxListHost implements Host{
-    hosts?: RxList<any>
+    hosts?: Host[]
+    childContext?: PathContext
     hostRenderComputed?:  ReturnType<typeof computed>
     constructor(public source: RxList<any>, public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
     }
 
     get element(): HTMLElement|Comment|SVGElement|Text  {
-        return this.hosts?.data[0]?.element || this.placeholder
+        return this.hosts?.[0]?.element || this.placeholder
     }
 
-    renderNewHosts(hosts: Host[]|RxList<Host>) {
+    createChildHost(item: any) {
+        return createHost(item, document.createComment('rx list item'), this.childContext!)
+    }
+
+    renderNewHosts(hosts: Host[]) {
         const frag = document.createDocumentFragment()
-        hosts.forEach(host => {
+        for (const host of hosts) {
             frag.appendChild(host.placeholder)
             host.render()
-        })
+        }
         return frag
     }
 
     render(): void {
         const host = this
-
-        this.hosts = this.source.map((item) => {
-            return createHost(item, document.createComment('rx list item'), {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-        })
+        const source = this.source
+        // 所有行共享同一个 childContext/hostPath 节点（内容完全相同），避免每行两次对象分配
+        this.childContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
+        this.hosts = []
 
         this.hostRenderComputed = computed(
             function computation(this:Computed) {
-                this.manualTrack(host.hosts!, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
-                this.manualTrack(host.hosts!, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE)
-                insertBefore(host.renderNewHosts(host.hosts!), host.placeholder)
+                this.manualTrack(source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
+                this.manualTrack(source, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE)
+                const hosts = host.hosts!
+                const data = source.data
+                for (let i = 0; i < data.length; i++) {
+                    hosts.push(host.createChildHost(data[i]))
+                }
+                insertBefore(host.renderNewHosts(hosts), host.placeholder)
                 return null
             },
             function applyPatch(_, triggerInfos) {
-                triggerInfos.forEach(({method, argv, key, methodResult, type}) => {
+                for (const info of triggerInfos) {
+                    const {method, argv, key, methodResult, type} = info as TriggerInfo & {reorderInfo?: ReorderInfo}
                     if (method === 'splice') {
-                        // 这里的 this.hosts 是已经插入好的。
-                        // CAUTION 因为 hosts 中的元素可能也是一个一个插进来的。例如 groupBy 中的 patch。
-                        //  我们的下一个元素可能也是新的还没渲染，所以要一直往后找到第一个已经渲染过的元素。
-                        let insertBeforeHost:Host|null = null
-                        const newHosts = argv!.slice(2)!
-
-                        let startIndex = argv![0] + newHosts.length
-                        while(startIndex < host.hosts!.data.length){
-                            if (host.hosts!.data[startIndex]!.placeholder.parentNode) {
-                                insertBeforeHost = host.hosts!.data[startIndex]
-                                break;
-                            }
-                            startIndex++
-                        }
-
-                        if (newHosts.length) {
-                            const newHostsFrag =  host.renderNewHosts(newHosts)
-                            insertBefore(newHostsFrag, insertBeforeHost?.element || host.placeholder)
-                        }
-
-
-                        const deletedHosts = methodResult as Host[]
-
-                        // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点强制要求自己来清理。那么直接清空 parent，这样比较快。
-                        if (deletedHosts.length) {
-
-                            const removeAllElementByParent = host.hosts!.data.length===0 &&
-                                !host.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
-                                !deletedHosts[0].element.previousSibling &&  // 删除的Host 是父 Host 的第一个，说明从头删到了尾
-                                deletedHosts.every(inner => !inner.forceHandleElement)
-
-                            if(removeAllElementByParent) {
-                                const parent = host.placeholder.parentNode!
-                                parent.replaceChildren(host.placeholder)
-
-                                deletedHosts.forEach((host: Host) => host.destroy(true))
-                            } else {
-                                deletedHosts.forEach((host: Host) => host.destroy())
-                            }
-                        }
-
+                        host.handleSplice(argv!, methodResult as any[]|undefined)
                     } else if(method === 'reorder') {
-                        const placeholders = (new Array(host.hosts!.length.raw)).fill(1).map((_, index) => document.createComment(`rx list item reorder placeholder ${index}`))
-                        const placeholderFragment = document.createDocumentFragment()
-                        placeholders.forEach(placeholder => {
-                            placeholderFragment.appendChild(placeholder)
-                        })
-                        // CAUTION 锚点必须在列表自身区域内（host.placeholder 是列表区域的末尾），
-                        //  不能使用 parentElement.firstChild，列表可能不是父元素的第一个孩子。
-                        insertBefore(placeholderFragment, host.placeholder)
-
-                        // FIXME 需要优化一下移动算法。
-                        host.hosts!.raw.forEach((childHost, index) => {
-                            insertBefore(childHost.element, placeholders[index],  childHost.placeholder)
-                            placeholders[index].remove()
-                        })
-
+                        host.handleReorder(argv![0], (info as any).reorderInfo)
                     } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
-                        // explicit key change
-                        const oldHost = methodResult as Host
-                        oldHost?.destroy()
-
-                        // 会回收之前 placeholder，完全重新执行
-                        const index = key as number
-                        // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
-                        // placeholder 一定是最后一个元素
-                        if (index === 0) {
-                            // CAUTION 锚点必须在列表自身区域内，不能使用 parentElement.firstChild，
-                            //  列表可能不是父元素的第一个孩子。
-                            //  连续 explicit_key_change 时后面的 host 可能也是新的（还没渲染），
-                            //  所以要往后找到第一个已渲染的 host，以它的起始节点为锚点。
-                            let anchor: HTMLElement|Comment|SVGElement|Text = host.placeholder
-                            for(let i = index + 1; i < host.hosts!.raw.length; i++) {
-                                const nextHost = host.hosts!.raw.at(i)!
-                                if (nextHost.placeholder.parentNode) {
-                                    anchor = nextHost.element
-                                    break
-                                }
-                            }
-                            insertBefore(host.hosts!.raw.at(index)!.placeholder, anchor)
-                        } else {
-                            insertAfter(host.hosts!.raw.at(index)!.placeholder, host.hosts!.raw.at(index-1)?.placeholder)
-                        }
-                        host.hosts!.raw.at(index)!.render()
+                        host.handleExplicitKeyChange(key as number)
                       /* v8 ignore next 3 */
                     } else {
                         throw new Error('unknown trigger info')
                     }
-                })
+                }
             },
             true
         )
     }
+    handleSplice(argv: any[], deletedItems?: any[]) {
+        const hosts = this.hosts!
+        const start = argv[0] as number
+        const deleteCount = deletedItems ? deletedItems.length : 0
+        let newHosts: Host[]
+        if (argv.length > 2) {
+            newHosts = new Array(argv.length - 2)
+            for (let i = 2; i < argv.length; i++) {
+                newHosts[i - 2] = this.createChildHost(argv[i])
+            }
+        } else {
+            newHosts = []
+        }
+
+        const deletedHosts = hosts.splice(start, deleteCount, ...newHosts)
+
+        if (newHosts.length) {
+            // CAUTION 一次 batch 中可能有连续 patch（例如 groupBy 一个一个插入），
+            //  后面的 host 可能还没渲染，所以要往后找到第一个已经渲染过的元素作为插入锚点。
+            let insertBeforeHost: Host|null = null
+            for (let i = start + newHosts.length; i < hosts.length; i++) {
+                if (hosts[i].placeholder.parentNode) {
+                    insertBeforeHost = hosts[i]
+                    break
+                }
+            }
+            insertBefore(this.renderNewHosts(newHosts), insertBeforeHost?.element || this.placeholder)
+        }
+
+        if (deletedHosts.length) {
+            // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点强制要求自己来清理。那么直接清空 parent，这样比较快。
+            const removeAllElementByParent = hosts.length === 0 &&
+                !this.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
+                !deletedHosts[0].element.previousSibling &&  // 删除的Host 是父 Host 的第一个，说明从头删到了尾
+                deletedHosts.every(inner => !inner.forceHandleElement)
+
+            if (removeAllElementByParent) {
+                const parent = this.placeholder.parentNode!
+                parent.replaceChildren(this.placeholder)
+                for (const deleted of deletedHosts) deleted.destroy(true)
+            } else {
+                for (const deleted of deletedHosts) deleted.destroy()
+            }
+        }
+    }
+    handleReorder(pairs: [number, number][], reorderInfo?: ReorderInfo) {
+        const hosts = this.hosts!
+        // 1. 先把 hosts 数组调整到新顺序（语义同 data0 RxList.reorder：data[to] = old[from]）
+        let minChanged = Infinity
+        let maxChanged = -Infinity
+        const movedHosts: Host[] = new Array(pairs.length)
+        for (let i = 0; i < pairs.length; i++) {
+            movedHosts[i] = hosts[pairs[i][0]]
+        }
+        for (let i = 0; i < pairs.length; i++) {
+            const [from, to] = pairs[i]
+            hosts[to] = movedHosts[i]
+            if (from !== to) {
+                if (from < minChanged) minChanged = from
+                if (to < minChanged) minChanged = to
+                if (from > maxChanged) maxChanged = from
+                if (to > maxChanged) maxChanged = to
+            }
+        }
+        if (reorderInfo?.affectedRange) {
+            minChanged = reorderInfo.affectedRange[0]
+            maxChanged = reorderInfo.affectedRange[1]
+        }
+        if (maxChanged < minChanged) return // 没有实际移动
+
+        // 2. 计算受影响区间内每个新位置对应的旧位置
+        const rangeLength = maxChanged - minChanged + 1
+        const oldPositions = new Array(rangeLength)
+        for (let i = 0; i < rangeLength; i++) oldPositions[i] = minChanged + i
+        for (const [from, to] of pairs) {
+            if (to >= minChanged && to <= maxChanged) oldPositions[to - minChanged] = from
+        }
+
+        // 3. 求旧位置序列的最长递增子序列（LIS），LIS 中的 host 相对顺序不变、无需移动，
+        //  其余 host 用 insertBefore 区间搬移。相比旧实现（为整个列表创建 N 个 comment
+        //  占位再逐个搬移），DOM 操作数从 O(N) 降到 O(移动数)。
+        const lisIndexes = longestIncreasingSubsequenceIndexes(oldPositions)
+
+        let anchor: Node = maxChanged + 1 < hosts.length ? hosts[maxChanged + 1].element : this.placeholder
+        let lisPointer = lisIndexes.length - 1
+        for (let i = rangeLength - 1; i >= 0; i--) {
+            const childHost = hosts[minChanged + i]
+            if (lisPointer >= 0 && lisIndexes[lisPointer] === i) {
+                // 已在正确相对位置
+                lisPointer--
+            } else {
+                insertBefore(childHost.element as any, anchor as any, childHost.placeholder)
+            }
+            anchor = childHost.element
+        }
+    }
+    handleExplicitKeyChange(index: number) {
+        const hosts = this.hosts!
+        const oldHost = hosts[index]
+        oldHost?.destroy()
+
+        const newHost = this.createChildHost(this.source.data[index])
+        hosts[index] = newHost
+        // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
+        // placeholder 一定是最后一个元素
+        if (index === 0) {
+            // CAUTION 锚点必须在列表自身区域内，不能使用 parentElement.firstChild，
+            //  列表可能不是父元素的第一个孩子。
+            //  连续 explicit_key_change 时后面的 host 可能也是新的（还没渲染），
+            //  所以要往后找到第一个已渲染的 host，以它的起始节点为锚点。
+            let anchor: HTMLElement|Comment|SVGElement|Text = this.placeholder
+            for(let i = index + 1; i < hosts.length; i++) {
+                if (hosts[i].placeholder.parentNode) {
+                    anchor = hosts[i].element
+                    break
+                }
+            }
+            insertBefore(newHost.placeholder, anchor)
+        } else {
+            insertAfter(newHost.placeholder, hosts[index-1].placeholder)
+        }
+        newHost.render()
+    }
     destroy(fromParentDestroy?: boolean, parentHandleComputed?: boolean) {
         trackHostDestroyed(this)
         if (!parentHandleComputed) {
-            this.hosts?.destroy()
             destroyComputed(this.hostRenderComputed)
         }
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
         this.hosts!.forEach(host => host.destroy(fromParentDestroy))
         if (!fromParentDestroy) this.placeholder.remove()
     }
+}
+
+/**
+ * 返回最长严格递增子序列在输入序列中的下标（升序）。O(n log n)。
+ */
+function longestIncreasingSubsequenceIndexes(sequence: number[]): number[] {
+    const n = sequence.length
+    if (n === 0) return []
+    const predecessors = new Array(n)
+    // tails[k] = 长度为 k+1 的递增子序列的最小结尾元素下标
+    const tails: number[] = []
+    for (let i = 0; i < n; i++) {
+        const value = sequence[i]
+        // 二分查找第一个结尾元素 >= value 的位置
+        let low = 0
+        let high = tails.length
+        while (low < high) {
+            const mid = (low + high) >> 1
+            if (sequence[tails[mid]] < value) {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        predecessors[i] = low > 0 ? tails[low - 1] : -1
+        tails[low] = i
+    }
+    const result = new Array(tails.length)
+    let current = tails[tails.length - 1]
+    for (let k = tails.length - 1; k >= 0; k--) {
+        result[k] = current
+        current = predecessors[current]
+    }
+    return result
 }

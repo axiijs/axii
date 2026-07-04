@@ -9,7 +9,9 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
-import {autorun, isAtom, isReactive} from "data0";
+import {isAtom, isReactive} from "data0";
+import {LightBindingEffect} from "./LightBindingEffect.js";
+import {trackLightBindingCreated, trackLightBindingDestroyed} from "./diagnostics.js";
 import {createHost} from "./createHost";
 import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
@@ -425,7 +427,9 @@ export class StaticHost implements Host {
     //  只有有 diff 算发以后才会出现引用变化的情况，现在我们还没有实现。所以现在其实永远不会重 render
     computed = undefined
     reactiveHosts?: Host[]
-    attrAutoruns?: (() => void)[]
+    attrEffects?: LightBindingEffect[]
+    // 是否有 style 类型的响应式属性，只有这种情况才需要 StyleManager 的 mount/unmount 记账
+    usesStyleManager = false
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
     removeAttachListener?: () => void
@@ -470,7 +474,11 @@ export class StaticHost implements Host {
                 this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
             }
         }
-        StaticHost.styleManager.mount(this.pathContext.hostPath)
+        // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，
+        //  没有响应式 style 属性的元素（绝大多数）完全不需要参与。
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.mount(this.pathContext.hostPath)
+        }
     }
     collectInnerHost() {
         const result = this.source as ExtendedElement
@@ -478,10 +486,12 @@ export class StaticHost implements Host {
         const { unhandledChildren } = result
 
         if (unhandledChildren) {
+            // 所有子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode
+            const hostPath = createLinkedNode<Host>(this, this.pathContext.hostPath)
             this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path }) =>
                 createHost(child, placeholder, {
                     ...this.pathContext,
-                    hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath),
+                    hostPath,
                     elementPath: path
                 })
             );
@@ -497,19 +507,25 @@ export class StaticHost implements Host {
         const { unhandledAttr } = result
 
         if(unhandledAttr) {
-            this.attrAutoruns = []
-            unhandledAttr.forEach(({ el, key, value, path }) => {
+            const attrEffects: LightBindingEffect[] = this.attrEffects = []
+            for (const { el, key, value, path } of unhandledAttr) {
                 // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
-                if (!el.hasAttribute('data-testid')) {
+                if (StaticHostConfig.autoGenerateTestId && !el.hasAttribute('data-testid')) {
                     this.generateTestId(el, path)
                 }
                 // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
                 if (!key.includes(':')) {
-                    this.attrAutoruns!.push(autorun(() => {
+                    if (key === 'style') {
+                        this.usesStyleManager = true
+                    }
+                    const effect = new LightBindingEffect(() => {
                         this.updateAttribute(el, key, value, path, isSVG)
-                    }, true))
+                    })
+                    trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
+                    effect.run()
+                    attrEffects.push(effect)
                 }
-            })
+            }
             result.unhandledAttr = undefined
         }
     }
@@ -550,8 +566,11 @@ export class StaticHost implements Host {
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         trackHostDestroyed(this)
-        if (!parentHandleComputed) {
-            this.attrAutoruns?.forEach(stopAutorun => stopAutorun())
+        if (this.attrEffects) {
+            for (const effect of this.attrEffects) {
+                trackLightBindingDestroyed(effect)
+                if (!parentHandleComputed) effect.destroy()
+            }
         }
 
         this.removeAttachListener?.()
@@ -562,9 +581,24 @@ export class StaticHost implements Host {
             createElement.detachRef(handle)
         })
 
+        // 没有离场动画时同步移除，避免每个元素销毁都分配 Promise/微任务
+        if (!this.detachStyledChildren?.length) {
+            if (!parentHandle &&
+                this.placeholder.parentNode &&
+                this.element.parentNode === this.placeholder.parentNode) {
+                removeNodesBetween(this.element!, this.placeholder, true)
+            }
+            if (this.usesStyleManager) {
+                StaticHost.styleManager.unmount(this.pathContext.hostPath)
+            }
+            return
+        }
+
         this.removeElements(parentHandle)
           .finally(() => {
-              StaticHost.styleManager.unmount(this.pathContext.hostPath)
+              if (this.usesStyleManager) {
+                  StaticHost.styleManager.unmount(this.pathContext.hostPath)
+              }
           })
     }
     async removeElements(parentHandle?: boolean) {

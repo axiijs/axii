@@ -1,81 +1,117 @@
-import {autorun, Notifier} from "data0";
+import {Notifier} from "data0";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 import {createLinkedNode} from "./LinkedList";
-import {trackHostDestroyed} from "./diagnostics.js";
+import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./diagnostics.js";
+import {DeferredBindingEffect} from "./LightBindingEffect.js";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
 }
-// CAUTION 纯粹的动态结构，有变化就重算，未来考虑做 dom diff, 现在不做
+// CAUTION 动态结构节点。返回原始值（string/number/boolean/null）时走文本快速路径，原地更新
+//  Text 节点；返回结构节点时整体重建（未来考虑做 dom diff）。
 type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|string|number|null|boolean
 /**
  * @internal
  */
 export class FunctionHost implements Host{
-    stopAutoRender!: () => any
-    fragmentParent = document.createDocumentFragment()
+    effect?: DeferredBindingEffect
     innerHost: Host|null = null
+    // 文本快速路径：函数返回原始值时直接复用一个 Text 节点
+    textNode: Text|null = null
+    cleanups?: (() => any)[]
     destroyed = false
     constructor(public source: FunctionNode, public placeholder:Comment, public pathContext: PathContext) {
     }
     get element() : HTMLElement|Comment|Text|SVGElement{
-        return this.innerHost?.element || this.placeholder
+        return this.textNode || this.innerHost?.element || this.placeholder
     }
     // 透传内层的 forceHandleElement（离场动画等），同 ComponentHost
     get forceHandleElement(): boolean {
         return !!this.innerHost?.forceHandleElement
     }
+    collectCleanup = (cleanup: () => any) => {
+        (this.cleanups ||= []).push(cleanup)
+    }
+    runCleanups() {
+        const cleanups = this.cleanups
+        if (cleanups?.length) {
+            this.cleanups = undefined
+            for (const cleanup of cleanups) cleanup()
+        }
+    }
     render(): void {
+        this.effect = new DeferredBindingEffect((effect) => this.renderSource(effect as DeferredBindingEffect))
+        trackLightBindingCreated(this.effect, 'FunctionNodeBinding')
+        this.effect.run()
+    }
+    renderSource(effect: DeferredBindingEffect) {
+        // CAUTION 每次都清空上一次的结果
+        this.runCleanups()
+        let node: ReturnType<FunctionNode>|null = null
+        try {
+            node = this.source({onCleanup: this.collectCleanup})
+        } catch (e) {
+            // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
+            // （effect 保持活跃，依赖恢复后该区域可以恢复渲染），否则保持向上抛出的行为。
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+        }
 
-
-        let scheduleRecompute = false
-
-        this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
-            // CAUTION 每次都清空上一次的结果
-            let node: ReturnType<FunctionNode>|null = null
-            try {
-                node = this.source({onCleanup})
-            } catch (e) {
-                // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
-                // （autorun 保持活跃，依赖恢复后该区域可以恢复渲染），否则保持向上抛出的行为。
-                if (!this.pathContext.root.dispatch('error', e)) throw e
+        const valueType = typeof node
+        if (node == null || valueType === 'string' || valueType === 'number' || valueType === 'boolean') {
+            // 文本快速路径：不需要 comment 占位和完整的 host 子树，
+            //  依赖变化时只更新 Text.nodeValue。
+            const text = node == null ? '' : String(node)
+            if (this.textNode) {
+                this.textNode.nodeValue = text
+                return
             }
-            const newPlaceholder = document.createComment('computed node')
-            insertBefore(newPlaceholder, this.placeholder)
-            const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-            Notifier.instance.pauseTracking()
-            pauseCollectChild()
-            host.render()
-            resumeCollectChild()
-            Notifier.instance.resetTracking()
-            this.innerHost = host
-            onCleanup(() => {
-                this.innerHost = null
-                host.destroy(false, false)
-            })
-        }, (recompute) => {
-            if (scheduleRecompute) return
-            scheduleRecompute = true
-            queueMicrotask(() => {
-                // CAUTION 微任务入队后 host 可能已经被 destroy，
-                //  不要依赖 data0 对已 stop 的 autorun 的容错，这里显式检查销毁标志。
-                if (!this.destroyed) {
-                    recompute()
-                }
-                scheduleRecompute = false
-            })
-        })
+            this.destroyInnerHost()
+            this.textNode = document.createTextNode(text)
+            insertBefore(this.textNode, this.placeholder)
+            return
+        }
+
+        // 结构路径：重建子树
+        if (this.textNode) {
+            this.textNode.remove()
+            this.textNode = null
+        }
+        this.destroyInnerHost()
+        const newPlaceholder = document.createComment('computed node')
+        insertBefore(newPlaceholder, this.placeholder)
+        const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+        // 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
+        //  否则内层的响应式内容变化会导致整个函数节点重算。
+        Notifier.instance.pauseTracking()
+        effect.pauseCollectChild()
+        host.render()
+        effect.resumeCollectChild()
+        Notifier.instance.resetTracking()
+        this.innerHost = host
+    }
+    destroyInnerHost(parentHandle = false, parentHandleComputed = false) {
+        const host = this.innerHost
+        if (host) {
+            this.innerHost = null
+            host.destroy(parentHandle, parentHandleComputed)
+        }
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         trackHostDestroyed(this)
+        if (this.effect) trackLightBindingDestroyed(this.effect)
         this.destroyed = true
         if (!parentHandleComputed) {
-            this.stopAutoRender()
+            this.effect?.destroy()
         }
-        // 这里不需要处理 innerHost 是因为在 stopAutoRender 的时候就会触发 innerHost 的 destroy
+        this.runCleanups()
+        this.destroyInnerHost(parentHandle, parentHandleComputed)
         if (!parentHandle) {
+            if (this.textNode) {
+                this.textNode.remove()
+                this.textNode = null
+            }
             this.placeholder.remove()
         }
     }
