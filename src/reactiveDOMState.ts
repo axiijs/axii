@@ -194,28 +194,36 @@ export type SizeObject = {
  */
 export class RxDOMSize extends RxDOMState<HTMLElement|Window, SizeObject>{
     static resizeTargetToState= new WeakMap<HTMLElement, Atom<SizeObject|null>>()
-    static globalResizeObserver = new ResizeObserver(entries => {
-        entries.forEach(entry => {
-            const target = entry.target as HTMLElement
-            const state = RxDOMSize.resizeTargetToState.get(target)
-            if (state) {
-                // 覆盖了 position 信息
-                const newSizeObject = {
-                    width: entry.contentRect.width,
-                    height: entry.contentRect.height,
-                    borderBoxWidth: entry.borderBoxSize[0].inlineSize,
-                    borderBoxHeight: entry.borderBoxSize[0].blockSize,
-                    contentBoxWidth: entry.contentBoxSize[0].inlineSize,
-                    contentBoxHeight: entry.contentBoxSize[0].blockSize,
+    // CAUTION ResizeObserver 是浏览器 API，必须惰性初始化。
+    //  如果在类定义（模块加载）时就 new，Node/SSR 等非浏览器环境 import 框架入口会直接崩溃。
+    static _globalResizeObserver?: ResizeObserver
+    static get globalResizeObserver(): ResizeObserver {
+        if (!RxDOMSize._globalResizeObserver) {
+            RxDOMSize._globalResizeObserver = new ResizeObserver(entries => {
+                entries.forEach(entry => {
+                    const target = entry.target as HTMLElement
+                    const state = RxDOMSize.resizeTargetToState.get(target)
+                    if (state) {
+                        // 覆盖了 position 信息
+                        const newSizeObject = {
+                            width: entry.contentRect.width,
+                            height: entry.contentRect.height,
+                            borderBoxWidth: entry.borderBoxSize[0].inlineSize,
+                            borderBoxHeight: entry.borderBoxSize[0].blockSize,
+                            contentBoxWidth: entry.contentBoxSize[0].inlineSize,
+                            contentBoxHeight: entry.contentBoxSize[0].blockSize,
 
-                }
+                        }
 
-                if(!shallowEqual(newSizeObject, state())) {
-                    state( newSizeObject)
-                }
-            }
-        })
-    })
+                        if(!shallowEqual(newSizeObject, state())) {
+                            state( newSizeObject)
+                        }
+                    }
+                })
+            })
+        }
+        return RxDOMSize._globalResizeObserver
+    }
     listen() {
         if (this.element === window) {
             const assignRect = () => {
