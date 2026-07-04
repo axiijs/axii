@@ -22,4 +22,11 @@ describe('BUG 6: package.json entry points', () => {
     test('data0 is available as a devDependency so a fresh clone can run tests', () => {
         expect(pkg.devDependencies.data0).toBeTruthy()
     })
+
+    // 改进项 15：package.json 曾缺失 sideEffects / repository / description 元数据
+    test('package metadata (description / repository / sideEffects) is present', () => {
+        expect(pkg.description).toBeTruthy()
+        expect(pkg.repository?.url).toContain('github.com/axiijs/axii')
+        expect(pkg.sideEffects).toBe(false)
+    })
 })
