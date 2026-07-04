@@ -114,6 +114,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         if (eventName === 'change') eventName = 'input'
         const proxy = useCapture ? captureEventProxy : eventProxy
         if (value) {
+            // CAUTION 同一个 proxy 重复 addEventListener 会被 DOM 自动去重，这里无需判断
             node.addEventListener(eventName, proxy, useCapture)
         } else {
             node.removeEventListener(eventName, proxy, useCapture)
@@ -123,8 +124,17 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             (node._captureListeners || (node._captureListeners = {})) :
             (node._listeners || (node._listeners = {}))
 
-        assert(listeners?.[eventName] === undefined, `${name} already listened`);
-        listeners[eventName] = value
+        if (value) {
+            // CAUTION onChange 会被别名成 input 事件，可能和用户同时写的 onInput 撞 key，
+            //  这里要合并成数组而不是断言唯一，否则会直接崩溃。
+            const existing = listeners[eventName]
+            listeners[eventName] = existing === undefined ?
+                value :
+                (Array.isArray(existing) ? existing : [existing]).concat(value)
+        } else {
+            // 传入 falsy 值表示解绑
+            delete listeners[eventName]
+        }
 
         return
     }
