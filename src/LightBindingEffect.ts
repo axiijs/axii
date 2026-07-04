@@ -1,4 +1,9 @@
-import {ReactiveEffect, trackRetainedReactiveEffectCreated} from "data0";
+import {
+    isData0RetainedObjectDiagnosticsEnabled,
+    ReactiveEffect,
+    setRetainedReactiveEffectSource,
+    trackRetainedReactiveEffectCreated
+} from "data0";
 
 type SkipIndicator = { skip: boolean }
 
@@ -24,7 +29,11 @@ export class LightBindingEffect extends ReactiveEffect {
         //  active 和 retained diagnostics 登记在下面手动补上。
         super()
         this.active = true
-        trackRetainedReactiveEffectCreated(this)
+        if (isData0RetainedObjectDiagnosticsEnabled()) {
+            trackRetainedReactiveEffectCreated(this)
+            // 构建产物里 constructor.name 会被压缩，显式登记可读的 source 名
+            setRetainedReactiveEffectSource(this, 'LightBindingEffect')
+        }
     }
     callGetter() {
         return this.update(this)
