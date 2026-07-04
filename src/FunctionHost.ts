@@ -3,6 +3,7 @@ import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 import {createLinkedNode} from "./LinkedList";
+import {withReactiveTrace} from "./diagnostics";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -32,27 +33,35 @@ export class FunctionHost implements Host{
         let scheduleRecompute = false
 
         this.stopAutoRender = autorun(({ onCleanup, pauseCollectChild, resumeCollectChild }) => {
-            // CAUTION 每次都清空上一次的结果
-            let node: ReturnType<FunctionNode>|null = null
-            try {
-                node = this.source({onCleanup})
-            } catch (e) {
-                // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
-                // （autorun 保持活跃，依赖恢复后该区域可以恢复渲染），否则保持向上抛出的行为。
-                if (!this.pathContext.root.dispatch('error', e)) throw e
-            }
-            const newPlaceholder = document.createComment('computed node')
-            insertBefore(newPlaceholder, this.placeholder)
-            const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-            Notifier.instance.pauseTracking()
-            pauseCollectChild()
-            host.render()
-            resumeCollectChild()
-            Notifier.instance.resetTracking()
-            this.innerHost = host
-            onCleanup(() => {
-                this.innerHost = null
-                host.destroy(false, false)
+            withReactiveTrace({
+                type: 'function-node',
+                operation: 'render',
+                hostType: 'FunctionHost',
+                elementPath: this.pathContext.elementPath,
+                source: this.pathContext.debugSource,
+            }, () => {
+                // CAUTION 每次都清空上一次的结果
+                let node: ReturnType<FunctionNode>|null = null
+                try {
+                    node = this.source({onCleanup})
+                } catch (e) {
+                    // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
+                    // （autorun 保持活跃，依赖恢复后该区域可以恢复渲染），否则保持向上抛出的行为。
+                    if (!this.pathContext.root.dispatch('error', e)) throw e
+                }
+                const newPlaceholder = document.createComment('computed node')
+                insertBefore(newPlaceholder, this.placeholder)
+                const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                Notifier.instance.pauseTracking()
+                pauseCollectChild()
+                host.render()
+                resumeCollectChild()
+                Notifier.instance.resetTracking()
+                this.innerHost = host
+                onCleanup(() => {
+                    this.innerHost = null
+                    host.destroy(false, false)
+                })
             })
         }, (recompute) => {
             if (scheduleRecompute) return
@@ -61,7 +70,13 @@ export class FunctionHost implements Host{
                 // CAUTION 微任务入队后 host 可能已经被 destroy，
                 //  不要依赖 data0 对已 stop 的 autorun 的容错，这里显式检查销毁标志。
                 if (!this.destroyed) {
-                    recompute()
+                    withReactiveTrace({
+                        type: 'function-node-recompute',
+                        operation: 'recompute',
+                        hostType: 'FunctionHost',
+                        elementPath: this.pathContext.elementPath,
+                        source: this.pathContext.debugSource,
+                    }, recompute)
                 }
                 scheduleRecompute = false
             })

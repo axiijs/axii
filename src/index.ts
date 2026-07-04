@@ -11,6 +11,7 @@ export * from './Form.js'
 export * from './ComponentHost.js'
 export * from './StaticHost.js'
 export * from './reactiveDOMState.js'
+export * from './diagnostics.js'
 export {ContextProvider, type ContextProviderProps, createContext} from "./ContextProvider.js";
 
 export * from 'data0'

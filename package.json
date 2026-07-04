@@ -7,7 +7,7 @@
     "url": "git+https://github.com/axiijs/axii.git"
   },
   "sideEffects": false,
-  "main": "./dist/axii.umd.cjs",
+  "main": "./dist/axii.cjs",
   "scripts": {
     "start": "vite",
     "build": "vite build --config vite.prod.config.ts && node scripts/type.js",
@@ -26,17 +26,22 @@
     ".": {
       "types": "./dist/axii.d.ts",
       "import": "./dist/axii.js",
-      "require": "./dist/axii.umd.cjs"
+      "require": "./dist/axii.cjs"
     },
     "./jsx-runtime": {
       "types": "./dist/axii.d.ts",
       "import": "./dist/axii.js",
-      "require": "./dist/axii.umd.cjs"
+      "require": "./dist/axii.cjs"
     },
     "./jsx-dev-runtime": {
       "types": "./dist/axii.d.ts",
       "import": "./dist/axii.js",
-      "require": "./dist/axii.umd.cjs"
+      "require": "./dist/axii.cjs"
+    },
+    "./vite-plugin": {
+      "types": "./dist/vite-plugin.d.ts",
+      "import": "./dist/vite-plugin.js",
+      "require": "./dist/vite-plugin.cjs"
     }
   },
   "type": "module",
