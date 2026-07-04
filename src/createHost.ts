@@ -65,10 +65,21 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     assert(placeholder instanceof Comment, 'incorrect placeholder type')
     let host:Host
     let typeIndex: number
-    if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
+    // CAUTION 按出现频率排序分支：函数（响应式文本/结构）和元素是最常见的动态 child
+    const sourceType = typeof source
+    if (sourceType === 'function') {
+        // atom 本身也是 function，必须先判断
+        if (isAtom(source)) {
+            host = new AtomHost(source, placeholder, context)
+            typeIndex = 7
+        } else {
+            host = new FunctionHost(source, placeholder, context)
+            typeIndex = 8
+        }
+    } else if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
         host = new StaticHost(source, placeholder, context)
         typeIndex = 0
-    } else if( typeof source === 'string' || typeof source === 'number' || typeof source === 'boolean'){
+    } else if( sourceType === 'string' || sourceType === 'number' || sourceType === 'boolean'){
         host = new PrimitiveHost(source, placeholder, context)
         typeIndex = 1
     } else if ( Array.isArray(source)  ) {
@@ -84,15 +95,9 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
         source.moveTo(placeholder)
         host = source
         typeIndex = 5
-    } else if( typeof source === 'object' && typeof source?.type === 'function') {
+    } else if( sourceType === 'object' && typeof source?.type === 'function') {
         host = new ComponentHost(source, placeholder, context)
         typeIndex = 6
-    } else if (isAtom(source)) {
-        host = new AtomHost(source, placeholder, context)
-        typeIndex = 7
-    } else if (typeof source === 'function'){
-        host  = new FunctionHost(source, placeholder, context)
-        typeIndex = 8
     } else {
         assert(false, `unknown child type ${source}`)
     }

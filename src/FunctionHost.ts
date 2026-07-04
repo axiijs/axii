@@ -21,6 +21,7 @@ export class FunctionHost implements Host{
     // 文本快速路径：函数返回原始值时直接复用一个 Text 节点
     textNode: Text|null = null
     cleanups?: (() => any)[]
+    sourceContext?: FunctionNodeContext
     destroyed = false
     constructor(public source: FunctionNode, public placeholder:Comment, public pathContext: PathContext) {
     }
@@ -31,9 +32,6 @@ export class FunctionHost implements Host{
     get forceHandleElement(): boolean {
         return !!this.innerHost?.forceHandleElement
     }
-    collectCleanup = (cleanup: () => any) => {
-        (this.cleanups ||= []).push(cleanup)
-    }
     runCleanups() {
         const cleanups = this.cleanups
         if (cleanups?.length) {
@@ -42,6 +40,13 @@ export class FunctionHost implements Host{
         }
     }
     render(): void {
+        const host = this
+        // context 对象整个 host 生命周期只创建一次，避免每次重算都分配
+        this.sourceContext = {
+            onCleanup(cleanup: () => any) {
+                (host.cleanups ||= []).push(cleanup)
+            }
+        }
         this.effect = new DeferredBindingEffect((effect) => this.renderSource(effect as DeferredBindingEffect))
         trackLightBindingCreated(this.effect, 'FunctionNodeBinding')
         this.effect.run()
@@ -51,7 +56,7 @@ export class FunctionHost implements Host{
         this.runCleanups()
         let node: ReturnType<FunctionNode>|null = null
         try {
-            node = this.source({onCleanup: this.collectCleanup})
+            node = this.source(this.sourceContext!)
         } catch (e) {
             // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
             // （effect 保持活跃，依赖恢复后该区域可以恢复渲染），否则保持向上抛出的行为。
@@ -69,8 +74,10 @@ export class FunctionHost implements Host{
             }
             this.destroyInnerHost()
             this.textNode = document.createTextNode(text)
-            // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它
-            insertBefore(this.textNode, this.placeholder)
+            // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它。
+            //  直接用 parentNode.insertBefore，跳过 DOM.ts insertBefore 的 select/option 处理
+            //  （文本节点不影响 select 的 value）。
+            this.placeholder.parentNode!.insertBefore(this.textNode, this.placeholder)
             return
         }
 

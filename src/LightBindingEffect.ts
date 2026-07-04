@@ -1,4 +1,4 @@
-import {ReactiveEffect} from "data0";
+import {ReactiveEffect, trackRetainedReactiveEffectCreated} from "data0";
 
 type SkipIndicator = { skip: boolean }
 
@@ -19,7 +19,12 @@ type SkipIndicator = { skip: boolean }
  */
 export class LightBindingEffect extends ReactiveEffect {
     constructor(public update: (effect: LightBindingEffect) => void, public skipIndicator?: SkipIndicator) {
-        super(update)
+        // CAUTION 不传 getter：跳过基类构造器里对 getter 的 AsyncFunction/GeneratorFunction
+        //  判断（两次 constructor.name 字符串比较，在长列表创建时可测量）。
+        //  active 和 retained diagnostics 登记在下面手动补上。
+        super()
+        this.active = true
+        trackRetainedReactiveEffectCreated(this)
     }
     callGetter() {
         return this.update(this)
