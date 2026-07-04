@@ -39,7 +39,9 @@ export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}
  * @category Common Utility
  */
 export function mergeProp(key:string, originValue:any, value: any) {
-    if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style' || key==='classname' || key==='class')) {
+    // CAUTION 事件必须用 /^on[A-Z]/ 判断，startsWith('on') 会误伤 once/onlyIcon 这类普通 prop；
+    //  JSX 中的 className 是驼峰写法，小写 'classname' 永远匹配不上。
+    if(originValue && (/^on[A-Z]/.test(key) || key === 'ref'|| key==='style' || key==='className' || key==='class')) {
         // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
         //  style 一定要放后面，才能覆写
         if(key === 'style') {
