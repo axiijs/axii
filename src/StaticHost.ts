@@ -155,7 +155,9 @@ class StyleManager {
         const styleSheet = this.styleScripts.get(id)
         if (styleSheet) {
             const index = document.adoptedStyleSheets.indexOf(styleSheet)
-            document.adoptedStyleSheets.splice(index, 1)
+            if (index > -1) {
+                document.adoptedStyleSheets.splice(index, 1)
+            }
             this.styleScripts.delete(id)
             return styleSheet
         }
@@ -271,9 +273,17 @@ class StyleManager {
                         el.classList.remove(lastStyleSheetId)
                         // 更新引用计数，但归零时并不会立即清除 stylesheet，因为它可能还被 cloneNode 用到
                         // 如果现在清除，cloneNode 的样式会瞬间失效
-                        // TODO: 如果一个组件一直不 destroy，这里就会一直不清除 stylesheet
-                        // 后面可以考虑加上一个长度为 2 的 buffer
                         this.updateRefCount(lastStyleSheetId, -1)
+                        // CAUTION 长度为 2 的滚动 buffer：上一个 stylesheet 留给 cloneNode 用，
+                        //  更早的（已无引用的）立即清除，否则长期存活、样式高频变化的组件
+                        //  会让 document.adoptedStyleSheets 无上限累积。
+                        if (styleItorNum >= 2) {
+                            const expiredStyleSheetId = `${so.styleSheetIdWithIndex}I${styleItorNum - 2}`
+                            if ((this.idToRefCount.get(expiredStyleSheetId) ?? 0) <= 0) {
+                                this.deleteStyleSheet(expiredStyleSheetId)
+                                this.hostToStyleIds.get(hostPath.node)?.delete(expiredStyleSheetId)
+                            }
+                        }
                     }
                 }
             } else {
