@@ -39,7 +39,9 @@ export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}
  * @category Common Utility
  */
 export function mergeProp(key:string, originValue:any, value: any) {
-    if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style' || key==='classname' || key==='class')) {
+    // CAUTION 事件必须用 /^on[A-Z]/ 判断，startsWith('on') 会误伤 once/onlyIcon 这类普通 prop；
+    //  JSX 中的 className 是驼峰写法，小写 'classname' 永远匹配不上。
+    if(originValue && (/^on[A-Z]/.test(key) || key === 'ref'|| key==='style' || key==='className' || key==='class')) {
         // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
         //  style 一定要放后面，才能覆写
         if(key === 'style') {
@@ -69,7 +71,6 @@ const INNER_CONFIG_PROP = '__config__'
  */
 export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
-    static reusedNodes = new Map<any, ComponentHost>()
     type: Component
     public innerHost?: Host
     innerReusedHosts: ReusableHost[] = []
@@ -124,8 +125,8 @@ export class ComponentHost implements Host{
                 // 穿透到子组件的 config，支持多个
                 itemConfig[itemName].configProps = ensureArray(itemConfig[itemName].configProps).concat(value)
             } else if(itemProp?.[0] === '_'){
-                // 不支持的配置项
-                assert(false, `unsupported config item: ${itemName}`)
+                // 不支持的配置项，报错信息要指出非法的配置项名（itemProp），而不是元素名
+                assert(false, `unsupported config item "${itemProp}" of "${itemName}"`)
             } else if( itemProp.endsWith('_') ) {
                 // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
                 if (!itemConfig[itemName].propMergeHandles) itemConfig[itemName].propMergeHandles = {}
@@ -152,6 +153,11 @@ export class ComponentHost implements Host{
     // CAUTION innerHost 可能是动态的，所以 element 也可能会变，因此每次都要实时去读
     get element() : HTMLElement|Comment|SVGElement|Text {
         return this.innerHost?.element || this.placeholder
+    }
+    // CAUTION 必须把内层的 forceHandleElement（离场动画等）透传出来，
+    //  否则 RxListHost 的整段快速删除会跳过包在组件里的离场动画。
+    get forceHandleElement(): boolean {
+        return !!this.innerHost?.forceHandleElement
     }
 
     separateProps(rawProps: AttributesArg) {
@@ -200,14 +206,14 @@ export class ComponentHost implements Host{
 
         const thisItemConfig = this.itemConfig[name]
         if (name && thisItemConfig) {
-            // 为了性能，又直接操作了 rawProps
             // 1. 使用 :[prop] 语法  对当前节点的 props 调整
             if (thisItemConfig.props) {
-                // CAUTION 普通节点，这里默认适合原来的 props 合并，除非用户想要自己的处理
+                // CAUTION 这里必须基于 separateProps 处理过的 finalProps 合并，
+                //  不能用 rawProps，否则 prop:/$self: 前缀的 key 会以原始形态混回 props。
                 if (isComponent) {
-                    finalProps = {...rawProps, ...thisItemConfig.props}
+                    finalProps = {...finalProps, ...thisItemConfig.props}
                 } else {
-                    finalProps = mergeProps(rawProps, thisItemConfig.props)
+                    finalProps = mergeProps(finalProps, thisItemConfig.props)
                 }
             }
 
@@ -301,7 +307,8 @@ export class ComponentHost implements Host{
         Object.entries(propTypes).forEach(([key, type]) => {
            if (props[key] !== undefined) {
                // coerce
-               finalProps[key] = type.coerce?.(props[key]) || props[key]
+               // CAUTION 不能写成 coerce(v) || v，coerce 返回合法的 falsy 值（0/''/false）会被吞掉
+               finalProps[key] = type.coerce ? type.coerce(props[key]) : props[key]
            } else {
                // create defaultValue
                finalProps[key] = type.defaultValue
@@ -313,7 +320,8 @@ export class ComponentHost implements Host{
         const finalProps: Props = {...props}
         Object.entries(propTypes).forEach(([key, type]) => {
             if (props[key] !== undefined) {
-                finalProps[key] = type.coerce?.(props[key]) || props[key]
+                // CAUTION 不能写成 coerce(v) || v，coerce 返回合法的 falsy 值（0/''/false）会被吞掉
+                finalProps[key] = type.coerce ? type.coerce(props[key]) : props[key]
             }
         })
         return finalProps
@@ -433,18 +441,26 @@ export class ComponentHost implements Host{
 
         // CAUTION collect effects start
         const getFrame = ReactiveEffect.collectEffect()
+        let node: ReturnType<Component>|null = null
+        try {
+            const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
+            this.itemConfig = itemConfig
+            // 这里要再 coerce props，因为 boundProps 可能 return fixed value
+            const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
 
-        const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
-        this.itemConfig = itemConfig
-        this.props = componentProps
-        // 这里要再 coerce props，因为 boundProps 可能 return fixed value
-        const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+            normalizedProps.children = this.children
+            this.props = normalizedProps
 
-        normalizedProps.children = this.children
-        this.props = normalizedProps
-
-        const node = this.type(normalizedProps, this.renderContext)
-        this.frame = getFrame()
+            node = this.type(normalizedProps, this.renderContext)
+        } catch (e) {
+            // 组件 render 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空，
+            // 否则保持向上抛出的行为。
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+        } finally {
+            // CAUTION 无论组件是否抛错，都必须弹出 collect frame，
+            //  否则 collect frame 栈会错位，后续渲染收集的 effect 会泄漏到错误的 frame 里。
+            this.frame = getFrame()
+        }
         // CAUTION collect effects end
         // 就用当前 component 的 placeholder
         this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
@@ -467,7 +483,9 @@ export class ComponentHost implements Host{
         if (this.pathContext.root.attached) {
             this.runLayoutEffect()
         } else {
-            this.pathContext.root.on('attach', this.runLayoutEffect, {once: true})
+            // CAUTION 一定要保存退订函数，组件如果在 root attach 之前被销毁，
+            //  必须退订，否则 attach 时会对已销毁的组件执行 layoutEffect/ref。
+            this.deleteLayoutEffectCallback = this.pathContext.root.on('attach', this.runLayoutEffect, {once: true})
         }
     }
     runLayoutEffect = () => {
@@ -493,14 +511,18 @@ export class ComponentHost implements Host{
             )
         }
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
-        this.innerHost!.destroy(parentHandle, parentHandleComputed)
+        // innerHost 可能不存在（render 抛错被中断的场景）
+        this.innerHost?.destroy(parentHandle, parentHandleComputed)
         this.layoutEffectDestroyHandles.forEach(handle => handle())
         this.destroyCallback.forEach(callback => callback())
 
         this.innerReusedHosts.forEach(host => host.destroyReusable())
 
         // 删除 dom
-        if (!parentHandle) {
+        // CAUTION placeholder 与 innerHost 共享，innerHost 自己会负责移除
+        //  （有离场动画时是异步移除），这里不能提前移除，否则异步移除时区间已不完整。
+        //  只有 render 抛错导致 innerHost 不存在时才需要自己清理。
+        if (!parentHandle && !this.innerHost) {
             this.placeholder.remove()
         }
 

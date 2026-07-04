@@ -123,6 +123,10 @@ Check out [https://axii.dev](https://axii.dev) for detailed documentation in bot
 
 We provide progressively organized examples and explanations in the documentation, which we believe will help you better understand and utilize the unique ideas of this framework.
 
+### Design notes / limitations
+
+- **Event handlers are bound once and are not reactive.** An `on*` prop is attached with `addEventListener` when the element is created; passing an atom or a function-returning-handler will not make the binding itself reactive. If you need conditional behavior, write the condition *inside* the handler (e.g. `onClick={(e) => enabled() && doSomething(e)}`) instead of trying to swap the handler dynamically.
+
 ## 🤝 Contributing
 
 We welcome you to submit [Issues](https://github.com/axiijs/axii/issues) or [Pull Requests](https://github.com/axiijs/axii/pulls) on GitHub to help polish this new incremental reactive frontend framework. Your ideas and suggestions are extremely important to us!

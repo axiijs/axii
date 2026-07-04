@@ -118,6 +118,10 @@ createRoot(document.getElementById('root')).render(<ListApp />)
 
 我们在文档中准备了由浅入深的示例与说明，相信能帮助你更好地理解与运用本框架的独特理念。
 
+### 设计说明 / 限制
+
+- **事件处理器只绑定一次，不是响应式的。** `on*` 属性在元素创建时通过 `addEventListener` 绑定，传入 atom 或返回 handler 的函数并不会让绑定本身变成响应式。如果需要条件行为，请把条件写在 handler *内部*（例如 `onClick={(e) => enabled() && doSomething(e)}`），而不是试图动态替换 handler。
+
 ## 🤝 贡献
 
 欢迎在 GitHub 上提交 [Issue](https://github.com/axiijs/axii/issues) 或 [Pull Request](https://github.com/axiijs/axii/pulls)，与我们一起打磨这款新型增量响应式前端框架。你的想法与改进意见对我们非常重要！

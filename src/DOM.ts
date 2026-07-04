@@ -74,12 +74,14 @@ export interface ExtendedElement extends HTMLElement {
 
 function eventProxy(this: ExtendedElement, e: Event) {
     const listener = this._listeners![e.type]
-    return Array.isArray(listener) ? listener.forEach(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
+    // CAUTION 数组 listener 用 map 而不是 forEach，保留每个 handler 的返回值
+    return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
 function captureEventProxy(this: ExtendedElement, e: Event) {
     const listener = this._captureListeners![e.type]
-    return Array.isArray(listener) ? listener.forEach(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
+    // CAUTION 数组 listener 用 map 而不是 forEach，保留每个 handler 的返回值
+    return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
 export type UnhandledPlaceholder = Comment
@@ -114,6 +116,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         if (eventName === 'change') eventName = 'input'
         const proxy = useCapture ? captureEventProxy : eventProxy
         if (value) {
+            // CAUTION 同一个 proxy 重复 addEventListener 会被 DOM 自动去重，这里无需判断
             node.addEventListener(eventName, proxy, useCapture)
         } else {
             node.removeEventListener(eventName, proxy, useCapture)
@@ -123,8 +126,17 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             (node._captureListeners || (node._captureListeners = {})) :
             (node._listeners || (node._listeners = {}))
 
-        assert(listeners?.[eventName] === undefined, `${name} already listened`);
-        listeners[eventName] = value
+        if (value) {
+            // CAUTION onChange 会被别名成 input 事件，可能和用户同时写的 onInput 撞 key，
+            //  这里要合并成数组而不是断言唯一，否则会直接崩溃。
+            const existing = listeners[eventName]
+            listeners[eventName] = existing === undefined ?
+                value :
+                (Array.isArray(existing) ? existing : [existing]).concat(value)
+        } else {
+            // 传入 falsy 值表示解绑
+            delete listeners[eventName]
+        }
 
         return
     }
@@ -207,6 +219,9 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         }
     } else if (name === 'checked' && node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
         // checkbox 的 checked 支持用 boolean 表示
+        // CAUTION 必须同时写 property 和 attribute：用户交互过后（dirty state），
+        //  attribute 不再影响显示，只有 property 能真正控制勾选状态。
+        (node as HTMLInputElement).checked = !!value
         if (value) {
             node.setAttribute('checked', 'true')
         } else {
@@ -474,19 +489,23 @@ function resetOptionParentSelectValue(select: HTMLSelectElement) {
  * If endEl is provided, insert all elements from newEl to endEl
  */
 export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement, endEl?: HTMLElement | Comment | Text | SVGElement) {
-    // 有 endEl 就一定是个已经存在的序列
-    const originNext = endEl ? newEl.nextSibling : undefined
-    // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
-    const result = refEl.parentNode!.insertBefore!(newEl, refEl)
+    // CAUTION 必须用循环而不是递归实现，递归深度等于节点数，长区间搬移时会栈溢出。
+    let result: Node
+    let current: Node|null = newEl
+    do {
+        // 有 endEl 就一定是个已经存在的序列。先取 next 再移动，移动之后 nextSibling 就变了。
+        const next: Node|null = (endEl && current !== endEl) ? current.nextSibling : null
+        // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
+        const inserted = refEl.parentNode!.insertBefore!(current, refEl)
+        if (current === newEl) result = inserted
+        current = next
+    } while (current)
+
     if (refEl.parentElement instanceof HTMLSelectElement) {
         resetOptionParentSelectValue(refEl.parentElement)
     }
 
-    if (originNext) {
-        insertBefore(originNext! as Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl, endEl === originNext ? undefined : endEl)
-    }
-
-    return result
+    return result!
 }
 
 

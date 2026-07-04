@@ -93,16 +93,18 @@ export function markDynamicProp(obj: object) {
     return obj
 }
 
+// CAUTION 这些判断必须对 null/undefined 安全，
+//  条件样式 style={cond ? {...} : null} 是很自然的写法，value 可能是 null。
 export function isBoundProp(obj: any) {
-    return !!obj['__bound']
+    return !!(obj && obj['__bound'])
 }
 
 export function isAopProp(obj: any) {
-    return !!obj['__aop']
+    return !!(obj && obj['__aop'])
 }
 
 export function isDynamicProp(obj: any) {
-    return !!obj['__dynamic']
+    return !!(obj && obj['__dynamic'])
 }
 
 // class name 中的字母含义
@@ -155,7 +157,9 @@ class StyleManager {
         const styleSheet = this.styleScripts.get(id)
         if (styleSheet) {
             const index = document.adoptedStyleSheets.indexOf(styleSheet)
-            document.adoptedStyleSheets.splice(index, 1)
+            if (index > -1) {
+                document.adoptedStyleSheets.splice(index, 1)
+            }
             this.styleScripts.delete(id)
             return styleSheet
         }
@@ -271,9 +275,17 @@ class StyleManager {
                         el.classList.remove(lastStyleSheetId)
                         // 更新引用计数，但归零时并不会立即清除 stylesheet，因为它可能还被 cloneNode 用到
                         // 如果现在清除，cloneNode 的样式会瞬间失效
-                        // TODO: 如果一个组件一直不 destroy，这里就会一直不清除 stylesheet
-                        // 后面可以考虑加上一个长度为 2 的 buffer
                         this.updateRefCount(lastStyleSheetId, -1)
+                        // CAUTION 长度为 2 的滚动 buffer：上一个 stylesheet 留给 cloneNode 用，
+                        //  更早的（已无引用的）立即清除，否则长期存活、样式高频变化的组件
+                        //  会让 document.adoptedStyleSheets 无上限累积。
+                        if (styleItorNum >= 2) {
+                            const expiredStyleSheetId = `${so.styleSheetIdWithIndex}I${styleItorNum - 2}`
+                            if ((this.idToRefCount.get(expiredStyleSheetId) ?? 0) <= 0) {
+                                this.deleteStyleSheet(expiredStyleSheetId)
+                                this.hostToStyleIds.get(hostPath.node)?.delete(expiredStyleSheetId)
+                            }
+                        }
                     }
                 }
             } else {
@@ -408,14 +420,9 @@ export class StaticHost implements Host {
     attrAutoruns?: (() => void)[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
-    parentElement: HTMLElement
     removeAttachListener?: () => void
     constructor(public source: HTMLElement | SVGElement | DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
-        this.parentElement = placeholder.parentElement!
     }
-    // get parentElement() {
-    //     return this.placeholder.parentElement
-    // }
     element: HTMLElement | Comment | SVGElement = this.placeholder
     render(): void {
         assert(this.element === this.placeholder, 'should never rerender')
@@ -450,7 +457,9 @@ export class StaticHost implements Host {
             if (this.pathContext.root.attached) {
                 this.attachRefs()
             } else {
-                this.pathContext.root.on('attach', this.attachRefs, {once: true})
+                // CAUTION 一定要保存退订函数，元素如果在 root attach 之前被销毁，
+                //  必须退订，否则 attach 时会把已销毁的元素重新附加到 ref 上。
+                this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
             }
         }
         StaticHost.styleManager.mount(this.pathContext.hostPath)
@@ -595,6 +604,9 @@ export class StaticHost implements Host {
 
             await Promise.all(promises)
         }
+        // CAUTION 等待离场动画期间，DOM 可能已被其他路径清理/篡改（例如外部直接操作了父节点），
+        //  此时区间已不完整，无法也无需再按区间删除，直接跳过，避免产生 unhandled rejection。
+        if (!this.placeholder.parentNode || this.element.parentNode !== this.placeholder.parentNode) return
         removeNodesBetween(this.element!, this.placeholder, true)
     }
 }

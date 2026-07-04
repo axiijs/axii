@@ -89,7 +89,9 @@ export class RxListHost implements Host{
                         placeholders.forEach(placeholder => {
                             placeholderFragment.appendChild(placeholder)
                         })
-                        insertBefore(placeholderFragment, host.placeholder.parentElement!.firstChild! as HTMLElement)
+                        // CAUTION 锚点必须在列表自身区域内（host.placeholder 是列表区域的末尾），
+                        //  不能使用 parentElement.firstChild，列表可能不是父元素的第一个孩子。
+                        insertBefore(placeholderFragment, host.placeholder)
 
                         // FIXME 需要优化一下移动算法。
                         host.hosts!.raw.forEach((childHost, index) => {
@@ -107,7 +109,19 @@ export class RxListHost implements Host{
                         // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
                         // placeholder 一定是最后一个元素
                         if (index === 0) {
-                            insertBefore(host.hosts!.raw.at(index)!.placeholder, host.placeholder.parentElement!.firstChild! as HTMLElement)
+                            // CAUTION 锚点必须在列表自身区域内，不能使用 parentElement.firstChild，
+                            //  列表可能不是父元素的第一个孩子。
+                            //  连续 explicit_key_change 时后面的 host 可能也是新的（还没渲染），
+                            //  所以要往后找到第一个已渲染的 host，以它的起始节点为锚点。
+                            let anchor: HTMLElement|Comment|SVGElement|Text = host.placeholder
+                            for(let i = index + 1; i < host.hosts!.raw.length; i++) {
+                                const nextHost = host.hosts!.raw.at(i)!
+                                if (nextHost.placeholder.parentNode) {
+                                    anchor = nextHost.element
+                                    break
+                                }
+                            }
+                            insertBefore(host.hosts!.raw.at(index)!.placeholder, anchor)
                         } else {
                             insertAfter(host.hosts!.raw.at(index)!.placeholder, host.hosts!.raw.at(index-1)?.placeholder)
                         }
