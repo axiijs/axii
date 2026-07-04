@@ -155,6 +155,11 @@ export class ComponentHost implements Host{
     get element() : HTMLElement|Comment|SVGElement|Text {
         return this.innerHost?.element || this.placeholder
     }
+    // CAUTION 必须把内层的 forceHandleElement（离场动画等）透传出来，
+    //  否则 RxListHost 的整段快速删除会跳过包在组件里的离场动画。
+    get forceHandleElement(): boolean {
+        return !!this.innerHost?.forceHandleElement
+    }
 
     separateProps(rawProps: AttributesArg) {
         const props: Props = {}

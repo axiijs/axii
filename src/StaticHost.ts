@@ -609,6 +609,9 @@ export class StaticHost implements Host {
 
             await Promise.all(promises)
         }
+        // CAUTION 等待离场动画期间，DOM 可能已被其他路径清理/篡改（例如外部直接操作了父节点），
+        //  此时区间已不完整，无法也无需再按区间删除，直接跳过，避免产生 unhandled rejection。
+        if (!this.placeholder.parentNode || this.element.parentNode !== this.placeholder.parentNode) return
         removeNodesBetween(this.element!, this.placeholder, true)
     }
 }

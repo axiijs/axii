@@ -12,17 +12,16 @@ export class StaticArrayHost implements Host{
     computed = undefined
 
     childHosts: Host[] = []
-    parentElement: HTMLElement|Comment|Text|SVGElement|null
     constructor(public source: any[], public placeholder: Comment, public pathContext: PathContext) {
-        this.parentElement = placeholder.parentElement
     }
-    // get parentElement() {
-    //     return this.placeholder.parentElement
-    // }
 
     firstChild?: HTMLElement|Comment|Text|SVGElement|Host
     get element(): HTMLElement|Comment|Text|SVGElement {
         return (this.firstChild as Host)?.element || (this.firstChild as HTMLElement|Comment|Text|SVGElement) || this.placeholder
+    }
+    // 透传内层的 forceHandleElement（离场动画等），同 ComponentHost
+    get forceHandleElement(): boolean {
+        return this.childHosts.some(host => host.forceHandleElement)
     }
     render(): void {
         if (this.element === this.placeholder) {
