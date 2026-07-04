@@ -440,18 +440,26 @@ export class ComponentHost implements Host{
 
         // CAUTION collect effects start
         const getFrame = ReactiveEffect.collectEffect()
+        let node: ReturnType<Component>|null = null
+        try {
+            const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
+            this.itemConfig = itemConfig
+            // 这里要再 coerce props，因为 boundProps 可能 return fixed value
+            const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
 
-        const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
-        this.itemConfig = itemConfig
-        this.props = componentProps
-        // 这里要再 coerce props，因为 boundProps 可能 return fixed value
-        const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+            normalizedProps.children = this.children
+            this.props = normalizedProps
 
-        normalizedProps.children = this.children
-        this.props = normalizedProps
-
-        const node = this.type(normalizedProps, this.renderContext)
-        this.frame = getFrame()
+            node = this.type(normalizedProps, this.renderContext)
+        } catch (e) {
+            // 组件 render 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空，
+            // 否则保持向上抛出的行为。
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+        } finally {
+            // CAUTION 无论组件是否抛错，都必须弹出 collect frame，
+            //  否则 collect frame 栈会错位，后续渲染收集的 effect 会泄漏到错误的 frame 里。
+            this.frame = getFrame()
+        }
         // CAUTION collect effects end
         // 就用当前 component 的 placeholder
         this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
@@ -502,14 +510,18 @@ export class ComponentHost implements Host{
             )
         }
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
-        this.innerHost!.destroy(parentHandle, parentHandleComputed)
+        // innerHost 可能不存在（render 抛错被中断的场景）
+        this.innerHost?.destroy(parentHandle, parentHandleComputed)
         this.layoutEffectDestroyHandles.forEach(handle => handle())
         this.destroyCallback.forEach(callback => callback())
 
         this.innerReusedHosts.forEach(host => host.destroyReusable())
 
         // 删除 dom
-        if (!parentHandle) {
+        // CAUTION placeholder 与 innerHost 共享，innerHost 自己会负责移除
+        //  （有离场动画时是异步移除），这里不能提前移除，否则异步移除时区间已不完整。
+        //  只有 render 抛错导致 innerHost 不存在时才需要自己清理。
+        if (!parentHandle && !this.innerHost) {
             this.placeholder.remove()
         }
 

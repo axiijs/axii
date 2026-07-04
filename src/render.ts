@@ -17,7 +17,8 @@ export type Root = {
     render: (componentOrEl: JSX.Element|ComponentNode|Function) => Host,
     destroy: () => void,
     on: (event: string, callback: EventCallback, options?: EventOptions) => () => void,
-    dispatch: (event: string, arg?: any) => void
+    // 返回是否有监听器消费了该事件
+    dispatch: (event: string, arg?: any) => boolean
 }
 
 /**
@@ -79,7 +80,10 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             }
         },
         dispatch(event: string, arg?: any) {
-            eventCallbacks.get(event)?.forEach(callback => callback(arg))
+            const callbacks = eventCallbacks.get(event)
+            if (!callbacks?.size) return false
+            callbacks.forEach(callback => callback(arg))
+            return true
         }
     }
 
