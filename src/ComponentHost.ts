@@ -71,7 +71,6 @@ const INNER_CONFIG_PROP = '__config__'
  */
 export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
-    static reusedNodes = new Map<any, ComponentHost>()
     type: Component
     public innerHost?: Host
     innerReusedHosts: ReusableHost[] = []

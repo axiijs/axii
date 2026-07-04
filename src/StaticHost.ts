@@ -420,14 +420,9 @@ export class StaticHost implements Host {
     attrAutoruns?: (() => void)[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
-    parentElement: HTMLElement
     removeAttachListener?: () => void
     constructor(public source: HTMLElement | SVGElement | DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
-        this.parentElement = placeholder.parentElement!
     }
-    // get parentElement() {
-    //     return this.placeholder.parentElement
-    // }
     element: HTMLElement | Comment | SVGElement = this.placeholder
     render(): void {
         assert(this.element === this.placeholder, 'should never rerender')
