@@ -217,6 +217,9 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         }
     } else if (name === 'checked' && node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
         // checkbox 的 checked 支持用 boolean 表示
+        // CAUTION 必须同时写 property 和 attribute：用户交互过后（dirty state），
+        //  attribute 不再影响显示，只有 property 能真正控制勾选状态。
+        (node as HTMLInputElement).checked = !!value
         if (value) {
             node.setAttribute('checked', 'true')
         } else {
