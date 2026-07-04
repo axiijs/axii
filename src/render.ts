@@ -50,9 +50,10 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             return root.host
         },
         destroy() {
-            eventCallbacks.clear()
+            // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
             root.dispatch('detach')
             root.host?.destroy()
+            eventCallbacks.clear()
             root.attached = false
         },
         // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
