@@ -9,7 +9,7 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
-import {isAtom, isReactive} from "data0";
+import {isAtom} from "data0";
 import {LightBindingEffect} from "./LightBindingEffect.js";
 import {trackLightBindingCreated, trackLightBindingDestroyed} from "./diagnostics.js";
 import {createHost} from "./createHost";
@@ -17,9 +17,15 @@ import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
-import {trackHostDestroyed, trackStyleHostStateCreated, trackStyleHostStateDestroyed} from "./diagnostics.js";
+import {
+    trackCompactHostDestroyed,
+    trackHostDestroyed,
+    trackStyleHostStateCreated,
+    trackStyleHostStateDestroyed
+} from "./diagnostics.js";
 
-// CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
+// CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发响应式值的读行为，不会泄漏到上层的 computed。
+// data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
 const originalIsValidAttribute = createElement.isValidAttribute
 createElement.isValidAttribute = function (name: string, value: any) {
     if (name.startsWith('on')) return true
@@ -33,7 +39,8 @@ createElement.isValidAttribute = function (name: string, value: any) {
 }
 
 function isReactiveValue(v: any) {
-    return isReactive(v) || isAtom(v) || typeof v === 'function'
+    // CAUTION atom 本身也是 function，先判断 typeof 更便宜
+    return typeof v === 'function' || isAtom(v)
 }
 
 function isAtomLike(v: any) {
@@ -654,6 +661,68 @@ export class StaticHost implements Host {
     }
 }
 
+
+// 所有 CompactElementHost 共享的占位符，永远不会插入文档，
+//  只是为了满足 Host 接口的 placeholder 字段。
+const COMPACT_SHARED_PLACEHOLDER = document.createComment('compact host shared placeholder')
+
+/**
+ * @internal
+ *
+ * RxListHost 专用的紧凑行 host：行内容是单个元素时，不需要给每一行分配
+ * 一个 comment 占位符（占位符的插入/删除和常驻 DOM 节点在长列表里开销可观）。
+ * 元素本身的定位（插入/搬移/删除）完全由 RxListHost 负责。
+ */
+export class CompactElementHost extends StaticHost {
+    constructor(source: HTMLElement | SVGElement, pathContext: PathContext) {
+        super(source, COMPACT_SHARED_PLACEHOLDER, pathContext)
+        this.element = source
+    }
+    render(): void {
+        this.collectInnerHost()
+        this.collectReactiveAttr()
+        this.collectRefHandles()
+        this.collectDetachStyledChildren()
+        if (this.detachStyledChildren?.length) {
+            this.forceHandleElement = true
+        }
+        this.reactiveHosts?.forEach(host => host.render())
+        // CAUTION 自己的插入由 RxListHost 完成，这里不做
+
+        if (this.refHandles?.length) {
+            if (this.pathContext.root.attached) {
+                this.attachRefs()
+            } else {
+                this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
+            }
+        }
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.mount(this.pathContext.hostPath)
+        }
+    }
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        // CAUTION 先减 compact 计数再登记 destroyed，顺序反了会被去重逻辑跳过
+        trackCompactHostDestroyed(this)
+        trackHostDestroyed(this)
+        if (this.attrEffects) {
+            for (const effect of this.attrEffects) {
+                trackLightBindingDestroyed(effect)
+                if (!parentHandleComputed) effect.destroy()
+            }
+        }
+        this.removeAttachListener?.()
+        this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
+        this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
+            createElement.detachRef(handle)
+        })
+        if (!parentHandle) {
+            (this.element as HTMLElement).remove()
+        }
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.unmount(this.pathContext.hostPath)
+        }
+    }
+}
 
 function eventToPromise(el: HTMLElement, event: string) {
     return new Promise(resolve => {

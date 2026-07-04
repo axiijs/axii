@@ -69,6 +69,7 @@ export class FunctionHost implements Host{
             }
             this.destroyInnerHost()
             this.textNode = document.createTextNode(text)
+            // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它
             insertBefore(this.textNode, this.placeholder)
             return
         }
@@ -91,11 +92,13 @@ export class FunctionHost implements Host{
         Notifier.instance.resetTracking()
         this.innerHost = host
     }
-    destroyInnerHost(parentHandle = false, parentHandleComputed = false) {
+    destroyInnerHost(parentHandle = false) {
         const host = this.innerHost
         if (host) {
             this.innerHost = null
-            host.destroy(parentHandle, parentHandleComputed)
+            // CAUTION 内层 host 的 effect 是在 pauseCollectChild 下创建的（没有父 effect），
+            //  必须显式销毁，所以 parentHandleComputed 恒为 false。
+            host.destroy(parentHandle, false)
         }
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
@@ -106,7 +109,7 @@ export class FunctionHost implements Host{
             this.effect?.destroy()
         }
         this.runCleanups()
-        this.destroyInnerHost(parentHandle, parentHandleComputed)
+        this.destroyInnerHost(parentHandle)
         if (!parentHandle) {
             if (this.textNode) {
                 this.textNode.remove()

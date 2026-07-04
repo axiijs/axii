@@ -1,4 +1,4 @@
-import {Atom, isReactive, ManualCleanup, ReactiveEffect} from "data0";
+import {Atom, ManualCleanup, ReactiveEffect} from "data0";
 import {
     AttributesArg,
     createElement,
@@ -218,12 +218,6 @@ export class ComponentHost implements Host{
     }
     createHTMLOrSVGElement = (isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
         const isComponent = typeof type === 'function'
-        if(__DEV__) {
-            if (!isComponent && rawProps)
-                Object.entries(rawProps).forEach(([key, value]) => {
-                    assert(!isReactive(value), `don't use reactive or computed for attr: ${key}, simply use function or atom`)
-                })
-        }
 
         const name = rawProps ? rawProps['as'] : undefined
 

@@ -1,9 +1,29 @@
-import {insertAfter, insertBefore, UnhandledPlaceholder} from './DOM'
+import {ExtendedElement, insertAfter, insertBefore, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed, TriggerInfo} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {createLinkedNode} from "./LinkedList";
-import {trackHostDestroyed} from "./diagnostics.js";
+import {
+    isAxiiRetainedObjectDiagnosticsEnabled,
+    trackCompactHostCreated,
+    trackHostCreated,
+    trackHostDestroyed
+} from "./diagnostics.js";
+import {CompactElementHost} from "./StaticHost.js";
+
+function isHostRendered(host: Host): boolean {
+    return host instanceof CompactElementHost ? !!host.element.parentNode : !!host.placeholder.parentNode
+}
+
+// host 对应 DOM 区间的最后一个节点（普通 host 是 placeholder，compact host 就是元素本身）
+function hostLastNode(host: Host): HTMLElement|Comment|Text|SVGElement {
+    return host instanceof CompactElementHost ? host.element : host.placeholder
+}
+
+// host 对应 DOM 区间的第一个节点
+function hostFirstNode(host: Host): HTMLElement|Comment|Text|SVGElement {
+    return host.element
+}
 
 type ReorderInfo = {
     kind: string,
@@ -34,13 +54,26 @@ export class RxListHost implements Host{
     }
 
     createChildHost(item: any) {
+        // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符
+        if ((item instanceof HTMLElement || item instanceof SVGElement) && !(item as ExtendedElement).detachStyledChildren) {
+            const host = new CompactElementHost(item, this.childContext!)
+            if (isAxiiRetainedObjectDiagnosticsEnabled()) {
+                trackHostCreated(host, 'CompactElementHost')
+                trackCompactHostCreated(host)
+            }
+            return host
+        }
         return createHost(item, document.createComment('rx list item'), this.childContext!)
     }
 
     renderNewHosts(hosts: Host[]) {
         const frag = document.createDocumentFragment()
         for (const host of hosts) {
-            frag.appendChild(host.placeholder)
+            if (host instanceof CompactElementHost) {
+                frag.appendChild(host.element)
+            } else {
+                frag.appendChild(host.placeholder)
+            }
             host.render()
         }
         return frag
@@ -104,7 +137,7 @@ export class RxListHost implements Host{
             //  后面的 host 可能还没渲染，所以要往后找到第一个已经渲染过的元素作为插入锚点。
             let insertBeforeHost: Host|null = null
             for (let i = start + newHosts.length; i < hosts.length; i++) {
-                if (hosts[i].placeholder.parentNode) {
+                if (isHostRendered(hosts[i])) {
                     insertBeforeHost = hosts[i]
                     break
                 }
@@ -113,15 +146,32 @@ export class RxListHost implements Host{
         }
 
         if (deletedHosts.length) {
-            // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一 child，并且没有子节点强制要求自己来清理。那么直接清空 parent，这样比较快。
-            const removeAllElementByParent = hosts.length === 0 &&
-                !this.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
-                !deletedHosts[0].element.previousSibling &&  // 删除的Host 是父 Host 的第一个，说明从头删到了尾
-                deletedHosts.every(inner => !inner.forceHandleElement)
+            let canBulkRemove = true
+            for (const deleted of deletedHosts) {
+                if (deleted.forceHandleElement) {
+                    canBulkRemove = false
+                    break
+                }
+            }
+            const firstNode = canBulkRemove ? hostFirstNode(deletedHosts[0]) : null
+            const lastNode = canBulkRemove ? hostLastNode(deletedHosts[deletedHosts.length - 1]) : null
 
-            if (removeAllElementByParent) {
-                const parent = this.placeholder.parentNode!
-                parent.replaceChildren(this.placeholder)
+            if (canBulkRemove && firstNode!.parentNode && firstNode!.parentNode === lastNode!.parentNode) {
+                // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一内容，直接 replaceChildren 清空 parent 最快；
+                //  否则用 Range 一次性删除整个连续区间，避免逐节点 remove。
+                const removeAllElementByParent = hosts.length === 0 &&
+                    !this.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
+                    !firstNode!.previousSibling // 删除的Host 是父 Host 的第一个，说明从头删到了尾
+
+                if (removeAllElementByParent) {
+                    const parent = this.placeholder.parentNode!
+                    parent.replaceChildren(this.placeholder)
+                } else {
+                    const range = document.createRange()
+                    range.setStartBefore(firstNode!)
+                    range.setEndAfter(lastNode!)
+                    range.deleteContents()
+                }
                 for (const deleted of deletedHosts) deleted.destroy(true)
             } else {
                 for (const deleted of deletedHosts) deleted.destroy()
@@ -174,7 +224,7 @@ export class RxListHost implements Host{
                 // 已在正确相对位置
                 lisPointer--
             } else {
-                insertBefore(childHost.element as any, anchor as any, childHost.placeholder)
+                insertBefore(childHost.element as any, anchor as any, hostLastNode(childHost) as any)
             }
             anchor = childHost.element
         }
@@ -186,6 +236,8 @@ export class RxListHost implements Host{
 
         const newHost = this.createChildHost(this.source.data[index])
         hosts[index] = newHost
+        // compact host 没有独立占位符，直接定位元素本身
+        const newHostAnchorNode = newHost instanceof CompactElementHost ? newHost.element : newHost.placeholder
         // CAUTION 因为有可能发生了连续的 explicit_key_change 的情况，后面的 host 可能都是新的，所以这里应该使用 insertAfter 往前面找确定的。
         // placeholder 一定是最后一个元素
         if (index === 0) {
@@ -195,14 +247,14 @@ export class RxListHost implements Host{
             //  所以要往后找到第一个已渲染的 host，以它的起始节点为锚点。
             let anchor: HTMLElement|Comment|SVGElement|Text = this.placeholder
             for(let i = index + 1; i < hosts.length; i++) {
-                if (hosts[i].placeholder.parentNode) {
+                if (isHostRendered(hosts[i])) {
                     anchor = hosts[i].element
                     break
                 }
             }
-            insertBefore(newHost.placeholder, anchor)
+            insertBefore(newHostAnchorNode, anchor)
         } else {
-            insertAfter(newHost.placeholder, hosts[index-1].placeholder)
+            insertAfter(newHostAnchorNode, hostLastNode(hosts[index-1]))
         }
         newHost.render()
     }

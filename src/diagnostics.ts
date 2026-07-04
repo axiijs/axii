@@ -124,6 +124,24 @@ export function trackLightBindingDestroyed(binding: object) {
 /**
  * @internal
  */
+export function trackCompactHostCreated(host: object) {
+    if (!enabled) return
+    activeCompactHosts++
+}
+
+/**
+ * @internal
+ */
+export function trackCompactHostDestroyed(host: object) {
+    if (!enabled) return
+    // 只有 create 阶段被登记过的对象才计数，避免 enable 之前创建的 host 把计数减成负数
+    if (!seenObjects.has(host) || destroyedObjects.has(host)) return
+    activeCompactHosts--
+}
+
+/**
+ * @internal
+ */
 export function trackStyleHostStateCreated() {
     if (!enabled) return
     activeStyleHostStates++
