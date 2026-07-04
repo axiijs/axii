@@ -74,12 +74,14 @@ export interface ExtendedElement extends HTMLElement {
 
 function eventProxy(this: ExtendedElement, e: Event) {
     const listener = this._listeners![e.type]
-    return Array.isArray(listener) ? listener.forEach(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
+    // CAUTION 数组 listener 用 map 而不是 forEach，保留每个 handler 的返回值
+    return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
 function captureEventProxy(this: ExtendedElement, e: Event) {
     const listener = this._captureListeners![e.type]
-    return Array.isArray(listener) ? listener.forEach(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
+    // CAUTION 数组 listener 用 map 而不是 forEach，保留每个 handler 的返回值
+    return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
 export type UnhandledPlaceholder = Comment

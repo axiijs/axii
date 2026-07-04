@@ -1,7 +1,12 @@
 {
   "name": "axii",
   "version": "3.9.2",
-  "description": "",
+  "description": "A high-performance incremental-update frontend framework without Virtual DOM.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/axiijs/axii.git"
+  },
+  "sideEffects": false,
   "main": "./dist/axii.umd.cjs",
   "scripts": {
     "start": "vite",
