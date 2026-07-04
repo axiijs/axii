@@ -207,14 +207,14 @@ export class ComponentHost implements Host{
 
         const thisItemConfig = this.itemConfig[name]
         if (name && thisItemConfig) {
-            // 为了性能，又直接操作了 rawProps
             // 1. 使用 :[prop] 语法  对当前节点的 props 调整
             if (thisItemConfig.props) {
-                // CAUTION 普通节点，这里默认适合原来的 props 合并，除非用户想要自己的处理
+                // CAUTION 这里必须基于 separateProps 处理过的 finalProps 合并，
+                //  不能用 rawProps，否则 prop:/$self: 前缀的 key 会以原始形态混回 props。
                 if (isComponent) {
-                    finalProps = {...rawProps, ...thisItemConfig.props}
+                    finalProps = {...finalProps, ...thisItemConfig.props}
                 } else {
-                    finalProps = mergeProps(rawProps, thisItemConfig.props)
+                    finalProps = mergeProps(finalProps, thisItemConfig.props)
                 }
             }
 
