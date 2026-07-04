@@ -50,8 +50,11 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
             if (!instances[name]) {
                 instances[name] = []
             }
-            values.get(name).push(instance.value)
-            (instances[name] as Array<FormItemInstance>).push(instance)
+            // CAUTION 不要把下面两行合并成以 `(` 开头的写法，会触发 ASI 陷阱：
+            //  上一行 push(...) 的返回值会被当成函数调用而抛 TypeError。
+            const instanceList = instances[name] as Array<FormItemInstance>;
+            (values.get(name) as RxList<any>).push(instance.value)
+            instanceList.push(instance)
 
         } else {
             values.set(name, instance.value)
