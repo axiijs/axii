@@ -1,6 +1,7 @@
 import {createHost} from "./createHost";
 import {ComponentNode} from "./types";
 import {PathContext, Host} from "./Host";
+import {assert} from "./util";
 
 
 type EventCallback = (e: any) => void
@@ -25,7 +26,9 @@ export type Root = {
 export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
 
-    const pathContext: PathContext = parentContext || {
+    // CAUTION parentContext 是外部（如 Portal 所在组件）自己的 pathContext，
+    //  这里必须 clone，不能原地改写它的 root 字段，否则外部组件的 pathContext.root 会指向内层 root。
+    const pathContext: PathContext = parentContext ? {...parentContext} : {
         hostPath: null,
         elementPath: [],
     } as unknown as PathContext
@@ -36,6 +39,8 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
         host: undefined as Host|undefined,
         attached: false,
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
+            // CAUTION render 不可重入，否则会往容器里追加多棵树
+            assert(!root.host, 'root can only render once, destroy the root before rendering again')
             const placeholder = document.createComment('root')
             const frag = document.createDocumentFragment()
             frag.appendChild(placeholder)
@@ -54,6 +59,7 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             root.dispatch('detach')
             root.host?.destroy()
             eventCallbacks.clear()
+            root.host = undefined
             root.attached = false
         },
         // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
