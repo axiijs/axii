@@ -90,27 +90,40 @@ export class RxListHost implements Host{
             function computation(this:Computed) {
                 this.manualTrack(source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
                 this.manualTrack(source, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE)
-                const hosts = host.hosts!
-                const data = source.data
-                for (let i = 0; i < data.length; i++) {
-                    hosts.push(host.createChildHost(data[i]))
+                // CAUTION 行 host 的 effect 不注册为本 computed 的子 effect：
+                //  行 host 一定会被显式 destroy（splice 删除/列表销毁），不需要父子级联清理，
+                //  这样每行创建/销毁都省一次父子登记与移除。
+                this.pauseCollectChild()
+                try {
+                    const hosts = host.hosts!
+                    const data = source.data
+                    for (let i = 0; i < data.length; i++) {
+                        hosts.push(host.createChildHost(data[i]))
+                    }
+                    insertBefore(host.renderNewHosts(hosts), host.placeholder)
+                } finally {
+                    this.resumeCollectChild()
                 }
-                insertBefore(host.renderNewHosts(hosts), host.placeholder)
                 return null
             },
-            function applyPatch(_, triggerInfos) {
-                for (const info of triggerInfos) {
-                    const {method, argv, key, methodResult, type} = info as TriggerInfo & {reorderInfo?: ReorderInfo}
-                    if (method === 'splice') {
-                        host.handleSplice(argv!, methodResult as any[]|undefined)
-                    } else if(method === 'reorder') {
-                        host.handleReorder(argv![0], (info as any).reorderInfo)
-                    } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
-                        host.handleExplicitKeyChange(key as number)
-                      /* v8 ignore next 3 */
-                    } else {
-                        throw new Error('unknown trigger info')
+            function applyPatch(this: Computed, _, triggerInfos) {
+                this.pauseCollectChild()
+                try {
+                    for (const info of triggerInfos) {
+                        const {method, argv, key, methodResult, type} = info as TriggerInfo & {reorderInfo?: ReorderInfo}
+                        if (method === 'splice') {
+                            host.handleSplice(argv!, methodResult as any[]|undefined)
+                        } else if(method === 'reorder') {
+                            host.handleReorder(argv![0], (info as any).reorderInfo)
+                        } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
+                            host.handleExplicitKeyChange(key as number)
+                          /* v8 ignore next 3 */
+                        } else {
+                            throw new Error('unknown trigger info')
+                        }
                     }
+                } finally {
+                    this.resumeCollectChild()
                 }
             },
             true

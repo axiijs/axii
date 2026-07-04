@@ -171,7 +171,11 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     if (name === 'className') {
         // 快速路径：纯字符串 className（最常见）
         if (typeof value === 'string') {
-            node.setAttribute('class', value)
+            if (isSvg) {
+                node.setAttribute('class', value)
+            } else {
+                node.className = value
+            }
             return
         }
         const classNameOptions = Array.isArray(value) ? value : [value]
