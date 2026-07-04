@@ -15,6 +15,7 @@ import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
+import {trackHostDestroyed, trackStyleHostStateCreated, trackStyleHostStateDestroyed} from "./diagnostics.js";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
 const originalIsValidAttribute = createElement.isValidAttribute
@@ -167,9 +168,13 @@ class StyleManager {
     }
     collect(hostPath: LinkedNode<Host>, id: string) {
         const host = hostPath.node
-        const ids = this.hostToStyleIds.get(host) ?? new Set()
+        let ids = this.hostToStyleIds.get(host)
+        if (!ids) {
+            ids = new Set()
+            this.hostToStyleIds.set(host, ids)
+            trackStyleHostStateCreated()
+        }
         ids.add(id)
-        this.hostToStyleIds.set(host, ids)
         this.updateRefCount(id, +1)
     }
     mount(hostPath: LinkedNode<Host>) {
@@ -193,6 +198,9 @@ class StyleManager {
     }
     cleanup(hostPath: LinkedNode<Host>) {
         const host = hostPath.node
+        if (this.hostToStyleIds.has(host)) {
+            trackStyleHostStateDestroyed()
+        }
         const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
         const styleSheetsToDelete = new Set<CSSStyleSheet>()
         ids.forEach(id => {
@@ -541,6 +549,7 @@ export class StaticHost implements Host {
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        trackHostDestroyed(this)
         if (!parentHandleComputed) {
             this.attrAutoruns?.forEach(stopAutorun => stopAutorun())
         }

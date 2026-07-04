@@ -1,5 +1,6 @@
 import {Atom, computed, destroyComputed} from "data0";
 import {Host, PathContext} from "./Host";
+import {trackHostDestroyed} from "./diagnostics.js";
 
 
 function stringValue(v: any) {
@@ -44,6 +45,7 @@ export class AtomHost implements Host{
 
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        trackHostDestroyed(this)
         if (!parentHandleComputed) {
             destroyComputed(this.computed)
         }

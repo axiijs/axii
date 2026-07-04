@@ -3,6 +3,7 @@ import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Compute
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {createLinkedNode} from "./LinkedList";
+import {trackHostDestroyed} from "./diagnostics.js";
 /**
  * @internal
  */
@@ -136,6 +137,7 @@ export class RxListHost implements Host{
         )
     }
     destroy(fromParentDestroy?: boolean, parentHandleComputed?: boolean) {
+        trackHostDestroyed(this)
         if (!parentHandleComputed) {
             this.hosts?.destroy()
             destroyComputed(this.hostRenderComputed)

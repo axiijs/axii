@@ -3,6 +3,7 @@ import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 import {createLinkedNode} from "./LinkedList";
+import {trackHostDestroyed} from "./diagnostics.js";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -68,6 +69,7 @@ export class FunctionHost implements Host{
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        trackHostDestroyed(this)
         this.destroyed = true
         if (!parentHandleComputed) {
             this.stopAutoRender()

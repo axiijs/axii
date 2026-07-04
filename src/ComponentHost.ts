@@ -19,6 +19,7 @@ import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
+import {trackHostDestroyed} from "./diagnostics.js";
 
 
 function ensureArray(o: any) {
@@ -500,6 +501,7 @@ export class ComponentHost implements Host{
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        trackHostDestroyed(this)
         if (this.refProp) {
             this.detachRef(this.refProp)
         }
