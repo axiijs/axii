@@ -450,7 +450,9 @@ export class StaticHost implements Host {
             if (this.pathContext.root.attached) {
                 this.attachRefs()
             } else {
-                this.pathContext.root.on('attach', this.attachRefs, {once: true})
+                // CAUTION 一定要保存退订函数，元素如果在 root attach 之前被销毁，
+                //  必须退订，否则 attach 时会把已销毁的元素重新附加到 ref 上。
+                this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
             }
         }
         StaticHost.styleManager.mount(this.pathContext.hostPath)

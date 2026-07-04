@@ -467,7 +467,9 @@ export class ComponentHost implements Host{
         if (this.pathContext.root.attached) {
             this.runLayoutEffect()
         } else {
-            this.pathContext.root.on('attach', this.runLayoutEffect, {once: true})
+            // CAUTION 一定要保存退订函数，组件如果在 root attach 之前被销毁，
+            //  必须退订，否则 attach 时会对已销毁的组件执行 layoutEffect/ref。
+            this.deleteLayoutEffectCallback = this.pathContext.root.on('attach', this.runLayoutEffect, {once: true})
         }
     }
     runLayoutEffect = () => {
