@@ -31,5 +31,5 @@ axii 是一个"增量更新"的响应式前端框架，核心特点：
 详见：
 
 - [02-fatal-issues.md](./02-fatal-issues.md) — 致命问题（已全部修复，现为修复索引）
-- [03-improvements.md](./03-improvements.md) — 显著改进项（尚未处理）
+- [03-improvements.md](./03-improvements.md) — 显著改进项（已逐项求证并处理，现为处理索引）
 - [04-reproduction-report.md](./04-reproduction-report.md) — 复现验证报告（已归档）
