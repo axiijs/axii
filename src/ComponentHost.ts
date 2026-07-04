@@ -307,7 +307,8 @@ export class ComponentHost implements Host{
         Object.entries(propTypes).forEach(([key, type]) => {
            if (props[key] !== undefined) {
                // coerce
-               finalProps[key] = type.coerce?.(props[key]) || props[key]
+               // CAUTION 不能写成 coerce(v) || v，coerce 返回合法的 falsy 值（0/''/false）会被吞掉
+               finalProps[key] = type.coerce ? type.coerce(props[key]) : props[key]
            } else {
                // create defaultValue
                finalProps[key] = type.defaultValue
@@ -319,7 +320,8 @@ export class ComponentHost implements Host{
         const finalProps: Props = {...props}
         Object.entries(propTypes).forEach(([key, type]) => {
             if (props[key] !== undefined) {
-                finalProps[key] = type.coerce?.(props[key]) || props[key]
+                // CAUTION 不能写成 coerce(v) || v，coerce 返回合法的 falsy 值（0/''/false）会被吞掉
+                finalProps[key] = type.coerce ? type.coerce(props[key]) : props[key]
             }
         })
         return finalProps

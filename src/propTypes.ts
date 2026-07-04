@@ -289,31 +289,34 @@ export const oneOfType = createTypeClass({
 export const arrayOf = createTypeClass({
     check(this: TypeChecker<any, any>, v: any) {
         if (!Array.isArray(v)) return false
-        // TODO of type?
         return v.every(e => this.argv[0].check(e))
     },
-    stringify(v) {
-        // TODO
-        // stringify 时 element 里面有，[ 等符号怎么办
-        // 应该始终都用 JSON 格式，至于 editor 要不要有自己的 stringify/parse ，那是它的事情。
+    // 始终使用 JSON 格式，特殊符号由 JSON 转义处理；editor 如需自定义格式自行处理。
+    stringify(v: any) {
+        return JSON.stringify(v)
     },
-    parse(v) {
-        // TODO
+    parse(this: TypeChecker<any, any>, v: any) {
+        const parsed = JSON.parse(v)
+        if (!this.check(parsed)) throw new Error(`can not parse ${v}`)
+        return parsed
     },
     zeroValue: [],
 })
 
 
 export const shapeOf = createTypeClass({
-    check(v) {
-        return true
+    check(this: TypeChecker<any, any>, v: any) {
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) return false
+        return Object.entries(this.argv[0]).every(([key, propType]: [string, unknown]) => (propType as TypeChecker<any, any>).check(v[key]))
     },
-    stringify(v) {
-        // TODO
-        // stringify 时 element 里面有，[ 等符号怎么办
+    // 始终使用 JSON 格式，特殊符号由 JSON 转义处理
+    stringify(v: any) {
+        return JSON.stringify(v)
     },
-    parse(v) {
-        // TODO
+    parse(this: TypeChecker<any, any>, v: any) {
+        const parsed = JSON.parse(v)
+        if (!this.check(parsed)) throw new Error(`can not parse ${v}`)
+        return parsed
     },
 })
 
