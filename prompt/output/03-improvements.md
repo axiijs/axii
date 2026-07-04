@@ -73,8 +73,8 @@ if(originValue && (key.startsWith('on') || key === 'ref'|| key==='style' || key=
 
 ### 14. 测试盲区
 
-- reorder / sort 无任何用例（正是致命问题 BUG 4 漏网的原因）；
-- `Form.tsx`、`propTypes.ts`、`common.ts` 被 coverage 排除（BUG 3 因此漏网）；
+- ~~reorder / sort 无任何用例~~（已补：`__tests__/fatalBugs.spec.tsx` 中已有 reorder / sort / explicit key change 用例）；
+- `Form.tsx`、`propTypes.ts`、`common.ts` 仍被 coverage 排除（`Form.register` 的 multiple 路径已有测试，但文件整体依旧不计入覆盖率）；
 - README 徽章展示的覆盖率因 exclude 配置而虚高。
 
 ### 15. 其他小项

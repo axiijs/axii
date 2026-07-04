@@ -26,10 +26,10 @@ axii 是一个"增量更新"的响应式前端框架，核心特点：
 - 增量更新路径（`RxListHost` 的 splice patch、`AtomHost` 的文本节点复用、`StaticHost` 的属性级 autorun）确实做到了理论最小 DOM 变更。
 - Host 抽象的职责边界清楚，`parentHandle` / `parentHandleComputed` 两个 destroy 参数是为了让父级批量清理时避免子级重复操作，设计合理（尽管透传有遗漏，见改进项）。
 
-**但实现层面的问题密度偏高**：8 个致命问题里有 5 个（BUG 1/2/3/4/5）属于"写了但没接上"或"两行代码顺序反了"这类低级疏漏，而且都落在测试盲区里（`Form.tsx` 被排除在 coverage 之外、reorder 无任何用例、detached root 场景无用例）。这说明测试策略比代码本身更需要补强——覆盖率数字（README 徽章）因为 exclude 配置而虚高。
+**但实现层面的问题密度偏高**：review 曾发现 8 个致命问题（**现已全部修复**，见 [02-fatal-issues.md](./02-fatal-issues.md) 的修复索引），其中 5 个属于"写了但没接上"或"两行代码顺序反了"这类低级疏漏，而且都落在当时的测试盲区里（`Form.tsx` 被排除在 coverage 之外、reorder 无任何用例、detached root 场景无用例）。这说明测试策略比代码本身更需要补强——覆盖率数字（README 徽章）因为 exclude 配置而虚高。
 
 详见：
 
-- [02-fatal-issues.md](./02-fatal-issues.md) — 致命问题详述
-- [03-improvements.md](./03-improvements.md) — 显著改进项
-- [04-reproduction-report.md](./04-reproduction-report.md) — 复现验证报告
+- [02-fatal-issues.md](./02-fatal-issues.md) — 致命问题（已全部修复，现为修复索引）
+- [03-improvements.md](./03-improvements.md) — 显著改进项（尚未处理）
+- [04-reproduction-report.md](./04-reproduction-report.md) — 复现验证报告（已归档）
