@@ -93,16 +93,18 @@ export function markDynamicProp(obj: object) {
     return obj
 }
 
+// CAUTION 这些判断必须对 null/undefined 安全，
+//  条件样式 style={cond ? {...} : null} 是很自然的写法，value 可能是 null。
 export function isBoundProp(obj: any) {
-    return !!obj['__bound']
+    return !!(obj && obj['__bound'])
 }
 
 export function isAopProp(obj: any) {
-    return !!obj['__aop']
+    return !!(obj && obj['__aop'])
 }
 
 export function isDynamicProp(obj: any) {
-    return !!obj['__dynamic']
+    return !!(obj && obj['__dynamic'])
 }
 
 // class name 中的字母含义
