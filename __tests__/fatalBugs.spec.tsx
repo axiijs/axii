@@ -1,22 +1,18 @@
 /** @jsx createElement */
 /**
- * 本文件用于复现代码 review 中发现的致命问题。
- *
- * CAUTION 每个测试断言的是【当前的错误行为】，测试通过 = bug 确实存在。
- * 每个测试的注释中标明了正确行为应该是什么。
- * 修复对应 bug 后，这里的断言应当反转。
+ * 本文件最初用于复现代码 review 中发现的致命问题（见 prompt/output/02-fatal-issues.md），
+ * 对应的 bug 修复后，断言已经反转为【正确行为】，本文件即为这些 bug 的回归测试。
  *
  * 编号与 review 报告一致：
- * - BUG 1a/1b, 2, 3, 4a/4b, 5, 8 在本文件（浏览器环境）中复现；
- * - BUG 6（仓库无法独立构建/测试：data0 只以 ../data0 兄弟目录源码 alias 存在、
- *   不在 devDependencies 中，package.json main 指向不存在的 index.js）
- *   由本分支对 vitest.config.ts 的修改 + devDependencies 补充 data0 所证实：
- *   修改前在没有兄弟目录 data0 的全新 clone 上，npm install && npm test 无法运行；
+ * - BUG 1a/1b, 2, 3, 4a/4b, 5, 8 在本文件（浏览器环境）中验证；
+ * - BUG 6（仓库无法独立构建/测试 + package.json main 指向不存在的文件）
+ *   由 vitest.config.ts 的 data0 fallback alias、devDependencies 中的 data0、
+ *   以及 __tests__/node/packageJson.spec.ts 验证；
  * - BUG 7（模块加载即执行浏览器 API，Node/SSR 环境 import 即崩）在
- *   __tests__/node/importInNode.spec.ts 中复现，需用 node 环境运行：
+ *   __tests__/node/importInNode.spec.ts 中验证，需用 node 环境运行：
  *   npx vitest run --config vitest.node.config.ts
  */
-import {createElement, createRoot, Form, FormContext, RenderContext} from "@framework";
+import {createElement, createRoot, Form, FormContext, RenderContext, setAttribute, ExtendedElement} from "@framework";
 import {atom, RxList, RxMap} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 
@@ -24,7 +20,9 @@ function nextMicrotask() {
     return new Promise<void>(resolve => queueMicrotask(resolve))
 }
 
-describe('fatal bug reproduction', () => {
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(() => resolve(), ms))
+
+describe('fatal bug regression', () => {
     let rootEl: HTMLElement
     beforeEach(() => {
         document.body.innerHTML = ''
@@ -33,32 +31,44 @@ describe('fatal bug reproduction', () => {
     })
 
     /**
-     * BUG 1a: ComponentHost.render 中 root.on('attach', ...) 的返回值（退订函数）没有保存到
-     * this.deleteLayoutEffectCallback（该字段在全仓库中从未被赋值），destroy 时无法退订。
-     * 导致：渲染到 detached 容器时，组件销毁后 attach 事件仍会执行它的 layoutEffect。
-     * 正确行为：组件销毁后 layoutEffect 不应再执行（runs 应保持 0）。
+     * BUG 1a: ComponentHost.render 中 root.on('attach', ...) 的返回值（退订函数）必须保存到
+     * this.deleteLayoutEffectCallback，destroy 时退订。
+     * 正确行为：渲染到 detached 容器时，组件在 root attach 之前被销毁，
+     * 它的 layoutEffect 不应再执行；仍然存活的组件的 layoutEffect 应正常执行。
      */
-    test('BUG 1a: layoutEffect of a destroyed component still runs when root attaches later', async () => {
+    test('BUG 1a: layoutEffect of a destroyed component must not run when root attaches later', async () => {
         const detachedEl = document.createElement('div')
         const root = createRoot(detachedEl)
 
         const show = atom(true)
-        let layoutEffectRuns = 0
+        let destroyedLayoutEffectRuns = 0
+        let aliveLayoutEffectRuns = 0
 
         function Inner({}: any, {createElement, useLayoutEffect}: RenderContext) {
             useLayoutEffect(() => {
-                layoutEffectRuns++
+                destroyedLayoutEffectRuns++
             })
             return <div>inner</div>
         }
 
+        function Alive({}: any, {createElement, useLayoutEffect}: RenderContext) {
+            useLayoutEffect(() => {
+                aliveLayoutEffectRuns++
+            })
+            return <div>alive</div>
+        }
+
         function App({}: any, {createElement}: RenderContext) {
-            return <div>{() => show() ? <Inner/> : null}</div>
+            return <div>
+                {() => show() ? <Inner/> : null}
+                <Alive/>
+            </div>
         }
 
         root.render(<App/>)
         // root 未 attach，layoutEffect 尚未执行，符合预期
-        expect(layoutEffectRuns).toBe(0)
+        expect(destroyedLayoutEffectRuns).toBe(0)
+        expect(aliveLayoutEffectRuns).toBe(0)
 
         // 在 attach 之前销毁 Inner（FunctionHost 的重算是 microtask 异步的）
         show(false)
@@ -69,30 +79,36 @@ describe('fatal bug reproduction', () => {
         document.body.appendChild(detachedEl)
         root.dispatch('attach')
 
-        // BUG：已销毁组件的 layoutEffect 仍然被执行了。正确行为应为 0。
-        expect(layoutEffectRuns).toBe(1)
+        // 已销毁组件的 layoutEffect 不应执行，存活组件的应正常执行
+        expect(destroyedLayoutEffectRuns).toBe(0)
+        expect(aliveLayoutEffectRuns).toBe(1)
 
         root.destroy()
     })
 
     /**
-     * BUG 1b: StaticHost 同样没有保存 attach 监听的退订函数（removeAttachListener 从未被赋值）。
-     * 导致：元素销毁后 attach 事件仍会把已从 DOM 移除的元素再次附加到 ref 上。
-     * 正确行为：destroy 时 ref 已被置 null，此后不应再被赋值。
+     * BUG 1b: StaticHost 同样必须保存 attach 监听的退订函数（removeAttachListener）。
+     * 正确行为：元素在 root attach 之前被销毁时，ref 收到 null 之后不应再被赋值；
+     * 存活元素的 ref 应在 attach 时正常附加。
      */
-    test('BUG 1b: ref of a destroyed element is re-attached when root attaches later', async () => {
+    test('BUG 1b: ref of a destroyed element must not be re-attached when root attaches later', async () => {
         const detachedEl = document.createElement('div')
         const root = createRoot(detachedEl)
 
         const show = atom(true)
         const refCalls: any[] = []
+        const aliveRefCalls: any[] = []
 
         function App({}: any, {createElement}: RenderContext) {
-            return <div>{() => show() ? <span ref={(el: any) => refCalls.push(el)}>x</span> : null}</div>
+            return <div>
+                {() => show() ? <span ref={(el: any) => refCalls.push(el)}>x</span> : null}
+                <span ref={(el: any) => aliveRefCalls.push(el)}>alive</span>
+            </div>
         }
 
         root.render(<App/>)
         expect(refCalls).toEqual([])
+        expect(aliveRefCalls).toEqual([])
 
         show(false)
         await nextMicrotask()
@@ -102,71 +118,86 @@ describe('fatal bug reproduction', () => {
         document.body.appendChild(detachedEl)
         root.dispatch('attach')
 
-        // BUG：attach 后，已销毁元素又被附加到 ref 上（且该元素已不在文档中）。
-        // 正确行为：refCalls 应保持 [null]。
-        expect(refCalls.length).toBe(2)
-        expect(refCalls[1]).toBeInstanceOf(HTMLElement)
-        expect((refCalls[1] as HTMLElement).isConnected).toBe(false)
+        // 已销毁元素的 ref 不应再被赋值
+        expect(refCalls).toEqual([null])
+        // 存活元素的 ref 应正常附加
+        expect(aliveRefCalls.length).toBe(1)
+        expect((aliveRefCalls[0] as HTMLElement).isConnected).toBe(true)
 
         root.destroy()
     })
 
     /**
-     * BUG 2: Root.destroy() 先执行 eventCallbacks.clear() 再 dispatch('detach')，
-     * 所有 detach 监听器都在派发前被清空。
-     * 正确行为：destroy 时 detach 监听器应被调用。
+     * BUG 2: Root.destroy() 必须先派发 detach 再清空监听器。
+     * 正确行为：destroy 时 detach 监听器应被调用（且只调用一次）。
      */
-    test('BUG 2: detach event is never dispatched on root.destroy()', () => {
+    test('BUG 2: detach event is dispatched on root.destroy()', () => {
         const root = createRoot(rootEl)
         root.render(<div>hello</div>)
 
-        let detachFired = false
+        let detachFired = 0
         root.on('detach', () => {
-            detachFired = true
+            detachFired++
         })
 
         root.destroy()
+        expect(detachFired).toBe(1)
 
-        // BUG：detach 永远不会触发。正确行为应为 true。
-        expect(detachFired).toBe(false)
+        // destroy 之后监听器已被清空，再次 dispatch 不应重复触发
+        root.dispatch('detach')
+        expect(detachFired).toBe(1)
     })
 
     /**
-     * BUG 3: Form.tsx register() 的 multiple 分支存在 ASI（自动分号插入）陷阱：
-     *     values.get(name).push(instance.value)
-     *     (instances[name] as Array<FormItemInstance>).push(instance)
-     * 两行被解析为一个表达式：push(...) 的返回值被当作函数调用，抛出 TypeError。
-     * 正确行为：multiple 注册应正常把 instance 推入列表，不抛错。
+     * BUG 3: Form.tsx register() 的 multiple 分支曾存在 ASI（自动分号插入）陷阱，
+     * push(...) 的返回值被当作函数调用而抛 TypeError。
+     * 正确行为：multiple 注册应正常把 value/instance 推入列表，不抛错；
+     * unregister 应能把对应项移除。
      */
-    test('BUG 3: Form register with multiple=true throws TypeError (ASI hazard)', () => {
+    test('BUG 3: Form register with multiple=true works without error', () => {
         const root = createRoot(rootEl)
         let registerError: any = null
+        let formContextValue: any = null
+
+        const instance1 = {value: atom(1), reset() {}, clear() {}}
+        const instance2 = {value: atom(2), reset() {}, clear() {}}
+
+        const values = new RxMap<string, any>({})
 
         function Item({}: any, {createElement, context}: RenderContext) {
             const formContext = context.get(FormContext)
+            formContextValue = formContext
             try {
-                formContext.register('field', {value: atom(1), reset() {}, clear() {}}, true)
+                formContext.register('field', instance1, true)
+                formContext.register('field', instance2, true)
             } catch (e) {
                 registerError = e
             }
             return <div>item</div>
         }
 
-        root.render(<Form name="test" values={new RxMap<string, any>({})}><Item/></Form>)
+        root.render(<Form name="test" values={values}><Item/></Form>)
 
-        // BUG：必然抛 TypeError（push 的返回值不是函数）。正确行为应为 registerError === null。
-        expect(registerError).toBeInstanceOf(TypeError)
-        expect(String(registerError)).toMatch(/is not a function/)
+        expect(registerError).toBe(null)
+        const valueList = values.get('field') as RxList<any>
+        expect(valueList.raw.length).toBe(2)
+        expect(valueList.raw[0]).toBe(instance1.value)
+        expect(valueList.raw[1]).toBe(instance2.value)
+
+        // unregister 应能把对应项移除
+        formContextValue.unregister('field', instance1, true)
+        expect(valueList.raw.length).toBe(1)
+        expect(valueList.raw[0]).toBe(instance2.value)
 
         root.destroy()
     })
 
     /**
-     * BUG 4a: RxListHost 的 reorder 分支用 placeholder.parentElement.firstChild 作为插入锚点，
-     * 隐含假设列表独占父元素。当列表前面有兄弟节点（如标题）时，排序会把所有列表项搬到兄弟节点之前。
-     * 正确行为：排序只改变列表项之间的相对顺序，<h1> 仍应是第一个子元素。
+     * BUG 4a: RxListHost 的 reorder 分支曾用 placeholder.parentElement.firstChild 作为插入锚点，
+     * 隐含假设列表独占父元素。
+     * 正确行为：排序只改变列表项之间的相对顺序，前面的兄弟节点（如 <h1>）位置不受影响。
      */
-    test('BUG 4a: sorting an RxList that has a preceding sibling moves items before the sibling', () => {
+    test('BUG 4a: sorting an RxList that has a preceding sibling keeps the sibling in place', () => {
         const root = createRoot(rootEl)
         const list = new RxList<number>([3, 1, 2])
 
@@ -185,21 +216,39 @@ describe('fatal bug reproduction', () => {
 
         list.sortSelf((a, b) => a - b)
 
-        // 列表项之间的顺序是对的……
+        // 列表项之间排序正确，且 h1 仍是第一个子元素
         expect(Array.from(container.querySelectorAll('span')).map(el => el.textContent)).toEqual(['1', '2', '3'])
-        // BUG：……但所有 span 被搬到了 h1 前面。
-        // 正确行为应为 ['H1', 'SPAN', 'SPAN', 'SPAN']。
-        expect(Array.from(container.children).map(el => el.tagName)).toEqual(['SPAN', 'SPAN', 'SPAN', 'H1'])
+        expect(Array.from(container.children).map(el => el.tagName)).toEqual(['H1', 'SPAN', 'SPAN', 'SPAN'])
+
+        root.destroy()
+    })
+
+    test('BUG 4a: sorting an RxList that is the only child of its parent still works', () => {
+        const root = createRoot(rootEl)
+        const list = new RxList<number>([3, 1, 2])
+
+        function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                {list.map(item => <span>{item}</span>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const container = rootEl.firstElementChild!
+        expect(Array.from(container.querySelectorAll('span')).map(el => el.textContent)).toEqual(['3', '1', '2'])
+
+        list.sortSelf((a, b) => a - b)
+        expect(Array.from(container.querySelectorAll('span')).map(el => el.textContent)).toEqual(['1', '2', '3'])
 
         root.destroy()
     })
 
     /**
-     * BUG 4b: EXPLICIT_KEY_CHANGE（list.set(0, ...)）分支同样用 parentElement.firstChild 作为
-     * index === 0 的插入锚点，新元素会被插到兄弟节点之前。
+     * BUG 4b: EXPLICIT_KEY_CHANGE（list.set(0, ...)）分支曾用 parentElement.firstChild 作为
+     * index === 0 的插入锚点。
      * 正确行为：替换后的元素应保持在 h1 之后的列表区域内。
      */
-    test('BUG 4b: list.set(0, ...) with a preceding sibling inserts the new item before the sibling', () => {
+    test('BUG 4b: list.set(0, ...) with a preceding sibling keeps the new item inside the list region', () => {
         const root = createRoot(rootEl)
         const list = new RxList<number>([1, 2, 3])
 
@@ -217,37 +266,76 @@ describe('fatal bug reproduction', () => {
         list.set(0, 9)
 
         expect(Array.from(container.querySelectorAll('span')).map(el => el.textContent)).toEqual(['9', '2', '3'])
-        // BUG：新的第 0 项被插到了 h1 前面。
-        // 正确行为应为 ['H1', 'SPAN', 'SPAN', 'SPAN']。
-        expect(container.children[0].tagName).toBe('SPAN')
-        expect(container.children[0].textContent).toBe('9')
-        expect(container.children[1].tagName).toBe('H1')
+        expect(Array.from(container.children).map(el => el.tagName)).toEqual(['H1', 'SPAN', 'SPAN', 'SPAN'])
+        expect(container.children[1].textContent).toBe('9')
+
+        root.destroy()
+    })
+
+    test('BUG 4b: explicit key change of the last item of a single-item list works', () => {
+        const root = createRoot(rootEl)
+        const list = new RxList<number>([1])
+
+        function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <h1>title</h1>
+                {list.map(item => <span>{item}</span>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        const container = rootEl.firstElementChild!
+
+        list.set(0, 9)
+
+        expect(Array.from(container.children).map(el => el.tagName)).toEqual(['H1', 'SPAN'])
+        expect(container.children[1].textContent).toBe('9')
 
         root.destroy()
     })
 
     /**
-     * BUG 5: setAttribute 把 onChange 别名成 input 事件后，与 onInput 在 _listeners 上撞 key，
-     * assert(listeners[eventName] === undefined) 直接抛错。
-     * 且 util.assert 的 throw 不受 __DEV__ 控制，生产构建同样会崩。
-     * 正确行为：同时监听 onChange 和 onInput 是合理写法，不应崩溃。
+     * BUG 5: setAttribute 把 onChange 别名成 input 事件后，曾与 onInput 在 _listeners 上撞 key，
+     * assert 直接抛错（生产构建同样会崩）。
+     * 正确行为：同时监听 onChange 和 onInput 是合理写法，两个 handler 都应被触发。
      */
-    test('BUG 5: element with both onChange and onInput throws "already listened"', () => {
+    test('BUG 5: element with both onChange and onInput works and both handlers fire', () => {
+        const calls: string[] = []
+        const el = createElement('input', {
+            onChange: () => calls.push('change'),
+            onInput: () => calls.push('input'),
+        }) as HTMLInputElement
+
+        el.dispatchEvent(new Event('input'))
+        expect(calls).toEqual(['change', 'input'])
+    })
+
+    test('BUG 5: unbinding an event by setting it to null does not throw', () => {
+        const calls: string[] = []
+        const el = createElement('input', {
+            onInput: () => calls.push('input'),
+        }) as HTMLInputElement
+
+        el.dispatchEvent(new Event('input'))
+        expect(calls).toEqual(['input'])
+
+        // 再次 setAttribute 置空来解绑，不应命中 "already listened" 断言
         expect(() => {
-            createElement('input', {
-                onChange: () => {},
-                onInput: () => {},
-            })
-        }).toThrow(/already listened/)
+            setAttribute(el as ExtendedElement, 'onInput', null)
+        }).not.toThrow()
+
+        el.dispatchEvent(new Event('input'))
+        expect(calls).toEqual(['input'])
     })
 
     /**
-     * BUG 8: 动态样式（函数/atom + 嵌套 selector）每次更新都会生成新的 CSSStyleSheet 追加到
-     * document.adoptedStyleSheets，旧的只减引用计数、不删除（源码中有 TODO 承认此问题），
-     * 要等 host destroy 才批量清理。长期存活、样式高频变化的组件会导致 stylesheet 无限累积。
-     * 正确行为：同一元素的动态样式更新应复用/回收 stylesheet，数量应保持 O(1)。
+     * BUG 8: 动态样式（函数/atom + 嵌套 selector）每次更新都会以新的滚动 id 生成新的 CSSStyleSheet，
+     * 旧的曾经只减引用计数、不从 document.adoptedStyleSheets 移除，导致无上限累积。
+     * 正确行为：使用长度为 2 的滚动 buffer（上一个留给 cloneNode），数量保持 O(1)；
+     * host destroy 后全部清理。
      */
-    test('BUG 8: dynamic style with nested selector leaks one stylesheet per update', () => {
+    test('BUG 8: dynamic style with nested selector keeps adoptedStyleSheets bounded', async () => {
+        const initialCount = document.adoptedStyleSheets.length
         const root = createRoot(rootEl)
         const color = atom('rgb(0, 0, 0)')
 
@@ -263,11 +351,17 @@ describe('fatal bug reproduction', () => {
             color(`rgb(${i}, 0, 0)`)
         }
 
+        // 滚动 buffer 之外的 stylesheet 应被及时清除，数量保持 O(1)
         const growth = document.adoptedStyleSheets.length - countAfterRender
-        // BUG：每次更新泄漏一个 stylesheet。正确行为 growth 应为 0（或至多一个小常数）。
-        expect(growth).toBe(UPDATE_COUNT)
+        expect(growth).toBeLessThanOrEqual(1)
 
-        // destroy 后才会批量清理
+        // 最新的样式应仍然生效
+        const el = rootEl.querySelector('div')!
+        expect(getComputedStyle(el).color).toBe(`rgb(${UPDATE_COUNT}, 0, 0)`)
+
+        // destroy 后全部清理
         root.destroy()
+        await sleep(10)
+        expect(document.adoptedStyleSheets.length).toBe(initialCount)
     })
 })
