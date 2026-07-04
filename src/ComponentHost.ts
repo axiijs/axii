@@ -126,8 +126,8 @@ export class ComponentHost implements Host{
                 // 穿透到子组件的 config，支持多个
                 itemConfig[itemName].configProps = ensureArray(itemConfig[itemName].configProps).concat(value)
             } else if(itemProp?.[0] === '_'){
-                // 不支持的配置项
-                assert(false, `unsupported config item: ${itemName}`)
+                // 不支持的配置项，报错信息要指出非法的配置项名（itemProp），而不是元素名
+                assert(false, `unsupported config item "${itemProp}" of "${itemName}"`)
             } else if( itemProp.endsWith('_') ) {
                 // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
                 if (!itemConfig[itemName].propMergeHandles) itemConfig[itemName].propMergeHandles = {}
