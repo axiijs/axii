@@ -49,7 +49,9 @@ export default {
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'json-summary'],
       include: ['src'],
-      exclude: ['src/util.ts', 'src/Form.tsx', 'src/common.ts', 'src/Host.ts', 'src/types.ts', 'src/propTypes.ts']
+      // 只排除纯类型声明文件。Form.tsx / propTypes.ts / util.ts 等运行时代码必须计入覆盖率，
+      // 否则覆盖率数字虚高，且这些文件里的 bug 会一直落在测试盲区（历史上 Form 的 ASI bug 正因此漏网）。
+      exclude: ['src/Host.ts', 'src/types.ts']
     },
   },
 }
