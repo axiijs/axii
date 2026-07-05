@@ -30,7 +30,12 @@ export class AtomHost implements Host{
                 this.placeholder.nodeValue = stringValue(value)
             } else {
                 const textNode = document.createTextNode(stringValue(value))
-                this.parentElement!.replaceChild(textNode, this.placeholder)
+                // CAUTION 必须保留 comment 占位符在 DOM 中（插入到它前面而不是替换掉它）：
+                //  atom 作为列表行时，RxListHost 的锚点查找（placeholder.parentNode）和
+                //  reorder 的区间搬移（element ... placeholder）都依赖占位符仍然在位。
+                //  旧实现用 replaceChild 会让占位符脱离 DOM，导致在 atom 行前插入新行时
+                //  锚点判断失效、新行落到列表末尾。
+                this.parentElement!.insertBefore(textNode, this.placeholder)
                 this.element = textNode
             }
         } else {
