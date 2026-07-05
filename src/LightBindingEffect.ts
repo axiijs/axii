@@ -14,6 +14,8 @@ type SkipIndicator = { skip: boolean }
 //  覆盖后实例字段指向共享函数（hidden class 不变），构造器里创建的闭包立即变成垃圾。
 //  这依赖 data0 内部始终以方法调用形式使用它们（effect.dispatch(...) 等），
 //  data0 的 L.destroy/prepareTracking 均满足。
+//  data0 >= 2.0.1 已把这三个函数改为原型方法（不再逐实例分配闭包），此时无需覆盖，
+//  覆盖反而会新增实例槽位，所以用模块级探测做一次性判断。
 function sharedPauseCollectChild(this: ReactiveEffect) {
     this.shouldCollectChild = false
 }
@@ -25,6 +27,7 @@ function sharedDispatch(this: ReactiveEffect, event: string, ...args: any[]) {
     const callbacks = (this as any)._eventToCallbacks?.get(event)
     if (callbacks) callbacks.forEach((callback: Function) => callback.call(this, ...args))
 }
+const effectHelpersOnPrototype = typeof (ReactiveEffect.prototype as any).pauseCollectChild === 'function'
 
 /**
  * @internal
@@ -54,9 +57,12 @@ export class LightBindingEffect extends ReactiveEffect {
         //  active 和 retained diagnostics 登记在下面手动补上。
         super()
         // 用共享函数覆盖基类构造器里逐实例分配的三个闭包字段，降低每绑定的常驻内存
-        this.pauseCollectChild = sharedPauseCollectChild
-        this.resumeCollectChild = sharedResumeCollectChild
-        this.dispatch = sharedDispatch
+        // （data0 >= 2.0.1 已是原型方法，无需覆盖）
+        if (!effectHelpersOnPrototype) {
+            this.pauseCollectChild = sharedPauseCollectChild
+            this.resumeCollectChild = sharedResumeCollectChild
+            this.dispatch = sharedDispatch
+        }
         if (update) this.update = update
         if (skipIndicator) this.skipIndicator = skipIndicator
         this.active = true
