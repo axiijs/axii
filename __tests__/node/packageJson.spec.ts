@@ -12,11 +12,20 @@ describe('BUG 6: package.json entry points', () => {
     const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf-8'))
 
     test('main points to the published CJS build artifact, consistent with exports', () => {
-        expect(pkg.main).toBe('./dist/axii.umd.cjs')
+        // 多入口 lib 构建（axii + vite-plugin）不支持 umd，CJS 产物是 dist/axii.cjs
+        expect(pkg.main).toBe('./dist/axii.cjs')
         expect(pkg.main).toBe(pkg.exports['.'].require)
         // main 必须落在随包发布的 files 范围内
         expect(pkg.files).toContain('dist')
         expect(pkg.main.startsWith('./dist/')).toBe(true)
+    })
+
+    test('vite-plugin (node-only code) is a separate subpath export, kept out of the runtime entry', () => {
+        expect(pkg.exports['./vite-plugin']).toEqual({
+            types: './dist/vite-plugin.d.ts',
+            import: './dist/vite-plugin.js',
+            require: './dist/vite-plugin.cjs',
+        })
     })
 
     test('data0 is available as a devDependency so a fresh clone can run tests', () => {

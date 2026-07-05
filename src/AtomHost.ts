@@ -1,7 +1,8 @@
 import {Atom} from "data0";
 import {Host, PathContext} from "./Host";
-import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./diagnostics.js";
+import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {LightBindingEffect} from "./LightBindingEffect.js";
+import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 
 
 function stringValue(v: any) {
@@ -40,7 +41,20 @@ export class AtomHost implements Host{
     render(): void {
         // CAUTION skipIndicator 是给富文本编辑器 contenteditable 来跳过 dom 变换的
         this.effect = new LightBindingEffect(() => {
-            this.replace(this.source())
+            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，文本更新是最热的路径之一
+            if (isAxiiDiagnosticsEnabled()) {
+                withReactiveTrace({
+                    type: 'atom-text',
+                    operation: 'update-text',
+                    hostType: 'AtomHost',
+                    elementPath: this.pathContext.elementPath,
+                    source: this.pathContext.debugSource,
+                }, () => {
+                    this.replace(this.source())
+                })
+            } else {
+                this.replace(this.source())
+            }
         }, this.pathContext.skipIndicator)
         trackLightBindingCreated(this.effect, 'AtomTextBinding')
         this.effect.run()

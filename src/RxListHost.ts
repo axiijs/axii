@@ -8,7 +8,14 @@ import {
     trackCompactHostCreated,
     trackHostCreated,
     trackHostDestroyed
-} from "./diagnostics.js";
+} from "./retainedObjectDiagnostics.js";
+import {
+    assertRangeReachable,
+    isAxiiDiagnosticsEnabled,
+    reportAxiiError,
+    summarizeArgv,
+    withReactiveTrace
+} from "./diagnostics";
 import {CompactElementHost} from "./StaticHost.js";
 
 function isHostRendered(host: Host): boolean {
@@ -110,16 +117,32 @@ export class RxListHost implements Host{
                 this.pauseCollectChild()
                 try {
                     for (const info of triggerInfos) {
-                        const {method, argv, key, methodResult, type} = info as TriggerInfo & {reorderInfo?: ReorderInfo}
-                        if (method === 'splice') {
-                            host.handleSplice(argv!, methodResult as any[]|undefined)
-                        } else if(method === 'reorder') {
-                            host.handleReorder(argv![0], (info as any).reorderInfo)
-                        } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
-                            host.handleExplicitKeyChange(key as number)
-                          /* v8 ignore next 3 */
-                        } else {
-                            throw new Error('unknown trigger info')
+                        // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled rejection，
+                        //  所以出错时必须先 reportAxiiError 输出结构化报告，再继续抛出保持可观测。
+                        try {
+                            if (isAxiiDiagnosticsEnabled()) {
+                                const {method, argv, key, methodResult, type} = info
+                                withReactiveTrace({
+                                    type: 'rx-list-patch',
+                                    operation: 'apply-patch',
+                                    hostType: 'RxListHost',
+                                    elementPath: host.pathContext.elementPath,
+                                    source: host.pathContext.debugSource,
+                                    method: method ?? String(type),
+                                    key: key as PropertyKey | undefined,
+                                    argvSummary: argv ? summarizeArgv(argv) : undefined,
+                                    createdCount: method === 'splice' ? argv!.length - 2 : undefined,
+                                    deletedCount: Array.isArray(methodResult) ? methodResult.length : methodResult ? 1 : 0,
+                                }, () => {
+                                    host.applyTriggerInfo(info)
+                                })
+                            } else {
+                                // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，列表 patch 是热路径
+                                host.applyTriggerInfo(info)
+                            }
+                        } catch (error) {
+                            reportAxiiError(error)
+                            throw error
                         }
                     }
                 } finally {
@@ -128,6 +151,19 @@ export class RxListHost implements Host{
             },
             true
         )
+    }
+    applyTriggerInfo(info: TriggerInfo) {
+        const {method, argv, key, methodResult, type} = info
+        if (method === 'splice') {
+            this.handleSplice(argv!, methodResult as any[]|undefined)
+        } else if(method === 'reorder') {
+            this.handleReorder(argv![0], (info as any).reorderInfo)
+        } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
+            this.handleExplicitKeyChange(key as number)
+          /* v8 ignore next 3 */
+        } else {
+            throw new Error('unknown trigger info')
+        }
     }
     handleSplice(argv: any[], deletedItems?: any[]) {
         const hosts = this.hosts!
@@ -170,6 +206,16 @@ export class RxListHost implements Host{
             const lastNode = canBulkRemove ? hostLastNode(deletedHosts[deletedHosts.length - 1]) : null
 
             if (canBulkRemove && firstNode!.parentNode && firstNode!.parentNode === lastNode!.parentNode) {
+                // CAUTION 开发期先做区间可达性校验：Range 对「终点在起点之前」这类被破坏的区间会
+                //  静默塌缩、误删或漏删节点，诊断开启时把它变成可解释的 AxiiError。
+                if (isAxiiDiagnosticsEnabled()) {
+                    assertRangeReachable({
+                        ownerHost: deletedHosts[0],
+                        start: firstNode!,
+                        end: lastNode!,
+                        operation: 'splice',
+                    })
+                }
                 // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一内容，直接 replaceChildren 清空 parent 最快；
                 //  否则用 Range 一次性删除整个连续区间，避免逐节点 remove。
                 const removeAllElementByParent = hosts.length === 0 &&

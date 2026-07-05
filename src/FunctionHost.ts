@@ -3,8 +3,9 @@ import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
 import {createLinkedNode} from "./LinkedList";
-import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./diagnostics.js";
+import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {DeferredBindingEffect} from "./LightBindingEffect.js";
+import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -51,7 +52,32 @@ export class FunctionHost implements Host{
         trackLightBindingCreated(this.effect, 'FunctionNodeBinding')
         this.effect.run()
     }
+    // 是否已经完成过一次渲染，诊断 trace 用它区分初次 render 和 recompute
+    renderedOnce = false
     renderSource(effect: DeferredBindingEffect) {
+        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，函数节点重算是热路径
+        if (isAxiiDiagnosticsEnabled()) {
+            withReactiveTrace(this.renderedOnce ? {
+                type: 'function-node-recompute',
+                operation: 'recompute',
+                hostType: 'FunctionHost',
+                elementPath: this.pathContext.elementPath,
+                source: this.pathContext.debugSource,
+            } : {
+                type: 'function-node',
+                operation: 'render',
+                hostType: 'FunctionHost',
+                elementPath: this.pathContext.elementPath,
+                source: this.pathContext.debugSource,
+            }, () => {
+                this.renderSourceWithoutTrace(effect)
+            })
+        } else {
+            this.renderSourceWithoutTrace(effect)
+        }
+        this.renderedOnce = true
+    }
+    renderSourceWithoutTrace(effect: DeferredBindingEffect) {
         // CAUTION 每次都清空上一次的结果
         this.runCleanups()
         let node: ReturnType<FunctionNode>|null = null

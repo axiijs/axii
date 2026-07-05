@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
+import type {AxiiSource} from "./diagnostics";
 
 export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
 let autoUnitType: 'px' | 'rem' | 'em' = 'px'
@@ -70,6 +71,8 @@ export interface ExtendedElement extends HTMLElement {
     unhandledAttr?: UnhandledAttrInfo[]
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
+    // 开发期 JSX source（文件/行/列），由 jsxDEV 写入
+    __axiiSource?: AxiiSource
 }
 
 function eventProxy(this: ExtendedElement, e: Event) {
@@ -282,18 +285,19 @@ export type AttributesArg = {
 
 export type JSXElementType = string | typeof Fragment | Component
 
-type UnhandledChildInfo = {
+export type UnhandledChildInfo = {
     placeholder: UnhandledPlaceholder,
     child: any,
     path: number[]
+    source?: AxiiSource
 }
 
-type UnhandledAttrInfo = {
+export type UnhandledAttrInfo = {
     el: ExtendedElement,
     key: string,
     value: any,
     path: number[]
-
+    source?: AxiiSource
 }
 
 export type RefHandleInfo = {
@@ -312,10 +316,20 @@ const EMPTY_CHILDREN: any[] = []
 
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+    // CAUTION __source/__self 既可能来自 jsxDEV，也可能来自 Babel classic dev transform，
+    //  两条链路都在这里收敛，绝不能作为普通 attr 落到 DOM/组件 props 上。
+    const debugSource = rawProps ? rawProps.__source as AxiiSource | undefined : undefined
+
     // Early return for component nodes
     if (typeof type !== 'string' && type !== Fragment) {
         const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || [])
-        return {type, props: rawProps||{}, children} as ComponentNode
+        let props = rawProps || {}
+        if (debugSource || (rawProps && '__self' in rawProps)) {
+            props = {...rawProps}
+            delete props.__source
+            delete props.__self
+        }
+        return {type, props, children, __axiiSource: debugSource} as ComponentNode
     }
 
     const _isSVG = rawProps ? rawProps._isSVG : undefined
@@ -353,9 +367,14 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 // CAUTION 这些元数据数组的所有权是唯一的（由子元素的 createElement 创建，
                 //  在这里被提升一次并清空引用），所以可以直接原地改写 path、直接接管数组。
                 const childElement = child as ExtendedElement
+                // 动态节点自身没有 JSX source 时，继承最近的父元素 source
+                const inheritedSource = childElement.__axiiSource ?? debugSource
                 const childUnhandledChildren = childElement.unhandledChildren
                 if (childUnhandledChildren?.length) {
-                    for (const c of childUnhandledChildren) c.path.unshift(index)
+                    for (const c of childUnhandledChildren) {
+                        c.path.unshift(index)
+                        if (inheritedSource && !c.source) c.source = inheritedSource
+                    }
                     if (unhandledChildren) {
                         unhandledChildren.push(...childUnhandledChildren)
                     } else {
@@ -365,7 +384,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 }
                 const childUnhandledAttr = childElement.unhandledAttr
                 if (childUnhandledAttr?.length) {
-                    for (const c of childUnhandledAttr) c.path.unshift(index)
+                    for (const c of childUnhandledAttr) {
+                        c.path.unshift(index)
+                        if (inheritedSource && !c.source) c.source = inheritedSource
+                    }
                     if (unhandledAttr) {
                         unhandledAttr.push(...childUnhandledAttr)
                     } else {
@@ -399,10 +421,11 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     document.createTextNode('') :
                     document.createComment('unhandledChild')
                 container.appendChild(placeholder)
+                const info: UnhandledChildInfo = {placeholder, child, path: [index], source: debugSource}
                 if (unhandledChildren) {
-                    unhandledChildren.push({placeholder, child, path: [index]})
+                    unhandledChildren.push(info)
                 } else {
-                    unhandledChildren = [{placeholder, child, path: [index]}]
+                    unhandledChildren = [info]
                 }
             }
         }
@@ -411,8 +434,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     // Process props after children for proper Select/Option behavior
     if (rawProps) {
         for (const key in rawProps) {
-            // key 目前不参与运行时逻辑（保留给未来的 diff），直接跳过
-            if (key === '_isSVG' || key === 'children' || key === 'key') continue
+            // key 目前不参与运行时逻辑（保留给未来的 diff），直接跳过；
+            // __source/__self 是开发期元数据，绝不能作为普通 attr 落到 DOM 上
+            if (key === '_isSVG' || key === 'children' || key === 'key' || key === '__source' || key === '__self') continue
             const value = rawProps[key]
             if (key === 'ref') {
                 // ref handles should be attached before children
@@ -433,7 +457,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 continue
             }
             if (!createElement.isValidAttribute(key, value)) {
-                (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: []})
+                (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
             } else {
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
             }
@@ -443,6 +467,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     // Attach metadata to container only if necessary
     const containerElement = container as ExtendedElement
+    if (debugSource) containerElement.__axiiSource = debugSource
     if (unhandledChildren) containerElement.unhandledChildren = unhandledChildren
     if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
     if (refHandles) containerElement.refHandles = refHandles
@@ -665,6 +690,15 @@ export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesAr
 export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     return createElement(type, rawProps, children)
 }
-export function jsxDEV(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return Array.isArray(children) ? createElement(type, rawProps, ...children) : createElement(type, rawProps, children)
+// React automatic dev runtime 签名：jsxDEV(type, props, key, isStaticChildren, source, self)
+export function jsxDEV(
+    type: JSXElementType,
+    {children, ...rawProps}: AttributesArg,
+    _key?: string,
+    _isStaticChildren?: boolean,
+    source?: AxiiSource,
+    self?: unknown
+): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
+    const props = source || self ? {...rawProps, __source: source, __self: self} : rawProps
+    return Array.isArray(children) ? createElement(type, props, ...children) : createElement(type, props, children)
 }

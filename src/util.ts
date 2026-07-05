@@ -1,3 +1,5 @@
+import {assertRangeReachable, isAxiiDiagnosticsEnabled, type RangeBoundaryContext} from "./diagnostics";
+
 type PlainObject = {
   [k: string] : any
 }
@@ -20,8 +22,22 @@ export function nextJob(fn: Function) {
 /**
  * @internal
  */
-export function removeNodesBetween(start: ChildNode, endNode: ChildNode|Comment, includeEnd = false) {
-  if (start.parentElement !== endNode.parentElement) {
+export function removeNodesBetween(
+    start: ChildNode,
+    endNode: ChildNode|Comment,
+    includeEnd = false,
+    context?: Omit<RangeBoundaryContext, 'start' | 'end'>
+) {
+  if (isAxiiDiagnosticsEnabled()) {
+    // CAUTION 先做完整的区间可达性校验再删除，避免删到一半才暴露底层错误、留下半删除的 DOM。
+    //  校验失败会抛出携带 Host 栈/组件栈/DOM 快照的 AxiiError。
+    assertRangeReachable({
+      ...context,
+      start,
+      end: endNode,
+      operation: context?.operation ?? 'destroy',
+    })
+  } else if (start.parentElement !== endNode.parentElement) {
     throw new Error('placeholder and element parentElement not same')
   }
 

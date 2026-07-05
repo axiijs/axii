@@ -11,7 +11,7 @@ import {
 import {Host, PathContext} from "./Host";
 import {isAtom} from "data0";
 import {LightBindingEffect} from "./LightBindingEffect.js";
-import {trackLightBindingCreated, trackLightBindingDestroyed} from "./diagnostics.js";
+import {trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {createHost} from "./createHost";
 import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
@@ -22,7 +22,8 @@ import {
     trackHostDestroyed,
     trackStyleHostStateCreated,
     trackStyleHostStateDestroyed
-} from "./diagnostics.js";
+} from "./retainedObjectDiagnostics.js";
+import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发响应式值的读行为，不会泄漏到上层的 computed。
 // data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
@@ -495,11 +496,12 @@ export class StaticHost implements Host {
         if (unhandledChildren) {
             // 所有子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode
             const hostPath = createLinkedNode<Host>(this, this.pathContext.hostPath)
-            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path }) =>
+            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) =>
                 createHost(child, placeholder, {
                     ...this.pathContext,
                     hostPath,
-                    elementPath: path
+                    elementPath: path,
+                    debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
                 })
             );
 
@@ -515,7 +517,7 @@ export class StaticHost implements Host {
 
         if(unhandledAttr) {
             const attrEffects: LightBindingEffect[] = this.attrEffects = []
-            for (const { el, key, value, path } of unhandledAttr) {
+            for (const { el, key, value, path, source } of unhandledAttr) {
                 // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
                 if (StaticHostConfig.autoGenerateTestId && !el.hasAttribute('data-testid')) {
                     this.generateTestId(el, path)
@@ -526,7 +528,21 @@ export class StaticHost implements Host {
                         this.usesStyleManager = true
                     }
                     const effect = new LightBindingEffect(() => {
-                        this.updateAttribute(el, key, value, path, isSVG)
+                        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
+                        if (isAxiiDiagnosticsEnabled()) {
+                            withReactiveTrace({
+                                type: 'static-attr',
+                                operation: 'update-attr',
+                                hostType: 'StaticHost',
+                                elementPath: path,
+                                source: source ?? this.pathContext.debugSource,
+                                attrName: key,
+                            }, () => {
+                                this.updateAttribute(el, key, value, path, isSVG)
+                            })
+                        } else {
+                            this.updateAttribute(el, key, value, path, isSVG)
+                        }
                     })
                     trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
                     effect.run()
@@ -588,27 +604,50 @@ export class StaticHost implements Host {
             createElement.detachRef(handle)
         })
 
-        // 没有离场动画时同步移除，避免每个元素销毁都分配 Promise/微任务
+        // CAUTION removeElements 只有在等待离场动画时才是异步的。
+        //  同步路径（绝大多数）直接内联处理，避免每个元素销毁都分配 Promise/微任务；
+        //  同步路径的 DOM boundary 错误必须同步向上抛（async 函数会把它变成 unhandled rejection）；
+        //  异步路径的错误无法向上抛，交给 reportAxiiError 收敛。
+        //  无论哪条路径、成功还是失败，样式引用计数都必须释放。
         if (!this.detachStyledChildren?.length) {
-            if (!parentHandle &&
-                this.placeholder.parentNode &&
-                this.element.parentNode === this.placeholder.parentNode) {
-                removeNodesBetween(this.element!, this.placeholder, true)
-            }
-            if (this.usesStyleManager) {
-                StaticHost.styleManager.unmount(this.pathContext.hostPath)
+            try {
+                // CAUTION 整段区间已脱离 DOM / 父节点失配，说明区间已被外部整体清理，
+                //  这是被容忍的合法状态；「同父但兄弟链断了」的破坏交给 removeNodesBetween 的诊断抛出。
+                if (!parentHandle &&
+                    this.placeholder.parentNode &&
+                    this.element.parentNode === this.placeholder.parentNode) {
+                    removeNodesBetween(this.element!, this.placeholder, true, {
+                        ownerHost: this,
+                        operation: 'destroy',
+                    })
+                }
+            } finally {
+                if (this.usesStyleManager) {
+                    StaticHost.styleManager.unmount(this.pathContext.hostPath)
+                }
             }
             return
         }
 
-        this.removeElements(parentHandle)
-          .finally(() => {
-              if (this.usesStyleManager) {
-                  StaticHost.styleManager.unmount(this.pathContext.hostPath)
-              }
-          })
+        const unmountStyle = () => {
+            if (this.usesStyleManager) {
+                StaticHost.styleManager.unmount(this.pathContext.hostPath)
+            }
+        }
+
+        try {
+            const removeResult = this.removeElements(parentHandle)
+            if (removeResult instanceof Promise) {
+                removeResult.catch(reportAxiiError).finally(unmountStyle)
+            } else {
+                unmountStyle()
+            }
+        } catch (error) {
+            unmountStyle()
+            throw error
+        }
     }
-    async removeElements(parentHandle?: boolean) {
+    removeElements(parentHandle?: boolean): void | Promise<void> {
         if (parentHandle) return
 
         if (this.detachStyledChildren?.length) {
@@ -652,12 +691,25 @@ export class StaticHost implements Host {
                 setAttribute(el, 'style', final, el instanceof SVGElement)
             })
 
-            await Promise.all(promises)
+            return Promise.all(promises).then(() => {
+                // CAUTION 等待离场动画期间，DOM 可能已被其他路径整体清理（例如外部直接清空了父节点），
+                //  整段区间脱离/父节点失配是这个场景下被容忍的合法状态，直接跳过删除。
+                //  其余更细的区间破坏（同父但链断了）仍会被 removeNodesBetween 的诊断捕获并 report。
+                if (!this.placeholder.parentNode || this.element.parentNode !== this.placeholder.parentNode) return
+                removeNodesBetween(this.element!, this.placeholder, true, {
+                    ownerHost: this,
+                    operation: 'destroy',
+                })
+            })
         }
-        // CAUTION 等待离场动画期间，DOM 可能已被其他路径清理/篡改（例如外部直接操作了父节点），
-        //  此时区间已不完整，无法也无需再按区间删除，直接跳过，避免产生 unhandled rejection。
+        // CAUTION 整段区间已脱离 DOM / 父节点失配，说明区间已被外部整体清理（例如 root 容器被直接清空），
+        //  这是被容忍的合法状态，无需也无法再按区间删除。真正危险的是「同父但兄弟链断了」——
+        //  盲删会误删别人的节点，这种情况交给 removeNodesBetween 的诊断同步抛出 AxiiError。
         if (!this.placeholder.parentNode || this.element.parentNode !== this.placeholder.parentNode) return
-        removeNodesBetween(this.element!, this.placeholder, true)
+        removeNodesBetween(this.element!, this.placeholder, true, {
+            ownerHost: this,
+            operation: 'destroy',
+        })
     }
 }
 

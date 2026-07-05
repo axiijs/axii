@@ -11,15 +11,19 @@ export default {
   },
   build: {
     lib: {
-      // Could also be a dictionary or array of multiple entry points
-      entry: resolve(__dirname, 'src/index.ts'),
+      // CAUTION vite-plugin 是 node-only 代码（依赖 node:fs/promises），必须独立入口打包，
+      //  不能混进浏览器侧的主入口。多入口 lib 模式不支持 umd，所以 cjs 产物从 axii.umd.cjs 变成 axii.cjs。
+      entry: {
+        axii: resolve(__dirname, 'src/index.ts'),
+        'vite-plugin': resolve(__dirname, 'src/vitePlugin.ts'),
+      },
       name: 'axii',
-      // the proper extensions will be added
-      fileName: 'axii',
+      formats: ['es', 'cjs'],
+      fileName: (format: string, entryName: string) => format === 'es' ? `${entryName}.js` : `${entryName}.cjs`,
     },
     sourcemap: true,
     rollupOptions: {
-      external: ['data0'],
+      external: ['data0', 'node:fs/promises'],
     },
   },
   plugins: [dts({
