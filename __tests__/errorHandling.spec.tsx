@@ -1,4 +1,5 @@
 /** @jsx createElement */
+/** @jsxFrag Fragment */
 import {
     AxiiError,
     assertRangeReachable,
@@ -9,6 +10,7 @@ import {
     createHost,
     createRoot,
     dismissAxiiDevOverlay,
+    Fragment,
     type ComponentNode,
     type ExtendedElement,
     jsx,
@@ -399,7 +401,8 @@ describe('error handling examples', () => {
         ])
         expect(container.unhandledChildren).toEqual([
             {
-                placeholder: expect.any(Comment),
+                // 函数类型的动态 child 用 Text 节点做占位符（文本快速路径直接复用它）
+                placeholder: expect.any(Text),
                 child: dynamicChild,
                 path: [0, 0],
                 source: parentSource,
@@ -544,9 +547,11 @@ describe('error handling examples', () => {
                 resolve()
             }, {once: true})
         })
+        // CAUTION 单元素行会走 CompactElementHost（没有独立的行占位符，也没有可破坏的区间），
+        //  这里用 Fragment 行保持「元素 ... 行占位符」的真实 DOM 区间，才能构造边界破坏场景。
         const list = new RxList([
-            <span>first</span>,
-            <span>second</span>,
+            <><span>first</span></>,
+            <><span>second</span></>,
         ])
         root.render(list as unknown as JSX.Element)
 

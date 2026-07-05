@@ -3,6 +3,7 @@ import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {removeNodesBetween} from "./util";
 import {createLinkedNode} from "./LinkedList";
+import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 
 
 /**
@@ -54,6 +55,7 @@ export class StaticArrayHost implements Host{
         }
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        trackHostDestroyed(this)
         if (!parentHandle) {
             removeNodesBetween(this.element, this.placeholder, true, {
                 ownerHost: this,

@@ -1,4 +1,4 @@
-import {Atom, isReactive, ManualCleanup, ReactiveEffect} from "data0";
+import {Atom, ManualCleanup, ReactiveEffect} from "data0";
 import {
     AttributesArg,
     createElement,
@@ -19,6 +19,7 @@ import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
+import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 
 
@@ -165,6 +166,7 @@ export class ComponentHost implements Host{
         const props: Props = {}
         const componentProps: Props = {}
         const selfMergeProps: Props = {}
+        let hasSelfMergeProps = false
         for(const key in rawProps) {
             if (key.startsWith('prop:')) {
                 componentProps[key.slice(5)] = rawProps[key]
@@ -172,27 +174,71 @@ export class ComponentHost implements Host{
                 // 支持自己 props 的 merge，这是因为有的组件包装了其他组件，想 merge props 而不是替换。
                 // 写成 $self 的形式默认就是 merge，不用再手动使用 mergeProps 了，可读性也更强。
                 selfMergeProps[key.slice(6)] = rawProps[key]
+                hasSelfMergeProps = true
             } else {
                 props[key] = rawProps[key]
             }
         }
 
         // merge props and selfMergeProps
-        this.parseAndMergeProps({props, itemConfig:{}, componentProp: componentProps}, selfMergeProps)
+        if (hasSelfMergeProps) {
+            this.parseAndMergeProps({props, itemConfig:{}, componentProp: componentProps}, selfMergeProps)
+        }
         return {props, componentProps}
+    }
+    // 判断 rawProps 中是否有需要 separateProps 处理的前缀 key（prop: / $self:）
+    static hasPrefixedProps(rawProps: AttributesArg) {
+        for (const key in rawProps) {
+            const first = key.charCodeAt(0)
+            // 'p' === 112, '$' === 36，先做单字符判断避免大量 startsWith
+            if ((first === 112 && key.startsWith('prop:')) || (first === 36 && key.startsWith('$self:'))) return true
+        }
+        return false
+    }
+    static hasEventProps(rawProps: AttributesArg) {
+        for (const key in rawProps) {
+            if (key[0] === 'o' && key[1] === 'n') return true
+        }
+        return false
+    }
+    // 缓存当前组件路径上的所有组件 props，事件绑定参数用。同一个组件内所有元素相同。
+    cachedContextComponentProps?: any[]
+    getContextComponentProps() {
+        if (!this.cachedContextComponentProps) {
+            const contextComponentProps: any[] = []
+            let start: LinkedNode<Host>|null = this.pathContext.hostPath
+            while(start){
+                if (start.node instanceof ComponentHost) {
+                    contextComponentProps.push((start.node as ComponentHost).props)
+                }
+                start = start.prev
+            }
+            this.cachedContextComponentProps = contextComponentProps
+        }
+        return this.cachedContextComponentProps
     }
     createHTMLOrSVGElement = (isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
         const isComponent = typeof type === 'function'
-        if(__DEV__) {
-            if (!isComponent && rawProps)
-                Object.entries(rawProps).forEach(([key, value]) => {
-                    assert(!isReactive(value), `don't use reactive or computed for attr: ${key}, simply use function or atom`)
-                })
+
+        const name = rawProps ? rawProps['as'] : undefined
+
+        // 快速路径：没有 as 名称、不是组件、也没有 prop:/$self: 前缀 key 的普通元素，
+        //  不需要 separateProps/itemConfig/AOP 的任何处理。
+        if (!name && !isComponent) {
+            if (!rawProps || !ComponentHost.hasPrefixedProps(rawProps)) {
+                const node = isSVG ?
+                    createSVGElement(type as string, rawProps, ...children) :
+                    createElement(type, rawProps, ...children)
+                // 事件参数只在存在事件监听时才需要
+                if (rawProps && ComponentHost.hasEventProps(rawProps)) {
+                    (node as ExtendedElement).listenerBoundArgs = [this.getContextComponentProps(), {}]
+                }
+                return node
+            }
         }
 
-        const name = rawProps?.['as']
         // 为了性能，直接操作了 rawProps
-        delete rawProps?.['as']
+        if (name !== undefined) delete rawProps['as']
         assert(name !=='self', '"self" is reserved, please use another element name.')
 
         // 支持 use 里面直接传入 HTMLElement 覆写整个节点
@@ -264,20 +310,7 @@ export class ComponentHost implements Host{
             createElement(finalType, finalProps, ...finalChildren)
 
         if (!(typeof finalType === 'function')) {
-            // const contextComponentProps = this.pathContext.hostPath
-            //     .filter(h => h instanceof ComponentHost)
-            //     .map(h => (h as ComponentHost).props).reverse();
-
-            const contextComponentProps: any[] = []
-            let start: LinkedNode<Host>|null = this.pathContext.hostPath
-            while(start){
-                if (start instanceof ComponentHost) {
-                    contextComponentProps.push(start.props)
-                }
-                start = start.prev
-            }
-
-            (node as ExtendedElement).listenerBoundArgs = [contextComponentProps, componentProps]
+            (node as ExtendedElement).listenerBoundArgs = [this.getContextComponentProps(), componentProps]
         }
 
         return node
@@ -509,6 +542,7 @@ export class ComponentHost implements Host{
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        trackHostDestroyed(this)
         if (this.refProp) {
             this.detachRef(this.refProp)
         }

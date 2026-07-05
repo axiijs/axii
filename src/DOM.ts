@@ -87,7 +87,9 @@ function captureEventProxy(this: ExtendedElement, e: Event) {
     return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
 }
 
-export type UnhandledPlaceholder = Comment
+// CAUTION 大多数占位符是 Comment。函数/atom 类型的 child 用 Text 节点做占位符（乐观策略）：
+//  它们绝大多数渲染为文本，此时占位符自身就能当 Text 节点用，省一次节点创建和插入。
+export type UnhandledPlaceholder = Comment | Text
 
 
 function isEventName(name: string) {
@@ -170,6 +172,15 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     }
 
     if (name === 'className') {
+        // 快速路径：纯字符串 className（最常见）
+        if (typeof value === 'string') {
+            if (isSvg) {
+                node.setAttribute('class', value)
+            } else {
+                node.className = value
+            }
+            return
+        }
         const classNameOptions = Array.isArray(value) ? value : [value]
         const classNames:string[] = []
         classNameOptions.forEach((className) => {
@@ -301,29 +312,27 @@ export type DetachStyledInfo = {
     path: number[]
 }
 
+const EMPTY_CHILDREN: any[] = []
+
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    const {
-        _isSVG,
-        ref: refProp,
-        detachStyle: detachStyleProp,
-        children: childrenProp,
-        // CAUTION __source/__self 既可能来自 jsxDEV，也可能来自 Babel classic dev transform，
-        //  两条链路都在这里收敛，绝不能作为普通 attr 落到 DOM/组件 props 上。
-        __source,
-        __self,
-        ...rawRestProps
-    } = rawProps || {}
-    const debugSource = __source as AxiiSource | undefined
+    // CAUTION __source/__self 既可能来自 jsxDEV，也可能来自 Babel classic dev transform，
+    //  两条链路都在这里收敛，绝不能作为普通 attr 落到 DOM/组件 props 上。
+    const debugSource = rawProps ? rawProps.__source as AxiiSource | undefined : undefined
 
     // Early return for component nodes
     if (typeof type !== 'string' && type !== Fragment) {
-        const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
-        const props = rawProps ? {...rawProps} : {}
-        delete props.__source
-        delete props.__self
+        const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || [])
+        let props = rawProps || {}
+        if (debugSource || (rawProps && '__self' in rawProps)) {
+            props = {...rawProps}
+            delete props.__source
+            delete props.__self
+        }
         return {type, props, children, __axiiSource: debugSource} as ComponentNode
     }
+
+    const _isSVG = rawProps ? rawProps._isSVG : undefined
 
     // Create container with proper type assertion
     const container = type === Fragment
@@ -332,81 +341,123 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             ? document.createElementNS('http://www.w3.org/2000/svg', type as string) as SVGElement
             : document.createElement(type as string)) as HTMLElement
 
-    // Initialize arrays only if needed
-    const unhandledAttr: UnhandledAttrInfo[] = []
-    const unhandledChildren: UnhandledChildInfo[] = []
-    const refHandles: RefHandleInfo[] = []
-    const detachStyledChildren: DetachStyledInfo[] = []
+    // CAUTION 元数据数组按需分配，绝大多数元素一个都不需要
+    let unhandledAttr: UnhandledAttrInfo[] | undefined
+    let unhandledChildren: UnhandledChildInfo[] | undefined
+    let refHandles: RefHandleInfo[] | undefined
+    let detachStyledChildren: DetachStyledInfo[] | undefined
 
-    // Process children in a single pass using DocumentFragment
-    const children: any[] = rawChildren.length ? rawChildren : (childrenProp || [])
-    if (type !== Fragment && children.length === 1 && (typeof children[0] === 'string' || typeof children[0]  === 'number')) {
+    // Process children in a single pass
+    const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || EMPTY_CHILDREN)
+    const childrenLength = children.length
+    if (type !== Fragment && childrenLength === 1 && (typeof children[0] === 'string' || typeof children[0]  === 'number')) {
         (container as HTMLElement).textContent = children[0].toString()
-    } else if (children.length) {
-    // if (children.length) {
-        const tempFragment = document.createDocumentFragment()
-        
-        children.forEach((child, index) => {
-            if (child == null) return // Handles both undefined and null
+    } else if (childrenLength) {
+        // CAUTION container 此时还没有插入文档，直接 append 不会触发布局，无需中转 fragment
+        for (let index = 0; index < childrenLength; index++) {
+            const child = children[index]
+            if (child == null) continue // Handles both undefined and null
 
             if (typeof child === 'string' || typeof child === 'number') {
-                tempFragment.appendChild(document.createTextNode(child.toString()))
+                container.appendChild(document.createTextNode(child.toString()))
             } else if (child instanceof Node) { // Covers HTMLElement, DocumentFragment, SVGElement
-                tempFragment.appendChild(child)
+                container.appendChild(child)
 
                 // Handle extended element properties
+                // CAUTION 这些元数据数组的所有权是唯一的（由子元素的 createElement 创建，
+                //  在这里被提升一次并清空引用），所以可以直接原地改写 path、直接接管数组。
                 const childElement = child as ExtendedElement
-                if (childElement.unhandledChildren?.length) {
-                    // 动态节点自身没有 JSX source，继承最近的父元素 source
-                    unhandledChildren.push(...childElement.unhandledChildren.map(c => ({
-                        ...c,
-                        path: [index, ...c.path],
-                        source: c.source ?? childElement.__axiiSource ?? debugSource,
-                    })))
+                // 动态节点自身没有 JSX source 时，继承最近的父元素 source
+                const inheritedSource = childElement.__axiiSource ?? debugSource
+                const childUnhandledChildren = childElement.unhandledChildren
+                if (childUnhandledChildren?.length) {
+                    for (const c of childUnhandledChildren) {
+                        c.path.unshift(index)
+                        if (inheritedSource && !c.source) c.source = inheritedSource
+                    }
+                    if (unhandledChildren) {
+                        unhandledChildren.push(...childUnhandledChildren)
+                    } else {
+                        unhandledChildren = childUnhandledChildren
+                    }
                     childElement.unhandledChildren = undefined
                 }
-                if (childElement.unhandledAttr?.length) {
-                    unhandledAttr.push(...childElement.unhandledAttr.map(c => ({
-                        ...c,
-                        path: [index, ...c.path],
-                        source: c.source ?? childElement.__axiiSource ?? debugSource,
-                    })))
+                const childUnhandledAttr = childElement.unhandledAttr
+                if (childUnhandledAttr?.length) {
+                    for (const c of childUnhandledAttr) {
+                        c.path.unshift(index)
+                        if (inheritedSource && !c.source) c.source = inheritedSource
+                    }
+                    if (unhandledAttr) {
+                        unhandledAttr.push(...childUnhandledAttr)
+                    } else {
+                        unhandledAttr = childUnhandledAttr
+                    }
                     childElement.unhandledAttr = undefined
                 }
-                if (childElement.refHandles?.length) {
-                    refHandles.push(...childElement.refHandles.map(c => ({...c, path: [index, ...c.path]})))
+                const childRefHandles = childElement.refHandles
+                if (childRefHandles?.length) {
+                    for (const c of childRefHandles) c.path.unshift(index)
+                    if (refHandles) {
+                        refHandles.push(...childRefHandles)
+                    } else {
+                        refHandles = childRefHandles
+                    }
                     childElement.refHandles = undefined
                 }
-                if (childElement.detachStyledChildren?.length) {
-                    detachStyledChildren.push(...childElement.detachStyledChildren.map(c => ({...c, path: [index, ...c.path]})))
+                const childDetachStyled = childElement.detachStyledChildren
+                if (childDetachStyled?.length) {
+                    for (const c of childDetachStyled) c.path.unshift(index)
+                    if (detachStyledChildren) {
+                        detachStyledChildren.push(...childDetachStyled)
+                    } else {
+                        detachStyledChildren = childDetachStyled
+                    }
                     childElement.detachStyledChildren = undefined
                 }
             } else {
-                const placeholder: UnhandledPlaceholder = document.createComment('unhandledChild')
-                tempFragment.appendChild(placeholder)
-                unhandledChildren.push({placeholder, child, path: [index], source: debugSource})
+                // 函数/atom child 大概率渲染为文本，直接用 Text 节点当占位符
+                const placeholder: UnhandledPlaceholder = typeof child === 'function' ?
+                    document.createTextNode('') :
+                    document.createComment('unhandledChild')
+                container.appendChild(placeholder)
+                const info: UnhandledChildInfo = {placeholder, child, path: [index], source: debugSource}
+                if (unhandledChildren) {
+                    unhandledChildren.push(info)
+                } else {
+                    unhandledChildren = [info]
+                }
             }
-        })
-        
-        container.appendChild(tempFragment)
+        }
     }
 
     // Process props after children for proper Select/Option behavior
     if (rawProps) {
-        if (refProp) {
-            // ref handles should be attached before children
-            refHandles.unshift({handle: refProp, path: [], el: container as HTMLElement})
-        }
-
-        if (detachStyleProp) {
-            detachStyledChildren.push({el: container as HTMLElement, style: detachStyleProp, path: []})
-        }
-
-        // Process remaining props
-        for (const key in rawRestProps) {
-            const value = rawRestProps[key]
+        for (const key in rawProps) {
+            // key 目前不参与运行时逻辑（保留给未来的 diff），直接跳过；
+            // __source/__self 是开发期元数据，绝不能作为普通 attr 落到 DOM 上
+            if (key === '_isSVG' || key === 'children' || key === 'key' || key === '__source' || key === '__self') continue
+            const value = rawProps[key]
+            if (key === 'ref') {
+                // ref handles should be attached before children
+                if (value) {
+                    const ownRef: RefHandleInfo = {handle: value, path: [], el: container as HTMLElement}
+                    if (refHandles) {
+                        refHandles.unshift(ownRef)
+                    } else {
+                        refHandles = [ownRef]
+                    }
+                }
+                continue
+            }
+            if (key === 'detachStyle') {
+                if (value) {
+                    (detachStyledChildren ||= []).push({el: container as HTMLElement, style: value, path: []})
+                }
+                continue
+            }
             if (!createElement.isValidAttribute(key, value)) {
-                unhandledAttr.push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
+                (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
             } else {
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
             }
@@ -417,10 +468,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     // Attach metadata to container only if necessary
     const containerElement = container as ExtendedElement
     if (debugSource) containerElement.__axiiSource = debugSource
-    if (unhandledChildren.length) containerElement.unhandledChildren = unhandledChildren
-    if (unhandledAttr.length) containerElement.unhandledAttr = unhandledAttr
-    if (refHandles.length) containerElement.refHandles = refHandles
-    if (detachStyledChildren.length) containerElement.detachStyledChildren = detachStyledChildren
+    if (unhandledChildren) containerElement.unhandledChildren = unhandledChildren
+    if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
+    if (refHandles) containerElement.refHandles = refHandles
+    if (detachStyledChildren) containerElement.detachStyledChildren = detachStyledChildren
 
     return container as (HTMLElement | DocumentFragment | SVGElement)
 }

@@ -9,15 +9,24 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
-import {autorun, isAtom, isReactive} from "data0";
+import {isAtom} from "data0";
+import {LightBindingEffect} from "./LightBindingEffect.js";
+import {trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {createHost} from "./createHost";
 import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
-import {reportAxiiError, withReactiveTrace} from "./diagnostics";
+import {
+    trackCompactHostDestroyed,
+    trackHostDestroyed,
+    trackStyleHostStateCreated,
+    trackStyleHostStateDestroyed
+} from "./retainedObjectDiagnostics.js";
+import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 
-// CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发 reactive 的读属性行为了，不会泄漏到上层的 computed。
+// CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发响应式值的读行为，不会泄漏到上层的 computed。
+// data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
 const originalIsValidAttribute = createElement.isValidAttribute
 createElement.isValidAttribute = function (name: string, value: any) {
     if (name.startsWith('on')) return true
@@ -31,7 +40,8 @@ createElement.isValidAttribute = function (name: string, value: any) {
 }
 
 function isReactiveValue(v: any) {
-    return isReactive(v) || isAtom(v) || typeof v === 'function'
+    // CAUTION atom 本身也是 function，先判断 typeof 更便宜
+    return typeof v === 'function' || isAtom(v)
 }
 
 function isAtomLike(v: any) {
@@ -168,9 +178,13 @@ class StyleManager {
     }
     collect(hostPath: LinkedNode<Host>, id: string) {
         const host = hostPath.node
-        const ids = this.hostToStyleIds.get(host) ?? new Set()
+        let ids = this.hostToStyleIds.get(host)
+        if (!ids) {
+            ids = new Set()
+            this.hostToStyleIds.set(host, ids)
+            trackStyleHostStateCreated()
+        }
         ids.add(id)
-        this.hostToStyleIds.set(host, ids)
         this.updateRefCount(id, +1)
     }
     mount(hostPath: LinkedNode<Host>) {
@@ -194,6 +208,9 @@ class StyleManager {
     }
     cleanup(hostPath: LinkedNode<Host>) {
         const host = hostPath.node
+        if (this.hostToStyleIds.has(host)) {
+            trackStyleHostStateDestroyed()
+        }
         const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
         const styleSheetsToDelete = new Set<CSSStyleSheet>()
         ids.forEach(id => {
@@ -418,7 +435,9 @@ export class StaticHost implements Host {
     //  只有有 diff 算发以后才会出现引用变化的情况，现在我们还没有实现。所以现在其实永远不会重 render
     computed = undefined
     reactiveHosts?: Host[]
-    attrAutoruns?: (() => void)[]
+    attrEffects?: LightBindingEffect[]
+    // 是否有 style 类型的响应式属性，只有这种情况才需要 StyleManager 的 mount/unmount 记账
+    usesStyleManager = false
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
     removeAttachListener?: () => void
@@ -463,7 +482,11 @@ export class StaticHost implements Host {
                 this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
             }
         }
-        StaticHost.styleManager.mount(this.pathContext.hostPath)
+        // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，
+        //  没有响应式 style 属性的元素（绝大多数）完全不需要参与。
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.mount(this.pathContext.hostPath)
+        }
     }
     collectInnerHost() {
         const result = this.source as ExtendedElement
@@ -471,10 +494,12 @@ export class StaticHost implements Host {
         const { unhandledChildren } = result
 
         if (unhandledChildren) {
+            // 所有子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode
+            const hostPath = createLinkedNode<Host>(this, this.pathContext.hostPath)
             this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) =>
                 createHost(child, placeholder, {
                     ...this.pathContext,
-                    hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath),
+                    hostPath,
                     elementPath: path,
                     debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
                 })
@@ -491,28 +516,39 @@ export class StaticHost implements Host {
         const { unhandledAttr } = result
 
         if(unhandledAttr) {
-            this.attrAutoruns = []
-            unhandledAttr.forEach(({ el, key, value, path, source }) => {
+            const attrEffects: LightBindingEffect[] = this.attrEffects = []
+            for (const { el, key, value, path, source } of unhandledAttr) {
                 // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
-                if (!el.hasAttribute('data-testid')) {
+                if (StaticHostConfig.autoGenerateTestId && !el.hasAttribute('data-testid')) {
                     this.generateTestId(el, path)
                 }
                 // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
                 if (!key.includes(':')) {
-                    this.attrAutoruns!.push(autorun(() => {
-                        withReactiveTrace({
-                            type: 'static-attr',
-                            operation: 'update-attr',
-                            hostType: 'StaticHost',
-                            elementPath: path,
-                            source: source ?? this.pathContext.debugSource,
-                            attrName: key,
-                        }, () => {
+                    if (key === 'style') {
+                        this.usesStyleManager = true
+                    }
+                    const effect = new LightBindingEffect(() => {
+                        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
+                        if (isAxiiDiagnosticsEnabled()) {
+                            withReactiveTrace({
+                                type: 'static-attr',
+                                operation: 'update-attr',
+                                hostType: 'StaticHost',
+                                elementPath: path,
+                                source: source ?? this.pathContext.debugSource,
+                                attrName: key,
+                            }, () => {
+                                this.updateAttribute(el, key, value, path, isSVG)
+                            })
+                        } else {
                             this.updateAttribute(el, key, value, path, isSVG)
-                        })
-                    }, true))
+                        }
+                    })
+                    trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
+                    effect.run()
+                    attrEffects.push(effect)
                 }
-            })
+            }
             result.unhandledAttr = undefined
         }
     }
@@ -552,8 +588,12 @@ export class StaticHost implements Host {
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
-        if (!parentHandleComputed) {
-            this.attrAutoruns?.forEach(stopAutorun => stopAutorun())
+        trackHostDestroyed(this)
+        if (this.attrEffects) {
+            for (const effect of this.attrEffects) {
+                trackLightBindingDestroyed(effect)
+                if (!parentHandleComputed) effect.destroy()
+            }
         }
 
         this.removeAttachListener?.()
@@ -565,11 +605,34 @@ export class StaticHost implements Host {
         })
 
         // CAUTION removeElements 只有在等待离场动画时才是异步的。
-        //  同步路径的 DOM boundary 错误必须同步向上抛（之前 async 函数会把它变成 unhandled rejection）；
-        //  异步路径的错误无法向上抛，交给 reportAxiiError 收敛，避免 unhandled rejection。
+        //  同步路径（绝大多数）直接内联处理，避免每个元素销毁都分配 Promise/微任务；
+        //  同步路径的 DOM boundary 错误必须同步向上抛（async 函数会把它变成 unhandled rejection）；
+        //  异步路径的错误无法向上抛，交给 reportAxiiError 收敛。
         //  无论哪条路径、成功还是失败，样式引用计数都必须释放。
+        if (!this.detachStyledChildren?.length) {
+            try {
+                // CAUTION 整段区间已脱离 DOM / 父节点失配，说明区间已被外部整体清理，
+                //  这是被容忍的合法状态；「同父但兄弟链断了」的破坏交给 removeNodesBetween 的诊断抛出。
+                if (!parentHandle &&
+                    this.placeholder.parentNode &&
+                    this.element.parentNode === this.placeholder.parentNode) {
+                    removeNodesBetween(this.element!, this.placeholder, true, {
+                        ownerHost: this,
+                        operation: 'destroy',
+                    })
+                }
+            } finally {
+                if (this.usesStyleManager) {
+                    StaticHost.styleManager.unmount(this.pathContext.hostPath)
+                }
+            }
+            return
+        }
+
         const unmountStyle = () => {
-            StaticHost.styleManager.unmount(this.pathContext.hostPath)
+            if (this.usesStyleManager) {
+                StaticHost.styleManager.unmount(this.pathContext.hostPath)
+            }
         }
 
         try {
@@ -650,6 +713,69 @@ export class StaticHost implements Host {
     }
 }
 
+
+// 所有 CompactElementHost 共享的占位符，永远不会插入文档，
+//  只是为了满足 Host 接口的 placeholder 字段。
+// CAUTION 延迟创建：模块顶层不能碰 document，否则 node 环境 import 直接崩（SSR/工具链场景）。
+let COMPACT_SHARED_PLACEHOLDER: Comment|undefined
+
+/**
+ * @internal
+ *
+ * RxListHost 专用的紧凑行 host：行内容是单个元素时，不需要给每一行分配
+ * 一个 comment 占位符（占位符的插入/删除和常驻 DOM 节点在长列表里开销可观）。
+ * 元素本身的定位（插入/搬移/删除）完全由 RxListHost 负责。
+ */
+export class CompactElementHost extends StaticHost {
+    constructor(source: HTMLElement | SVGElement, pathContext: PathContext) {
+        super(source, COMPACT_SHARED_PLACEHOLDER ??= document.createComment('compact host shared placeholder'), pathContext)
+        this.element = source
+    }
+    render(): void {
+        this.collectInnerHost()
+        this.collectReactiveAttr()
+        this.collectRefHandles()
+        this.collectDetachStyledChildren()
+        if (this.detachStyledChildren?.length) {
+            this.forceHandleElement = true
+        }
+        this.reactiveHosts?.forEach(host => host.render())
+        // CAUTION 自己的插入由 RxListHost 完成，这里不做
+
+        if (this.refHandles?.length) {
+            if (this.pathContext.root.attached) {
+                this.attachRefs()
+            } else {
+                this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
+            }
+        }
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.mount(this.pathContext.hostPath)
+        }
+    }
+    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+        // CAUTION 先减 compact 计数再登记 destroyed，顺序反了会被去重逻辑跳过
+        trackCompactHostDestroyed(this)
+        trackHostDestroyed(this)
+        if (this.attrEffects) {
+            for (const effect of this.attrEffects) {
+                trackLightBindingDestroyed(effect)
+                if (!parentHandleComputed) effect.destroy()
+            }
+        }
+        this.removeAttachListener?.()
+        this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
+        this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
+            createElement.detachRef(handle)
+        })
+        if (!parentHandle) {
+            (this.element as HTMLElement).remove()
+        }
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.unmount(this.pathContext.hostPath)
+        }
+    }
+}
 
 function eventToPromise(el: HTMLElement, event: string) {
     return new Promise(resolve => {

@@ -7,7 +7,8 @@ import type {AxiiSource} from "./diagnostics";
  */
 export interface Host {
     element: HTMLElement|Comment|Text|SVGElement
-    placeholder:Comment
+    // CAUTION 函数/atom child 的占位符是 Text（见 DOM.ts createElement），其余是 Comment
+    placeholder:Comment|Text
     pathContext: PathContext
     computed?: ReturnType<typeof computed>
     render: () => void
