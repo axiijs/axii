@@ -13,7 +13,20 @@ import {
 } from "./DOM";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
-import {Component, ComponentNode, EffectHandle, Props, RenderContext} from "./types";
+import {
+    Component,
+    ComponentNode,
+    CreateElementFn,
+    CreateSVGElementFn,
+    EffectHandle,
+    ExposeFn,
+    OnCleanupFn,
+    Props,
+    RenderContext,
+    ReuseFn,
+    UseEffectFn,
+    UseLayoutEffectFn,
+} from "./types";
 import {assert} from "./util";
 import {Portal} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
@@ -68,6 +81,15 @@ interface PropsWithConfig {
 }
 
 const INNER_CONFIG_PROP = '__config__'
+
+// 无 AOP 配置的组件共享同一个空 itemConfig，避免每个组件实例保留一个空对象
+const EMPTY_ITEM_CONFIG: Record<string, ConfigItem> = {}
+const EMPTY_COMPONENT_PROP: Props = {}
+
+// createPortal 不依赖组件实例，所有组件共享同一个函数
+function createPortalShared(content: JSX.Element|ComponentNode|Function, container: HTMLElement) {
+    return createElement(Portal, {container, content})
+}
 /**
  * @internal
  */
@@ -75,23 +97,35 @@ export class ComponentHost implements Host{
     static typeIds = new Map<Function, number>()
     type: Component
     public innerHost?: Host
-    innerReusedHosts: ReusableHost[] = []
-    props: Props
-    public layoutEffects = new Set<EffectHandle>()
-    public effects = new Set<EffectHandle>()
-    public destroyCallback = new Set<Exclude<ReturnType<EffectHandle>, void>>()
-    public layoutEffectDestroyHandles = new Set<Exclude<ReturnType<EffectHandle>, void>>()
-    public refs: {[k:string]: any} = {}
-    public itemConfig : {[k:string]:ConfigItem} = {}
+    // CAUTION 以下所有容器/闭包字段全部惰性分配：一个典型的小组件（不用
+    //  effect/ref/expose/context/reusable）不应该为这些"可能用到的能力"付常驻内存。
+    innerReusedHosts?: ReusableHost[]
+    props!: Props
+    public layoutEffects?: Set<EffectHandle>
+    public effects?: Set<EffectHandle>
+    public destroyCallback?: Set<Exclude<ReturnType<EffectHandle>, void>>
+    public layoutEffectDestroyHandles?: Set<Exclude<ReturnType<EffectHandle>, void>>
+    _refs?: {[k:string]: any}
+    public itemConfig!: {[k:string]:ConfigItem}
     public children: any
-    public frame?: ManualCleanup[] = []
+    public frame?: ManualCleanup[]
     public name: string
-    public exposed: {[k:string]:any} = {}
+    _exposed?: {[k:string]:any}
     public renderContext?: RenderContext
+    // context.set 的存储，只有真正用到 context 的组件才会分配（见 ensureDataContext）
+    dataContext?: DataContext
     public refProp?: RefObject|RefFn
     public thisProp?: RefObject|RefFn
     public inputProps: Props
     deleteLayoutEffectCallback?: () => void
+    // 惰性缓存的 renderContext 闭包（只有组件解构对应能力时才分配）
+    _createElement?: CreateElementFn
+    _createSVGElement?: CreateSVGElementFn
+    _useLayoutEffect?: UseLayoutEffectFn
+    _useEffect?: UseEffectFn
+    _onCleanup?: OnCleanupFn
+    _expose?: ExposeFn
+    _reusable?: ReuseFn
     constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
             ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
@@ -99,11 +133,19 @@ export class ComponentHost implements Host{
 
         this.name = type.name
         this.type = type
-        this.props = {}
         this.refProp = inputProps.ref
         this.thisProp = inputProps.__this
         this.inputProps = inputProps
         this.children = children
+    }
+    get refs(): {[k:string]: any} {
+        return this._refs ??= {}
+    }
+    get exposed(): {[k:string]: any} {
+        return this._exposed ??= {}
+    }
+    ensureDataContext(): DataContext {
+        return this.dataContext ??= new DataContext(this.pathContext.hostPath)
     }
 
     parseItemConfigFromProp(itemConfig: any, key:string, value:any, props: Props) {
@@ -217,7 +259,7 @@ export class ComponentHost implements Host{
         }
         return this.cachedContextComponentProps
     }
-    createHTMLOrSVGElement = (isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> => {
+    createHTMLOrSVGElement(isSVG: boolean, type: JSXElementType, rawProps : AttributesArg, ...children: any[]) : ReturnType<typeof createElement> {
         const isComponent = typeof type === 'function'
 
         const name = rawProps ? rawProps['as'] : undefined
@@ -315,26 +357,41 @@ export class ComponentHost implements Host{
 
         return node
     }
-    createElement = this.createHTMLOrSVGElement.bind(this, false)
-    createSVGElement = this.createHTMLOrSVGElement.bind(this, true)
-    createPortal = (content: JSX.Element|ComponentNode|Function, container: HTMLElement) => {
-        return createElement(Portal, {container, content})
+    // CAUTION 下面这些都是惰性分配的 renderContext 能力闭包：只在组件真正解构/使用时创建
+    get createElement(): CreateElementFn {
+        return this._createElement ??= this.createHTMLOrSVGElement.bind(this, false)
     }
-    reusable = (reusableNode: any) => {
-        const reusedHost = new ReusableHost(reusableNode, new Comment('reusable'), this.pathContext)
-        this.innerReusedHosts.push(reusedHost)
-        return reusedHost
+    get createSVGElement(): CreateSVGElementFn {
+        return this._createSVGElement ??= this.createHTMLOrSVGElement.bind(this, true) as CreateSVGElementFn
+    }
+    get createPortal() {
+        return createPortalShared
+    }
+    get reusable(): ReuseFn {
+        return this._reusable ??= (reusableNode: any) => {
+            const reusedHost = new ReusableHost(reusableNode, new Comment('reusable'), this.pathContext)
+            ;(this.innerReusedHosts ??= []).push(reusedHost)
+            return reusedHost
+        }
     }
     // 处理视图相关的 effect
-    useLayoutEffect = (callback: EffectHandle) => {
-        this.layoutEffects.add(callback)
+    get useLayoutEffect(): UseLayoutEffectFn {
+        return this._useLayoutEffect ??= (callback: EffectHandle) => {
+            (this.layoutEffects ??= new Set()).add(callback)
+        }
     }
     // 处理纯业务相关的 effect，例如建立长连接等
-    useEffect = (callback: EffectHandle) => {
-        this.effects.add(callback)
+    get useEffect(): UseEffectFn {
+        return this._useEffect ??= (callback: EffectHandle) => {
+            (this.effects ??= new Set()).add(callback)
+        }
     }
-    createRef = createRef
-    createRxRef = createRxRef
+    get createRef() {
+        return createRef
+    }
+    get createRxRef() {
+        return createRxRef
+    }
     normalizePropsByPropTypes(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
         const finalProps: Props = {...props}
         // TODO dev 模式下类型检查
@@ -362,7 +419,7 @@ export class ComponentHost implements Host{
     }
     attachRef(ref: RefObject|RefFn) {
         const refValue = {
-            ...this.exposed,
+            ...this._exposed,
             refs: this.refs
         }
 
@@ -387,19 +444,23 @@ export class ComponentHost implements Host{
           ref.current = null
        }
     }
-    expose = (value:any, name?: string) => {
-        if (typeof value === 'object' && name === undefined) {
-            // kv 形式的 expose
-            Object.assign(this.exposed, value)
-        } else if( typeof name === 'string'){
-            // 单个 expose
-            this.exposed[name] = value
-        }
+    get expose(): ExposeFn {
+        return this._expose ??= ((value:any, name?: string) => {
+            if (typeof value === 'object' && name === undefined) {
+                // kv 形式的 expose
+                Object.assign(this.exposed, value)
+            } else if( typeof name === 'string'){
+                // 单个 expose
+                this.exposed[name] = value
+            }
 
-        return value
+            return value
+        }) as ExposeFn
     }
-    onCleanup = (callback: () => any) => {
-        this.destroyCallback.add(callback)
+    get onCleanup(): OnCleanupFn {
+        return this._onCleanup ??= (callback: () => any) => {
+            (this.destroyCallback ??= new Set()).add(callback)
+        }
     }
     evaluateBoundProps(inputProps:Props, renderContext:RenderContext) {
         return (this.type.boundProps || []).map(b => {
@@ -433,7 +494,26 @@ export class ComponentHost implements Host{
 
         return last
     }
+    // 判断 props 中是否有 $ 前缀的 AOP 配置 key
+    static hasConfigProps(props: Props) {
+        for (const key in props) {
+            if (key.charCodeAt(0) === 36) return true // '$'
+        }
+        return false
+    }
     getFinalPropsAndItemConfig(): PropsWithConfig {
+        // 快速路径：没有 boundProps/postBoundProps/透传 config/$ 前缀 key 的普通组件（绝大多数），
+        //  不需要 evaluate/concat/reduce 的整套合并流程，itemConfig 直接共享空对象。
+        const type = this.type
+        if (!type.boundProps && !type.postBoundProps &&
+            !this.inputProps[INNER_CONFIG_PROP] &&
+            !ComponentHost.hasConfigProps(this.inputProps)) {
+            const props = type.propTypes ?
+                this.normalizePropsByPropTypes(type.propTypes, this.inputProps) :
+                {...this.inputProps}
+            return { props, itemConfig: EMPTY_ITEM_CONFIG, componentProp: EMPTY_COMPONENT_PROP }
+        }
+
         const inputPropsWithDefaultValue = this.type.propTypes ? this.normalizePropsByPropTypes(this.type.propTypes, this.inputProps) : this.inputProps
         const evaluatedBoundProps = this.evaluateBoundProps(inputPropsWithDefaultValue, this.renderContext!)
 
@@ -455,23 +535,9 @@ export class ComponentHost implements Host{
             assert(false, 'should never rerender')
         }
 
-        // CAUTION 注意这里 children 的写法，没有children 就不要传，免得后面 props 继续往下透传的时候出问题。
-        this.renderContext = {
-            Fragment,
-            createElement: this.createElement,
-            createSVGElement: this.createSVGElement,
-            refs: this.refs,
-            useLayoutEffect: this.useLayoutEffect,
-            useEffect: this.useEffect,
-            pathContext: this.pathContext,
-            context: new DataContext(this.pathContext.hostPath),
-            createPortal: this.createPortal,
-            createRef: this.createRef,
-            createRxRef: this.createRxRef,
-            onCleanup: this.onCleanup,
-            expose: this.expose,
-            reusable: this.reusable,
-        }
+        // CAUTION renderContext 是一个全 getter 的轻量包装：组件只为它真正解构的能力付费
+        //  （闭包/refs 对象/DataContext 都在第一次访问时才分配）。
+        this.renderContext = new ComponentRenderContext(this)
 
         withReactiveTrace({
             type: 'component-render',
@@ -500,7 +566,9 @@ export class ComponentHost implements Host{
             } finally {
                 // CAUTION 无论组件是否抛错，都必须弹出 collect frame，
                 //  否则 collect frame 栈会错位，后续渲染收集的 effect 会泄漏到错误的 frame 里。
-                this.frame = getFrame()
+                //  空 frame 不保留（多数组件 render 中不创建 computed），省一个常驻数组。
+                const frame = getFrame()
+                if (frame.length) this.frame = frame
             }
             // CAUTION collect effects end
             // 就用当前 component 的 placeholder
@@ -515,30 +583,33 @@ export class ComponentHost implements Host{
             this.attachThis(this.thisProp)
         }
 
-        this.effects.forEach(effect => {
+        this.effects?.forEach(effect => {
             const handle = effect()
             // 也支持 async function return promise，只不过不做处理
-            if (typeof handle === 'function') this.destroyCallback.add(handle)
+            if (typeof handle === 'function') (this.destroyCallback ??= new Set()).add(handle)
         })
 
-        // 已经 root attach 了，动态生成的节点，需要手动触发 layoutEffect。因为没有 attach 事件了。
-        if (this.pathContext.root.attached) {
-            this.runLayoutEffect()
-        } else {
-            // CAUTION 一定要保存退订函数，组件如果在 root attach 之前被销毁，
-            //  必须退订，否则 attach 时会对已销毁的组件执行 layoutEffect/ref。
-            this.deleteLayoutEffectCallback = this.pathContext.root.on('attach', this.runLayoutEffect, {once: true})
+        // 没有 layoutEffect 也没有 ref 的组件（绝大多数）完全不需要参与 attach 流程
+        if (this.layoutEffects || this.refProp) {
+            // 已经 root attach 了，动态生成的节点，需要手动触发 layoutEffect。因为没有 attach 事件了。
+            if (this.pathContext.root.attached) {
+                this.runLayoutEffect()
+            } else {
+                // CAUTION 一定要保存退订函数，组件如果在 root attach 之前被销毁，
+                //  必须退订，否则 attach 时会对已销毁的组件执行 layoutEffect/ref。
+                this.deleteLayoutEffectCallback = this.pathContext.root.on('attach', () => this.runLayoutEffect(), {once: true})
+            }
         }
     }
-    runLayoutEffect = () => {
+    runLayoutEffect() {
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.refProp) {
             this.attachRef(this.refProp)
         }
 
-        this.layoutEffects.forEach(layoutEffect => {
+        this.layoutEffects?.forEach(layoutEffect => {
             const handle = layoutEffect()
-            if (typeof handle === 'function') this.layoutEffectDestroyHandles.add(handle)
+            if (typeof handle === 'function') (this.layoutEffectDestroyHandles ??= new Set()).add(handle)
         })
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
@@ -556,10 +627,10 @@ export class ComponentHost implements Host{
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
         // innerHost 可能不存在（render 抛错被中断的场景）
         this.innerHost?.destroy(parentHandle, parentHandleComputed)
-        this.layoutEffectDestroyHandles.forEach(handle => handle())
-        this.destroyCallback.forEach(callback => callback())
+        this.layoutEffectDestroyHandles?.forEach(handle => handle())
+        this.destroyCallback?.forEach(callback => callback())
 
-        this.innerReusedHosts.forEach(host => host.destroyReusable())
+        this.innerReusedHosts?.forEach(host => host.destroyReusable())
 
         // 删除 dom
         // CAUTION placeholder 与 innerHost 共享，innerHost 自己会负责移除
@@ -597,32 +668,83 @@ type ConfigItem = {
 }
 
 export class DataContext{
-    public valueByType: Map<any, any>
+    // CAUTION 惰性创建：只有真正 set 过 context 的组件（Provider）才分配 Map
+    _valueByType?: Map<any, any>
     constructor(public hostPath: LinkedNode<Host>) {
-        this.valueByType = new Map<any, any>()
+    }
+    get valueByType(): Map<any, any> {
+        return this._valueByType ??= new Map<any, any>()
     }
     get(contextType:any) {
         // 找到最近具有 contextType 的 host
+        // CAUTION 直接读 ComponentHost.dataContext 而不是 renderContext.context：
+        //  后者是惰性 getter，读取会给沿途每个祖先组件分配 DataContext
         let start: LinkedNode<Host>|null = this.hostPath
         while(start) {
             if (start.node instanceof ComponentHost) {
-                if (start.node.renderContext!.context.valueByType.has(contextType)) {
-                    return start.node.renderContext!.context.valueByType.get(contextType)
+                const valueByType = start.node.dataContext?._valueByType
+                if (valueByType?.has(contextType)) {
+                    return valueByType.get(contextType)
                 }
             }
             start = start.prev
         }
-        // for (let i = this.hostPath.length - 1; i >= 0; i--) {
-        //     const host = this.hostPath[i]
-        //     if (host instanceof ComponentHost) {
-        //         if (host.renderContext!.context.valueByType.has(contextType)) {
-        //             return host.renderContext!.context.valueByType.get(contextType)
-        //         }
-        //     }
-        // }
     }
     set(contextType: any, value: any) {
         this.valueByType.set(contextType, value)
+    }
+}
+
+/**
+ * @internal
+ *
+ * 传给组件函数的第二个参数。全部成员都是 getter：组件解构哪个能力，才为哪个能力分配
+ * 闭包/对象。典型的小组件只解构 createElement，整个 context 的常驻成本就是这一个
+ * wrapper 对象 + 一个 bind 闭包。
+ */
+export class ComponentRenderContext implements RenderContext {
+    constructor(public host: ComponentHost) {}
+    get Fragment() {
+        return Fragment
+    }
+    get createElement(): CreateElementFn {
+        return this.host.createElement
+    }
+    get createSVGElement(): CreateSVGElementFn {
+        return this.host.createSVGElement
+    }
+    get refs() {
+        return this.host.refs
+    }
+    get useLayoutEffect(): UseLayoutEffectFn {
+        return this.host.useLayoutEffect
+    }
+    get useEffect(): UseEffectFn {
+        return this.host.useEffect
+    }
+    get pathContext() {
+        return this.host.pathContext
+    }
+    get context(): DataContext {
+        return this.host.ensureDataContext()
+    }
+    get createPortal() {
+        return this.host.createPortal
+    }
+    get createRef() {
+        return createRef
+    }
+    get createRxRef() {
+        return createRxRef
+    }
+    get onCleanup(): OnCleanupFn {
+        return this.host.onCleanup
+    }
+    get expose(): ExposeFn {
+        return this.host.expose
+    }
+    get reusable(): ReuseFn {
+        return this.host.reusable
     }
 }
 

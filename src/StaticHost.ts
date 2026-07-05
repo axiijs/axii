@@ -429,15 +429,15 @@ export const StaticHostConfig = {
  */
 export class StaticHost implements Host {
     static styleManager = new StyleManager()
+    // CAUTION 下面这些可选字段都不带初始化器：StaticHost/CompactElementHost 是数量最大的
+    //  host（长列表每行一个），不用的能力不占实例槽位（useDefineForClassFields=false 下
+    //  无初始化器的字段不产生构造期赋值）。
     // 如果有 detachStyledChildren，会设为 true
-    public forceHandleElement: boolean = false
-    // CAUTION Component 只因为 props 的引用变化而重新 render。
-    //  只有有 diff 算发以后才会出现引用变化的情况，现在我们还没有实现。所以现在其实永远不会重 render
-    computed = undefined
+    public forceHandleElement?: boolean
     reactiveHosts?: Host[]
     attrEffects?: LightBindingEffect[]
     // 是否有 style 类型的响应式属性，只有这种情况才需要 StyleManager 的 mount/unmount 记账
-    usesStyleManager = false
+    usesStyleManager?: boolean
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
     removeAttachListener?: () => void
@@ -479,7 +479,7 @@ export class StaticHost implements Host {
             } else {
                 // CAUTION 一定要保存退订函数，元素如果在 root attach 之前被销毁，
                 //  必须退订，否则 attach 时会把已销毁的元素重新附加到 ref 上。
-                this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
+                this.removeAttachListener = this.pathContext.root.on('attach', () => this.attachRefs(), {once: true})
             }
         }
         // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，
@@ -582,7 +582,9 @@ export class StaticHost implements Host {
         const testId = generateGlobalElementStaticId(this.pathContext.hostPath, elementPath)
         setAttribute(el, 'data-testid', testId)
     }
-    attachRefs = () => {
+    // CAUTION 原型方法而不是实例箭头函数：每个元素 host 都有这个字段的话，长列表每行多一个闭包。
+    //  需要脱离 this 使用的注册点（root.on('attach')）自己包一层箭头函数，只有带 ref 的元素才分配。
+    attachRefs() {
         this.refHandles?.forEach(({ handle, el }: RefHandleInfo) => {
             createElement.attachRef(el, handle)
         })
@@ -746,7 +748,7 @@ export class CompactElementHost extends StaticHost {
             if (this.pathContext.root.attached) {
                 this.attachRefs()
             } else {
-                this.removeAttachListener = this.pathContext.root.on('attach', this.attachRefs, {once: true})
+                this.removeAttachListener = this.pathContext.root.on('attach', () => this.attachRefs(), {once: true})
             }
         }
         if (this.usesStyleManager) {

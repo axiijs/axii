@@ -1,4 +1,4 @@
-import {Notifier} from "data0";
+import {Notifier, ReactiveEffect} from "data0";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
 import {insertBefore} from './DOM'
@@ -15,16 +15,22 @@ type FunctionNodeContext = {
 type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|string|number|null|boolean
 /**
  * @internal
+ *
+ * CAUTION FunctionHost 自己就是绑定 effect（继承 DeferredBindingEffect），不再为每个函数
+ *  节点单独分配一个 effect 对象 + update 闭包；同时自己实现 onCleanup，直接把自己作为
+ *  source 的 context 传入，省掉每实例的 context 对象 + 闭包。
+ *  长列表里每行的函数文本绑定都会经过这里，合并后每行少两个对象和两个闭包的常驻内存。
  */
-export class FunctionHost implements Host{
-    effect?: DeferredBindingEffect
+export class FunctionHost extends DeferredBindingEffect implements Host{
     innerHost: Host|null = null
     // 文本快速路径：函数返回原始值时直接复用一个 Text 节点
     textNode: Text|null = null
     cleanups?: (() => any)[]
     sourceContext?: FunctionNodeContext
-    destroyed = false
     constructor(public source: FunctionNode, public placeholder:Comment|Text, public pathContext: PathContext) {
+        super()
+        // Host 的生命周期由宿主树显式管理，不能被创建时的 collect frame/父 effect 接管
+        this.detachFromCreationContext()
     }
     get element() : HTMLElement|Comment|Text|SVGElement{
         return this.textNode || this.innerHost?.element || this.placeholder
@@ -41,19 +47,26 @@ export class FunctionHost implements Host{
         }
     }
     render(): void {
-        const host = this
-        // context 对象整个 host 生命周期只创建一次，避免每次重算都分配
-        this.sourceContext = {
-            onCleanup(cleanup: () => any) {
-                (host.cleanups ||= []).push(cleanup)
+        // CAUTION 绝大多数函数节点是 () => atom() 这类零参函数，不会用到 context，
+        //  只有 source 声明了参数（含解构 ({onCleanup})，length 为 1）才分配 context 对象 + 闭包。
+        //  onCleanup 必须是独立闭包而不是方法引用，用户可能解构后脱离 this 调用。
+        if (this.source.length > 0) {
+            const host = this
+            this.sourceContext = {
+                onCleanup(cleanup: () => any) {
+                    (host.cleanups ||= []).push(cleanup)
+                }
             }
         }
-        this.effect = new DeferredBindingEffect((effect) => this.renderSource(effect as DeferredBindingEffect))
-        trackLightBindingCreated(this.effect, 'FunctionNodeBinding')
-        this.effect.run()
+        trackLightBindingCreated(this, 'FunctionNodeBinding')
+        this.run()
     }
     // 是否已经完成过一次渲染，诊断 trace 用它区分初次 render 和 recompute
     renderedOnce = false
+    // DeferredBindingEffect 触发时的回调（以原型方法提供，替代构造器闭包）
+    update() {
+        this.renderSource(this)
+    }
     renderSource(effect: DeferredBindingEffect) {
         // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，函数节点重算是热路径
         if (isAxiiDiagnosticsEnabled()) {
@@ -82,6 +95,7 @@ export class FunctionHost implements Host{
         this.runCleanups()
         let node: ReturnType<FunctionNode>|null = null
         try {
+            // 零参 source 用不到 context，直接传 undefined，省掉每实例的 context 分配
             node = this.source(this.sourceContext!)
         } catch (e) {
             // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
@@ -126,11 +140,13 @@ export class FunctionHost implements Host{
         this.destroyInnerHost()
         const newPlaceholder = document.createComment('computed node')
         insertBefore(newPlaceholder, this.placeholder)
-        const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-        // 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
+        // CAUTION 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
         //  否则内层的响应式内容变化会导致整个函数节点重算。
+        //  AtomHost/FunctionHost 这类 host 本身就是 effect，对象创建时就可能被父 effect
+        //  收集，所以 pauseCollectChild 必须在 createHost 之前。
         Notifier.instance.pauseTracking()
         effect.pauseCollectChild()
+        const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
         host.render()
         effect.resumeCollectChild()
         Notifier.instance.resetTracking()
@@ -147,10 +163,11 @@ export class FunctionHost implements Host{
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         trackHostDestroyed(this)
-        if (this.effect) trackLightBindingDestroyed(this.effect)
-        this.destroyed = true
+        trackLightBindingDestroyed(this)
         if (!parentHandleComputed) {
-            this.effect?.destroy()
+            // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
+            //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
+            ReactiveEffect.destroy(this)
         }
         this.runCleanups()
         this.destroyInnerHost(parentHandle)

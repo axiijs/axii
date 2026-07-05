@@ -1,11 +1,30 @@
 import {
     isData0RetainedObjectDiagnosticsEnabled,
+    ManualCleanup,
     ReactiveEffect,
     setRetainedReactiveEffectSource,
     trackRetainedReactiveEffectCreated
 } from "data0";
 
 type SkipIndicator = { skip: boolean }
+
+// CAUTION 下面三个共享函数用来覆盖 data0 ReactiveEffect 构造器里逐实例分配的
+//  pauseCollectChild/resumeCollectChild/dispatch 箭头函数字段。
+//  长列表里每个文本/属性绑定都是一个 effect，3 个闭包 × 每实例 ≈ 数百 KB 的常驻内存。
+//  覆盖后实例字段指向共享函数（hidden class 不变），构造器里创建的闭包立即变成垃圾。
+//  这依赖 data0 内部始终以方法调用形式使用它们（effect.dispatch(...) 等），
+//  data0 的 L.destroy/prepareTracking 均满足。
+function sharedPauseCollectChild(this: ReactiveEffect) {
+    this.shouldCollectChild = false
+}
+function sharedResumeCollectChild(this: ReactiveEffect) {
+    this.shouldCollectChild = true
+}
+function sharedDispatch(this: ReactiveEffect, event: string, ...args: any[]) {
+    // 与 data0 实例版 dispatch 行为完全一致（_eventToCallbacks 是惰性创建的私有字段）
+    const callbacks = (this as any)._eventToCallbacks?.get(event)
+    if (callbacks) callbacks.forEach((callback: Function) => callback.call(this, ...args))
+}
 
 /**
  * @internal
@@ -21,13 +40,25 @@ type SkipIndicator = { skip: boolean }
  * - 触发时同步重跑 update 函数（与之前 autorun(fn, true)/computed(fn, undefined, true) 的
  *   immediate 语义一致）；
  * - 没有 applyPatch/async/状态机，构造成本只有基类的字段初始化。
+ *
+ * update 可以通过构造器闭包传入，也可以由子类以原型方法提供（AtomHost/FunctionHost
+ * 把自己和 effect 合并成同一个对象时用后者，省掉一个闭包 + 一个对象）。
  */
 export class LightBindingEffect extends ReactiveEffect {
-    constructor(public update: (effect: LightBindingEffect) => void, public skipIndicator?: SkipIndicator) {
+    // 可选方法声明（而不是属性声明），子类既可以用原型方法覆写，也可以由构造器闭包赋值
+    update?(effect: LightBindingEffect): void
+    skipIndicator?: SkipIndicator
+    constructor(update?: (effect: LightBindingEffect) => void, skipIndicator?: SkipIndicator) {
         // CAUTION 不传 getter：跳过基类构造器里对 getter 的 AsyncFunction/GeneratorFunction
         //  判断（两次 constructor.name 字符串比较，在长列表创建时可测量）。
         //  active 和 retained diagnostics 登记在下面手动补上。
         super()
+        // 用共享函数覆盖基类构造器里逐实例分配的三个闭包字段，降低每绑定的常驻内存
+        this.pauseCollectChild = sharedPauseCollectChild
+        this.resumeCollectChild = sharedResumeCollectChild
+        this.dispatch = sharedDispatch
+        if (update) this.update = update
+        if (skipIndicator) this.skipIndicator = skipIndicator
         this.active = true
         if (isData0RetainedObjectDiagnosticsEnabled()) {
             trackRetainedReactiveEffectCreated(this)
@@ -36,13 +67,41 @@ export class LightBindingEffect extends ReactiveEffect {
         }
     }
     callGetter() {
-        return this.update(this)
+        return this.update!(this)
     }
     run() {
         // 已销毁的 effect 不应再执行副作用（基类对 inactive 的 run 会退化成直接调用 getter）
         if (!this.active) return
         if (this.skipIndicator?.skip) return
         return super.run()
+    }
+    /**
+     * 把（AtomHost/FunctionHost 这类同时也是 Host 的）effect 从创建时的上下文中摘除：
+     * - ManualCleanup collect frame：Host 对象的销毁由宿主树显式管理（destroy(parentHandle,
+     *   parentHandleComputed) 带 DOM 语义），绝不能被组件 frame 的 forEach(x => x.destroy())
+     *   以无参形式误销毁；
+     * - 父 effect 收集：Host 的生命周期与创建它的 effect 无关（列表行由 splice 显式销毁），
+     *   不能挂在父 effect 的 children 里被 destroyChildren 提前 deactivate。
+     */
+    detachFromCreationContext() {
+        const frames = ManualCleanup.collectFrames as unknown as object[][]
+        if (frames.length) {
+            const frame = frames[frames.length - 1]
+            if (frame[frame.length - 1] === this) frame.pop()
+        }
+        const parent = this.parent
+        if (parent) {
+            const children = (parent as any)._children as ReactiveEffect[] | undefined
+            if (children?.length) {
+                const last = children.pop()!
+                if (last !== this) {
+                    children[this.index] = last
+                    last.index = this.index
+                }
+            }
+            this.parent = undefined
+            this.index = 0
+        }
     }
 }
 

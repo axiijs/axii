@@ -34,8 +34,12 @@ let activeCompactHosts = 0
 
 // 已经计数过的对象，防止重复 destroy 导致计数为负。
 // value 是创建时登记的类型名，destroy 时直接取用，调用方无需再提供。
-let seenObjects = new WeakMap<object, string>()
-let destroyedObjects = new WeakSet<object>()
+// CAUTION host 与 light binding 分开登记：AtomHost/FunctionHost 把 Host 和绑定 effect
+//  合并成同一个对象后，同一个对象需要同时计入 hosts 和 lightBindings 两套计数。
+let seenHosts = new WeakMap<object, string>()
+let destroyedHosts = new WeakSet<object>()
+let seenBindings = new WeakMap<object, string>()
+let destroyedBindings = new WeakSet<object>()
 
 function increase(map: CountMap, key: string, delta = 1) {
     const next = (map[key] ?? 0) + delta
@@ -54,8 +58,10 @@ function resetCounts() {
     }
     activeStyleHostStates = 0
     activeCompactHosts = 0
-    seenObjects = new WeakMap()
-    destroyedObjects = new WeakSet()
+    seenHosts = new WeakMap()
+    destroyedHosts = new WeakSet()
+    seenBindings = new WeakMap()
+    destroyedBindings = new WeakSet()
 }
 
 export function isAxiiRetainedObjectDiagnosticsEnabled() {
@@ -81,8 +87,8 @@ export function resetAxiiRetainedObjectDiagnostics() {
  * @internal
  */
 export function trackHostCreated(host: object, type: string) {
-    if (!enabled || seenObjects.has(host)) return
-    seenObjects.set(host, type)
+    if (!enabled || seenHosts.has(host)) return
+    seenHosts.set(host, type)
     increase(hostCounts.createdByType, type)
     increase(hostCounts.activeByType, type)
 }
@@ -91,10 +97,10 @@ export function trackHostCreated(host: object, type: string) {
  * @internal
  */
 export function trackHostDestroyed(host: object) {
-    if (!enabled || destroyedObjects.has(host)) return
-    const type = seenObjects.get(host)
+    if (!enabled || destroyedHosts.has(host)) return
+    const type = seenHosts.get(host)
     if (type === undefined) return
-    destroyedObjects.add(host)
+    destroyedHosts.add(host)
     increase(hostCounts.destroyedByType, type)
     increase(hostCounts.activeByType, type, -1)
 }
@@ -103,8 +109,8 @@ export function trackHostDestroyed(host: object) {
  * @internal
  */
 export function trackLightBindingCreated(binding: object, type: string) {
-    if (!enabled || seenObjects.has(binding)) return
-    seenObjects.set(binding, type)
+    if (!enabled || seenBindings.has(binding)) return
+    seenBindings.set(binding, type)
     increase(lightBindingCounts.createdByType, type)
     increase(lightBindingCounts.activeByType, type)
 }
@@ -113,10 +119,10 @@ export function trackLightBindingCreated(binding: object, type: string) {
  * @internal
  */
 export function trackLightBindingDestroyed(binding: object) {
-    if (!enabled || destroyedObjects.has(binding)) return
-    const type = seenObjects.get(binding)
+    if (!enabled || destroyedBindings.has(binding)) return
+    const type = seenBindings.get(binding)
     if (type === undefined) return
-    destroyedObjects.add(binding)
+    destroyedBindings.add(binding)
     increase(lightBindingCounts.destroyedByType, type)
     increase(lightBindingCounts.activeByType, type, -1)
 }
@@ -135,7 +141,7 @@ export function trackCompactHostCreated(host: object) {
 export function trackCompactHostDestroyed(host: object) {
     if (!enabled) return
     // 只有 create 阶段被登记过的对象才计数，避免 enable 之前创建的 host 把计数减成负数
-    if (!seenObjects.has(host) || destroyedObjects.has(host)) return
+    if (!seenHosts.has(host) || destroyedHosts.has(host)) return
     activeCompactHosts--
 }
 

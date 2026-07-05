@@ -10,7 +10,6 @@ import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
  * @internal
  */
 export class StaticArrayHost implements Host{
-    computed = undefined
 
     childHosts: Host[] = []
     constructor(public source: any[], public placeholder: Comment, public pathContext: PathContext) {
