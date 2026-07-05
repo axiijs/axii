@@ -1,4 +1,4 @@
-import {Atom} from "data0";
+import {Atom, ReactiveEffect} from "data0";
 import {Host, PathContext} from "./Host";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {LightBindingEffect} from "./LightBindingEffect.js";
@@ -12,11 +12,18 @@ function stringValue(v: any) {
 }
 /**
  * @internal
+ *
+ * CAUTION AtomHost 自己就是绑定 effect（继承 LightBindingEffect），不再为每个 atom 文本
+ *  单独分配一个 effect 对象 + update 闭包。长列表里每行的文本绑定都会经过这里，
+ *  合并后每行少一个对象和一个闭包的常驻内存。
  */
-export class AtomHost implements Host{
-    effect?: LightBindingEffect
-    element: Text|Comment = this.placeholder
+export class AtomHost extends LightBindingEffect implements Host{
+    element: Text|Comment
     constructor(public source: Atom, public placeholder:Comment|Text, public pathContext: PathContext) {
+        super(undefined, pathContext.skipIndicator as {skip: boolean}|undefined)
+        this.element = placeholder
+        // Host 的生命周期由宿主树显式管理，不能被创建时的 collect frame/父 effect 接管
+        this.detachFromCreationContext()
     }
     get parentElement() {
         // CAUTION 这里必须用 parentNode，因为可能是在数组下，这个父节点是 staticArrayHost 创建的 frag
@@ -43,32 +50,35 @@ export class AtomHost implements Host{
         }
     }
 
-    render(): void {
-        // CAUTION skipIndicator 是给富文本编辑器 contenteditable 来跳过 dom 变换的
-        this.effect = new LightBindingEffect(() => {
-            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，文本更新是最热的路径之一
-            if (isAxiiDiagnosticsEnabled()) {
-                withReactiveTrace({
-                    type: 'atom-text',
-                    operation: 'update-text',
-                    hostType: 'AtomHost',
-                    elementPath: this.pathContext.elementPath,
-                    source: this.pathContext.debugSource,
-                }, () => {
-                    this.replace(this.source())
-                })
-            } else {
+    // LightBindingEffect 触发时的回调（以原型方法提供，替代构造器闭包）
+    update() {
+        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，文本更新是最热的路径之一
+        if (isAxiiDiagnosticsEnabled()) {
+            withReactiveTrace({
+                type: 'atom-text',
+                operation: 'update-text',
+                hostType: 'AtomHost',
+                elementPath: this.pathContext.elementPath,
+                source: this.pathContext.debugSource,
+            }, () => {
                 this.replace(this.source())
-            }
-        }, this.pathContext.skipIndicator)
-        trackLightBindingCreated(this.effect, 'AtomTextBinding')
-        this.effect.run()
+            })
+        } else {
+            this.replace(this.source())
+        }
+    }
+
+    render(): void {
+        trackLightBindingCreated(this, 'AtomTextBinding')
+        this.run()
     }
     destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
         trackHostDestroyed(this)
-        if (this.effect) trackLightBindingDestroyed(this.effect)
+        trackLightBindingDestroyed(this)
         if (!parentHandleComputed) {
-            this.effect?.destroy()
+            // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
+            //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
+            ReactiveEffect.destroy(this)
         }
         if (!parentHandle) {
             this.element.remove()
