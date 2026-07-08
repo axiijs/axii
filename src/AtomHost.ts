@@ -6,9 +6,13 @@ import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 
 
 function stringValue(v: any) {
+    // CAUTION null/undefined 渲染为空文本，与函数 child（FunctionHost 返回 null 渲染为空）语义一致，
+    //  atom(null) 是"暂无数据"的自然写法，不应该把字面 "null"/"undefined" 渲染到页面上。
+    if (v === undefined || v === null) return ''
     return (v as string)?.toString ?
         (v as string).toString() :
-        (v === undefined ? 'undefined' : JSON.stringify(v))
+        /* v8 ignore next */
+        JSON.stringify(v)
 }
 /**
  * @internal
