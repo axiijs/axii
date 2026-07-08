@@ -227,8 +227,9 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 (node as HTMLInputElement).checked = false
                 node.removeAttribute('checked')
             }
-        } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'text' && value === undefined) {
-            // 特殊处理一下 input value 为 undefined 的情况
+        } else if ((node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') && value == null) {
+            // CAUTION 所有 input 类型（不只 type=text）和 textarea：value 为 undefined/null 时
+            //  显示空字符串，否则会渲染出字面 "undefined"/"null"
             (node as HTMLDataElement).value = ''
         }
     } else if (name === 'checked' && node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
