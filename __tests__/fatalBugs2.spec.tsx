@@ -73,4 +73,70 @@ describe('fatal bug regression (2026-07 review)', () => {
         expect(called).toBe(1)
         root.destroy()
     })
+
+    /**
+     * F3: detachStyle 的离场 transition/animation 可能实际不会发生
+     * （离场样式与当前值相同、元素 display:none、prefers-reduced-motion 等），
+     * 之前等待 transitionrun/transitionend 的 Promise 永不 resolve，节点永远留在 DOM。
+     * 现在以声明的最长动画时长 + buffer 作为兜底超时。
+     */
+    test('F3a: exit style equal to current value (no transition fires) still removes the node', async () => {
+        const show = atom(true)
+        function App({}: any, {createElement}: RenderContext) {
+            return <div>{() => show() ? (
+                <div id="leaving-noop"
+                     style={{opacity: 1, transition: 'opacity 0.05s'}}
+                     detachStyle={{opacity: 1}}
+                >bye</div>
+            ) : null}</div>
+        }
+        const root = createRoot(rootEl)
+        root.render(<App/>)
+        expect(document.getElementById('leaving-noop')).toBeTruthy()
+        show(false)
+        // deadline = 0.05s + 100ms buffer
+        await sleep(400)
+        expect(document.getElementById('leaving-noop')).toBeNull()
+        root.destroy()
+    })
+
+    test('F3b: exit transition inside display:none subtree still removes the node', async () => {
+        const show = atom(true)
+        function App({}: any, {createElement}: RenderContext) {
+            return <div style={{display: 'none'}}>{() => show() ? (
+                <div id="leaving-hidden"
+                     style={{opacity: 1, transition: 'opacity 0.05s'}}
+                     detachStyle={{opacity: 0}}
+                >bye</div>
+            ) : null}</div>
+        }
+        const root = createRoot(rootEl)
+        root.render(<App/>)
+        expect(document.getElementById('leaving-hidden')).toBeTruthy()
+        show(false)
+        await sleep(400)
+        expect(document.getElementById('leaving-hidden')).toBeNull()
+        root.destroy()
+    })
+
+    test('F3c: a real exit transition still plays fully before removal', async () => {
+        const show = atom(true)
+        function App({}: any, {createElement}: RenderContext) {
+            return <div>{() => show() ? (
+                <div id="leaving-real"
+                     style={{opacity: 1, transition: 'opacity 0.15s'}}
+                     detachStyle={{opacity: 0}}
+                >bye</div>
+            ) : null}</div>
+        }
+        const root = createRoot(rootEl)
+        root.render(<App/>)
+        show(false)
+        await sleep(30)
+        // 动画进行中：节点应该还在
+        expect(document.getElementById('leaving-real')).toBeTruthy()
+        await sleep(500)
+        expect(document.getElementById('leaving-real')).toBeNull()
+        root.destroy()
+    })
 })
