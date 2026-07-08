@@ -52,4 +52,25 @@ describe('fatal bug regression (2026-07 review)', () => {
         expect(clicked).toBe(2)
         expect(() => root2.destroy()).not.toThrow()
     })
+
+    /**
+     * F2: 空格键的 KeyboardEvent.key 是 ' '（'Space' 只是 e.code），
+     * onSpaceKey 之前比较 e.key === 'Space'，真实按键永远不会命中。
+     */
+    test('F2: onSpaceKey fires on real space keydown (e.key is " ")', () => {
+        let called = 0
+        let ref: any
+        function App({}: any, {createElement, createRef}: RenderContext) {
+            ref = createRef()
+            return <div ref={ref} onKeyDown={onSpaceKey(() => called++)}>x</div>
+        }
+        const root = createRoot(rootEl)
+        root.render(<App/>)
+        dispatchEvent(ref.current, new KeyboardEvent('keydown', {key: ' ', code: 'Space'}))
+        expect(called).toBe(1)
+        // 非空格键不触发
+        dispatchEvent(ref.current, new KeyboardEvent('keydown', {key: 'a', code: 'KeyA'}))
+        expect(called).toBe(1)
+        root.destroy()
+    })
 })

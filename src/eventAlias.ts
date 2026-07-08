@@ -46,7 +46,8 @@ export const onBackspaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Backsp
 /**
  * @category Event Utility
  */
-export const onSpaceKey = eventAlias((e: KeyboardEvent) => e.key === 'Space')
+// CAUTION 空格键的 KeyboardEvent.key 是 ' '（'Space' 是 e.code），两者都兼容
+export const onSpaceKey = eventAlias((e: KeyboardEvent) => e.key === ' ' || e.code === 'Space')
 /**
  * @category Event Utility
  */
