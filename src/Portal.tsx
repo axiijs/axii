@@ -26,7 +26,11 @@ export function Portal({ container,content, destroyOnUnmount }: PortalProps, { u
 
     useEffect(() => {
         return () => {
-            root.destroy()
+            // CAUTION destroyOnUnmount 默认为 true；显式传 false 时保留 portal 内容
+            //  （典型场景：挂到 body 上的常驻弹层），由使用方自行负责后续清理。
+            if (destroyOnUnmount !== false) {
+                root.destroy()
+            }
         }
     })
 
