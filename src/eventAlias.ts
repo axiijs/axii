@@ -89,9 +89,15 @@ export const onSelf = eventAlias(e => e.target === e.currentTarget)
  */
 export function createEventTransfer(transform?: (e: Event) => Event|null|undefined ){
     let targetRef: HTMLElement|undefined
-    function target(el: HTMLElement) {
+    function target(el: HTMLElement|null) {
+        // CAUTION target 会被当作 ref 使用，元素卸载时框架会以 null 回调（detachRef），
+        //  必须当作解绑处理；元素重新挂载后还可以再次绑定。
+        if (el === null) {
+            targetRef = undefined
+            return
+        }
         /* v8 ignore next 3 */
-        if (targetRef !== undefined) {
+        if (targetRef !== undefined && targetRef !== el) {
             throw new Error('event transfer can only have one target')
         }
         targetRef = el
