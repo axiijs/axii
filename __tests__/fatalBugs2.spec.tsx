@@ -139,4 +139,37 @@ describe('fatal bug regression (2026-07 review)', () => {
         expect(document.getElementById('leaving-real')).toBeNull()
         root.destroy()
     })
+
+    /**
+     * F4: 数组 child 中带 detachStyle 的元素，之前被 StaticArrayHost.destroy 无条件同步
+     * removeNodesBetween 直接删除，离场动画被跳过。现在 StaticArrayHost 尊重子 host 的
+     * forceHandleElement，把 DOM 处理委托给子 host（异步等待动画），自己只清理直接创建的
+     * 文本节点和 placeholder。
+     */
+    test('F4: detachStyle exit animation plays when the node is inside an array child', async () => {
+        const show = atom(true)
+        function App({}: any, {createElement}: RenderContext) {
+            // 函数节点返回数组 → StaticArrayHost；混入 string item 验证直接文本节点也被清理
+            return <div>{() => show() ? [
+                'plain text ',
+                <span id="array-sibling">sibling</span>,
+                <div id="leaving-array"
+                     style={{opacity: 1, transition: 'opacity 0.15s'}}
+                     detachStyle={{opacity: 0}}
+                >bye</div>
+            ] : null}</div>
+        }
+        const root = createRoot(rootEl)
+        root.render(<App/>)
+        expect(rootEl.textContent).toContain('plain text')
+        show(false)
+        await sleep(30)
+        // 动画进行中：detachStyle 元素还在；其他兄弟节点（文本/普通元素）已同步移除
+        expect(document.getElementById('leaving-array')).toBeTruthy()
+        expect(document.getElementById('array-sibling')).toBeNull()
+        expect(rootEl.textContent).not.toContain('plain text')
+        await sleep(500)
+        expect(document.getElementById('leaving-array')).toBeNull()
+        root.destroy()
+    })
 })
