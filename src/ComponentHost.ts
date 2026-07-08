@@ -94,7 +94,10 @@ function createPortalShared(content: JSX.Element|ComponentNode|Function, contain
  * @internal
  */
 export class ComponentHost implements Host{
-    static typeIds = new Map<Function, number>()
+    // CAUTION WeakMap + 计数器而不是 Map + size：bindProps/lazy/HOC 每次调用都会产生新的
+    //  组件函数，普通 Map 会把这些函数永久 pin 住（样式 id 注册表无上限增长）。
+    static typeIds = new WeakMap<Function, number>()
+    static nextTypeId = 0
     type: Component
     public innerHost?: Host
     // CAUTION 以下所有容器/闭包字段全部惰性分配：一个典型的小组件（不用
@@ -128,7 +131,7 @@ export class ComponentHost implements Host{
     _reusable?: ReuseFn
     constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
-            ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
+            ComponentHost.typeIds.set(type, ComponentHost.nextTypeId++)
         }
 
         this.name = type.name
