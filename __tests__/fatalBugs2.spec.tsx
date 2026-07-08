@@ -172,4 +172,30 @@ describe('fatal bug regression (2026-07 review)', () => {
         expect(document.getElementById('leaving-array')).toBeNull()
         root.destroy()
     })
+
+    /**
+     * F5: PropTypes.bool 之前用 typeof v === 'bool' 校验（正确值是 'boolean'），
+     * 所有布尔值校验恒失败。
+     */
+    test('F5: PropTypes.bool.check works for booleans', () => {
+        expect(PropTypes.bool.check(true)).toBe(true)
+        expect(PropTypes.bool.check(false)).toBe(true)
+        expect(PropTypes.bool.check('true')).toBe(false)
+        expect(PropTypes.bool.check(1)).toBe(false)
+        // 验证函数本体（返回 Error 表示失败）
+        expect(PropTypes.bool(true)).toBeUndefined()
+        expect(PropTypes.bool('x')).toBeInstanceOf(Error)
+    })
+
+    /**
+     * F6: PropTypes.map.stringify 之前生成的字符串缺少收尾 '}' 且 key 不带引号，
+     * 产物不是合法 JSON，自己的 parse 也无法解析。
+     */
+    test('F6: PropTypes.map stringify/parse roundtrip', () => {
+        const t = PropTypes.map({a: PropTypes.string, b: PropTypes.number})
+        const value = {a: 'x"y', b: 1.5}
+        const s = t.stringify(value)
+        expect(() => JSON.parse(s)).not.toThrow()
+        expect(t.parse(s)).toEqual(value)
+    })
 })

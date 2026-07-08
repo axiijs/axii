@@ -231,7 +231,8 @@ export const array = createNormalType<Array<any>, {}>((v: any) => {
 }, {})
 
 const boolDef = { zeroValue: false }
-export const bool = createNormalType<boolean, typeof boolDef>('bool', boolDef)
+// CAUTION typeof true 是 'boolean'，之前写成 'bool' 导致校验永远失败
+export const bool = createNormalType<boolean, typeof boolDef>('boolean', boolDef)
 
 const funcDef = {
     stringify(v: any) { return v.toString() },
@@ -325,10 +326,12 @@ export const map = createTypeClass({
         return Object.entries(this.argv[0]).every(([key, propType]: [string, unknown]) => (propType as TypeChecker<any, any>).check(v[key]))
     },
     stringify(this: TypeChecker<any, any>, v: any) {
-        // 注意里面对 propType.stringify 结果又用了一次 JSON.stringify 是为了转义双引号
+        // 注意里面对 propType.stringify 结果又用了一次 JSON.stringify 是为了转义双引号。
+        // CAUTION key 也必须 JSON.stringify（JSON 的 key 必须带引号），并且要有收尾的 '}'，
+        //  否则 parse 无法解析自己 stringify 的产物。
         return `{${Object.entries(this.argv[0]).map(([key, propType]: [string, unknown]) => {
-            return `${key}:${JSON.stringify((propType as TypeChecker<any, any>).stringify(v[key]))}`
-        }).join(',')}`
+            return `${JSON.stringify(key)}:${JSON.stringify((propType as TypeChecker<any, any>).stringify(v[key]))}`
+        }).join(',')}}`
     },
     parse(this: TypeChecker<any, any>, v: any) {
         const map = JSON.parse(v)
