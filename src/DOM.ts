@@ -689,7 +689,8 @@ export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesAr
     return createElement(type, rawProps, ...children)
 }
 export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return createElement(type, rawProps, children)
+    // CAUTION 无 children 时不能把 undefined 当作一个实参传下去，否则组件拿到的是 [undefined] 而不是 []
+    return children === undefined ? createElement(type, rawProps) : createElement(type, rawProps, children)
 }
 // React automatic dev runtime 签名：jsxDEV(type, props, key, isStaticChildren, source, self)
 export function jsxDEV(
@@ -701,5 +702,7 @@ export function jsxDEV(
     self?: unknown
 ): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     const props = source || self ? {...rawProps, __source: source, __self: self} : rawProps
-    return Array.isArray(children) ? createElement(type, props, ...children) : createElement(type, props, children)
+    if (Array.isArray(children)) return createElement(type, props, ...children)
+    // CAUTION 同 jsx：无 children 时不能传 undefined 占位
+    return children === undefined ? createElement(type, props) : createElement(type, props, children)
 }
