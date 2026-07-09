@@ -24,6 +24,13 @@ export class RxDOMState<T, U> extends ManualCleanup{
         const originEl = this.element
         this.element = el
         if (this.element) {
+            // CAUTION ref 直接从一个元素切到另一个元素（中间没有 null）时，
+            //  必须先解绑旧元素：否则旧的 abort 被新的 listen 覆盖，
+            //  旧元素上的监听/observer 永久泄漏（RxDOMSize 还会继续把旧元素的
+            //  尺寸变化写进同一个 value atom）。
+            if (originEl && originEl !== this.element) {
+                this.unlisten(originEl)
+            }
             this.listen()
         } else {
             this.unlisten(originEl)

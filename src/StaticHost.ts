@@ -3,6 +3,7 @@ import {
     DetachStyledInfo,
     ExtendedElement,
     insertBefore,
+    isEventName,
     RefHandleInfo,
     setAttribute,
     stringifyStyleValue,
@@ -29,14 +30,30 @@ import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./di
 // data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
 const originalIsValidAttribute = createElement.isValidAttribute
 createElement.isValidAttribute = function (name: string, value: any) {
-    if (name.startsWith('on')) return true
+    // CAUTION 只有真正的事件（on + 大写字母）直接放行；once/online 这类普通 on* prop
+    //  要继续走 isReactiveValue 判断，atom/函数值才能建立响应式属性绑定。
+    if (isEventName(name)) return true
 
     if (Array.isArray(value) && value.some(isReactiveValue)) {
         return false
     } else if (isReactiveValue(value)) {
         return false
     }
+    // CAUTION className 对象形式的 value 可以是 atom/函数（className={{active: isActive}}），
+    //  必须按响应式属性处理（走 LightBindingEffect），否则依赖永远建立不起来。
+    if ((name === 'className' || name === 'class') && isClassNameWithReactiveValue(value)) {
+        return false
+    }
     return originalIsValidAttribute(name, value)
+}
+
+function isClassNameWithReactiveValue(value: any): boolean {
+    if (Array.isArray(value)) return value.some(isClassNameWithReactiveValue)
+    if (!isPlainObject(value)) return false
+    for (const key in value as {[k:string]:any}) {
+        if (isReactiveValue((value as {[k:string]:any})[key])) return true
+    }
+    return false
 }
 
 function isReactiveValue(v: any) {

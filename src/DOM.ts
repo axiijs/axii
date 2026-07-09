@@ -130,8 +130,16 @@ function captureEventProxy(this: ExtendedElement, e: Event) {
 export type UnhandledPlaceholder = Comment | Text
 
 
-function isEventName(name: string) {
-    return name[0] === 'o' && name[1] === 'n'
+/**
+ * @internal
+ * CAUTION 事件必须是 on + 大写字母（onClick/onChangeCapture），与 mergeProp 的约定一致：
+ *  宽松的 startsWith('on') 会把 once/online 这类普通 prop 吞进事件分支——
+ *  属性永远设不到 DOM 上，还会挂上一个永不触发的假监听器。
+ */
+export function isEventName(name: string) {
+    if (name[0] !== 'o' || name[1] !== 'n') return false
+    const third = name.charCodeAt(2)
+    return third >= 65 && third <= 90
 }
 
 
@@ -156,7 +164,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     }
 
     // 事件
-    if (name[0] === 'o' && name[1] === 'n') {
+    if (isEventName(name)) {
         const useCapture = name !== (name = name.replace(/Capture$/, ''))
         // sourceKey 是别名前的事件名（如 change），用于区分监听的来源
         const sourceKey = name.toLowerCase().substring(2)
@@ -249,7 +257,11 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             if (className == null || typeof className === 'boolean') return
             if (typeof className === 'object') {
                 for(const name in className) {
-                    if (className[name]) {
+                    // CAUTION 对象形式的 value 支持 atom/函数（className={{active: isActive}}），
+                    //  这里统一求值。调用点在响应式绑定内时读取会建立依赖；
+                    //  不求值的话 atom（本身是 function，恒 truthy）会让 class 永远挂在元素上。
+                    const value = className[name]
+                    if (typeof value === 'function' ? value() : value) {
                         classNames.push(name)
                     }
                 }
@@ -567,7 +579,7 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
 
     if (valueType !== 'object' && valueType !== 'function') return true
     // 事件 允许是函数
-    if ((name[0] === 'o' && name[1] === 'n') && valueType === 'function') return true
+    if (isEventName(name) && valueType === 'function') return true
     if (name === 'style' && (isSimpleStyleObject(value) || valueType === 'string')) return true
     // 默认支持 className/class 的对象形式
     if ((name === 'className' || name === 'class') && isPlainObject(value)) return true

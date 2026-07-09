@@ -251,10 +251,8 @@ const anyDef = {
         throw new Error('type any can not parse')
         return false
     },
-    check() {
-        throw new Error('type any can not check')
-        return false
-    },
+    // CAUTION check 不能抛错：oneOfType/arrayOf/shapeOf 的 check 会组合调用成员类型的
+    //  check，any 作为成员（shapeOf({x: any}) 等）是自然写法，语义就是「任何值都通过」。
 }
 export const any = createNormalType<any, typeof anyDef>(() => true, anyDef )
 
