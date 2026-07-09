@@ -44,8 +44,12 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
 
     const register = (name: string, instance: FormItemInstance, multiple?: boolean) => {
         if (multiple) {
-            if (!values.get(name)) {
-                values.set(name, new RxList([]))
+            // CAUTION 用户可以在 values 里用普通数组给 multiple 字段提供初始值
+            //  （values: new RxMap({tags: ['preset']})），必须收敛成 RxList（保留初始项），
+            //  否则 unregister 读 .data 直接 TypeError，push 进普通数组也没有响应性。
+            const existing = values.get(name)
+            if (!(existing instanceof RxList)) {
+                values.set(name, new RxList(Array.isArray(existing) ? existing : []))
             }
             if (!instances[name]) {
                 instances[name] = []

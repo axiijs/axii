@@ -90,10 +90,15 @@ function GetPathToLastComponent(hostPath: LinkedNode<Host>) {
 }
 
 function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
-    const [lastComponentHost, ...pathToGenerateId] = path as [ComponentHost, ...Host[]]
+    // CAUTION path[0] 只有在 GetPathToLastComponent 真的找到组件时才是 ComponentHost：
+    //  整棵子树都不在任何组件里（root.render 直接渲染元素/函数节点/列表）时，
+    //  path[0] 是普通 host（StaticHost/RxListHost 等）甚至路径为空（F15），
+    //  绝不能对它读 .type/.typeId——普通 host 没有 type 字段，直接 TypeError。
+    const lastComponentHost = path[0] instanceof ComponentHost ? path[0] as ComponentHost : undefined
+    const pathToGenerateId = lastComponentHost ? path.slice(1) : path
     // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
     // CAUTION 压缩工具可能使得 name 以 $ 开头
-    const componentName = lastComponentHost?.type.name.toString().replace(/(\s|\$)/g, '_') ?? 'GLOBAL'
+    const componentName = lastComponentHost ? lastComponentHost.type.name.toString().replace(/(\s|\$)/g, '_') : 'GLOBAL'
     return `${componentName}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
 
@@ -151,6 +156,25 @@ export function isDynamicProp(obj: any) {
     return !!(obj && obj['__dynamic'])
 }
 
+// F30：静态样式对象 -> 内容签名 的缓存。boundProps 等跨实例共享的对象引用直接命中；
+//  JSX 字面量对象随元素同生共死，WeakMap 不延长其生命周期。
+//  key 顺序不同的等价对象会得到不同签名——代价只是退化为元素独享 stylesheet，语义仍然正确。
+const styleSignatureCache = new WeakMap<object, string>()
+function computeStyleSignature(styleObject: any): string | undefined {
+    if (typeof styleObject !== 'object' || styleObject === null) return undefined
+    const cached = styleSignatureCache.get(styleObject)
+    if (cached !== undefined) return cached
+    let signature: string | undefined
+    try {
+        signature = JSON.stringify(styleObject)
+        /* v8 ignore next 3 */
+    } catch {
+        signature = undefined
+    }
+    if (signature !== undefined) styleSignatureCache.set(styleObject, signature)
+    return signature
+}
+
 // 深度扫描 style 对象中是否有 atom/函数值（style={{color: colorAtom}} / 嵌套样式中的 atom）
 function containsReactiveStyleValue(styleObject: any): boolean {
     for (const key in styleObject) {
@@ -189,6 +213,10 @@ class StyleManager {
     public hostToStyleIds = new WeakMap<Host, Set<string>>()
     public hostMountCount = new WeakMap<Host, number>()
     public idToRefCount = new Map<string, number>()
+    // 共享静态 stylesheet id -> 内容签名。「相同 path ⇒ 相同样式内容」只是猜测：
+    //  静态样式对象可以携带每实例不同的数据（style={{'& b': {color: item.color}}}），
+    //  签名不一致时该实例必须退化为元素独享的 rolling id，否则所有实例都套用第一个实例的样式。
+    public idToStaticStyleSignature = new Map<string, string>()
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
         const pathToLastComponent = GetPathToLastComponent(hostPath)
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
@@ -277,6 +305,8 @@ class StyleManager {
                     styleSheetsToDelete.add(styleSheet)
                 }
                 this.styleScripts.delete(id);
+                // 共享静态 id 的内容签名随 stylesheet 一起退役（rolling id 不在签名表里，delete 无害）
+                this.idToStaticStyleSignature.delete(id)
             }
         })
         this.hostToStyleIds.delete(host)
@@ -332,14 +362,38 @@ class StyleManager {
         }
 
         const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
+        // 路径信息对所有条目相同，只算一次（之前每个条目都重新走一遍 hostPath）
+        const pathToLastComponent = GetPathToLastComponent(hostPath)
+        const hasFunctionHostInPath = pathToLastComponent.some(host => host instanceof FunctionHost)
+        // 跨元素共享的静态 id 基础（路径含 FunctionHost 时不共享，见 getStyleSheetId）
+        const sharedStaticBaseId = hasFunctionHostInPath ? null : generateComponentElementStaticId(pathToLastComponent, elementPath)
         const splitStyleObjects = evaluatedEntries.map(({value: evaluatedStyleObject, entryIsDynamic, isBound}, index) => {
             // 分离普通和嵌套样式
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
-            // CAUTION 嵌套样式（stylesheet 路径）里出现 atom/函数值时必须按动态样式处理（滚动重建 stylesheet）：
-            //  stylesheet 只有第一次/滚动时才重建，静态路径下 atom 值变化既不会反映到样式，
-            //  依赖也会在下一次重算时丢失。普通（inline）样式不需要：它每次 update 都整体重新赋值。
-            const isDynamic = entryIsDynamic || containsReactiveStyleValue(nestedStyles)
-            const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isDynamic ? el : null)
+            const usesStyleSheet = isBound || Object.keys(nestedStyles).length > 0
+            // CAUTION stylesheet 路径（嵌套样式/boundProps）里出现 atom/函数值时必须按动态样式处理
+            //  （滚动重建 stylesheet）：stylesheet 只有第一次/滚动时才重建。必须扫描整个对象而不是
+            //  只扫 nestedStyles——atom 出现在 simple 部分（{color: colorAtom, '&:hover': {...}}）时
+            //  同样会进 stylesheet，按静态处理的话第一次生效后就永远不再更新（F31）。
+            //  普通（inline）样式不需要扫：它每次 update 都整体重新赋值。
+            let isDynamic = entryIsDynamic || (usesStyleSheet && containsReactiveStyleValue(evaluatedStyleObject))
+            // CAUTION 共享静态 stylesheet id 的内容一致性校验（F30）：「相同 path ⇒ 相同样式内容」
+            //  对携带实例数据的静态样式（style={{'& b': {color: item.color}}} 的列表行/同类型兄弟组件）
+            //  不成立。第一个实例登记内容签名，后续实例签名不一致时退化为元素独享的 rolling id，
+            //  否则它们会静默套用第一个实例的 stylesheet。签名算不出来（循环引用等）时同样退化，保证正确性。
+            if (usesStyleSheet && !isDynamic && sharedStaticBaseId) {
+                const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
+                const signature = computeStyleSignature(evaluatedStyleObject)
+                const existingSignature = this.idToStaticStyleSignature.get(sharedIdWithIndex)
+                if (signature === undefined || (existingSignature !== undefined && existingSignature !== signature)) {
+                    isDynamic = true
+                } else if (existingSignature === undefined) {
+                    this.idToStaticStyleSignature.set(sharedIdWithIndex, signature)
+                }
+            }
+            const styleSheetId = isDynamic ?
+                this.getStyleSheetId(hostPath, elementPath, el) :
+                (sharedStaticBaseId ?? this.getStyleSheetId(hostPath, elementPath, null))
             const styleSheetIdWithIndex = `${styleSheetId}F${index}`
             const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
             return {
