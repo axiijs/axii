@@ -19,6 +19,7 @@
 | [11-contracts-and-invariants.md](./11-contracts-and-invariants.md) | 契约测试（data0 patch 协议）、RxList fuzz、开发期列表不变量（AXII_LIST_ORDER_BROKEN）、同类假设猎杀 |
 | [12-review-2026-07-round7.md](./12-review-2026-07-round7.md) | 2026-07 深度 review 第七轮（F25-F28 / I31-I33，**已全部修复**）：StyleManager 样式形态空间 + attach 生命周期 |
 | [13-review-2026-07-round8.md](./13-review-2026-07-round8.md) | 2026-07 深度 review 第八轮（F29-F32 / I34-I35，**已全部修复**）：无组件祖先路径、StyleManager 跨实例共享假设、FunctionHost 结构重建、Form 全链路 |
+| [14-review-2026-07-round9.md](./14-review-2026-07-round9.md) | 2026-07 深度 review 第九轮（F33-F34 / I36-I38，**已全部修复**）：select/optgroup 与 form 关联的 DOM 协议、property/attribute 双路径、RxList 初始渲染错误出口、事件谓词与 ref 形态的同类猎杀 |
 
 ## 结论摘要
 

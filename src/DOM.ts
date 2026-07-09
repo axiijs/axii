@@ -55,11 +55,19 @@ function setProperty(node: HTMLElement, name: string, value: any) {
         // name value 的类型不会写
         // @ts-ignore
         node[name] = value
-        /* v8 ignore next 5 */
     } catch (e) {
-        /* eslint-disable no-console */
-        console.error(e)
-        /* eslint-enable no-console */
+        // CAUTION 与只读 property 同名的 name 仍可能是合法的 HTML attribute（form 这类
+        //  常见项已在 setAttribute 显式排除，这里兜底自定义元素等未知的同类形态）：
+        //  严格模式下对只读 accessor 赋值直接 TypeError，静默丢弃会让属性永远设不上去，
+        //  回退到 attribute 写入。
+        try {
+            node.setAttribute(name, value)
+            /* v8 ignore next 5 */
+        } catch {
+            /* eslint-disable no-console */
+            console.error(e)
+            /* eslint-enable no-console */
+        }
     }
 }
 
@@ -168,8 +176,11 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         const useCapture = name !== (name = name.replace(/Capture$/, ''))
         // sourceKey 是别名前的事件名（如 change），用于区分监听的来源
         const sourceKey = name.toLowerCase().substring(2)
-        // CAUTION 体验改成和 react 的一致
-        const eventName = sourceKey === 'change' ? 'input' : sourceKey
+        // CAUTION 体验改成和 react 的一致：onChange -> input。
+        //  onDoubleClick（React 拼法）对应的 DOM 事件是 dblclick，不别名的话监听器
+        //  会挂在不存在的 doubleclick 事件上，永远不触发且没有任何报错。
+        const eventName = sourceKey === 'change' ? 'input' :
+            sourceKey === 'doubleclick' ? 'dblclick' : sourceKey
         const proxy = useCapture ? captureEventProxy : eventProxy
 
         const listeners = useCapture ?
@@ -289,8 +300,10 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             node.dataset['__value__'] = value ?? ''
         } else if (node.tagName === 'OPTION') {
             // 当 option 的 value 发生变化的时候也要 reset 一下，因为可能这个时候与 select value 相等的 option 才出现
-            if (node.parentElement instanceof HTMLSelectElement) {
-                resetOptionParentSelectValue(node.parentElement)
+            // CAUTION option 可能包在 optgroup 里（合法且常见的 HTML），不能只认直接父级是 select 的形态
+            const ownerSelect = findOwnerSelect(node.parentElement)
+            if (ownerSelect) {
+                resetOptionParentSelectValue(ownerSelect)
             }
         } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
             // checkbox 也支持用 value ，这样容易统一 api
@@ -327,7 +340,11 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     } else if (name === 'dangerouslySetInnerHTML') {
         // console.warn(value)
         node.innerHTML = value
-    } else if (name !== 'list' && name !== 'type' && !isSvg && name in node) {
+    // CAUTION list/type/form 是「与只读（或行为特殊的）DOM property 同名的合法 HTML attribute」：
+    //  input.list / select.type / *.form 都是 readonly accessor，走 property 赋值在严格模式下
+    //  直接 TypeError（sloppy 模式下静默无效），属性永远设不上去——
+    //  form="xxx"（控件关联非祖先 form）会静默失效。这类 name 必须走 attribute 路径。
+    } else if (name !== 'list' && name !== 'type' && name !== 'form' && !isSvg && name in node) {
         setProperty(node, name, value === null ? '' : value)
         if (value === null || value === undefined) node.removeAttribute(name)
     } else {
@@ -634,6 +651,20 @@ export function Fragment(props: any = {}): DocumentFragment {
     return document.createDocumentFragment();
 }
 
+/**
+ * option/占位符所属的 select。
+ * CAUTION option 的父级不一定是 select：optgroup 是合法且常见的 HTML 结构，
+ *  只认「直接父级是 select」会让 optgroup 里动态渲染的 option 不触发 select 的 value 恢复，
+ *  选中值静默丢失。热路径上先做最常见的 select 判断，再做一层 optgroup 判断。
+ */
+function findOwnerSelect(parent: Element | null): HTMLSelectElement | null {
+    if (parent instanceof HTMLSelectElement) return parent
+    if (parent instanceof HTMLOptGroupElement && parent.parentElement instanceof HTMLSelectElement) {
+        return parent.parentElement
+    }
+    return null
+}
+
 function resetOptionParentSelectValue(select: HTMLSelectElement) {
     // CAUTION 只有显式设置过 value prop 的 select 才需要重置（dataset 里才有存值）。
     //  没有 value prop 的 select（非受控）在动态渲染 option 时也会走到这里，
@@ -662,8 +693,10 @@ export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | S
         current = next
     } while (current)
 
-    if (refEl.parentElement instanceof HTMLSelectElement) {
-        resetOptionParentSelectValue(refEl.parentElement)
+    // CAUTION option 可能包在 optgroup 里，owner select 的判断见 findOwnerSelect
+    const ownerSelect = findOwnerSelect(refEl.parentElement)
+    if (ownerSelect) {
+        resetOptionParentSelectValue(ownerSelect)
     }
 
     return result!
@@ -676,8 +709,9 @@ export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | S
 export function insertAfter(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
     const result = refEl.parentNode!.insertBefore!(newEl, refEl.nextSibling)
-    if (refEl.parentElement instanceof HTMLSelectElement) {
-        resetOptionParentSelectValue(refEl.parentElement)
+    const ownerSelect = findOwnerSelect(refEl.parentElement)
+    if (ownerSelect) {
+        resetOptionParentSelectValue(ownerSelect)
     }
 
     return result

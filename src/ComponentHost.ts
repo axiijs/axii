@@ -7,6 +7,7 @@ import {
     ExtendedElement,
     Fragment,
     insertBefore,
+    isEventName,
     JSXElementType,
     RefFn,
     RefObject,
@@ -55,9 +56,10 @@ export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}
  * @category Common Utility
  */
 export function mergeProp(key:string, originValue:any, value: any) {
-    // CAUTION 事件必须用 /^on[A-Z]/ 判断，startsWith('on') 会误伤 once/onlyIcon 这类普通 prop；
+    // CAUTION 事件判定统一用 isEventName（on + 大写字母），startsWith('on') 会误伤
+    //  once/onlyIcon 这类普通 prop；同一分类谓词只保留一份，行为分叉就是新的 bug 面。
     //  JSX 中的 className 是驼峰写法，小写 'classname' 永远匹配不上。
-    if(originValue && (/^on[A-Z]/.test(key) || key === 'ref'|| key==='style' || key==='className' || key==='class')) {
+    if(originValue && (isEventName(key) || key === 'ref'|| key==='style' || key==='className' || key==='class')) {
         // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
         //  style 一定要放后面，才能覆写
         if(key === 'style') {
@@ -599,6 +601,12 @@ export class ComponentHost implements Host{
 
                 normalizedProps.children = this.children
                 this.props = normalizedProps
+
+                // CAUTION ref 不只来自 inputProps：boundProps（bindProps 包装的 HOC）也可以
+                //  提供 ref，mergeProp 会把两者合并成数组。构造期只捕获了 inputProps.ref，
+                //  这里必须用合并后的最终值回写，否则 boundProps 提供的 ref 被静默丢弃
+                //  （attachRef/detachRef 本来就支持数组形态）。
+                if (normalizedProps.ref) this.refProp = normalizedProps.ref
 
                 node = this.type(normalizedProps, this.renderContext!)
             } catch (e) {

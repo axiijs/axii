@@ -105,10 +105,26 @@ export class RxListHost implements Host{
                 try {
                     const hosts = host.hosts!
                     const data = source.data
-                    for (let i = 0; i < data.length; i++) {
-                        hosts.push(host.createChildHost(data[i]))
+                    try {
+                        for (let i = 0; i < data.length; i++) {
+                            hosts.push(host.createChildHost(data[i]))
+                        }
+                        insertBefore(host.renderNewHosts(hosts), host.placeholder)
+                    } catch (error) {
+                        // CAUTION 初始行渲染也发生在 data0 computed 的 computation 里（fullRecompute
+                        //  是 async 函数），向上抛只会变成 unhandled rejection：root error 钩子拿不到
+                        //  错误，该区域永远卡死，后续销毁还会对未初始化的 computed/hosts 再抛错。
+                        //  与 applyPatch 的错误出口对齐：已创建的行全部回收（DOM 还在脱离文档的
+                        //  fragment 里，直接丢弃），区域渲染为空；错误交给 root error 钩子，
+                        //  未消费时先 reportAxiiError 输出结构化报告再继续抛出保持可观测。
+                        for (const created of hosts) created.destroy(true)
+                        hosts.length = 0
+                        if (!host.pathContext.root.dispatch('error', error)) {
+                            reportAxiiError(error)
+                            throw error
+                        }
+                        return null
                     }
-                    insertBefore(host.renderNewHosts(hosts), host.placeholder)
                     // 行是在脱离文档的 fragment 里渲染的，插入完成后才执行行内登记的 layoutEffect/ref。
                     // 列表自身仍未连通（在更外层 fragment 里）时跳过，留给外层 flush。
                     if (host.placeholder.isConnected) {
@@ -410,9 +426,12 @@ export class RxListHost implements Host{
     }
     destroy(fromParentDestroy?: boolean) {
         trackHostDestroyed(this)
-        destroyComputed(this.hostRenderComputed)
+        // CAUTION render 可能中途抛错（行渲染错误已交给 error 钩子/向上抛出），
+        //  此时 hostRenderComputed/hosts 可能尚未初始化，destroy 必须容忍，
+        //  否则错误恢复路径（函数节点重算、root.destroy）会二次崩溃。
+        if (this.hostRenderComputed) destroyComputed(this.hostRenderComputed)
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
-        this.hosts!.forEach(host => host.destroy(fromParentDestroy))
+        this.hosts?.forEach(host => host.destroy(fromParentDestroy))
         if (!fromParentDestroy) this.placeholder.remove()
     }
 }
