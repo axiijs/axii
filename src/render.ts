@@ -132,10 +132,18 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
                 root.attached = false
             }
             const callbacks = eventCallbacks.get(event)
-            if (callbacks?.size) {
-                callbacks.forEach(callback => callback(arg))
-                return true
+            const consumed = !!callbacks?.size
+            if (consumed) {
+                callbacks!.forEach(callback => callback(arg))
             }
+            // CAUTION 手动 dispatch('attach')（容器脱离文档后重新连通是公开用法）也必须
+            //  flush deferred-attach 队列：root.attached 为 true 期间动态创建、但插入时
+            //  仍未连通的组件/元素登记在这里，没有任何外层插入动作会再替它们 flush，
+            //  不 flush 的话它们的 layoutEffect/ref 永不执行。
+            if (event === 'attach') {
+                root.flushAttachQueue()
+            }
+            if (consumed) return true
             // CAUTION 只冒泡 error：attach/detach 是每个 root 自己的生命周期事件，不能转发
             if (event === 'error' && parentRoot) {
                 return parentRoot.dispatch(event, arg)
