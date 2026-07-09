@@ -81,6 +81,9 @@ interface PropsWithConfig {
   props: Props,
   itemConfig: Record<string, ConfigItem>,
   componentProp: Props,
+  // 已经被 normalizePropsByPropTypes coerce 过的输入 props（render 里第二次 coerce 时
+  //  用来跳过原样保留的输入值，避免非幂等 coerce 被执行两次）
+  precoerced?: Props,
 }
 
 const INNER_CONFIG_PROP = '__config__'
@@ -440,15 +443,24 @@ export class ComponentHost implements Host{
                finalProps[key] = type.coerce ? type.coerce(props[key]) : props[key]
            } else {
                // create defaultValue
-               finalProps[key] = type.defaultValue
+               // CAUTION 没有声明默认值时不能写入显式的 undefined key：这个幽灵 key 会在
+               //  boundProps 合并（bound 在前、input 在后按覆盖合并）时把 bindProps 提供的值
+               //  覆盖成 undefined，组件拿不到 bound 值且没有任何报错。
+               const defaultValue = type.defaultValue
+               if (defaultValue !== undefined) finalProps[key] = defaultValue
            }
         })
         return finalProps
     }
-    normalizePropsWithCoerceValue(propTypes: NonNullable<Component["propTypes"]>, props: Props) {
+    normalizePropsWithCoerceValue(propTypes: NonNullable<Component["propTypes"]>, props: Props, precoerced?: Props) {
         const finalProps: Props = {...props}
         Object.entries(propTypes).forEach(([key, type]) => {
             if (props[key] !== undefined) {
+                // CAUTION 输入值在 normalizePropsByPropTypes 里已经 coerce 过一次，原样保留到
+                //  这里的（=== precoerced 的同 key 值）绝不能再 coerce：coerce 不一定幂等
+                //  （coerce: v => [v] 这类包装写法会变成双层包装，值静默错误）。
+                //  这里只需要 coerce boundProps/AOP 合并出来的新值。
+                if (precoerced && props[key] === precoerced[key]) return
                 // CAUTION 不能写成 coerce(v) || v，coerce 返回合法的 falsy 值（0/''/false）会被吞掉
                 finalProps[key] = type.coerce ? type.coerce(props[key]) : props[key]
             }
@@ -562,23 +574,48 @@ export class ComponentHost implements Host{
             const props = type.propTypes ?
                 this.normalizePropsByPropTypes(type.propTypes, this.inputProps) :
                 {...this.inputProps}
-            return { props, itemConfig: EMPTY_ITEM_CONFIG, componentProp: EMPTY_COMPONENT_PROP }
+            // 快速路径下 props 全部来自（已 coerce 的）输入，render 里不需要第二次 coerce
+            return { props, itemConfig: EMPTY_ITEM_CONFIG, componentProp: EMPTY_COMPONENT_PROP, precoerced: props }
         }
 
         const inputPropsWithDefaultValue = this.type.propTypes ? this.normalizePropsByPropTypes(this.type.propTypes, this.inputProps) : this.inputProps
         const evaluatedBoundProps = this.evaluateBoundProps(inputPropsWithDefaultValue, this.renderContext!)
 
+        // CAUTION propTypes 默认值必须是最低优先级：它只是「谁都没提供时的兜底」，
+        //  不是用户输入。默认值混在 inputProps 里按输入合并的话，bindProps 提供的值会被
+        //  声明的默认值静默覆盖（bindProps(Comp, {size:'large'}) + default 'medium' 得到
+        //  'medium'）。这里把默认值填充的 key 拆出来放到合并序列最前面。
+        //  boundProps 的求值函数仍然收到含默认值的完整 inputProps（引用同一批默认值实例）。
+        let defaultsOnlyProps: Props | undefined
+        let realInputProps = inputPropsWithDefaultValue
+        if (this.type.propTypes) {
+            for (const key in this.type.propTypes) {
+                if (this.inputProps[key] === undefined && inputPropsWithDefaultValue[key] !== undefined) {
+                    if (!defaultsOnlyProps) {
+                        defaultsOnlyProps = {}
+                        realInputProps = {...inputPropsWithDefaultValue}
+                    }
+                    defaultsOnlyProps[key] = inputPropsWithDefaultValue[key]
+                    delete realInputProps[key]
+                }
+            }
+        }
+
         // CAUTION boundProps 的优先级是低于 inputProps，但这里 boundProps 还是可以拿到 inputProps 的值是因为
         //  它需要和 inputProps 里面通用的引用，例如 form 状态。
-        // 优先级：postBoundProps > configProps(AOP props) > boundProps > inputProps
-        const allPropsBeforePostBound = evaluatedBoundProps.concat(inputPropsWithDefaultValue, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
+        // 优先级：postBoundProps > configProps(AOP props) > inputProps > boundProps > propTypes 默认值
+        const allPropsBeforePostBound = (defaultsOnlyProps ? [defaultsOnlyProps] : [] as Props[])
+            .concat(evaluatedBoundProps, realInputProps, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
         const resultBeforePostBound = allPropsBeforePostBound.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {} })
         
         // 在 AOP props 之后，再评估和应用 postBoundProps
         // CAUTION postBoundProps 的函数参数应该能拿到 AOP 之后的 props，所以传入 resultBeforePostBound.props
         const propsAfterAOP = resultBeforePostBound.props
         const evaluatedPostBoundProps = this.evaluatePostBoundProps(propsAfterAOP, this.renderContext!)
-        return evaluatedPostBoundProps.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), resultBeforePostBound)
+        const result = evaluatedPostBoundProps.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), resultBeforePostBound)
+        // 原样保留的输入值（已 coerce）在 render 的第二次 coerce 中按引用跳过
+        result.precoerced = inputPropsWithDefaultValue
+        return result
     }
     render(): void {
         if (this.element !== this.placeholder) {
@@ -601,10 +638,13 @@ export class ComponentHost implements Host{
             const getFrame = ReactiveEffect.collectEffect()
             let node: ReturnType<Component>|null = null
             try {
-                const { props: componentProps, itemConfig } = this.getFinalPropsAndItemConfig()
+                const { props: componentProps, itemConfig, precoerced } = this.getFinalPropsAndItemConfig()
                 this.itemConfig = itemConfig
-                // 这里要再 coerce props，因为 boundProps 可能 return fixed value
-                const normalizedProps = this.type.propTypes ? this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps) : componentProps
+                // 这里要再 coerce props，因为 boundProps/AOP 可能 return fixed value；
+                // 已在 normalizePropsByPropTypes 里 coerce 过的输入值按引用跳过（coerce 不一定幂等）
+                const normalizedProps = (this.type.propTypes && componentProps !== precoerced) ?
+                    this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps, precoerced) :
+                    componentProps
 
                 normalizedProps.children = this.children
                 this.props = normalizedProps

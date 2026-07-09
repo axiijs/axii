@@ -144,9 +144,21 @@ export class RxDOMRect extends RxDOMState<HTMLElement|Window, RectObject>{
 
             if (Array.isArray(this.options)) {
                 const abortController = new AbortController()
+                const listener = () => assignRect()
                 this.options.forEach(event => {
-                    const listener = () => assignRect()
-                    event.target.current.addEventListener(event.event, listener, {signal: abortController.signal})
+                    // CAUTION 重算目标（滚动容器等）的 ref 此刻可能还没挂上：refs 按文档顺序
+                    //  attach，目标元素排在被测元素之后是自然写法。直接读 current 会 TypeError，
+                    //  整个渲染崩溃。ref 的附加在同一个同步任务内完成（flushAttachQueue），
+                    //  延迟到微任务再绑定即可；届时仍未挂载（目标从未渲染）就没有可监听的对象，跳过。
+                    const target = event.target.current
+                    if (target) {
+                        target.addEventListener(event.event, listener, {signal: abortController.signal})
+                    } else {
+                        queueMicrotask(() => {
+                            if (abortController.signal.aborted) return
+                            event.target.current?.addEventListener(event.event, listener, {signal: abortController.signal})
+                        })
+                    }
                 })
 
                 this.abort = () => {
