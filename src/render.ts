@@ -19,13 +19,30 @@ export type Root = {
     on: (event: string, callback: EventCallback, options?: EventOptions) => () => void,
     // 返回是否有监听器消费了该事件
     dispatch: (event: string, arg?: any) => boolean
+    /**
+     * @internal
+     * root 已 attach、但组件/元素此刻仍渲染在脱离文档的 fragment 里
+     * （列表新行、动态重建的静态子树等）时，layoutEffect/ref 不能立即执行——
+     * 它们的语义是「可以测量 DOM」。登记到这里，等外层把子树真正插入文档后
+     * 由 flushAttachQueue 同步执行。返回取消函数（host 在插入前被销毁时调用）。
+     */
+    deferUntilAttached: (node: Node, run: () => void) => () => void
+    /**
+     * @internal
+     * 完成一次「detached fragment -> 文档」插入后调用：执行队列中已经连通的回调，
+     * 仍未连通的（自己只是被插进了更外层的 fragment）留给更外层的 flush。
+     */
+    flushAttachQueue: () => void
 }
+
+type AttachQueueEntry = {node: Node, run: () => void, cancelled: boolean}
 
 /**
  * @category Basic
  */
 export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
+    let attachQueue: AttachQueueEntry[] = []
 
     // CAUTION parentContext 是外部（如 Portal 所在组件）自己的 pathContext，
     //  这里必须 clone，不能原地改写它的 root 字段，否则外部组件的 pathContext.root 会指向内层 root。
@@ -60,8 +77,30 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             root.dispatch('detach')
             root.host?.destroy()
             eventCallbacks.clear()
+            attachQueue = []
             root.host = undefined
             root.attached = false
+        },
+        deferUntilAttached(node: Node, run: () => void) {
+            const entry: AttachQueueEntry = {node, run, cancelled: false}
+            attachQueue.push(entry)
+            return () => { entry.cancelled = true }
+        },
+        flushAttachQueue() {
+            if (!attachQueue.length) return
+            // CAUTION 先取快照再执行：回调（layoutEffect）可能同步触发新的渲染/登记，
+            //  新条目直接落进新的队列，由本轮循环外的下一次 flush 处理。
+            const entries = attachQueue
+            attachQueue = []
+            for (const entry of entries) {
+                if (entry.cancelled) continue
+                if (entry.node.isConnected) {
+                    entry.run()
+                } else {
+                    // 仍在更外层的 fragment 里，等外层插入后的 flush
+                    attachQueue.push(entry)
+                }
+            }
         },
         // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
         on(event: string, callback: EventCallback, options?: EventOptions) {

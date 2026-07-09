@@ -118,7 +118,8 @@ export class ComponentHost implements Host{
     public renderContext?: RenderContext
     // context.set 的存储，只有真正用到 context 的组件才会分配（见 ensureDataContext）
     dataContext?: DataContext
-    public refProp?: RefObject|RefFn
+    // CAUTION 命名子组件（as=xxx）的 ref 会被合并成数组（用户 ref + 内部 refs[name] 收集回调）
+    public refProp?: RefObject|RefFn|(RefObject|RefFn)[]
     public thisProp?: RefObject|RefFn
     public inputProps: Props
     deleteLayoutEffectCallback?: () => void
@@ -154,7 +155,13 @@ export class ComponentHost implements Host{
 
     parseItemConfigFromProp(itemConfig: any, key:string, value:any, props: Props) {
         if (key[0] === '$') {
-            const [itemName, itemProp] = key.slice(1).split(':')
+            // CAUTION 只在第一个 ':' 处切分，itemProp 自身可能还含 ':'：
+            //  - $a:$b:prop 这类嵌套 AOP key（itemProp = '$b:prop'，由目标子组件自己解析）
+            //  - $icon:xlink:href 这类带 namespace 的属性名（itemProp = 'xlink:href'）
+            //  用 split(':') 一刀切会静默丢掉第二个 ':' 之后的部分。
+            const separatorIndex = key.indexOf(':')
+            const itemName = separatorIndex === -1 ? key.slice(1) : key.slice(1, separatorIndex)
+            const itemProp = separatorIndex === -1 ? undefined : key.slice(separatorIndex + 1)
             if (!itemConfig[itemName]) itemConfig[itemName] = {}
 
             if (itemProp === '_eventTarget')  {
@@ -175,8 +182,10 @@ export class ComponentHost implements Host{
             } else if(itemProp?.[0] === '_'){
                 // 不支持的配置项，报错信息要指出非法的配置项名（itemProp），而不是元素名
                 assert(false, `unsupported config item "${itemProp}" of "${itemName}"`)
-            } else if( itemProp.endsWith('_') ) {
+            } else if( itemProp[0] !== '$' && itemProp.endsWith('_') ) {
                 // 支持 $xxx:[prop]_ 来让用户使用函数自定义 merge props
+                // CAUTION 嵌套 AOP key（$a:$b:xxx_）不在这一层解析，
+                //  作为普通 prop 落到下面的分支，由目标子组件自己解析。
                 if (!itemConfig[itemName].propMergeHandles) itemConfig[itemName].propMergeHandles = {}
                 const propName = itemProp.slice(0, -1)
                 itemConfig[itemName].propMergeHandles![propName] = ensureArray(itemConfig[itemName].propMergeHandles![propName]).concat(value)
@@ -437,7 +446,14 @@ export class ComponentHost implements Host{
         })
         return finalProps
     }
-    attachRef(ref: RefObject|RefFn) {
+    attachRef(ref: RefObject|RefFn|(RefObject|RefFn)[]) {
+        // CAUTION 命名子组件（as=xxx）的 ref 会被 createHTMLOrSVGElement 合并成数组
+        //  （用户 ref + 内部收集 refs[name] 的回调），必须逐个附加，
+        //  否则用户 ref 拿不到值、父组件的 refs[name] 也不会被填充。
+        if (Array.isArray(ref)) {
+            ref.forEach(r => this.attachRef(r))
+            return
+        }
         const refValue = {
             ...this._exposed,
             refs: this.refs
@@ -457,7 +473,11 @@ export class ComponentHost implements Host{
             ref.current = this
         }
     }
-    detachRef(ref: RefObject|RefFn) {
+    detachRef(ref: RefObject|RefFn|(RefObject|RefFn)[]) {
+       if (Array.isArray(ref)) {
+           ref.forEach(r => this.detachRef(r))
+           return
+       }
        if(typeof ref === 'function') {
            ref(null)
        } else {
@@ -613,13 +633,21 @@ export class ComponentHost implements Host{
 
         // 没有 layoutEffect 也没有 ref 的组件（绝大多数）完全不需要参与 attach 流程
         if (this.layoutEffects || this.refProp) {
+            const root = this.pathContext.root
             // 已经 root attach 了，动态生成的节点，需要手动触发 layoutEffect。因为没有 attach 事件了。
-            if (this.pathContext.root.attached) {
-                this.runLayoutEffect()
+            if (root.attached) {
+                // CAUTION 动态生成的组件可能正被渲染在脱离文档的 fragment 里
+                //  （列表新行、动态重建的静态子树等）。layoutEffect/ref 的语义是「可以测量 DOM」，
+                //  必须等外层把子树真正插入文档后再执行（同一个同步任务内，由外层 flush 触发）。
+                if (this.placeholder.isConnected) {
+                    this.runLayoutEffect()
+                } else {
+                    this.deleteLayoutEffectCallback = root.deferUntilAttached(this.placeholder, () => this.runLayoutEffect())
+                }
             } else {
                 // CAUTION 一定要保存退订函数，组件如果在 root attach 之前被销毁，
                 //  必须退订，否则 attach 时会对已销毁的组件执行 layoutEffect/ref。
-                this.deleteLayoutEffectCallback = this.pathContext.root.on('attach', () => this.runLayoutEffect(), {once: true})
+                this.deleteLayoutEffectCallback = root.on('attach', () => this.runLayoutEffect(), {once: true})
             }
         }
     }

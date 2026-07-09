@@ -80,27 +80,40 @@ function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     return `${componentName}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
 
-export function markBoundProp(obj: object) {
-    Object.defineProperty(obj, '__bound', {
-        value: true,
-        enumerable: false
-    })
+// CAUTION 只有 object/function 才能 defineProperty。style 的合法取值还包括字符串
+//  （style="color:red" / $item:style={'color:red'}），对原始值标记直接跳过，
+//  否则 AOP 传入字符串 style 会在 defineProperty 处 TypeError。
+function canMarkProp(obj: any) {
+    return !!obj && (typeof obj === 'object' || typeof obj === 'function')
+}
+
+export function markBoundProp(obj: any) {
+    if (canMarkProp(obj)) {
+        Object.defineProperty(obj, '__bound', {
+            value: true,
+            enumerable: false
+        })
+    }
     return obj
 }
 
-export function markAopProp(obj: object) {
-    Object.defineProperty(obj, '__aop', {
-        value: true,
-        enumerable: false
-    })
+export function markAopProp(obj: any) {
+    if (canMarkProp(obj)) {
+        Object.defineProperty(obj, '__aop', {
+            value: true,
+            enumerable: false
+        })
+    }
     return obj
 }
 
-export function markDynamicProp(obj: object) {
-    Object.defineProperty(obj, '__dynamic', {
-        value: true,
-        enumerable: false
-    })
+export function markDynamicProp(obj: any) {
+    if (canMarkProp(obj)) {
+        Object.defineProperty(obj, '__dynamic', {
+            value: true,
+            enumerable: false
+        })
+    }
     return obj
 }
 
@@ -116,6 +129,22 @@ export function isAopProp(obj: any) {
 
 export function isDynamicProp(obj: any) {
     return !!(obj && obj['__dynamic'])
+}
+
+// 深度扫描 style 对象中是否有 atom/函数值（style={{color: colorAtom}} / 嵌套样式中的 atom）
+function containsReactiveStyleValue(styleObject: any): boolean {
+    for (const key in styleObject) {
+        const value = styleObject[key]
+        if (typeof value === 'function') return true
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                if (typeof item === 'function') return true
+            }
+        } else if (isPlainObject(value) && containsReactiveStyleValue(value)) {
+            return true
+        }
+    }
+    return false
 }
 
 // class name 中的字母含义
@@ -262,14 +291,18 @@ class StyleManager {
 
         const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
         const splitStyleObjects = styleObjects.map((styleObject, index) => {
-            const isDynamic = typeof styleObject === 'function' || isDynamicProp(styleObject)
             const isBound = isBoundProp(styleObject)
-            const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isDynamic ? el : null)
-            const styleSheetIdWithIndex = `${styleSheetId}F${index}`
-            const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
             const evaluatedStyleObject: StyleObject = typeof styleObject === 'function' ? styleObject() : styleObject
             // 分离普通和嵌套样式
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
+            // CAUTION 嵌套样式（stylesheet 路径）里出现 atom/函数值时必须按动态样式处理（滚动重建 stylesheet）：
+            //  stylesheet 只有第一次/滚动时才重建，静态路径下 atom 值变化既不会反映到样式，
+            //  依赖也会在下一次重算时丢失。普通（inline）样式不需要：它每次 update 都整体重新赋值。
+            const isDynamic = typeof styleObject === 'function' || isDynamicProp(styleObject) ||
+                containsReactiveStyleValue(nestedStyles)
+            const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isDynamic ? el : null)
+            const styleSheetIdWithIndex = `${styleSheetId}F${index}`
+            const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
             return {
               index,
               isDynamic,
@@ -522,19 +555,37 @@ export class StaticHost implements Host {
             insertBefore(this.source, this.placeholder)
         }
 
-        if (this.refHandles?.length) {
-            if (this.pathContext.root.attached) {
-                this.attachRefs()
-            } else {
-                // CAUTION 一定要保存退订函数，元素如果在 root attach 之前被销毁，
-                //  必须退订，否则 attach 时会把已销毁的元素重新附加到 ref 上。
-                this.removeAttachListener = this.pathContext.root.on('attach', () => this.attachRefs(), {once: true})
-            }
-        }
+        this.setupRefHandles()
         // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，
         //  没有响应式 style 属性的元素（绝大多数）完全不需要参与。
         if (this.usesStyleManager) {
             StaticHost.styleManager.mount(this)
+        }
+        // 自己插入完成后，内层（reactiveHosts 渲染期间登记的）layoutEffect/ref 可能已经连通，
+        //  在同一个同步任务内立刻执行。
+        // CAUTION 自己都还没连通（整体在更外层 fragment 里，如列表行）时必须跳过：
+        //  此时自己内部登记的条目必然也未连通，flush 纯属无效重扫——批量插入 N 个
+        //  带 layoutEffect/ref 的行时会退化成 O(N^2)。留给最外层完成插入的那次 flush 统一处理。
+        if (this.placeholder.isConnected) {
+            this.pathContext.root.flushAttachQueue()
+        }
+    }
+    setupRefHandles() {
+        if (this.refHandles?.length) {
+            const root = this.pathContext.root
+            if (root.attached) {
+                // CAUTION 元素可能正被渲染在脱离文档的 fragment 里（列表新行等），
+                //  ref 的挂载（以及依赖 ref 的 RxDOMSize 等 DOM 测量）要等真正插入文档后执行。
+                if (this.element.isConnected) {
+                    this.attachRefs()
+                } else {
+                    this.removeAttachListener = root.deferUntilAttached(this.element, () => this.attachRefs())
+                }
+            } else {
+                // CAUTION 一定要保存退订函数，元素如果在 root attach 之前被销毁，
+                //  必须退订，否则 attach 时会把已销毁的元素重新附加到 ref 上。
+                this.removeAttachListener = root.on('attach', () => this.attachRefs(), {once: true})
+            }
         }
     }
     collectInnerHost() {
@@ -822,15 +873,10 @@ export class CompactElementHost extends StaticHost {
             this.forceHandleElement = true
         }
         this.reactiveHosts?.forEach(host => host.render())
-        // CAUTION 自己的插入由 RxListHost 完成，这里不做
+        // CAUTION 自己的插入由 RxListHost 完成，这里不做，
+        //  layoutEffect/ref 的 flush 也由 RxListHost 在插入后统一触发。
 
-        if (this.refHandles?.length) {
-            if (this.pathContext.root.attached) {
-                this.attachRefs()
-            } else {
-                this.removeAttachListener = this.pathContext.root.on('attach', () => this.attachRefs(), {once: true})
-            }
-        }
+        this.setupRefHandles()
         if (this.usesStyleManager) {
             StaticHost.styleManager.mount(this)
         }

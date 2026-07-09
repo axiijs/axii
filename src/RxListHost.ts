@@ -108,6 +108,11 @@ export class RxListHost implements Host{
                         hosts.push(host.createChildHost(data[i]))
                     }
                     insertBefore(host.renderNewHosts(hosts), host.placeholder)
+                    // 行是在脱离文档的 fragment 里渲染的，插入完成后才执行行内登记的 layoutEffect/ref。
+                    // 列表自身仍未连通（在更外层 fragment 里）时跳过，留给外层 flush。
+                    if (host.placeholder.isConnected) {
+                        host.pathContext.root.flushAttachQueue()
+                    }
                 } finally {
                     this.resumeCollectChild()
                 }
@@ -196,6 +201,11 @@ export class RxListHost implements Host{
                 }
             }
             insertBefore(this.renderNewHosts(newHosts), insertBeforeHost?.element || this.placeholder)
+            // 新行是在脱离文档的 fragment 里渲染的，插入完成后才执行行内登记的 layoutEffect/ref。
+            // 列表自身仍未连通时跳过，留给外层 flush。
+            if (this.placeholder.isConnected) {
+                this.pathContext.root.flushAttachQueue()
+            }
         }
 
         if (deletedHosts.length) {
@@ -320,6 +330,11 @@ export class RxListHost implements Host{
             insertAfter(newHostAnchorNode, hostLastNode(hosts[index-1]))
         }
         newHost.render()
+        // compact host 的元素/ref 登记发生在 render 里（此时可能仍未连通），插入后统一 flush。
+        // 列表自身仍未连通时跳过，留给外层 flush。
+        if (this.placeholder.isConnected) {
+            this.pathContext.root.flushAttachQueue()
+        }
     }
     destroy(fromParentDestroy?: boolean) {
         trackHostDestroyed(this)
