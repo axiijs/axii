@@ -130,6 +130,13 @@ class StyleManager {
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
     // 上一次 update 写入的 inline style key，用于清除本次不再出现的残留 key
     public elToInlineStyleKeys = new WeakMap<HTMLElement, Set<string>>()
+    // 当前挂在元素 class 上的 stylesheet class id：响应式 className 整体覆写 class attribute 后，
+    //  必须能把这些框架管理的 class 补回去，否则 stylesheet 样式静默丢失。
+    public elToStyleClassIds = new WeakMap<HTMLElement, Set<string>>()
+    // CAUTION 记账 key 是「拥有这些样式的元素 host」（StaticHost/CompactElementHost 自身），
+    //  而不是 hostPath 上的父级 host：列表行共享同一个 hostPath 节点（RxListHost），
+    //  按父级记账时稳态 churn（列表始终非空）的行永远等不到计数归零，
+    //  被销毁行的 stylesheet 引用计数不释放，adoptedStyleSheets 无上限增长。
     public hostToStyleIds = new WeakMap<Host, Set<string>>()
     public hostMountCount = new WeakMap<Host, number>()
     public idToRefCount = new Map<string, number>()
@@ -178,8 +185,7 @@ class StyleManager {
         }
         return null
     }
-    collect(hostPath: LinkedNode<Host>, id: string) {
-        const host = hostPath.node
+    collect(host: Host, id: string) {
         let ids = this.hostToStyleIds.get(host)
         if (!ids) {
             ids = new Set()
@@ -189,27 +195,22 @@ class StyleManager {
         ids.add(id)
         this.updateRefCount(id, +1)
     }
-    mount(hostPath: LinkedNode<Host>) {
-        if (!hostPath) return // robustness for ReusableHost
-        const host = hostPath.node
+    mount(host: Host) {
         const count = ((this.hostMountCount.get(host) ?? 0) + 1)
         this.hostMountCount.set(host, count)
         return count
     }
-    unmount(hostPath: LinkedNode<Host>) {
-        if (!hostPath) return // robustness for ReusableHost
-        const host = hostPath.node
+    unmount(host: Host) {
         const count = ((this.hostMountCount.get(host) ?? 0) - 1)
         if (count > 0) {
             this.hostMountCount.set(host, count)
             return count
         }
 
-        this.cleanup(hostPath)
+        this.cleanup(host)
         this.hostMountCount.delete(host)
     }
-    cleanup(hostPath: LinkedNode<Host>) {
-        const host = hostPath.node
+    cleanup(host: Host) {
         if (this.hostToStyleIds.has(host)) {
             trackStyleHostStateDestroyed()
         }
@@ -239,7 +240,23 @@ class StyleManager {
         }
         return count
     }
-    update(hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
+    trackStyleClassAdded(el: ExtendedElement, id: string) {
+        let ids = this.elToStyleClassIds.get(el)
+        if (!ids) this.elToStyleClassIds.set(el, ids = new Set())
+        ids.add(id)
+    }
+    trackStyleClassRemoved(el: ExtendedElement, id: string) {
+        this.elToStyleClassIds.get(el)?.delete(id)
+    }
+    // 响应式 className/class 更新整体覆写了 class attribute 之后，
+    //  把 StyleManager 管理的 stylesheet class 补回去。
+    reapplyStyleClasses(el: ExtendedElement) {
+        const ids = this.elToStyleClassIds.get(el)
+        if (ids) {
+            for (const id of ids) el.classList.add(id)
+        }
+    }
+    update(owner: Host, hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
         // style 中有嵌套写法/animation/at-rules 等原生不能识别的，都会当做 unhandledAttr 走到这里。当然也包括 atom 和 function
         const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
 
@@ -286,13 +303,15 @@ class StyleManager {
                     // 如果是第一次应用样式，或者需要滚动生成样式，则生成 stylesheet
                     const styleSheet = this.styleScripts.get(finalStyleSheetId) ?? this.createStyleSheet(finalStyleSheetId, so.evaluatedStyleObject)
                     el.classList.add(finalStyleSheetId)
+                    this.trackStyleClassAdded(el, finalStyleSheetId)
                     // 保存 stylesheet，更新引用计数
                     this.styleScripts.set(finalStyleSheetId, styleSheet)
-                    this.collect(hostPath, finalStyleSheetId)
+                    this.collect(owner, finalStyleSheetId)
                     if (shouldUseRollingStyleId) {
                         const lastStyleSheetId = `${so.styleSheetIdWithIndex}I${styleItorNum - 1}`
                         // 如果是滚动生成样式，则移除上一个 classname
                         el.classList.remove(lastStyleSheetId)
+                        this.trackStyleClassRemoved(el, lastStyleSheetId)
                         // 更新引用计数，但归零时并不会立即清除 stylesheet，因为它可能还被 cloneNode 用到
                         // 如果现在清除，cloneNode 的样式会瞬间失效
                         this.updateRefCount(lastStyleSheetId, -1)
@@ -303,7 +322,7 @@ class StyleManager {
                             const expiredStyleSheetId = `${so.styleSheetIdWithIndex}I${styleItorNum - 2}`
                             if ((this.idToRefCount.get(expiredStyleSheetId) ?? 0) <= 0) {
                                 this.deleteStyleSheet(expiredStyleSheetId)
-                                this.hostToStyleIds.get(hostPath.node)?.delete(expiredStyleSheetId)
+                                this.hostToStyleIds.get(owner)?.delete(expiredStyleSheetId)
                             }
                         }
                     }
@@ -515,7 +534,7 @@ export class StaticHost implements Host {
         // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，
         //  没有响应式 style 属性的元素（绝大多数）完全不需要参与。
         if (this.usesStyleManager) {
-            StaticHost.styleManager.mount(this.pathContext.hostPath)
+            StaticHost.styleManager.mount(this)
         }
     }
     collectInnerHost() {
@@ -541,19 +560,22 @@ export class StaticHost implements Host {
     collectReactiveAttr() {
         const result = this.source as ExtendedElement
 
-        const isSVG = result instanceof SVGElement
-
         const { unhandledAttr } = result
 
         if(unhandledAttr) {
             const attrEffects: LightBindingEffect[] = this.attrEffects = []
             for (const { el, key, value, path, source } of unhandledAttr) {
+                // CAUTION isSVG 必须按属性所属的元素判断，而不是按整个静态子树的根：
+                //  HTML 子树里可以嵌套 SVG 元素（反之亦然），按根判断会让嵌套侧的
+                //  驼峰属性转换/namespace 处理全部失效。
+                const isSVG = el instanceof SVGElement
                 // 基于一个推测：拥有 unhandledAttr 的元素，更有可能被测到
                 if (StaticHostConfig.autoGenerateTestId && !el.hasAttribute('data-testid')) {
                     this.generateTestId(el, path)
                 }
-                // FIXME  这里和 Component  configuration 约定的传递 prop 的key 耦合了
-                if (!key.includes(':')) {
+                // CAUTION prop:/$ 前缀是 Component configuration 约定的配置 key，不是真实 DOM 属性；
+                //  其余带 ':' 的 key（如 xlink:href / xmlns:*）是合法属性，不能一并跳过。
+                if (!(key[0] === '$' || key.startsWith('prop:'))) {
                     if (key === 'style') {
                         this.usesStyleManager = true
                     }
@@ -592,12 +614,17 @@ export class StaticHost implements Host {
     updateAttribute(el: ExtendedElement, key: string, value: any, path: number[], isSVG: boolean) {
 
         if (key === 'style' ) {
-            return StaticHost.styleManager.update(this.pathContext.hostPath, path, value, el)
+            return StaticHost.styleManager.update(this, this.pathContext.hostPath, path, value, el)
         } else {
             const final = Array.isArray(value) ?
                 value.map(v => isAtomLike(v) ? v() : v) :
                 isAtomLike(value) ? value() : value
-            if (/^data-/.test(key)) {
+            if (key === 'className' || key === 'class') {
+                // CAUTION className 更新是整体覆写 class attribute，
+                //  必须把 StyleManager 挂上去的 stylesheet class 补回来，否则嵌套样式/boundProps 样式静默丢失。
+                setAttribute(el, key, final, isSVG)
+                StaticHost.styleManager.reapplyStyleClasses(el)
+            } else if (/^data-/.test(key)) {
                 // 使用 dataset 的时候 key 要进行驼峰化
                 // ref: https://developer.mozilla.org/zh-CN/docs/Web/API/HTMLElement/dataset#%E5%90%8D%E7%A7%B0%E8%BD%AC%E6%8D%A2
                 // CAUTION null/undefined 表示移除属性，dataset 赋值会把它们字符串化成
@@ -668,7 +695,7 @@ export class StaticHost implements Host {
                 }
             } finally {
                 if (this.usesStyleManager) {
-                    StaticHost.styleManager.unmount(this.pathContext.hostPath)
+                    StaticHost.styleManager.unmount(this)
                 }
             }
             return
@@ -676,7 +703,7 @@ export class StaticHost implements Host {
 
         const unmountStyle = () => {
             if (this.usesStyleManager) {
-                StaticHost.styleManager.unmount(this.pathContext.hostPath)
+                StaticHost.styleManager.unmount(this)
             }
         }
 
@@ -805,7 +832,7 @@ export class CompactElementHost extends StaticHost {
             }
         }
         if (this.usesStyleManager) {
-            StaticHost.styleManager.mount(this.pathContext.hostPath)
+            StaticHost.styleManager.mount(this)
         }
     }
     destroy(parentHandle?: boolean) {
@@ -827,7 +854,7 @@ export class CompactElementHost extends StaticHost {
             (this.element as HTMLElement).remove()
         }
         if (this.usesStyleManager) {
-            StaticHost.styleManager.unmount(this.pathContext.hostPath)
+            StaticHost.styleManager.unmount(this)
         }
     }
 }

@@ -3,6 +3,7 @@ import {
     AttributesArg,
     createElement,
     createSVGElement,
+    dispatchEvent,
     ExtendedElement,
     Fragment,
     insertBefore,
@@ -356,6 +357,17 @@ export class ComponentHost implements Host{
 
         if (!(typeof finalType === 'function')) {
             (node as ExtendedElement).listenerBoundArgs = [this.getContextComponentProps(), componentProps]
+
+            // 6. 支持 $name:_eventTarget 把外部事件转发到该元素：
+            //  用户拿到的 dispatch 回调会克隆事件（原事件可能已完成派发，不能直接重派），
+            //  并直接走元素的 eventProxy（keydown 等事件无法用 node.dispatchEvent 真实模拟）。
+            if (thisItemConfig?.eventTarget?.length) {
+                const targetNode = node as ExtendedElement
+                thisItemConfig.eventTarget.forEach(receiveDispatch => receiveDispatch((sourceEvent: Event) => {
+                    const EventConstructor = sourceEvent.constructor as typeof Event
+                    return dispatchEvent(targetNode, new EventConstructor(sourceEvent.type, sourceEvent))
+                }))
+            }
         }
 
         return node
@@ -767,15 +779,30 @@ export function bindProps(Component: Component, props: Props,) {
 export class ReusableHost implements Host{
     public innerHost: Host
     reusePlaceholder?: Comment
-    constructor(public source: any, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
-        this.innerHost = createHost(source, placeholder, pathContext)
+    constructor(public source: any, public innerPlaceholder: UnhandledPlaceholder, public pathContext: PathContext) {
+        this.innerHost = createHost(source, innerPlaceholder, pathContext)
     }
-    element:HTMLElement|Comment|Text|SVGElement = this.placeholder
+    // CAUTION Host 契约中的 placeholder 是「当前挂载点」（moveTo 传入的 reusePlaceholder），
+    //  而不是 innerHost 的 placeholder：RxListHost 等父级用它插入/定位/判断是否已渲染。
+    get placeholder(): UnhandledPlaceholder {
+        return (this.reusePlaceholder ?? this.innerPlaceholder)
+    }
+    // CAUTION element 必须是实时 getter（区间第一个节点），不能是构造时固定的字段：
+    //  固定字段永远指向区间末尾的 innerPlaceholder，父级（列表插入锚点/区间搬移）
+    //  以它为区间起点时会漏掉全部实际内容。
+    get element(): HTMLElement|Comment|Text|SVGElement {
+        return this.rendered ? this.innerHost.element : this.placeholder
+    }
+    // CAUTION 内容必须由自己搬移保留（destroy 时挪进 fragment 以便复用），
+    //  绝不允许父级（RxListHost 整段 Range 删除等）连内容一起物理删除。
+    get forceHandleElement(): boolean {
+        return true
+    }
     rendered = false
     render() {
         // 第一次渲染
         if (!this.rendered) {
-            insertBefore(this.placeholder, this.reusePlaceholder!)
+            insertBefore(this.innerPlaceholder, this.reusePlaceholder!)
             // debugger
             this.innerHost.render()
             this.rendered = true
@@ -833,8 +860,8 @@ export class ReusableHost implements Host{
     }
     destroyReusable() {
         // 可能没有真正被渲染过
-        if (this.element === this.placeholder) {
-            this.element.remove()
+        if (!this.rendered) {
+            this.innerPlaceholder.remove()
         } else {
             this.innerHost.destroy(false)
         }

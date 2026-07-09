@@ -12,6 +12,7 @@
 | [04-reproduction-report.md](./04-reproduction-report.md) | 致命问题复现报告（已归档，复现测试已反转为回归测试） |
 | [05-review-2026-07.md](./05-review-2026-07.md) | 2026-07 深度 review 第一轮（F1-F6 / I7-I15 / O1-O3，**已全部修复**） |
 | [06-review-2026-07-round2.md](./06-review-2026-07-round2.md) | 2026-07 深度 review 第二轮（F7-F10 / I16-I18，**已全部修复**） |
+| [07-review-2026-07-round3.md](./07-review-2026-07-round3.md) | 2026-07 深度 review 第三轮（F11-F15 / I19-I20 / O4-O6，**已全部修复**） |
 
 ## 结论摘要
 
