@@ -470,7 +470,9 @@ export class ComponentHost implements Host{
             if (typeof b === 'function') {
                 // 由于在这里提前展开了函数，在 StyleManager#update 里拿到的已经是 object
                 // 故而 StyleManager 不知道这个东西是不是 dynamic 的，应该在这里标记一下
-                return markDynamicProp(markBoundProp(b(inputProps, renderContext!)))
+                // CAUTION 函数返回 falsy（cond ? {...} : undefined 的条件写法）视为空 props，
+                //  不能直接对 undefined/false 做 defineProperty（TypeError）。
+                return markDynamicProp(markBoundProp(b(inputProps, renderContext!) || {}))
             }
             return markBoundProp(b)
         })
@@ -478,7 +480,7 @@ export class ComponentHost implements Host{
     evaluatePostBoundProps(inputProps:Props, renderContext:RenderContext) {
         return (this.type.postBoundProps || []).map(b => {
             if (typeof b === 'function') {
-                return markDynamicProp(markBoundProp(b(inputProps, renderContext!)))
+                return markDynamicProp(markBoundProp(b(inputProps, renderContext!) || {}))
             }
             return markBoundProp(b)
         })
@@ -752,9 +754,13 @@ export class ComponentRenderContext implements RenderContext {
 export const N_ATTR = '__nativeAttrs'
 
 export function bindProps(Component: Component, props: Props,) {
-    const ComponentWithProps = Component.bind(null)
+    // CAUTION Function.prototype.bind 产生的新函数不会继承原函数上的静态属性
+    //  （propTypes/boundProps/postBoundProps），必须显式从原 Component 上复制。
+    //  boundProps 尤其要从原组件读取再 concat，否则嵌套 bindProps 会静默丢掉前一层绑定的 props。
+    const ComponentWithProps = Component.bind(null) as Component
     ComponentWithProps.propTypes = Component.propTypes
-    ComponentWithProps.boundProps = ensureArray(ComponentWithProps.boundProps).concat(props)
+    ComponentWithProps.boundProps = ensureArray(Component.boundProps).concat(props)
+    if (Component.postBoundProps) ComponentWithProps.postBoundProps = Component.postBoundProps
     return ComponentWithProps
 }
 

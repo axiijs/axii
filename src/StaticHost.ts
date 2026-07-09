@@ -128,6 +128,8 @@ class StyleManager {
     public styleScripts = new Map<string, CSSStyleSheet>()
     public elToStyleId = new WeakMap<HTMLElement, string>()
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
+    // 上一次 update 写入的 inline style key，用于清除本次不再出现的残留 key
+    public elToInlineStyleKeys = new WeakMap<HTMLElement, Set<string>>()
     public hostToStyleIds = new WeakMap<Host, Set<string>>()
     public hostMountCount = new WeakMap<Host, number>()
     public idToRefCount = new Map<string, number>()
@@ -318,6 +320,34 @@ class StyleManager {
               // DEV: 把 styleItorNum 打到 DOM 节点上方便调试
               el.setAttribute('data-axii-style-itor-num', String(styleItorNum + 1))
             }
+        }
+        // CAUTION 响应式 style 重算后，新值可能不再包含上一次写过的某些 key
+        //  （条件样式 () => cond() && {...} 翻转为 falsy、或对象换了一批 key）。
+        //  inline style 是按 key 赋值的，必须显式清掉本次不再出现的 key，否则旧样式残留。
+        const previousInlineKeys = this.elToInlineStyleKeys.get(el)
+        const nextInlineKeys = new Set<string>()
+        for (const patch of stylePatches) {
+            if (typeof patch === 'string') {
+                // 字符串 patch 会整体覆写 cssText，之前收集的 key 全部失效
+                nextInlineKeys.clear()
+            } else if (patch && typeof patch === 'object') {
+                for (const k in patch) nextInlineKeys.add(k)
+            }
+        }
+        if (previousInlineKeys) {
+            for (const k of previousInlineKeys) {
+                if (!nextInlineKeys.has(k)) {
+                    if (k[0] === '-' && k[1] === '-') {
+                        el.style.removeProperty(k)
+                    } else {
+                        // @ts-ignore
+                        el.style[k] = ''
+                    }
+                }
+            }
+        }
+        if (previousInlineKeys || nextInlineKeys.size) {
+            this.elToInlineStyleKeys.set(el, nextInlineKeys)
         }
         setAttribute(el, 'style', stylePatches, el instanceof SVGElement)
     }
@@ -570,7 +600,13 @@ export class StaticHost implements Host {
             if (/^data-/.test(key)) {
                 // 使用 dataset 的时候 key 要进行驼峰化
                 // ref: https://developer.mozilla.org/zh-CN/docs/Web/API/HTMLElement/dataset#%E5%90%8D%E7%A7%B0%E8%BD%AC%E6%8D%A2
-                el.dataset[camelize(key.slice(5))] = final
+                // CAUTION null/undefined 表示移除属性，dataset 赋值会把它们字符串化成
+                //  字面 "null"/"undefined"，必须用 delete。
+                if (final == null) {
+                    delete el.dataset[camelize(key.slice(5))]
+                } else {
+                    el.dataset[camelize(key.slice(5))] = final
+                }
             } else {
                 setAttribute(el, key, final, isSVG)
             }

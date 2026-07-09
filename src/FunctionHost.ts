@@ -107,7 +107,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         if (node == null || valueType === 'string' || valueType === 'number' || valueType === 'boolean') {
             // 文本快速路径：不需要 comment 占位和完整的 host 子树，
             //  依赖变化时只更新 Text.nodeValue。
-            const text = node == null ? '' : String(node)
+            // CAUTION boolean 渲染为空文本而不是字面 "true"/"false"：
+            //  () => cond() && <el/> 是最常见的条件渲染写法，false 不应该出现在页面上。
+            const text = (node == null || valueType === 'boolean') ? '' : String(node)
             if (this.textNode) {
                 this.textNode.nodeValue = text
                 return

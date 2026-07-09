@@ -10,6 +10,8 @@
 | [02-fatal-issues.md](./02-fatal-issues.md) | 致命问题（8 项，**已全部修复**，现为修复索引） |
 | [03-improvements.md](./03-improvements.md) | 显著改进项（15 项，**已逐项求证并处理**，现为处理索引） |
 | [04-reproduction-report.md](./04-reproduction-report.md) | 致命问题复现报告（已归档，复现测试已反转为回归测试） |
+| [05-review-2026-07.md](./05-review-2026-07.md) | 2026-07 深度 review 第一轮（F1-F6 / I7-I15 / O1-O3，**已全部修复**） |
+| [06-review-2026-07-round2.md](./06-review-2026-07-round2.md) | 2026-07 深度 review 第二轮（F7-F10 / I16-I18，**已全部修复**） |
 
 ## 结论摘要
 
