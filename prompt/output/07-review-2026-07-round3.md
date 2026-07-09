@@ -7,7 +7,9 @@
 **root attach 生命周期** 上。
 
 回归测试：致命问题在 `__tests__/fatalBugs4.spec.tsx`（F11-F15），改进项在
-`__tests__/improvements4.spec.tsx`（I19-I20），编号与下表一致。
+`__tests__/improvements4.spec.tsx`（I19-I23），编号与下表一致。
+（I21-I23 是本轮初版报告中的观察项 O4-O6，后续已全部落地修复，
+每个测试都先在未修复代码上确认失败再转为回归测试。）
 
 ## 致命问题修复索引
 
@@ -25,14 +27,9 @@
 | --- | --- | --- |
 | I19 | 响应式的带 namespace 属性（`xlink:href` / `xmlns:*`）因 key 含 `:` 被 `collectReactiveAttr` 一刀切跳过（连初值都不设置）；同时 isSVG 按静态子树的根判断，HTML 子树里嵌套的 SVG 元素拿不到 namespace / 驼峰属性转换 | 只跳过真正的配置 key（`prop:` / `$` 前缀），其余带 `:` 的合法属性正常建立响应式绑定；isSVG 改为按属性所属元素（`el instanceof SVGElement`）判断（`src/StaticHost.ts`） |
 | I20 | `$name:_eventTarget`（AOP 事件转发）只有解析端，消费端在历史重构（d07c3d8）中丢失，静默不生效 | 恢复消费端：传入的函数收到一个 dispatch 回调，事件克隆后直接走目标元素的 eventProxy 派发（keydown 等事件无法用 `node.dispatchEvent` 真实模拟）（`src/ComponentHost.ts`） |
-
-## 代码审查观察项（未修复，记录备查）
-
-| # | 观察 | 说明 |
-| --- | --- | --- |
-| O4 | `DataContext.get` 从父链开始查找，组件自己 `context.set` 后自己 `context.get` 拿不到 | Provider 模式（父设子取）不受影响；是否支持自读属语义决策，未改动 |
-| O5 | `separateProps` 处理 `$self:` 时若值里再嵌套 `$xxx:` 配置 key，会落进被丢弃的临时 itemConfig | 极端嵌套写法，未见真实使用场景 |
-| O6 | `Form` 多值 unregister 里 `RxList.findIndex` 创建的 computed 未显式销毁 | 泄漏量极小（每次 unregister 一个），可与 Form 的 TODO 一起重构 |
+| I21 | `DataContext.get` 从父链开始查找（hostPath 不含当前组件），组件自己 `context.set` 后自己 `context.get` 拿不到 | get 先查自己的 `_valueByType` 再沿父链查找，与「Provider 覆盖含自身的子树」语义一致（`src/ComponentHost.ts`） |
+| I22 | `separateProps` 处理 `$self:` 时复用 `parseAndMergeProps`，值里再嵌套的 `$xxx:` 配置 key（`$self:$inner:prop`）落进被丢弃的临时 itemConfig，静默失效 | `$self:` 的所有 key（含 `$` 前缀）作为普通 prop 用 `mergeProp` 合并进 props，嵌套 AOP 配置由目标子组件自己解析（`src/ComponentHost.ts`） |
+| I23 | `Form` 多值 unregister 用 `RxList.findIndex` 做一次性位置查询，每次调用创建一个永不销毁的响应式 computed（订阅泄漏） | 改查 raw `data.indexOf`，unregister 不留任何订阅；以 data0 retained diagnostics 断言 effect 数归零（`src/Form.tsx`） |
 
 运行方式：
 

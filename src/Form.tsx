@@ -65,9 +65,11 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
     const unregister = (name: string, instance: FormItemInstance, multiple?: boolean) => {
         if (multiple) {
             const valuesList = values.get(name) as RxList<any>
-            const valueIndex = valuesList.findIndex(v => v === instance.value)
-            if (valueIndex() > -1) {
-                valuesList.splice(valueIndex(), 1)
+            // CAUTION 不能用 RxList.findIndex：它每次调用都会创建一个长驻的响应式 computed，
+            //  这里只需要一次性的位置查询，直接查 raw data，unregister 不留任何订阅。
+            const valueIndex = valuesList.data.indexOf(instance.value)
+            if (valueIndex > -1) {
+                valuesList.splice(valueIndex, 1)
             }
 
             const index = (instances[name] as Array<FormItemInstance>).findIndex(i => i === instance)

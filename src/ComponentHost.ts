@@ -228,7 +228,12 @@ export class ComponentHost implements Host{
 
         // merge props and selfMergeProps
         if (hasSelfMergeProps) {
-            this.parseAndMergeProps({props, itemConfig:{}, componentProp: componentProps}, selfMergeProps)
+            // CAUTION 不能复用 parseAndMergeProps：它会把 $ 前缀的 key 解析进（这里被丢弃的）
+            //  临时 itemConfig。$self:$inner:xxx 这类嵌套 AOP 配置应该作为普通 prop 合并进 props，
+            //  由目标（子组件）自己去解析。
+            for (const key in selfMergeProps) {
+                props[key] = mergeProp(key, props[key], selfMergeProps[key])
+            }
         }
         return {props, componentProps}
     }
@@ -691,6 +696,11 @@ export class DataContext{
         return this._valueByType ??= new Map<any, any>()
     }
     get(contextType:any) {
+        // CAUTION 先查自己：hostPath 是「父级路径」，不包含当前组件，
+        //  组件 set 过的 context 自己也应该能 get 到（与 Provider 覆盖子树含自身的语义一致）。
+        if (this._valueByType?.has(contextType)) {
+            return this._valueByType.get(contextType)
+        }
         // 找到最近具有 contextType 的 host
         // CAUTION 直接读 ComponentHost.dataContext 而不是 renderContext.context：
         //  后者是惰性 getter，读取会给沿途每个祖先组件分配 DataContext
