@@ -117,8 +117,10 @@ export class RxListHost implements Host{
                 this.pauseCollectChild()
                 try {
                     for (const info of triggerInfos) {
-                        // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled rejection，
-                        //  所以出错时必须先 reportAxiiError 输出结构化报告，再继续抛出保持可观测。
+                        // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled rejection。
+                        //  外部通过 root.on('error') 注册了处理器时交给处理器（应用保持存活，
+                        //  该列表区域可能处于不一致状态）；否则先 reportAxiiError 输出结构化报告，
+                        //  再继续抛出保持可观测。
                         try {
                             if (isAxiiDiagnosticsEnabled()) {
                                 const {method, argv, key, methodResult, type} = info
@@ -141,8 +143,10 @@ export class RxListHost implements Host{
                                 host.applyTriggerInfo(info)
                             }
                         } catch (error) {
-                            reportAxiiError(error)
-                            throw error
+                            if (!host.pathContext.root.dispatch('error', error)) {
+                                reportAxiiError(error)
+                                throw error
+                            }
                         }
                     }
                 } finally {

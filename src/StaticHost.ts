@@ -528,20 +528,27 @@ export class StaticHost implements Host {
                         this.usesStyleManager = true
                     }
                     const effect = new LightBindingEffect(() => {
-                        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
-                        if (isAxiiDiagnosticsEnabled()) {
-                            withReactiveTrace({
-                                type: 'static-attr',
-                                operation: 'update-attr',
-                                hostType: 'StaticHost',
-                                elementPath: path,
-                                source: source ?? this.pathContext.debugSource,
-                                attrName: key,
-                            }, () => {
+                        // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，
+                        //  则报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），
+                        //  否则保持向上抛出的行为。与 ComponentHost/FunctionHost 的错误钩子语义一致。
+                        try {
+                            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
+                            if (isAxiiDiagnosticsEnabled()) {
+                                withReactiveTrace({
+                                    type: 'static-attr',
+                                    operation: 'update-attr',
+                                    hostType: 'StaticHost',
+                                    elementPath: path,
+                                    source: source ?? this.pathContext.debugSource,
+                                    attrName: key,
+                                }, () => {
+                                    this.updateAttribute(el, key, value, path, isSVG)
+                                })
+                            } else {
                                 this.updateAttribute(el, key, value, path, isSVG)
-                            })
-                        } else {
-                            this.updateAttribute(el, key, value, path, isSVG)
+                            }
+                        } catch (e) {
+                            if (!this.pathContext.root.dispatch('error', e)) throw e
                         }
                     })
                     trackLightBindingCreated(effect, 'ReactiveAttributeBinding')

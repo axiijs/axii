@@ -56,19 +56,25 @@ export class AtomHost extends LightBindingEffect implements Host{
 
     // LightBindingEffect 触发时的回调（以原型方法提供，替代构造器闭包）
     update() {
-        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，文本更新是最热的路径之一
-        if (isAxiiDiagnosticsEnabled()) {
-            withReactiveTrace({
-                type: 'atom-text',
-                operation: 'update-text',
-                hostType: 'AtomHost',
-                elementPath: this.pathContext.elementPath,
-                source: this.pathContext.debugSource,
-            }, () => {
+        // CAUTION 文本更新抛错（如用户对象的 toString 抛错）：如果外部通过 root.on('error')
+        //  注册了处理器，则报告错误并跳过本次更新，否则保持向上抛出的行为。
+        try {
+            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，文本更新是最热的路径之一
+            if (isAxiiDiagnosticsEnabled()) {
+                withReactiveTrace({
+                    type: 'atom-text',
+                    operation: 'update-text',
+                    hostType: 'AtomHost',
+                    elementPath: this.pathContext.elementPath,
+                    source: this.pathContext.debugSource,
+                }, () => {
+                    this.replace(this.source())
+                })
+            } else {
                 this.replace(this.source())
-            })
-        } else {
-            this.replace(this.source())
+            }
+        } catch (e) {
+            if (!this.pathContext.root.dispatch('error', e)) throw e
         }
     }
 

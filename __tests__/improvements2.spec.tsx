@@ -314,4 +314,95 @@ describe('improvements regression (2026-07 review)', () => {
         el.dispatchEvent(new Event('input'))
         expect(calls).toEqual(['change', 'input', 'change', 'rebound'])
     })
+
+    /**
+     * O1a: root.on('error') 之前只覆盖组件 render 和函数节点重算，
+     * 响应式属性更新抛错不经过钩子。现在属性更新（含初始求值）抛错也会被报告，
+     * effect 保持活跃，依赖恢复后可以继续更新。
+     */
+    test('O1a: root.on(error) catches reactive attribute update errors and binding recovers', () => {
+        const errors: any[] = []
+        const ok = atom(true)
+        let ref: any
+        function App({}: any, {createElement, createRef}: RenderContext) {
+            ref = createRef()
+            return <div ref={ref} className={() => {
+                if (!ok()) throw new Error('attr boom')
+                return 'fine'
+            }}>x</div>
+        }
+        const root = createRoot(rootEl)
+        root.on('error', (e: any) => errors.push(e))
+        root.render(<App/>)
+        expect(ref.current.className).toBe('fine')
+        ok(false)
+        expect(errors.length).toBe(1)
+        expect(errors[0].message).toBe('attr boom')
+        // 依赖恢复后继续更新
+        ok(true)
+        expect(ref.current.className).toBe('fine')
+        root.destroy()
+    })
+
+    /**
+     * O1b: atom 文本更新抛错（如用户对象的 toString 抛错）也应经过 root.on('error')，
+     * 保留上一次的文本，依赖恢复后继续更新。
+     */
+    test('O1b: root.on(error) catches atom text update errors and binding recovers', () => {
+        const errors: any[] = []
+        const val = atom<any>('ok')
+        function App() {
+            return <span id="atom-err">{val}</span>
+        }
+        const root = createRoot(rootEl)
+        root.on('error', (e: any) => errors.push(e))
+        root.render(<App/>)
+        const span = document.getElementById('atom-err')!
+        expect(span.textContent).toBe('ok')
+        val({toString() { throw new Error('text boom') }})
+        expect(errors.length).toBe(1)
+        expect(errors[0].message).toBe('text boom')
+        // 保留上一次的文本
+        expect(span.textContent).toBe('ok')
+        val('recovered')
+        expect(span.textContent).toBe('recovered')
+        root.destroy()
+    })
+
+    /**
+     * O1c: RxList patch 中的错误（如外部破坏了列表管理的 DOM 区间导致
+     * AXII_DOM_BOUNDARY_BROKEN）之前 reportAxiiError 后继续 rethrow，
+     * 在 data0 computed 里变成 unhandled rejection。现在注册了 root.on('error')
+     * 时交给处理器，应用保持存活。
+     */
+    test('O1c: root.on(error) catches RxList patch errors without unhandled rejection', async () => {
+        let unhandled = false
+        const onUnhandled = () => { unhandled = true }
+        window.addEventListener('unhandledrejection', onUnhandled)
+
+        const errors: any[] = []
+        const {RxList} = await import('@framework')
+        const list = new RxList([1, 2, 3])
+        function App({}: any, {createElement}: RenderContext) {
+            return <div id="list-parent">{list.map((n: number) => <div class="err-row">{'' + n}</div>)}</div>
+        }
+        const root = createRoot(rootEl)
+        root.on('error', (e: any) => errors.push(e))
+        root.render(<App/>)
+
+        // 外部破坏列表 DOM 区间：把第二行搬到第一行前面
+        const parent = document.getElementById('list-parent')!
+        const rows = parent.querySelectorAll('.err-row')
+        parent.insertBefore(rows[1], rows[0])
+
+        // 删除前两行 → 整段删除路径的区间校验抛 AxiiError
+        list.splice(0, 2)
+        expect(errors.length).toBe(1)
+        expect((errors[0] as any).code).toBe('AXII_DOM_BOUNDARY_BROKEN')
+
+        await sleep(30)
+        window.removeEventListener('unhandledrejection', onUnhandled)
+        expect(unhandled).toBe(false)
+        root.destroy()
+    })
 })
