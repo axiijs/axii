@@ -43,6 +43,10 @@ type AttachQueueEntry = {node: Node, run: () => void, cancelled: boolean}
 export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     let attachQueue: AttachQueueEntry[] = []
+    // Portal 场景：内层 root 由框架私有创建，用户无法在它上面注册监听，
+    //  未被消费的 error 事件必须冒泡到父 root，否则 portal 内容的错误
+    //  永远到不了用户的 root.on('error') 钩子（异步路径下直接变成 unhandled rejection）。
+    const parentRoot = parentContext?.root
 
     // CAUTION parentContext 是外部（如 Portal 所在组件）自己的 pathContext，
     //  这里必须 clone，不能原地改写它的 root 字段，否则外部组件的 pathContext.root 会指向内层 root。
@@ -128,9 +132,15 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
                 root.attached = false
             }
             const callbacks = eventCallbacks.get(event)
-            if (!callbacks?.size) return false
-            callbacks.forEach(callback => callback(arg))
-            return true
+            if (callbacks?.size) {
+                callbacks.forEach(callback => callback(arg))
+                return true
+            }
+            // CAUTION 只冒泡 error：attach/detach 是每个 root 自己的生命周期事件，不能转发
+            if (event === 'error' && parentRoot) {
+                return parentRoot.dispatch(event, arg)
+            }
+            return false
         }
     }
 
