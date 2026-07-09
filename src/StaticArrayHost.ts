@@ -53,6 +53,8 @@ export class StaticArrayHost implements Host{
             })
             this.childHosts.forEach(host => host.render())
             insertBefore(frag, this.placeholder)
+            // 子 host 是在脱离文档的 fragment 里渲染的，插入完成后才执行其中登记的 layoutEffect/ref
+            this.pathContext.root.flushAttachQueue()
             /* v8 ignore next 3 */
         } else {
             throw new Error('should never rerender')

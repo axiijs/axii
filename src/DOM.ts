@@ -19,14 +19,18 @@ export function autoUnit(num: number|string) {
 export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 
 export function stringifyStyleValue(k:string, v: any): string {
+    // CAUTION style 对象的值可以是 atom/函数（style={{color: colorAtom}} 是自然写法），
+    //  这里统一求值。调用点都在响应式绑定（LightBindingEffect / StyleManager.update）内，
+    //  读取会正确建立依赖。不求值的话函数源码会被字符串化成非法 CSS，且没有任何响应性。
+    if (typeof v === 'function') v = v()
     // 当值是 falsy 的时候 设置 style[k] 为 ''，用来清除 inline style
     if (v === undefined || v === null) return ''
     if(Array.isArray(v)) {
         // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
             // attr like box-shadow
-            // 这里不可能是 StyleSize 所以不用 toString
-            return v.join(',')
+            // 这里不可能是 StyleSize 所以不用 toString；数组项同样支持 atom/函数值
+            return v.map((i: any) => typeof i === 'function' ? i() : i).join(',')
 
         } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string') {
             // [12, 'px'] => 12px
@@ -136,6 +140,10 @@ const svgForceDashStyleAttributes = /^(strokeWidth|strokeLinecap|strokeLinejoin|
  * @internal
  */
 export function setAttribute(node: ExtendedElement, name: string, value: any, isSvg?: boolean): void {
+    // CAUTION class 与 className 语义完全一致（mergeProp 也对两者做同样的合并），
+    //  统一成 className 处理：否则 AOP 合并出的 class 数组会掉进「取最后一个」的覆盖分支，
+    //  合并语义被静默破坏（外部覆盖值丢失）。
+    if (name === 'class') name = 'className'
     if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name)) {
         // 全都是覆盖模式，只处理最后一个
         return setAttribute(node, name, value.at(-1), isSvg)
@@ -209,7 +217,8 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             } else  if (typeof style === 'object') {
                 each(style, (v, k) => {
                     if (k[0] === '-' && k[1] === '-') {
-                        node.style.setProperty(k, v)
+                        // CSS 自定义属性同样支持 atom/函数值
+                        node.style.setProperty(k, typeof v === 'function' ? v() : v)
                     }else {
                         // @ts-ignore
                         node.style[k] = stringifyStyleValue(k, v)
@@ -258,8 +267,6 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     // 剩下的都是 primitive value 的情况了
     if (name === 'key' || name === 'ref') {
         // ignore
-    } else if (name === 'class' && !isSvg) {
-        node.className = value || ''
     } else if (name === 'value') {
         (node as HTMLDataElement).value = value
 
@@ -562,8 +569,8 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
     // 事件 允许是函数
     if ((name[0] === 'o' && name[1] === 'n') && valueType === 'function') return true
     if (name === 'style' && (isSimpleStyleObject(value) || valueType === 'string')) return true
-    // 默认支持 className 的对象形式
-    if (name === 'className' && isPlainObject(value)) return true
+    // 默认支持 className/class 的对象形式
+    if ((name === 'className' || name === 'class') && isPlainObject(value)) return true
 
     return false
 }
