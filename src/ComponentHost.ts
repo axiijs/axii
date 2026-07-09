@@ -626,7 +626,10 @@ export class ComponentHost implements Host{
         }
 
         this.effects?.forEach(effect => {
-            const handle = effect()
+            // CAUTION effect 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并
+            //  继续执行其余 effect（否则一个抛错的 effect 会让 root.render 中断，
+            //  已渲染好的树永远挂不上容器）；未注册时保持向上抛出的行为。
+            const handle = this.runWithErrorHook(effect)
             // 也支持 async function return promise，只不过不做处理
             if (typeof handle === 'function') (this.destroyCallback ??= new Set()).add(handle)
         })
@@ -651,6 +654,15 @@ export class ComponentHost implements Host{
             }
         }
     }
+    // 生命周期回调（effect/layoutEffect/cleanup）的统一错误出口：
+    //  注册了 root error 钩子时交给钩子（兄弟回调照常执行），否则保持向上抛出。
+    runWithErrorHook(fn: () => any): any {
+        try {
+            return fn()
+        } catch (e) {
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+        }
+    }
     runLayoutEffect() {
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.refProp) {
@@ -658,7 +670,8 @@ export class ComponentHost implements Host{
         }
 
         this.layoutEffects?.forEach(layoutEffect => {
-            const handle = layoutEffect()
+            // CAUTION layoutEffect 抛错走 error 钩子，否则会打断同批其他 layoutEffect/ref
+            const handle = this.runWithErrorHook(layoutEffect)
             if (typeof handle === 'function') (this.layoutEffectDestroyHandles ??= new Set()).add(handle)
         })
     }
@@ -675,8 +688,10 @@ export class ComponentHost implements Host{
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
         // innerHost 可能不存在（render 抛错被中断的场景）
         this.innerHost?.destroy(parentHandle)
-        this.layoutEffectDestroyHandles?.forEach(handle => handle())
-        this.destroyCallback?.forEach(callback => callback())
+        // CAUTION 清理函数抛错走 error 钩子：否则一个抛错的 cleanup 会中断
+        //  兄弟清理函数与剩余销毁流程（reusable 销毁、placeholder 移除），造成泄漏。
+        this.layoutEffectDestroyHandles?.forEach(handle => this.runWithErrorHook(handle))
+        this.destroyCallback?.forEach(callback => this.runWithErrorHook(callback))
 
         this.innerReusedHosts?.forEach(host => host.destroyReusable())
 
