@@ -487,16 +487,58 @@ ${this.stringifyStyleObject(valueStyleObject)}
         return nestedStyleEntries.reduce((acc, [key, nestedObject]: [string, any]) => {
             // 支持 at-rules for media/container query
             if (key.startsWith('@')) {
+                // CAUTION 递归结果是 string[]，必须显式 join('\n')：
+                //  直接内插进模板字符串会按 ',' 连接，at-rule 里第一条之后的所有规则
+                //  （嵌套 selector、@keyframes/animation）都会变成非法 CSS 被浏览器静默丢弃。
                 return acc.concat(`${key} {
-    ${this.generateStyleContent(selector, nestedObject)}
+    ${this.generateStyleContent(selector, nestedObject).join('\n')}
 }`)
             }
 
-            const nestedClassName = /^(\s?)+&/.test(key) ? key.replace('&', selector) : `${selector} ${key}`
-            return acc.concat(this.generateStyleContent(nestedClassName, nestedObject))
+            return acc.concat(this.generateStyleContent(scopeNestedSelector(selector, key), nestedObject))
         }, contents)
 
     }
+}
+
+/**
+ * 把嵌套样式 key 作用域化到 selector 下。
+ * CAUTION 必须逐个处理逗号分隔的 selector，且 '&' 要全部替换：
+ *  - 'X, Y' 的每个部分都要被作用域化，否则第一个之后的 selector 要么带着残留的
+ *    顶层 '&' 永不匹配，要么（不含 & 时）变成未作用域的全局 selector 污染组件外元素；
+ *  - 残留在顶层 stylesheet 里的 '&' 还会让整条规则的匹配在 Chromium 下不稳定。
+ *  逗号切分要跳过括号/方括号/引号内部（:is(.a, .b)、[data-x="1,2"] 里的逗号不是分隔符）。
+ */
+function scopeNestedSelector(selector: string, key: string): string {
+    return splitSelectorList(key).map(part => {
+        const trimmed = part.trim()
+        return trimmed.includes('&') ? trimmed.replaceAll('&', selector) : `${selector} ${trimmed}`
+    }).join(', ')
+}
+
+// 按顶层逗号切分 selector 列表（忽略 () / [] / 引号内部的逗号）
+function splitSelectorList(input: string): string[] {
+    const parts: string[] = []
+    let depth = 0
+    let quote: string | null = null
+    let start = 0
+    for (let i = 0; i < input.length; i++) {
+        const ch = input[i]
+        if (quote) {
+            if (ch === quote && input[i - 1] !== '\\') quote = null
+        } else if (ch === '"' || ch === "'") {
+            quote = ch
+        } else if (ch === '(' || ch === '[') {
+            depth++
+        } else if (ch === ')' || ch === ']') {
+            depth--
+        } else if (ch === ',' && depth === 0) {
+            parts.push(input.slice(start, i))
+            start = i + 1
+        }
+    }
+    parts.push(input.slice(start))
+    return parts
 }
 
 type StyleObject = { [k: string]: any }
