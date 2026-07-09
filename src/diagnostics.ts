@@ -14,7 +14,7 @@ import type {Host} from "./Host";
  * 因此 assertRangeReachable 只用于 range / reusable-range 两种真实 DOM 区间。
  */
 
-export type AxiiErrorCode = 'AXII_DOM_BOUNDARY_BROKEN'
+export type AxiiErrorCode = 'AXII_DOM_BOUNDARY_BROKEN' | 'AXII_LIST_ORDER_BROKEN'
 
 export type AxiiErrorPhase = 'render' | 'destroy' | 'insert' | 'move' | 'splice' | 'reorder'
 
@@ -382,25 +382,42 @@ export function assertRangeReachable(context: RangeBoundaryContext) {
 }
 
 export function createDomBoundaryError(context: RangeBoundaryContext, detail: string) {
+    return createStructureError('AXII_DOM_BOUNDARY_BROKEN', context, detail, [
+        'Do not remove or move DOM nodes managed by Axii manually.',
+        'Check whether a ref callback, effect, or third-party library mutates children inside this range.',
+        'If detachStyle is involved, check whether the same nodes are removed while an animation is still running.',
+    ])
+}
+
+/**
+ * RxListHost 的列表不变量（hosts 数与 data 数一致、行区间在 DOM 中按数组顺序排列）
+ * 被破坏时的结构化错误。这类破坏意味着「数据与 DOM 已经静默错位」——
+ * 没有这个校验的话它不会抛任何错，只会一直渲染错的顺序。
+ */
+export function createListOrderError(context: RangeBoundaryContext, detail: string) {
+    return createStructureError('AXII_LIST_ORDER_BROKEN', context, detail, [
+        'The rendered DOM order of this RxList no longer matches list.data.',
+        'Check for out-of-contract RxList usage (e.g. set() with an out-of-range index creating a sparse list).',
+        'Check whether external code moved or removed row nodes managed by Axii.',
+    ])
+}
+
+function createStructureError(code: AxiiErrorCode, context: RangeBoundaryContext, detail: string, hints: string[]) {
     const hostStack = collectHostStack(context.ownerHost)
     const componentStack = hostStack.filter(frame => !!frame.componentName)
     const reactiveTrace = collectReactiveTrace()
     return new AxiiError(
-        `${detail} (AXII_DOM_BOUNDARY_BROKEN)`,
+        `${detail} (${code})`,
         {
-            code: 'AXII_DOM_BOUNDARY_BROKEN',
+            code,
             phase: context.operation,
             cause: context.cause,
             componentStack,
             hostStack,
             reactiveTrace,
             domSnapshot: createDomSnapshot(context),
-            hints: [
-                'Do not remove or move DOM nodes managed by Axii manually.',
-                'Check whether a ref callback, effect, or third-party library mutates children inside this range.',
-                'If detachStyle is involved, check whether the same nodes are removed while an animation is still running.',
-            ],
-            docsUrl: 'https://axii.dev/errors/AXII_DOM_BOUNDARY_BROKEN',
+            hints,
+            docsUrl: `https://axii.dev/errors/${code}`,
         }
     )
 }

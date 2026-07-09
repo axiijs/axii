@@ -11,6 +11,7 @@ import {
 } from "./retainedObjectDiagnostics.js";
 import {
     assertRangeReachable,
+    createListOrderError,
     isAxiiDiagnosticsEnabled,
     reportAxiiError,
     summarizeArgv,
@@ -154,12 +155,77 @@ export class RxListHost implements Host{
                             }
                         }
                     }
+                    // CAUTION 开发期列表不变量：每个 patch 批次结束后校验「hosts 数 === data 数」
+                    //  与「行区间在 DOM 中按数组顺序排列」。这类破坏（契约外的稀疏 set、
+                    //  外部代码搬动行节点等）不校验的话不会抛任何错，只会永远渲染错的顺序。
+                    if (isAxiiDiagnosticsEnabled()) {
+                        try {
+                            host.assertListInvariants()
+                        } catch (error) {
+                            if (!host.pathContext.root.dispatch('error', error)) {
+                                reportAxiiError(error)
+                                throw error
+                            }
+                        }
+                    }
                 } finally {
                     this.resumeCollectChild()
                 }
             },
             true
         )
+    }
+    /**
+     * 开发期不变量（只在诊断开启时由 applyPatch 调用）：
+     * 1. hosts 数量与 source.data 数量一致；
+     * 2. 已渲染行的 DOM 区间按 hosts 数组顺序排列，且都在 placeholder 之前。
+     * 任一破坏说明数据与 DOM 已静默错位，抛出结构化的 AXII_LIST_ORDER_BROKEN。
+     */
+    assertListInvariants() {
+        const hosts = this.hosts!
+        const dataLength = this.source.data.length
+        if (hosts.length !== dataLength) {
+            throw createListOrderError({
+                ownerHost: this,
+                start: this.element,
+                end: this.placeholder,
+                operation: 'splice',
+            }, `Axii list invariant is broken: ${hosts.length} row host(s) but list.data has ${dataLength} item(s). Out-of-contract RxList usage (e.g. sparse set()) can cause this.`)
+        }
+        let previous: Host|null = null
+        for (let i = 0; i < hosts.length; i++) {
+            const current = hosts[i]
+            if (!current || !isHostRendered(current)) continue
+            if (previous) {
+                const prevLast = hostLastNode(previous)
+                const currentFirst = hostFirstNode(current)
+                const position = prevLast.compareDocumentPosition(currentFirst)
+                // CAUTION 不同树（一个在 fragment、一个在文档）无法比较顺序，跳过而不是误报
+                if (!(position & Node.DOCUMENT_POSITION_DISCONNECTED) &&
+                    !(position & Node.DOCUMENT_POSITION_FOLLOWING)) {
+                    throw createListOrderError({
+                        ownerHost: this,
+                        start: hostFirstNode(current),
+                        end: this.placeholder,
+                        operation: 'splice',
+                    }, `Axii list invariant is broken: row ${i} appears before its predecessor in the DOM. The rendered order no longer matches list.data.`)
+                }
+            }
+            previous = current
+        }
+        if (previous && this.placeholder.parentNode) {
+            const prevLast = hostLastNode(previous)
+            const position = prevLast.compareDocumentPosition(this.placeholder)
+            if (!(position & Node.DOCUMENT_POSITION_DISCONNECTED) &&
+                !(position & Node.DOCUMENT_POSITION_FOLLOWING)) {
+                throw createListOrderError({
+                    ownerHost: this,
+                    start: this.element,
+                    end: this.placeholder,
+                    operation: 'splice',
+                }, 'Axii list invariant is broken: the last row appears after the list placeholder in the DOM.')
+            }
+        }
     }
     applyTriggerInfo(info: TriggerInfo) {
         const {method, argv, key, methodResult, type} = info
