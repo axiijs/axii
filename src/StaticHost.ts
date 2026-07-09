@@ -56,14 +56,14 @@ function isClassNameWithReactiveValue(value: any): boolean {
     return false
 }
 
+// CAUTION 分类谓词只保留一份（atom 本身也是 function，先判断 typeof 更便宜）。
+//  曾经存在语义完全相同的 isReactiveValue/isAtomLike 两个副本——同一个判定存在两份，
+//  未来行为分叉时就是新的 bug 面。
 function isReactiveValue(v: any) {
-    // CAUTION atom 本身也是 function，先判断 typeof 更便宜
     return typeof v === 'function' || isAtom(v)
 }
 
-function isAtomLike(v: any) {
-    return isAtom(v) || typeof v === 'function'
-}
+const isAtomLike = isReactiveValue
 
 
 function generateGlobalElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
@@ -99,9 +99,12 @@ function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
 
 // CAUTION 只有 object/function 才能 defineProperty。style 的合法取值还包括字符串
 //  （style="color:red" / $item:style={'color:red'}），对原始值标记直接跳过，
-//  否则 AOP 传入字符串 style 会在 defineProperty 处 TypeError。
+//  否则 AOP 传入字符串 style 会在 defineProperty 处 TypeError（F17）。
+//  同类假设：frozen/sealed 的对象（Object.freeze 的静态 boundProps/样式常量是自然写法）
+//  defineProperty 新属性同样直接 TypeError，必须一并跳过——标记只是优化用元数据，
+//  丢标记的代价（按覆盖语义处理）远小于渲染期崩溃。
 function canMarkProp(obj: any) {
-    return !!obj && (typeof obj === 'object' || typeof obj === 'function')
+    return !!obj && (typeof obj === 'object' || typeof obj === 'function') && Object.isExtensible(obj)
 }
 
 export function markBoundProp(obj: any) {
