@@ -321,11 +321,9 @@ export class RxListHost implements Host{
         }
         newHost.render()
     }
-    destroy(fromParentDestroy?: boolean, parentHandleComputed?: boolean) {
+    destroy(fromParentDestroy?: boolean) {
         trackHostDestroyed(this)
-        if (!parentHandleComputed) {
-            destroyComputed(this.hostRenderComputed)
-        }
+        destroyComputed(this.hostRenderComputed)
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
         this.hosts!.forEach(host => host.destroy(fromParentDestroy))
         if (!fromParentDestroy) this.placeholder.remove()

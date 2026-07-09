@@ -14,7 +14,10 @@ export interface Host {
     render: () => void
     // 声明是否强制由自己来处理 element，例如 StaticHost 在有 detachStyledChildren 的时候，就需要自己处理 element
     forceHandleElement?: boolean
-    destroy : (parentHandleElement?: boolean, parentHandleComputed?: boolean) => void
+    // CAUTION 曾经还有第二个参数 parentHandleComputed（父级 computed rerun 时级联清理 effect），
+    //  自从所有绑定 effect 都 detachFromCreationContext（不再挂在父 effect 下）后，
+    //  它在整个代码库中永远不会以 true 传入，已删除。
+    destroy : (parentHandleElement?: boolean) => void
     revoke?: () => void
 }
 /**

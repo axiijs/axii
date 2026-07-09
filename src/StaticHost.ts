@@ -596,18 +596,18 @@ export class StaticHost implements Host {
             createElement.attachRef(el, handle)
         })
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         if (this.attrEffects) {
             for (const effect of this.attrEffects) {
                 trackLightBindingDestroyed(effect)
-                if (!parentHandleComputed) effect.destroy()
+                effect.destroy()
             }
         }
 
         this.removeAttachListener?.()
 
-        this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
+        this.reactiveHosts?.forEach(host => host.destroy(true))
 
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
@@ -772,18 +772,18 @@ export class CompactElementHost extends StaticHost {
             StaticHost.styleManager.mount(this.pathContext.hostPath)
         }
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         // CAUTION 先减 compact 计数再登记 destroyed，顺序反了会被去重逻辑跳过
         trackCompactHostDestroyed(this)
         trackHostDestroyed(this)
         if (this.attrEffects) {
             for (const effect of this.attrEffects) {
                 trackLightBindingDestroyed(effect)
-                if (!parentHandleComputed) effect.destroy()
+                effect.destroy()
             }
         }
         this.removeAttachListener?.()
-        this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
+        this.reactiveHosts?.forEach(host => host.destroy(true))
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
         })

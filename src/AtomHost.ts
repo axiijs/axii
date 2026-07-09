@@ -82,14 +82,12 @@ export class AtomHost extends LightBindingEffect implements Host{
         trackLightBindingCreated(this, 'AtomTextBinding')
         this.run()
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         trackLightBindingDestroyed(this)
-        if (!parentHandleComputed) {
-            // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
-            //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
-            ReactiveEffect.destroy(this)
-        }
+        // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
+        //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
+        ReactiveEffect.destroy(this)
         if (!parentHandle) {
             this.element.remove()
             this.placeholder.remove()

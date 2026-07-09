@@ -615,21 +615,19 @@ export class ComponentHost implements Host{
             if (typeof handle === 'function') (this.layoutEffectDestroyHandles ??= new Set()).add(handle)
         })
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         if (this.refProp) {
             this.detachRef(this.refProp)
         }
 
-        if (!parentHandleComputed) {
-            // 如果上层是 computed rerun，那么也会清理掉我们产生的 computed。但不能确定，所以这里还是自己清理一下。
-            this.frame?.forEach(manualCleanupObject =>
-                manualCleanupObject.destroy()
-            )
-        }
+        // render 期间收集到的 computed 等由自己清理
+        this.frame?.forEach(manualCleanupObject =>
+            manualCleanupObject.destroy()
+        )
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
         // innerHost 可能不存在（render 抛错被中断的场景）
-        this.innerHost?.destroy(parentHandle, parentHandleComputed)
+        this.innerHost?.destroy(parentHandle)
         this.layoutEffectDestroyHandles?.forEach(handle => handle())
         this.destroyCallback?.forEach(callback => callback())
 
@@ -801,7 +799,7 @@ export class ReusableHost implements Host{
     moveTo(reusePlaceholder: Comment) {
         this.reusePlaceholder = reusePlaceholder
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         // do nothing
         if (!parentHandle) {
             const frag = document.createDocumentFragment()
@@ -832,7 +830,7 @@ export class ReusableHost implements Host{
         if (this.element === this.placeholder) {
             this.element.remove()
         } else {
-            this.innerHost.destroy(false, false)
+            this.innerHost.destroy(false)
         }
         if (this.reusePlaceholder) {
             this.reusePlaceholder.remove()

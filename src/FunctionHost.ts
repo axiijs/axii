@@ -156,19 +156,16 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         const host = this.innerHost
         if (host) {
             this.innerHost = null
-            // CAUTION 内层 host 的 effect 是在 pauseCollectChild 下创建的（没有父 effect），
-            //  必须显式销毁，所以 parentHandleComputed 恒为 false。
-            host.destroy(parentHandle, false)
+            // CAUTION 内层 host 的 effect 是在 pauseCollectChild 下创建的（没有父 effect），必须显式销毁
+            host.destroy(parentHandle)
         }
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         trackLightBindingDestroyed(this)
-        if (!parentHandleComputed) {
-            // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
-            //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
-            ReactiveEffect.destroy(this)
-        }
+        // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
+        //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
+        ReactiveEffect.destroy(this)
         this.runCleanups()
         this.destroyInnerHost(parentHandle)
         if (!parentHandle) {

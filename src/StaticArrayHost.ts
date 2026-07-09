@@ -58,14 +58,14 @@ export class StaticArrayHost implements Host{
             throw new Error('should never rerender')
         }
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         // CAUTION 只要有子 host 声明了 forceHandleElement（离场动画等），
         //  就不能整段同步 removeNodesBetween，必须把 DOM 处理委托给各个子 host
         //  （它们各自的 element..placeholder 区间可能要等动画结束才异步移除），
         //  自己只负责直接创建的 Text 节点和 placeholder。
         if (!parentHandle && this.forceHandleElement) {
-            this.childHosts!.forEach(host => host.destroy(false, parentHandleComputed))
+            this.childHosts!.forEach(host => host.destroy(false))
             this.directNodes?.forEach(node => node.remove())
             this.placeholder.remove()
             return
@@ -76,6 +76,6 @@ export class StaticArrayHost implements Host{
                 operation: 'destroy',
             })
         }
-        this.childHosts!.forEach(host => host.destroy(true, parentHandleComputed))
+        this.childHosts!.forEach(host => host.destroy(true))
     }
 }

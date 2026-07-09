@@ -5,7 +5,9 @@
  */
 import {
     createElement, createRoot, RenderContext, atom, lazy, jsx, setAttribute,
-    RxDOMRect, RxDOMSize, ComponentHost, RectObject, Portal
+    RxDOMRect, RxDOMSize, ComponentHost, RectObject, Portal, RxList,
+    enableAxiiRetainedObjectDiagnostics, disableAxiiRetainedObjectDiagnostics,
+    getAxiiRetainedObjectDiagnosticsSnapshot,
 } from "@framework";
 import {beforeEach, describe, expect, test, vi} from "vitest";
 
@@ -381,7 +383,6 @@ describe('improvements regression (2026-07 review)', () => {
         window.addEventListener('unhandledrejection', onUnhandled)
 
         const errors: any[] = []
-        const {RxList} = await import('@framework')
         const list = new RxList([1, 2, 3])
         function App({}: any, {createElement}: RenderContext) {
             return <div id="list-parent">{list.map((n: number) => <div class="err-row">{'' + n}</div>)}</div>
@@ -404,5 +405,41 @@ describe('improvements regression (2026-07 review)', () => {
         window.removeEventListener('unhandledrejection', onUnhandled)
         expect(unhandled).toBe(false)
         root.destroy()
+    })
+
+    /**
+     * O2: Host.destroy 的第二个参数 parentHandleComputed 已删除（代码库中不再有以 true
+     * 传入的起点）。回归验证：destroy 后所有 host / 绑定 effect 无条件清理，无泄漏。
+     */
+    test('O2: destroy always cleans up all hosts and binding effects (no leak)', async () => {
+        enableAxiiRetainedObjectDiagnostics({reset: true})
+        try {
+            const list = new RxList([1, 2, 3])
+            const title = atom('t')
+            const show = atom(true)
+            function Row({n}: any, {createElement}: RenderContext) {
+                return <div className={() => 'row-' + n}>{'' + n}</div>
+            }
+            function App({}: any, {createElement}: RenderContext) {
+                return <div>
+                    <span>{title}</span>
+                    {() => show() ? <em>{() => title() + '!'}</em> : null}
+                    {list.map((n: number) => <Row n={n}/>)}
+                </div>
+            }
+            const root = createRoot(rootEl)
+            root.render(<App/>)
+            list.push(4)
+            show(false)
+            await nextMicrotask()
+            list.splice(0, 2)
+            root.destroy()
+
+            const snapshot = getAxiiRetainedObjectDiagnosticsSnapshot()
+            expect(snapshot.hosts.totalActive).toBe(0)
+            expect(snapshot.lightBindings.totalActive).toBe(0)
+        } finally {
+            disableAxiiRetainedObjectDiagnostics()
+        }
     })
 })
