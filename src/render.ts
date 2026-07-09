@@ -80,6 +80,14 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             }
         },
         dispatch(event: string, arg?: any) {
+            // CAUTION render 到 detached 容器、之后手动 dispatch('attach') 是公开用法。
+            //  必须同步更新 attached 标记，否则之后动态创建的组件/元素会重新注册
+            //  once 的 attach 监听，永远等不到下一次 attach，layoutEffect/ref 永不执行。
+            if (event === 'attach') {
+                root.attached = true
+            } else if (event === 'detach') {
+                root.attached = false
+            }
             const callbacks = eventCallbacks.get(event)
             if (!callbacks?.size) return false
             callbacks.forEach(callback => callback(arg))
