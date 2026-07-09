@@ -210,8 +210,12 @@ class StyleManager {
     }
     stringifyStyleObject(styleObject: { [k: string]: any }): string {
         return Object.entries(styleObject).map(([key, value]) => {
-
-            const property = key.replace(/([A-Z])/g, '-$1').toLowerCase()
+            // CAUTION CSS 自定义属性（--main-color / --mainColor）大小写敏感，
+            //  绝不能做驼峰转连字符/小写化，否则 var(--mainColor) 永远读不到值。
+            //  inline 路径（setAttribute 的 setProperty 分支）本来就保留原样，这里必须对齐。
+            const property = (key[0] === '-' && key[1] === '-') ?
+                key :
+                key.replace(/([A-Z])/g, '-$1').toLowerCase()
             // value 是数字类型的 attr，自动加上 单位
             return `${property}:${stringifyStyleValue(key, value)};`
         }).join('\n')
@@ -307,19 +311,34 @@ class StyleManager {
     }
     update(owner: Host, hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
         // style 中有嵌套写法/animation/at-rules 等原生不能识别的，都会当做 unhandledAttr 走到这里。当然也包括 atom 和 function
-        const styleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
+        const rawStyleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
+        // CAUTION 先求值再展开：响应式 style 函数可以返回数组（() => [base, extra] 是自然写法）。
+        //  不展开的话数组会被 splitStyleObject 当成 {0: {...}, 1: {...}} 的嵌套样式，
+        //  生成 `.cls 0 {...}` 这类非法 selector，整个样式静默失效。
+        const evaluatedEntries: {value: any, entryIsDynamic: boolean, isBound: boolean}[] = []
+        for (const raw of rawStyleObjects) {
+            const isBound = isBoundProp(raw)
+            const entryIsDynamic = typeof raw === 'function' || isDynamicProp(raw)
+            const evaluated = typeof raw === 'function' ? raw() : raw
+            if (Array.isArray(evaluated)) {
+                for (const item of evaluated) {
+                    // 函数返回的数组项自身也可能是函数/atom
+                    const evaluatedItem = typeof item === 'function' ? item() : item
+                    evaluatedEntries.push({value: evaluatedItem, entryIsDynamic: true, isBound: isBound || isBoundProp(item)})
+                }
+            } else {
+                evaluatedEntries.push({value: evaluated, entryIsDynamic, isBound})
+            }
+        }
 
         const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
-        const splitStyleObjects = styleObjects.map((styleObject, index) => {
-            const isBound = isBoundProp(styleObject)
-            const evaluatedStyleObject: StyleObject = typeof styleObject === 'function' ? styleObject() : styleObject
+        const splitStyleObjects = evaluatedEntries.map(({value: evaluatedStyleObject, entryIsDynamic, isBound}, index) => {
             // 分离普通和嵌套样式
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
             // CAUTION 嵌套样式（stylesheet 路径）里出现 atom/函数值时必须按动态样式处理（滚动重建 stylesheet）：
             //  stylesheet 只有第一次/滚动时才重建，静态路径下 atom 值变化既不会反映到样式，
             //  依赖也会在下一次重算时丢失。普通（inline）样式不需要：它每次 update 都整体重新赋值。
-            const isDynamic = typeof styleObject === 'function' || isDynamicProp(styleObject) ||
-                containsReactiveStyleValue(nestedStyles)
+            const isDynamic = entryIsDynamic || containsReactiveStyleValue(nestedStyles)
             const styleSheetId = this.getStyleSheetId(hostPath, elementPath, isDynamic ? el : null)
             const styleSheetIdWithIndex = `${styleSheetId}F${index}`
             const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
@@ -339,6 +358,8 @@ class StyleManager {
         // 如果使用了 itor-based style id，就要更新
         let shouldUpdateItor = false
         const stylePatches: StyleObject[] = []
+        // 本轮仍然有效的 rolling stylesheet class（形态翻转清理时用来判断哪些是残留）
+        let activeRollingClassIds: Set<string>|undefined
         splitStyleObjects.forEach(so => {
             // 如果是 boundProps，优先使用 stylesheet，因为 boundProps 通常是组件级别的基础样式
             // 如果包含 nested style，只能使用 stylesheet，因为依赖于 CSS selector
@@ -350,6 +371,9 @@ class StyleManager {
                 // - 来自 boundProps 并且是通过 function evaluate 获得
                 const shouldUseRollingStyleId = so.isDynamic
                 const finalStyleSheetId = shouldUseRollingStyleId ? so.styleSheetIdWithItorNum : so.styleSheetIdWithIndex
+                if (shouldUseRollingStyleId) {
+                    (activeRollingClassIds ??= new Set()).add(finalStyleSheetId)
+                }
                 if (styleItorNum === 0 || shouldUseRollingStyleId) {
                     shouldUpdateItor = true
 
@@ -386,6 +410,27 @@ class StyleManager {
                 // nestedStyles 肯定是空的，这里就不用管了
             }
         })
+        // CAUTION 响应式 style 的「形态翻转」清理：上一轮走了 stylesheet 路径（rolling class
+        //  挂在元素上），这一轮同一个条目变成了纯 inline / null / 条目消失时，必须把残留的
+        //  rolling class 摘掉，否则旧 stylesheet 里的嵌套规则（:hover、子元素选择器等）永远生效。
+        //  rolling class 一定以本元素独享的 elToStyleId（含随机段）为前缀，
+        //  静态/跨元素共享的 stylesheet class 不受影响。
+        const rollingBase = this.elToStyleId.get(el)
+        if (rollingBase) {
+            const trackedIds = this.elToStyleClassIds.get(el)
+            if (trackedIds) {
+                for (const id of trackedIds) {
+                    if (id.startsWith(rollingBase) && !activeRollingClassIds?.has(id)) {
+                        el.classList.remove(id)
+                        trackedIds.delete(id)
+                        this.updateRefCount(id, -1)
+                        // 推进 itor：翻回 stylesheet 路径时用新的 id，
+                        //  且下一次滚动的 expired 清理（itor-2）能删掉这里退役的 stylesheet
+                        shouldUpdateItor = true
+                    }
+                }
+            }
+        }
         if (shouldUpdateItor) {
             this.elToStyleIdItorNum.set(el, styleItorNum + 1)
             if (__DEV__) {
@@ -400,8 +445,10 @@ class StyleManager {
         const nextInlineKeys = new Set<string>()
         for (const patch of stylePatches) {
             if (typeof patch === 'string') {
-                // 字符串 patch 会整体覆写 cssText，之前收集的 key 全部失效
+                // 字符串 patch 会整体覆写 cssText，之前收集的 key 全部失效；
+                // 用哨兵记录「当前样式来自字符串」，翻转回对象/null 时要整体清掉 cssText
                 nextInlineKeys.clear()
+                nextInlineKeys.add(CSS_TEXT_SENTINEL)
             } else if (patch && typeof patch === 'object') {
                 for (const k in patch) nextInlineKeys.add(k)
             }
@@ -409,7 +456,10 @@ class StyleManager {
         if (previousInlineKeys) {
             for (const k of previousInlineKeys) {
                 if (!nextInlineKeys.has(k)) {
-                    if (k[0] === '-' && k[1] === '-') {
+                    if (k === CSS_TEXT_SENTINEL) {
+                        // 上一轮写的是字符串 cssText，这一轮不是：整体清除后再按 patch 赋值
+                        el.style.cssText = ''
+                    } else if (k[0] === '-' && k[1] === '-') {
                         el.style.removeProperty(k)
                     } else {
                         // @ts-ignore
@@ -431,9 +481,12 @@ class StyleManager {
         if (typeof styleObject === 'string') {
           return { simpleStyles: styleObject, nestedStyles: {} }
         }
-        // 处理 null 或 undefined 的情况，返回空字符串来清除样式
+        // CAUTION null/undefined 返回空对象而不是空字符串：'' 作为 patch 会在 setAttribute
+        //  里整体覆写 cssText，把数组里其他 style 对象刚写入的值一起清掉
+        //  （style={[base, () => cond() ? {...} : null]} 是自然写法）。
+        //  上一轮残留 key 的清除由 elToInlineStyleKeys 的 diff 逻辑负责，不需要 '' 兜底。
         if (styleObject === null || styleObject === undefined) {
-          return { simpleStyles: '' as any, nestedStyles: {} }
+          return { simpleStyles: {}, nestedStyles: {} }
         }
 
         const simpleStyles: StyleObject = {}
@@ -562,6 +615,10 @@ function splitSelectorList(input: string): string[] {
 }
 
 type StyleObject = { [k: string]: any }
+
+// elToInlineStyleKeys 里的哨兵 key：标记「上一轮 inline 样式是字符串 cssText 整体覆写」，
+//  翻转回对象/null 形态时必须整体清除 cssText（字符串里写过哪些 key 无从得知）。
+const CSS_TEXT_SENTINEL = '__cssText__'
 
 // 添加全局配置对象
 export const StaticHostConfig = {
@@ -844,9 +901,12 @@ export class StaticHost implements Host {
             this.detachStyledChildren?.forEach(({ el, style: value }) => {
                 const transitionProperties = getComputedStyle(el).transitionProperty.split(',').map(p => p.trim())
                 // CAUTION 注意这里的计算规则和 updateAttribute 里的不太一样，这里只要找 key 就行了
-                const finalStyle: StyleObject = Array.isArray(value) ?
-                    Object.assign({}, ...value.map(v => isAtomLike(v) ? v() : v)) :
-                    isAtomLike(value) ? value() : value
+                // CAUTION 先求值再判断数组：detachStyle 是函数/atom 时可以返回数组，
+                //  先判数组的话函数返回的数组会被当成对象、styleKeys 变成数组下标。
+                const evaluated = isAtomLike(value) ? value() : value
+                const finalStyle: StyleObject = Array.isArray(evaluated) ?
+                    Object.assign({}, ...evaluated.map(v => isAtomLike(v) ? v() : v)) :
+                    evaluated
 
                 const styleKeys = Object.keys(finalStyle)
                 const hasTransition = transitionProperties.includes('all') || styleKeys.some(key => transitionProperties.includes(key))
