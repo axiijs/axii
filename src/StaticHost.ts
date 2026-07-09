@@ -599,7 +599,8 @@ ${selector} {
             } else if (this.isNestedStyleObject(key, valueStyleObject[key])) {
                 nestedStyleEntries.push([key, valueStyleObject[key]])
                 delete valueStyleObject[key]
-            } else if(valueStyleObject[key] === null|| valueStyleObject[key] === undefined) {
+            } else if(valueStyleObject[key] === null|| valueStyleObject[key] === undefined || typeof valueStyleObject[key] === 'boolean') {
+                // boolean 来自 {fontWeight: cond && 'bold'} 的条件写法，语义同 null（F36 同类）
                 delete valueStyleObject[key]
             }
         }
