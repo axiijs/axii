@@ -56,8 +56,11 @@
 `setAttribute` 的数组 flatten 分支多一个短路条件（仅数组值时求值）；
 `ComponentHost.destroy` 只调整顺序，无新增分配。
 
-用 sibling `benchmark` 重跑 real-browser 与 memory 基准（修复前后同机对比），
-全部场景差异在轮间噪声内；memory 基准的 afterClear 残留与长跑增长与存档同级。
+用 sibling `benchmark` 重跑 real-browser 基准（基线一轮、修复后两轮，同机对比）：
+全部场景差异在轮间噪声内（`axii-update-text-1000-repeat-100`——文本更新热路径——
+38.8 / 38.3 / 38.7ms；`axii-create-clear-method-1000-repeat-50` 129.4 / 138.0 / 129.6ms，
+第二轮完全回到基线；`create-5000` 10.0 / 10.2ms）。memory 基准的 afterClear 残留
+与存档同级（axii 1000 行 afterClear 残留 5.4KB）。
 `__tests__/matrix.spec.tsx` 的时间敏感用例全部通过。
 
 运行方式：
