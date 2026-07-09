@@ -17,6 +17,7 @@
 | [09-review-2026-07-round5.md](./09-review-2026-07-round5.md) | 2026-07 深度 review 第五轮（F20-F21 / I26-I27，**已全部修复**） |
 | [10-review-2026-07-round6.md](./10-review-2026-07-round6.md) | 2026-07 深度 review 第六轮（F22-F24 / I28-I30，**已全部修复**） |
 | [11-contracts-and-invariants.md](./11-contracts-and-invariants.md) | 契约测试（data0 patch 协议）、RxList fuzz、开发期列表不变量（AXII_LIST_ORDER_BROKEN）、同类假设猎杀 |
+| [12-review-2026-07-round7.md](./12-review-2026-07-round7.md) | 2026-07 深度 review 第七轮（F25-F28 / I31-I33，**已全部修复**）：StyleManager 样式形态空间 + attach 生命周期 |
 
 ## 结论摘要
 
