@@ -88,7 +88,13 @@ export class RxDOMRect extends RxDOMState<HTMLElement|Window, RectObject>{
     listen() {
         if (this.element instanceof Window) {
             const assignRect = () => {
+                // CAUTION 保持与 RectObject 类型一致的完整形状（viewport 的 top/left/x/y 恒为 0），
+                //  否则消费方读 rect.top 会拿到 undefined
                 const rect = {
+                    top: 0,
+                    left: 0,
+                    x: 0,
+                    y: 0,
                     right: window.innerWidth,
                     bottom: window.innerHeight,
                     width: window.innerWidth,
@@ -140,16 +146,31 @@ export class RxDOMRect extends RxDOMState<HTMLElement|Window, RectObject>{
                     this.value(null)
                     abortController.abort()
                 }
-            /* v8 ignore next 16 */
             } else if (this.options === 'requestAnimationFrame') {
-                const id = window.requestAnimationFrame(assignRect)
+                // CAUTION 必须在回调里重新调度形成循环，只调度一次的话位置只会更新一帧就停止跟踪
+                let stopped = false
+                let id: number
+                const loop = () => {
+                    assignRect()
+                    if (!stopped) id = window.requestAnimationFrame(loop)
+                }
+                id = window.requestAnimationFrame(loop)
                 this.abort = () => {
+                    stopped = true
                     this.value(null)
                     window.cancelAnimationFrame(id)
                 }
+            /* v8 ignore next 15 */
             } else if (this.options === 'requestIdleCallback') {
-                const id = window.requestIdleCallback(assignRect)
+                let stopped = false
+                let id: number
+                const loop = () => {
+                    assignRect()
+                    if (!stopped) id = window.requestIdleCallback(loop)
+                }
+                id = window.requestIdleCallback(loop)
                 this.abort = () => {
+                    stopped = true
                     this.value(null)
                     window.cancelIdleCallback(id)
                 }
@@ -170,6 +191,11 @@ export class RxDOMRect extends RxDOMState<HTMLElement|Window, RectObject>{
                 this.abort = () => {
                     this.value(null)
                     stop()
+                }
+            } else if (this.options === 'manual') {
+                // 只取一次初始值（上面的 assignRect() 已执行），由外部自行决定何时重算
+                this.abort = () => {
+                    this.value(null)
                 }
             /* v8 ignore next 3 */
             } else {
@@ -193,7 +219,9 @@ export type SizeObject = {
  * @category Reactive State Utility
  */
 export class RxDOMSize extends RxDOMState<HTMLElement|Window, SizeObject>{
-    static resizeTargetToState= new WeakMap<HTMLElement, Atom<SizeObject|null>>()
+    // CAUTION 同一个元素上可能同时存在多个 RxDOMSize（不同组件各自观察），
+    //  必须是集合而不是单值槽，否则后注册的覆盖先注册的、任一注销会打死其余的。
+    static resizeTargetToStates = new WeakMap<HTMLElement, Set<Atom<SizeObject|null>>>()
     // CAUTION ResizeObserver 是浏览器 API，必须惰性初始化。
     //  如果在类定义（模块加载）时就 new，Node/SSR 等非浏览器环境 import 框架入口会直接崩溃。
     static _globalResizeObserver?: ResizeObserver
@@ -202,8 +230,8 @@ export class RxDOMSize extends RxDOMState<HTMLElement|Window, SizeObject>{
             RxDOMSize._globalResizeObserver = new ResizeObserver(entries => {
                 entries.forEach(entry => {
                     const target = entry.target as HTMLElement
-                    const state = RxDOMSize.resizeTargetToState.get(target)
-                    if (state) {
+                    const states = RxDOMSize.resizeTargetToStates.get(target)
+                    if (states) {
                         // 覆盖了 position 信息
                         const newSizeObject = {
                             width: entry.contentRect.width,
@@ -215,9 +243,11 @@ export class RxDOMSize extends RxDOMState<HTMLElement|Window, SizeObject>{
 
                         }
 
-                        if(!shallowEqual(newSizeObject, state())) {
-                            state( newSizeObject)
-                        }
+                        states.forEach(state => {
+                            if(!shallowEqual(newSizeObject, state())) {
+                                state( newSizeObject)
+                            }
+                        })
                     }
                 })
             })
@@ -227,9 +257,14 @@ export class RxDOMSize extends RxDOMState<HTMLElement|Window, SizeObject>{
     listen() {
         if (this.element === window) {
             const assignRect = () => {
+                // viewport 没有 border/padding，各 box 尺寸相同；保持 SizeObject 的完整形状
                 const rect = {
                     width: window.innerWidth,
-                    height: window.innerHeight
+                    height: window.innerHeight,
+                    borderBoxWidth: window.innerWidth,
+                    borderBoxHeight: window.innerHeight,
+                    contentBoxWidth: window.innerWidth,
+                    contentBoxHeight: window.innerHeight
                 }
                 if(!shallowEqual(rect, this.value.raw)) {
                     this.value(rect)
@@ -245,18 +280,44 @@ export class RxDOMSize extends RxDOMState<HTMLElement|Window, SizeObject>{
             }
 
         } else {
-            RxDOMSize.globalResizeObserver.observe(this.element as HTMLElement)
-            RxDOMSize.resizeTargetToState.set(this.element as HTMLElement, this.value)
-            // observe 的时候就会不会触发一次，所以这里手动触发一次
-            const rect = (this.element as HTMLElement).getBoundingClientRect()
+            const element = this.element as HTMLElement
+            let states = RxDOMSize.resizeTargetToStates.get(element)
+            if (!states) {
+                states = new Set()
+                RxDOMSize.resizeTargetToStates.set(element, states)
+                RxDOMSize.globalResizeObserver.observe(element)
+            }
+            states.add(this.value)
+            // CAUTION ResizeObserver 对 observe 的首次回调是异步的，这里同步给出一份
+            //  与 SizeObject 类型形状一致的初始值（含 borderBox/contentBox 字段）。
+            const rect = element.getBoundingClientRect()
+            const style = getComputedStyle(element)
+            const horizontalExtra = (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0) +
+                (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
+            const verticalExtra = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0) +
+                (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+            const contentBoxWidth = Math.max(0, rect.width - horizontalExtra)
+            const contentBoxHeight = Math.max(0, rect.height - verticalExtra)
             this.value({
-                width: rect.width,
-                height: rect.height
+                // 与 ResizeObserver 的 contentRect 语义一致：width/height 是 content box
+                width: contentBoxWidth,
+                height: contentBoxHeight,
+                borderBoxWidth: rect.width,
+                borderBoxHeight: rect.height,
+                contentBoxWidth,
+                contentBoxHeight
             })
 
-            this.abort =  (element) => {
-                RxDOMSize.globalResizeObserver.unobserve(element as HTMLElement)
-                RxDOMSize.resizeTargetToState.delete(element as HTMLElement)
+            this.abort =  (originEl) => {
+                const el = originEl as HTMLElement
+                const elStates = RxDOMSize.resizeTargetToStates.get(el)
+                if (elStates) {
+                    elStates.delete(this.value)
+                    if (!elStates.size) {
+                        RxDOMSize.globalResizeObserver.unobserve(el)
+                        RxDOMSize.resizeTargetToStates.delete(el)
+                    }
+                }
                 this.value(null)
             }
         }

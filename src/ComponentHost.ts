@@ -94,7 +94,10 @@ function createPortalShared(content: JSX.Element|ComponentNode|Function, contain
  * @internal
  */
 export class ComponentHost implements Host{
-    static typeIds = new Map<Function, number>()
+    // CAUTION WeakMap + 计数器而不是 Map + size：bindProps/lazy/HOC 每次调用都会产生新的
+    //  组件函数，普通 Map 会把这些函数永久 pin 住（样式 id 注册表无上限增长）。
+    static typeIds = new WeakMap<Function, number>()
+    static nextTypeId = 0
     type: Component
     public innerHost?: Host
     // CAUTION 以下所有容器/闭包字段全部惰性分配：一个典型的小组件（不用
@@ -128,7 +131,7 @@ export class ComponentHost implements Host{
     _reusable?: ReuseFn
     constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
-            ComponentHost.typeIds.set(type, ComponentHost.typeIds.size)
+            ComponentHost.typeIds.set(type, ComponentHost.nextTypeId++)
         }
 
         this.name = type.name
@@ -612,21 +615,19 @@ export class ComponentHost implements Host{
             if (typeof handle === 'function') (this.layoutEffectDestroyHandles ??= new Set()).add(handle)
         })
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         if (this.refProp) {
             this.detachRef(this.refProp)
         }
 
-        if (!parentHandleComputed) {
-            // 如果上层是 computed rerun，那么也会清理掉我们产生的 computed。但不能确定，所以这里还是自己清理一下。
-            this.frame?.forEach(manualCleanupObject =>
-                manualCleanupObject.destroy()
-            )
-        }
+        // render 期间收集到的 computed 等由自己清理
+        this.frame?.forEach(manualCleanupObject =>
+            manualCleanupObject.destroy()
+        )
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
         // innerHost 可能不存在（render 抛错被中断的场景）
-        this.innerHost?.destroy(parentHandle, parentHandleComputed)
+        this.innerHost?.destroy(parentHandle)
         this.layoutEffectDestroyHandles?.forEach(handle => handle())
         this.destroyCallback?.forEach(callback => callback())
 
@@ -798,7 +799,7 @@ export class ReusableHost implements Host{
     moveTo(reusePlaceholder: Comment) {
         this.reusePlaceholder = reusePlaceholder
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         // do nothing
         if (!parentHandle) {
             const frag = document.createDocumentFragment()
@@ -829,7 +830,7 @@ export class ReusableHost implements Host{
         if (this.element === this.placeholder) {
             this.element.remove()
         } else {
-            this.innerHost.destroy(false, false)
+            this.innerHost.destroy(false)
         }
         if (this.reusePlaceholder) {
             this.reusePlaceholder.remove()

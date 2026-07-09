@@ -83,9 +83,8 @@ export class LightBindingEffect extends ReactiveEffect {
     }
     /**
      * 把（AtomHost/FunctionHost 这类同时也是 Host 的）effect 从创建时的上下文中摘除：
-     * - ManualCleanup collect frame：Host 对象的销毁由宿主树显式管理（destroy(parentHandle,
-     *   parentHandleComputed) 带 DOM 语义），绝不能被组件 frame 的 forEach(x => x.destroy())
-     *   以无参形式误销毁；
+     * - ManualCleanup collect frame：Host 对象的销毁由宿主树显式管理（destroy(parentHandle)
+     *   带 DOM 语义），绝不能被组件 frame 的 forEach(x => x.destroy()) 以无参形式误销毁；
      * - 父 effect 收集：Host 的生命周期与创建它的 effect 无关（列表行由 splice 显式销毁），
      *   不能挂在父 effect 的 children 里被 destroyChildren 提前 deactivate。
      */

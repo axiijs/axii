@@ -59,12 +59,21 @@ function setProperty(node: HTMLElement, name: string, value: any) {
     }
 }
 
+type EventListenerValue = ((e: Event, ...args: any[]) => any) | ((e: Event, ...args: any[]) => any)[]
+
+// CAUTION 以事件名为一级 key、来源 prop（别名前的事件名，如 change/input）为二级 key：
+//  onChange 会被别名成 input 事件，与用户同时写的 onInput 落到同一个事件名下，
+//  二级 key 让解绑（传 falsy）只影响自己来源的监听，不会把别人的一起删掉。
+type EventListenerEntries = {
+    [sourceKey: string]: EventListenerValue
+}
+
 export interface ExtendedElement extends HTMLElement {
     _listeners?: {
-        [k: string]: (e: Event, ...args: any[]) => any
+        [k: string]: EventListenerEntries
     },
     _captureListeners?: {
-        [k: string]: (e: Event, ...args: any[]) => any
+        [k: string]: EventListenerEntries
     }
     listenerBoundArgs?: any[]
     unhandledChildren?: UnhandledChildInfo[]
@@ -75,16 +84,41 @@ export interface ExtendedElement extends HTMLElement {
     __axiiSource?: AxiiSource
 }
 
+function invokeEventEntries(el: ExtendedElement, entries: EventListenerEntries|undefined, e: Event) {
+    if (!entries) return
+    const args = el.listenerBoundArgs || []
+    // CAUTION 保留每个 handler 的返回值：单个 handler 返回其值，多个（数组或多来源）返回值数组
+    let firstResult: any
+    let hasFirst = false
+    let results: any[] | undefined
+    for (const key in entries) {
+        const listener = entries[key]
+        const value = Array.isArray(listener) ? listener.map(l => l?.(e, ...args)) : listener?.(e, ...args)
+        if (!hasFirst) {
+            hasFirst = true
+            if (Array.isArray(listener)) {
+                results = value as any[]
+            } else {
+                firstResult = value
+            }
+        } else {
+            if (results === undefined) results = [firstResult]
+            if (Array.isArray(value)) {
+                results.push(...value)
+            } else {
+                results.push(value)
+            }
+        }
+    }
+    return results ?? firstResult
+}
+
 function eventProxy(this: ExtendedElement, e: Event) {
-    const listener = this._listeners![e.type]
-    // CAUTION 数组 listener 用 map 而不是 forEach，保留每个 handler 的返回值
-    return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
+    return invokeEventEntries(this, this._listeners?.[e.type], e)
 }
 
 function captureEventProxy(this: ExtendedElement, e: Event) {
-    const listener = this._captureListeners![e.type]
-    // CAUTION 数组 listener 用 map 而不是 forEach，保留每个 handler 的返回值
-    return Array.isArray(listener) ? listener.map(l => l?.(e, ...(this.listenerBoundArgs||[]))) : listener?.(e, ...(this.listenerBoundArgs||[]))
+    return invokeEventEntries(this, this._captureListeners?.[e.type], e)
 }
 
 // CAUTION 大多数占位符是 Comment。函数/atom 类型的 child 用 Text 节点做占位符（乐观策略）：
@@ -116,31 +150,43 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     // 事件
     if (name[0] === 'o' && name[1] === 'n') {
         const useCapture = name !== (name = name.replace(/Capture$/, ''))
-        let eventName = name.toLowerCase().substring(2)
+        // sourceKey 是别名前的事件名（如 change），用于区分监听的来源
+        const sourceKey = name.toLowerCase().substring(2)
         // CAUTION 体验改成和 react 的一致
-        if (eventName === 'change') eventName = 'input'
+        const eventName = sourceKey === 'change' ? 'input' : sourceKey
         const proxy = useCapture ? captureEventProxy : eventProxy
-        if (value) {
-            // CAUTION 同一个 proxy 重复 addEventListener 会被 DOM 自动去重，这里无需判断
-            node.addEventListener(eventName, proxy, useCapture)
-        } else {
-            node.removeEventListener(eventName, proxy, useCapture)
-        }
 
         const listeners = useCapture ?
             (node._captureListeners || (node._captureListeners = {})) :
             (node._listeners || (node._listeners = {}))
 
         if (value) {
-            // CAUTION onChange 会被别名成 input 事件，可能和用户同时写的 onInput 撞 key，
-            //  这里要合并成数组而不是断言唯一，否则会直接崩溃。
-            const existing = listeners[eventName]
-            listeners[eventName] = existing === undefined ?
-                value :
-                (Array.isArray(existing) ? existing : [existing]).concat(value)
+            // CAUTION 同一个 proxy 重复 addEventListener 会被 DOM 自动去重，这里无需判断
+            node.addEventListener(eventName, proxy, useCapture)
+            // CAUTION onChange 会被别名成 input 事件，与用户同时写的 onInput 落到同一个事件名下，
+            //  按来源分槽存储：两者都会被触发，且互不影响对方的绑定/解绑。
+            //  同一来源重复设置是覆盖语义（重绑）。
+            const entries = listeners[eventName] || (listeners[eventName] = {})
+            entries[sourceKey] = value
         } else {
-            // 传入 falsy 值表示解绑
-            delete listeners[eventName]
+            // 传入 falsy 值表示解绑：只解绑自己来源的监听，
+            // 该事件名下已无任何来源时才移除 proxy
+            const entries = listeners[eventName]
+            if (entries) {
+                delete entries[sourceKey]
+                let empty = true
+                // eslint-disable-next-line no-unreachable-loop
+                for (const _ in entries) {
+                    empty = false
+                    break
+                }
+                if (empty) {
+                    delete listeners[eventName]
+                    node.removeEventListener(eventName, proxy, useCapture)
+                }
+            } else {
+                node.removeEventListener(eventName, proxy, useCapture)
+            }
         }
 
         return
@@ -227,8 +273,9 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 (node as HTMLInputElement).checked = false
                 node.removeAttribute('checked')
             }
-        } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'text' && value === undefined) {
-            // 特殊处理一下 input value 为 undefined 的情况
+        } else if ((node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') && value == null) {
+            // CAUTION 所有 input 类型（不只 type=text）和 textarea：value 为 undefined/null 时
+            //  显示空字符串，否则会渲染出字面 "undefined"/"null"
             (node as HTMLDataElement).value = ''
         }
     } else if (name === 'checked' && node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
@@ -688,7 +735,8 @@ export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesAr
     return createElement(type, rawProps, ...children)
 }
 export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return createElement(type, rawProps, children)
+    // CAUTION 无 children 时不能把 undefined 当作一个实参传下去，否则组件拿到的是 [undefined] 而不是 []
+    return children === undefined ? createElement(type, rawProps) : createElement(type, rawProps, children)
 }
 // React automatic dev runtime 签名：jsxDEV(type, props, key, isStaticChildren, source, self)
 export function jsxDEV(
@@ -700,5 +748,7 @@ export function jsxDEV(
     self?: unknown
 ): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     const props = source || self ? {...rawProps, __source: source, __self: self} : rawProps
-    return Array.isArray(children) ? createElement(type, props, ...children) : createElement(type, props, children)
+    if (Array.isArray(children)) return createElement(type, props, ...children)
+    // CAUTION 同 jsx：无 children 时不能传 undefined 占位
+    return children === undefined ? createElement(type, props) : createElement(type, props, children)
 }

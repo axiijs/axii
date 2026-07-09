@@ -54,8 +54,10 @@ describe('function render', () => {
         expect(ref.innerText).toBe('world')
         name('world2')
         expect(ref.innerText).toBe('world2')
+        // CAUTION atom(undefined)/atom(null) 渲染为空文本（与函数 child 返回 null 的语义一致），
+        //  不再渲染字面 'undefined'（2026-07 review 条目 I7）
         name(undefined)
-        expect(ref.innerText).toBe('undefined')
+        expect(ref.innerText).toBe('')
         name({name: 'world3'})
         expect(ref.innerText).toBe('[object Object]')
 

@@ -6,9 +6,13 @@ import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 
 
 function stringValue(v: any) {
+    // CAUTION null/undefined 渲染为空文本，与函数 child（FunctionHost 返回 null 渲染为空）语义一致，
+    //  atom(null) 是"暂无数据"的自然写法，不应该把字面 "null"/"undefined" 渲染到页面上。
+    if (v === undefined || v === null) return ''
     return (v as string)?.toString ?
         (v as string).toString() :
-        (v === undefined ? 'undefined' : JSON.stringify(v))
+        /* v8 ignore next */
+        JSON.stringify(v)
 }
 /**
  * @internal
@@ -52,19 +56,25 @@ export class AtomHost extends LightBindingEffect implements Host{
 
     // LightBindingEffect 触发时的回调（以原型方法提供，替代构造器闭包）
     update() {
-        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，文本更新是最热的路径之一
-        if (isAxiiDiagnosticsEnabled()) {
-            withReactiveTrace({
-                type: 'atom-text',
-                operation: 'update-text',
-                hostType: 'AtomHost',
-                elementPath: this.pathContext.elementPath,
-                source: this.pathContext.debugSource,
-            }, () => {
+        // CAUTION 文本更新抛错（如用户对象的 toString 抛错）：如果外部通过 root.on('error')
+        //  注册了处理器，则报告错误并跳过本次更新，否则保持向上抛出的行为。
+        try {
+            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，文本更新是最热的路径之一
+            if (isAxiiDiagnosticsEnabled()) {
+                withReactiveTrace({
+                    type: 'atom-text',
+                    operation: 'update-text',
+                    hostType: 'AtomHost',
+                    elementPath: this.pathContext.elementPath,
+                    source: this.pathContext.debugSource,
+                }, () => {
+                    this.replace(this.source())
+                })
+            } else {
                 this.replace(this.source())
-            })
-        } else {
-            this.replace(this.source())
+            }
+        } catch (e) {
+            if (!this.pathContext.root.dispatch('error', e)) throw e
         }
     }
 
@@ -72,14 +82,12 @@ export class AtomHost extends LightBindingEffect implements Host{
         trackLightBindingCreated(this, 'AtomTextBinding')
         this.run()
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         trackLightBindingDestroyed(this)
-        if (!parentHandleComputed) {
-            // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
-            //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
-            ReactiveEffect.destroy(this)
-        }
+        // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
+        //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
+        ReactiveEffect.destroy(this)
         if (!parentHandle) {
             this.element.remove()
             this.placeholder.remove()

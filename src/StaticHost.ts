@@ -528,20 +528,27 @@ export class StaticHost implements Host {
                         this.usesStyleManager = true
                     }
                     const effect = new LightBindingEffect(() => {
-                        // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
-                        if (isAxiiDiagnosticsEnabled()) {
-                            withReactiveTrace({
-                                type: 'static-attr',
-                                operation: 'update-attr',
-                                hostType: 'StaticHost',
-                                elementPath: path,
-                                source: source ?? this.pathContext.debugSource,
-                                attrName: key,
-                            }, () => {
+                        // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，
+                        //  则报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），
+                        //  否则保持向上抛出的行为。与 ComponentHost/FunctionHost 的错误钩子语义一致。
+                        try {
+                            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
+                            if (isAxiiDiagnosticsEnabled()) {
+                                withReactiveTrace({
+                                    type: 'static-attr',
+                                    operation: 'update-attr',
+                                    hostType: 'StaticHost',
+                                    elementPath: path,
+                                    source: source ?? this.pathContext.debugSource,
+                                    attrName: key,
+                                }, () => {
+                                    this.updateAttribute(el, key, value, path, isSVG)
+                                })
+                            } else {
                                 this.updateAttribute(el, key, value, path, isSVG)
-                            })
-                        } else {
-                            this.updateAttribute(el, key, value, path, isSVG)
+                            }
+                        } catch (e) {
+                            if (!this.pathContext.root.dispatch('error', e)) throw e
                         }
                     })
                     trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
@@ -589,18 +596,18 @@ export class StaticHost implements Host {
             createElement.attachRef(el, handle)
         })
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         if (this.attrEffects) {
             for (const effect of this.attrEffects) {
                 trackLightBindingDestroyed(effect)
-                if (!parentHandleComputed) effect.destroy()
+                effect.destroy()
             }
         }
 
         this.removeAttachListener?.()
 
-        this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
+        this.reactiveHosts?.forEach(host => host.destroy(true))
 
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
@@ -678,11 +685,13 @@ export class StaticHost implements Host {
 
             const transformingElementsArray = Array.from(transformingElements)
             const animatingElementsArray = Array.from(animatingElements)
+            // CAUTION end 事件必须同时接受 cancel（transition 被打断/元素被隐藏时只会派发 cancel），
+            //  否则等待永远不会结束。
             const promises = [
-                ...transformingElementsArray.map(el => eventToPromise(el, 'transitionrun')),
-                ...transformingElementsArray.map(el => eventToPromise(el, 'transitionend')),
-                ...animatingElementsArray.map(el => eventToPromise(el, 'animationrun')),
-                ...animatingElementsArray.map(el => eventToPromise(el, 'animationend')),
+                ...transformingElementsArray.map(el => eventToPromise(el, ['transitionrun'])),
+                ...transformingElementsArray.map(el => eventToPromise(el, ['transitionend', 'transitioncancel'])),
+                ...animatingElementsArray.map(el => eventToPromise(el, ['animationrun'])),
+                ...animatingElementsArray.map(el => eventToPromise(el, ['animationend', 'animationcancel'])),
             ]
 
             // 出发 transition 和 animation
@@ -693,7 +702,15 @@ export class StaticHost implements Host {
                 setAttribute(el, 'style', final, el instanceof SVGElement)
             })
 
-            return Promise.all(promises).then(() => {
+            // CAUTION 兜底超时：transition/animation 可能实际不会发生（离场样式与当前值相同、
+            //  元素 display:none、prefers-reduced-motion 等场景下 run/end 事件永不触发），
+            //  没有超时的话节点会永远留在 DOM。上限取各元素声明的最长动画时长 + buffer。
+            const deadline = computeExitDeadlineMs(transformingElementsArray, animatingElementsArray)
+
+            return Promise.race([
+                Promise.all(promises),
+                new Promise(resolve => setTimeout(resolve, deadline)),
+            ]).then(() => {
                 // CAUTION 等待离场动画期间，DOM 可能已被其他路径整体清理（例如外部直接清空了父节点），
                 //  整段区间脱离/父节点失配是这个场景下被容忍的合法状态，直接跳过删除。
                 //  其余更细的区间破坏（同父但链断了）仍会被 removeNodesBetween 的诊断捕获并 report。
@@ -755,18 +772,18 @@ export class CompactElementHost extends StaticHost {
             StaticHost.styleManager.mount(this.pathContext.hostPath)
         }
     }
-    destroy(parentHandle?: boolean, parentHandleComputed?: boolean) {
+    destroy(parentHandle?: boolean) {
         // CAUTION 先减 compact 计数再登记 destroyed，顺序反了会被去重逻辑跳过
         trackCompactHostDestroyed(this)
         trackHostDestroyed(this)
         if (this.attrEffects) {
             for (const effect of this.attrEffects) {
                 trackLightBindingDestroyed(effect)
-                if (!parentHandleComputed) effect.destroy()
+                effect.destroy()
             }
         }
         this.removeAttachListener?.()
-        this.reactiveHosts?.forEach(host => host.destroy(true, parentHandleComputed))
+        this.reactiveHosts?.forEach(host => host.destroy(true))
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
         })
@@ -779,10 +796,50 @@ export class CompactElementHost extends StaticHost {
     }
 }
 
-function eventToPromise(el: HTMLElement, event: string) {
+function eventToPromise(el: HTMLElement, events: string[]) {
     return new Promise(resolve => {
-        el.addEventListener(event, () => {
-            resolve(true)
-        }, { once: true })
+        const abortController = new AbortController()
+        for (const event of events) {
+            el.addEventListener(event, () => {
+                abortController.abort()
+                resolve(true)
+            }, { once: true, signal: abortController.signal })
+        }
     })
+}
+
+// 离场动画兜底等待的余量与绝对上限
+const EXIT_ANIMATION_BUFFER_MS = 100
+const EXIT_ANIMATION_MAX_WAIT_MS = 10_000
+
+// 解析 computed style 的时长列表（如 "0.3s, 1s"），返回最大值（毫秒）
+function maxDurationMs(list: string) {
+    let max = 0
+    for (const part of list.split(',')) {
+        const seconds = parseFloat(part) || 0
+        if (seconds * 1000 > max) max = seconds * 1000
+    }
+    return max
+}
+
+function computeExitDeadlineMs(transitioning: HTMLElement[], animating: HTMLElement[]) {
+    let max = 0
+    for (const el of transitioning) {
+        const style = getComputedStyle(el)
+        const total = maxDurationMs(style.transitionDuration) + maxDurationMs(style.transitionDelay)
+        if (total > max) max = total
+    }
+    for (const el of animating) {
+        const style = getComputedStyle(el)
+        let iterationCount = 1
+        for (const part of style.animationIterationCount.split(',')) {
+            const count = part.trim() === 'infinite' ? Infinity : (parseFloat(part) || 1)
+            if (count > iterationCount) iterationCount = count
+        }
+        const total = maxDurationMs(style.animationDuration) * iterationCount + maxDurationMs(style.animationDelay)
+        if (total > max) max = total
+    }
+    /* v8 ignore next */
+    if (!Number.isFinite(max)) max = EXIT_ANIMATION_MAX_WAIT_MS
+    return Math.min(max + EXIT_ANIMATION_BUFFER_MS, EXIT_ANIMATION_MAX_WAIT_MS)
 }

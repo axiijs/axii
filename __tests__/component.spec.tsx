@@ -106,13 +106,18 @@ describe('component render', () => {
         text('hello data0')
         expect(rootEl.firstElementChild!.innerHTML).toBe('hello data0')
 
-        // 设置为 undefined
+        // CAUTION atom(undefined)/atom(null) 渲染为空文本（与函数 child 返回 null 的语义一致），
+        //  不再渲染字面 'undefined'/'null'（2026-07 review 条目 I7）
         text(undefined)
-        expect(rootEl.firstElementChild!.innerHTML).toBe('undefined')
+        expect(rootEl.firstElementChild!.innerHTML).toBe('')
 
         // 设置为 null
         text(null)
-        expect(rootEl.firstElementChild!.innerHTML).toBe('null')
+        expect(rootEl.firstElementChild!.innerHTML).toBe('')
+
+        // 恢复有值
+        text('back')
+        expect(rootEl.firstElementChild!.innerHTML).toBe('back')
     })
 
     test('reactive attribute should not leak to upper computed', () => {
