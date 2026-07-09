@@ -37,7 +37,10 @@ class PrimitiveHost implements Host{
     constructor(public source: string|number|boolean, public placeholder:Comment|Text, public pathContext: PathContext) {
     }
     render() {
-        this.element = document.createTextNode(this.source.toString());
+        // CAUTION boolean 渲染为空文本：{cond && <el/>} 的 falsy 结果不应该出现字面 "false"，
+        //  与 FunctionHost/AtomHost 的语义一致。
+        const text = typeof this.source === 'boolean' ? '' : this.source.toString()
+        this.element = document.createTextNode(text);
         insertBefore(this.element, this.placeholder)
     }
     destroy(parentHandle?: boolean) {
