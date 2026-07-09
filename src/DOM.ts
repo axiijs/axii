@@ -194,11 +194,16 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
 
     // style
     if (name === 'style') {
+        // CAUTION falsy 值（false/null/undefined，来自 style={cond && {...}} 的条件写法）
+        //  语义是清空 inline style，必须 return，否则会掉进下面的类型 assert。
         if (!value || (Array.isArray(value) && !value.length)) {
-            node.style.cssText = value || ''
+            node.style.cssText = ''
+            return
         }
         const styles = Array.isArray(value) ? value : [value]
         styles.forEach(style => {
+            // 数组中的条件项 [base, cond && {...}]，falsy 直接跳过
+            if (style == null || typeof style === 'boolean') return
             if (typeof style === 'string') {
                 node.style.cssText = style
             } else  if (typeof style === 'object') {
@@ -230,6 +235,9 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         const classNameOptions = Array.isArray(value) ? value : [value]
         const classNames:string[] = []
         classNameOptions.forEach((className) => {
+            // CAUTION 条件写法 className={cond && 'x'} 的 falsy 结果（false/null/undefined）跳过，
+            //  单值 falsy 时落到下面的 join('') 清空 class，与「条件不满足」的语义一致。
+            if (className == null || typeof className === 'boolean') return
             if (typeof className === 'object') {
                 for(const name in className) {
                     if (className[name]) {
@@ -258,7 +266,8 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         // CAUTION 因为 select 如果 option 还没有渲染（比如 computed 的情况），那么设置 value 就没用，我们这里先存着，
         //  等 append option children 的时候再 set value 一下
         if (node.tagName === 'SELECT') {
-            node.dataset['__value__'] = value
+            // null/undefined 存空字符串（清空选中），不能让 dataset 把它字符串化成 "null"/"undefined"
+            node.dataset['__value__'] = value ?? ''
         } else if (node.tagName === 'OPTION') {
             // 当 option 的 value 发生变化的时候也要 reset 一下，因为可能这个时候与 select value 相等的 option 才出现
             if (node.parentElement instanceof HTMLSelectElement) {
@@ -607,7 +616,14 @@ export function Fragment(props: any = {}): DocumentFragment {
 }
 
 function resetOptionParentSelectValue(select: HTMLSelectElement) {
-    select.value = select.dataset['__value__']!
+    // CAUTION 只有显式设置过 value prop 的 select 才需要重置（dataset 里才有存值）。
+    //  没有 value prop 的 select（非受控）在动态渲染 option 时也会走到这里，
+    //  盲目赋值会把 undefined 字符串化成 "undefined" 写给 select.value，
+    //  没有任何 option 匹配，浏览器的默认选中（第一个 option）被清掉。
+    const storedValue = select.dataset['__value__']
+    if (storedValue !== undefined) {
+        select.value = storedValue
+    }
 }
 
 /**
