@@ -24,14 +24,24 @@ export function stringifyStyleValue(k:string, v: any): string {
     //  读取会正确建立依赖。不求值的话函数源码会被字符串化成非法 CSS，且没有任何响应性。
     if (typeof v === 'function') v = v()
     // 当值是 falsy 的时候 设置 style[k] 为 ''，用来清除 inline style
-    if (v === undefined || v === null) return ''
+    // CAUTION boolean 必须和 null/undefined 一样按「清除」处理：{fontWeight: cond && 'bold'} 的
+    //  条件写法翻转为 false 时，'false' 是非法 CSS 值，浏览器会静默拒绝这次赋值——
+    //  旧值（'bold'）不会被清除，样式永久残留（F36）。
+    if (v === undefined || v === null || typeof v === 'boolean') return ''
     if(Array.isArray(v)) {
         // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
             // attr like box-shadow
-            // 这里不可能是 StyleSize 所以不用 toString；数组项同样支持 atom/函数值
-            return v.map((i: any) => typeof i === 'function' ? i() : i).join(',')
-
+            // 这里不可能是 StyleSize 所以不用 toString；数组项同样支持 atom/函数值。
+            // CAUTION 条件项（cond && '0 0 2px blue'）的 falsy 结果必须过滤掉：
+            //  'false' 混进逗号列表会让整条声明非法，浏览器静默丢弃 => 旧值永远残留（F36）。
+            const parts: string[] = []
+            for (let i of v) {
+                if (typeof i === 'function') i = i()
+                if (i === undefined || i === null || typeof i === 'boolean' || i === '') continue
+                parts.push(i)
+            }
+            return parts.join(',')
         } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string') {
             // [12, 'px'] => 12px
             return `${v[0]}${v[1]}`
@@ -160,7 +170,11 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     //  统一成 className 处理：否则 AOP 合并出的 class 数组会掉进「取最后一个」的覆盖分支，
     //  合并语义被静默破坏（外部覆盖值丢失）。
     if (name === 'class') name = 'className'
-    if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name)) {
+    // CAUTION multiple select 的 value 天然就是数组（HTML 多选的用户本意），不能落进
+    //  「数组取最后一个」的覆盖语义——mergeProp 从不会把 value 合并成数组，
+    //  所以 select 上的数组 value 一定来自用户，必须按多选语义整体应用。
+    if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name) &&
+        !(name === 'value' && node.tagName === 'SELECT')) {
         // 全都是覆盖模式，只处理最后一个
         return setAttribute(node, name, value.at(-1), isSvg)
     }
@@ -237,7 +251,14 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 each(style, (v, k) => {
                     if (k[0] === '-' && k[1] === '-') {
                         // CSS 自定义属性同样支持 atom/函数值
-                        node.style.setProperty(k, typeof v === 'function' ? v() : v)
+                        // CAUTION 条件值（cond && val）的 falsy 结果按移除处理，
+                        //  否则 setProperty 会把 false 字符串化成 "false" 写进变量（F36 同类）。
+                        const evaluated = typeof v === 'function' ? v() : v
+                        if (evaluated === undefined || evaluated === null || typeof evaluated === 'boolean') {
+                            node.style.removeProperty(k)
+                        } else {
+                            node.style.setProperty(k, evaluated)
+                        }
                     }else {
                         // @ts-ignore
                         node.style[k] = stringifyStyleValue(k, v)
@@ -291,14 +312,19 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     if (name === 'key' || name === 'ref') {
         // ignore
     } else if (name === 'value') {
+        if (node.tagName === 'SELECT') {
+            // CAUTION 因为 select 如果 option 还没有渲染（比如 computed 的情况），那么设置 value 就没用，
+            //  我们这里先存着，等 append option children 的时候再 set value 一下。
+            //  null/undefined 存空字符串（清空选中）。数组（multiple select 的多选值）原样保存，
+            //  应用/恢复统一走 applySelectValue。
+            const storedValue = value ?? ''
+            ;(node as SelectWithAxiiValue).__axiiSelectValue__ = storedValue
+            applySelectValue(node as unknown as HTMLSelectElement, storedValue)
+            return
+        }
         (node as HTMLDataElement).value = value
 
-        // CAUTION 因为 select 如果 option 还没有渲染（比如 computed 的情况），那么设置 value 就没用，我们这里先存着，
-        //  等 append option children 的时候再 set value 一下
-        if (node.tagName === 'SELECT') {
-            // null/undefined 存空字符串（清空选中），不能让 dataset 把它字符串化成 "null"/"undefined"
-            node.dataset['__value__'] = value ?? ''
-        } else if (node.tagName === 'OPTION') {
+        if (node.tagName === 'OPTION') {
             // 当 option 的 value 发生变化的时候也要 reset 一下，因为可能这个时候与 select value 相等的 option 才出现
             // CAUTION option 可能包在 optgroup 里（合法且常见的 HTML），不能只认直接父级是 select 的形态
             const ownerSelect = findOwnerSelect(node.parentElement)
@@ -338,8 +364,10 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         }
 
     } else if (name === 'dangerouslySetInnerHTML') {
-        // console.warn(value)
-        node.innerHTML = value
+        // CAUTION nullish 表示清空：innerHTML 的 IDL 对 null 走 LegacyNullToEmptyString，
+        //  但 undefined 会被字符串化成字面 "undefined" 渲染到页面上
+        //  （dangerouslySetInnerHTML={() => maybeHtml()} 的条件写法会产出 undefined）。
+        node.innerHTML = value ?? ''
     // CAUTION list/type/form 是「与只读（或行为特殊的）DOM property 同名的合法 HTML attribute」：
     //  input.list / select.type / *.form 都是 readonly accessor，走 property 赋值在严格模式下
     //  直接 TypeError（sloppy 模式下静默无效），属性永远设不上去——
@@ -665,14 +693,50 @@ function findOwnerSelect(parent: Element | null): HTMLSelectElement | null {
     return null
 }
 
+type SelectWithAxiiValue = HTMLElement & { __axiiSelectValue__?: string | any[] }
+
+/**
+ * 把 value 应用到 select 上。
+ * CAUTION multiple select 的 value 是数组（HTML 多选的用户本意）：
+ *  直接赋给 select.value 会被字符串化成 "a,b"，没有任何 option 匹配，选中被整体清空。
+ *  必须逐个 option 按包含关系设置 selected。单值路径维持原生赋值。
+ */
+function applySelectValue(select: HTMLSelectElement, value: string | any[]) {
+    if (Array.isArray(value)) {
+        for (const option of Array.from(select.options)) {
+            // option.value 恒为字符串，数组里的数字值（[1, 2] 是自然写法）按字符串化比较
+            option.selected = value.some(v => String(v) === option.value)
+        }
+    } else {
+        select.value = value
+    }
+}
+
+/**
+ * @internal
+ * option 的文本内容变化（atom/函数 text child 原地更新 nodeValue）时，没有 value attr 的
+ * option 的 value 就是它的文本——此刻可能才出现与 select 存值匹配的 option，必须触发恢复。
+ * CAUTION 这是 atom/函数文本更新的热路径，只做两次属性读 + 一次 tagName 比较，
+ *  非 option 场景零额外分配。
+ */
+export function resetOptionOwnerSelect(node: Text | Comment) {
+    const parent = node.parentElement
+    if (parent && parent.tagName === 'OPTION') {
+        const ownerSelect = findOwnerSelect(parent.parentElement)
+        if (ownerSelect) {
+            resetOptionParentSelectValue(ownerSelect)
+        }
+    }
+}
+
 function resetOptionParentSelectValue(select: HTMLSelectElement) {
-    // CAUTION 只有显式设置过 value prop 的 select 才需要重置（dataset 里才有存值）。
+    // CAUTION 只有显式设置过 value prop 的 select 才需要重置（存过值才恢复）。
     //  没有 value prop 的 select（非受控）在动态渲染 option 时也会走到这里，
     //  盲目赋值会把 undefined 字符串化成 "undefined" 写给 select.value，
     //  没有任何 option 匹配，浏览器的默认选中（第一个 option）被清掉。
-    const storedValue = select.dataset['__value__']
+    const storedValue = (select as SelectWithAxiiValue).__axiiSelectValue__
     if (storedValue !== undefined) {
-        select.value = storedValue
+        applySelectValue(select, storedValue)
     }
 }
 

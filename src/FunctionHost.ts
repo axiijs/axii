@@ -1,7 +1,7 @@
 import {Notifier, ReactiveEffect} from "data0";
 import {Host, PathContext} from "./Host";
 import {createHost} from "./createHost";
-import {insertBefore} from './DOM'
+import {insertBefore, resetOptionOwnerSelect} from './DOM'
 import {createLinkedNode} from "./LinkedList";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {DeferredBindingEffect} from "./LightBindingEffect.js";
@@ -112,6 +112,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             const text = (node == null || valueType === 'boolean') ? '' : String(node)
             if (this.textNode) {
                 this.textNode.nodeValue = text
+                // CAUTION 没有 value attr 的 option 以文本为 value，原地更新文本后
+                //  必须触发 select 的 value 恢复（F37），非 option 场景零额外分配。
+                resetOptionOwnerSelect(this.placeholder)
                 return
             }
             this.destroyInnerHost()
@@ -122,10 +125,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             } else {
                 this.textNode = document.createTextNode(text)
                 // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它。
-                //  直接用 parentNode.insertBefore，跳过 DOM.ts insertBefore 的 select/option 处理
-                //  （文本节点不影响 select 的 value）。
+                //  直接用 parentNode.insertBefore，跳过 DOM.ts insertBefore 的 select/option 区间处理，
+                //  option 文本（= 没有 value attr 时的 option value）的恢复由下面的
+                //  resetOptionOwnerSelect 统一负责。
                 this.placeholder.parentNode!.insertBefore(this.textNode, this.placeholder)
             }
+            resetOptionOwnerSelect(this.placeholder)
             return
         }
 

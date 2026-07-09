@@ -1,4 +1,5 @@
 import {Atom, ReactiveEffect} from "data0";
+import {resetOptionOwnerSelect} from "./DOM";
 import {Host, PathContext} from "./Host";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {LightBindingEffect} from "./LightBindingEffect.js";
@@ -53,6 +54,9 @@ export class AtomHost extends LightBindingEffect implements Host{
         } else {
             this.element.nodeValue = stringValue(value)
         }
+        // CAUTION 没有 value attr 的 option 以文本为 value：atom 文本原地更新（不走 insertBefore）
+        //  也可能让 select 存值匹配的 option 此刻才出现，必须触发 select 的 value 恢复（F37）。
+        resetOptionOwnerSelect(this.placeholder)
     }
 
     // LightBindingEffect 触发时的回调（以原型方法提供，替代构造器闭包）

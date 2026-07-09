@@ -330,19 +330,26 @@ export class ComponentHost implements Host{
             if(thisItemConfig.propMergeHandles) {
                 Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handles]) => {
                     // TODO 这里的 componentProps 需不要 N_ATTR?
-                    finalProps[key] = handles.reduce((acc, handle) => handle(acc, componentProps), finalProps[key])
+                    // CAUTION 就地修改 origin、不 return 也是 merge 函数的自然写法，
+                    //  返回 undefined 时回退到累积值（要显式清掉 prop 用 () => null）。
+                    finalProps[key] = handles.reduce((acc, handle) => handle(acc, componentProps) ?? acc, finalProps[key])
                 })
             }
 
             // 3. 使用:_props 可以正对 props 进行整体重写
             if (thisItemConfig.propsMergeHandle) {
                 // TODO 这里的 componentProps 需不要 N_ATTR?
-                finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc, componentProps), finalProps)
+                // CAUTION 就地修改 props、不 return 是 merge 函数的自然写法（(props) => { props.x = 1 }），
+                //  返回 undefined 时必须回退到累积值，否则后续对 finalProps 的所有读取直接 TypeError。
+                finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc, componentProps) ?? acc, finalProps)
             }
 
             // 4. 支持对 children 进行重写
             if (thisItemConfig.children) {
-                finalChildren = thisItemConfig.children
+                // CAUTION children 会被展开传入 createElement（...finalChildren），
+                //  用户传单个节点（$name:_children={<b/>} 是自然写法）时必须包成数组，
+                //  否则展开非 iterable 直接 TypeError。
+                finalChildren = ensureArray(thisItemConfig.children)
             }
         }
 
@@ -685,6 +692,15 @@ export class ComponentHost implements Host{
     }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
+        // CAUTION 清理函数（layoutEffect 返回值 / useEffect 返回值 / onCleanup）必须在
+        //  DOM 拆除、ref 置空、render 期 computed 销毁**之前**执行：
+        //  onCleanup(() => observer.unobserve(ref.current)) 是最自然的写法，
+        //  拆完 DOM 再跑清理时 ref.current 已是 null，直接 TypeError 或静默漏清理（I39）。
+        //  清理函数抛错走 error 钩子：否则一个抛错的 cleanup 会中断
+        //  兄弟清理函数与剩余销毁流程（reusable 销毁、placeholder 移除），造成泄漏。
+        this.layoutEffectDestroyHandles?.forEach(handle => this.runWithErrorHook(handle))
+        this.destroyCallback?.forEach(callback => this.runWithErrorHook(callback))
+
         if (this.refProp) {
             this.detachRef(this.refProp)
         }
@@ -696,10 +712,6 @@ export class ComponentHost implements Host{
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
         // innerHost 可能不存在（render 抛错被中断的场景）
         this.innerHost?.destroy(parentHandle)
-        // CAUTION 清理函数抛错走 error 钩子：否则一个抛错的 cleanup 会中断
-        //  兄弟清理函数与剩余销毁流程（reusable 销毁、placeholder 移除），造成泄漏。
-        this.layoutEffectDestroyHandles?.forEach(handle => this.runWithErrorHook(handle))
-        this.destroyCallback?.forEach(callback => this.runWithErrorHook(callback))
 
         this.innerReusedHosts?.forEach(host => host.destroyReusable())
 
