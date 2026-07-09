@@ -4,7 +4,7 @@
  * 编号与 review 报告一致（I7-I15）。
  */
 import {
-    createElement, createRoot, RenderContext, atom, lazy, jsx,
+    createElement, createRoot, RenderContext, atom, lazy, jsx, setAttribute,
     RxDOMRect, RxDOMSize, ComponentHost, RectObject, Portal
 } from "@framework";
 import {beforeEach, describe, expect, test, vi} from "vitest";
@@ -282,5 +282,36 @@ describe('improvements regression (2026-07 review)', () => {
         root2.render(jsx(Comp as any, {children: 'x'}) as any)
         expect(seenChildren).toEqual(['x'])
         root2.destroy()
+    })
+
+    /**
+     * O3: onChange 被别名成 input 事件后与 onInput 共享同一个事件名，
+     * 之前解绑（传 falsy）会把整个事件名下的监听全部删除；
+     * 现在按来源分槽，解绑 onInput 不影响 onChange，反之亦然。
+     */
+    test('O3: unbinding onInput does not remove the merged onChange listener', () => {
+        const calls: string[] = []
+        const el = createElement('input', {
+            onChange: () => calls.push('change'),
+            onInput: () => calls.push('input'),
+        }) as HTMLInputElement
+
+        el.dispatchEvent(new Event('input'))
+        expect(calls).toEqual(['change', 'input'])
+
+        // 解绑 onInput：onChange 的监听必须保留
+        setAttribute(el as any, 'onInput', null)
+        el.dispatchEvent(new Event('input'))
+        expect(calls).toEqual(['change', 'input', 'change'])
+
+        // 再解绑 onChange：事件名下已无监听
+        setAttribute(el as any, 'onChange', null)
+        el.dispatchEvent(new Event('input'))
+        expect(calls).toEqual(['change', 'input', 'change'])
+
+        // 重新绑定（重绑语义：同一来源覆盖）
+        setAttribute(el as any, 'onInput', () => calls.push('rebound'))
+        el.dispatchEvent(new Event('input'))
+        expect(calls).toEqual(['change', 'input', 'change', 'rebound'])
     })
 })
