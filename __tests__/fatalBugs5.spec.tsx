@@ -119,6 +119,31 @@ describe('fatal bug regression (2026-07 review round 4)', () => {
             root.destroy()
         })
 
+        test('nested list rows (detached fragment inside detached fragment) still run connected', () => {
+            // 门控优化（自己未连通时跳过 flush）下，内层条目必须由最外层完成插入的 flush 兜底
+            const root = createRoot(rootEl)
+            const outer = new RxList<number>([])
+            const connectedRecords: boolean[] = []
+            function Cell({n}: any, {createElement, useLayoutEffect, createRef}: RenderContext) {
+                const ref = createRef()
+                useLayoutEffect(() => {
+                    connectedRecords.push((ref.current as HTMLElement).isConnected)
+                })
+                return <span ref={ref}>{n}</span>
+            }
+            function Row({n}: any, {createElement}: RenderContext) {
+                const inner = new RxList<number>([n * 10, n * 10 + 1])
+                return <div>{inner.map((m: number) => createElement(Cell as any, {n: m}))}</div>
+            }
+            function App({}: any, {createElement}: RenderContext) {
+                return <div>{outer.map((n: number) => createElement(Row as any, {n}))}</div>
+            }
+            root.render(<App/>)
+            outer.splice(0, 0, 1, 2)
+            expect(connectedRecords).toEqual([true, true, true, true])
+            root.destroy()
+        })
+
         test('initial render before root attach still defers to attach event', () => {
             const detachedContainer = document.createElement('div')
             const root = createRoot(detachedContainer)

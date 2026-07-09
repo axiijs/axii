@@ -562,8 +562,13 @@ export class StaticHost implements Host {
             StaticHost.styleManager.mount(this)
         }
         // 自己插入完成后，内层（reactiveHosts 渲染期间登记的）layoutEffect/ref 可能已经连通，
-        //  在同一个同步任务内立刻执行。仍未连通的（自己整体还在更外层 fragment 里）留给外层 flush。
-        this.pathContext.root.flushAttachQueue()
+        //  在同一个同步任务内立刻执行。
+        // CAUTION 自己都还没连通（整体在更外层 fragment 里，如列表行）时必须跳过：
+        //  此时自己内部登记的条目必然也未连通，flush 纯属无效重扫——批量插入 N 个
+        //  带 layoutEffect/ref 的行时会退化成 O(N^2)。留给最外层完成插入的那次 flush 统一处理。
+        if (this.placeholder.isConnected) {
+            this.pathContext.root.flushAttachQueue()
+        }
     }
     setupRefHandles() {
         if (this.refHandles?.length) {
