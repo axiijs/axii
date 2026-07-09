@@ -148,10 +148,29 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         //  收集，所以 pauseCollectChild 必须在 createHost 之前。
         Notifier.instance.pauseTracking()
         effect.pauseCollectChild()
-        const host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
-        host.render()
-        effect.resumeCollectChild()
-        Notifier.instance.resetTracking()
+        let host: Host | undefined
+        try {
+            host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            host.render()
+        } catch (e) {
+            // CAUTION 结构重建抛错（unknown child type 断言等）：重算发生在微任务里，
+            //  向上抛只会变成 uncaught error。注册了 root error 钩子时报告错误并把该区域
+            //  渲染为空（effect 保持活跃，依赖恢复后可以恢复渲染），否则保持向上抛出。
+            //  组件/属性等内层错误已由各自的错误钩子消费，这里只兜底真正逃逸的错误。
+            if (host) {
+                // render 中途抛错：部分渲染的子树交给下一次重建/销毁做尽力清理
+                this.innerHost = host
+            } else {
+                newPlaceholder.remove()
+            }
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+            return
+        } finally {
+            // CAUTION 无论成败都必须恢复 tracking/collect 状态：
+            //  pauseTracking 不恢复的话全局 Notifier 停止追踪，整个应用的响应式全部失效。
+            effect.resumeCollectChild()
+            Notifier.instance.resetTracking()
+        }
         this.innerHost = host
     }
     destroyInnerHost(parentHandle = false) {

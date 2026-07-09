@@ -242,12 +242,12 @@ export class RxListHost implements Host{
     }
     handleSplice(argv: any[], deletedItems?: any[]) {
         const hosts = this.hosts!
-        // CAUTION data0 透传的是 splice 的原始参数，负数/越界 start 是 Array#splice 的合法用法
-        //  （splice(-1, 0, x) 在最后一个之前插入）。hosts.splice 自己会做同样的归一化，
-        //  但下面「往后找插入锚点」的扫描用的是原始值：不归一化的话，负数 start 会从错误的
-        //  位置开始扫，新行插到错误的 DOM 位置（数据与 DOM 永久错位），越界负数还会读到
-        //  undefined host 直接抛错。
-        const rawStart = argv[0] as number
+        // CAUTION data0 透传的是 splice 的原始参数，负数/越界/小数 start 都是 Array#splice 的
+        //  合法用法（splice(-1, 0, x) 在最后一个之前插入；ToIntegerOrInfinity 把 1.5 截断成 1、
+        //  NaN/undefined 归 0）。hosts.splice 自己会做同样的归一化，但下面「往后找插入锚点」
+        //  的扫描用的是原始值：不归一化的话，负数/小数 start 会从错误（甚至不存在）的位置开始扫，
+        //  读到 undefined host 直接抛错，或把新行插到错误的 DOM 位置（数据与 DOM 永久错位）。
+        const rawStart = Math.trunc(argv[0] as number) || 0
         const start = rawStart < 0 ? Math.max(hosts.length + rawStart, 0) : Math.min(rawStart, hosts.length)
         const deleteCount = deletedItems ? deletedItems.length : 0
         let newHosts: Host[]

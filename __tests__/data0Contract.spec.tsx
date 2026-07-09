@@ -74,6 +74,27 @@ describe('data0 -> axii trigger info contract', () => {
         sub.destroy()
     })
 
+    test('1a-2. splice forwards the raw user argv: fractional/NaN start is NOT normalized either', () => {
+        // Array#splice 对 start 做 ToIntegerOrInfinity：1.5 截断成 1、NaN 归 0。
+        // data0 的 data.splice 按该语义生效，但 argv 仍是原始输入（F32 的契约前提）。
+        const list = new RxList(['a', 'b', 'c'])
+        const sub = captureTriggerInfos(list)
+
+        list.splice(1.5 as any, 1, 'X')
+        let infos = sub.take()
+        expect(infos[0].argv).toEqual([1.5, 1, 'X'])
+        expect(infos[0].methodResult).toEqual(['b'])
+        expect(list.data).toEqual(['a', 'X', 'c'])
+
+        list.splice(NaN as any, 1, 'Y')
+        infos = sub.take()
+        expect(Number.isNaN(infos[0].argv![0])).toBe(true)
+        expect(infos[0].methodResult).toEqual(['a'])
+        expect(list.data).toEqual(['Y', 'X', 'c'])
+
+        sub.destroy()
+    })
+
     test('1b. methodResult length is the real delete count (deleteCount argv can overshoot)', () => {
         const list = new RxList(['a', 'b', 'c'])
         const sub = captureTriggerInfos(list)

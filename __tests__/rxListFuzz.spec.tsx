@@ -60,8 +60,9 @@ function randomStep(rng: () => number, list: RxList<string>, mirror: string[], n
     const opIndex = length >= MAX_LENGTH ? 0 : int(0, 9)
 
     switch (opIndex) {
-        case 0: { // splice：start 故意允许负数与越界（Array#splice 的合法输入域）
-            const start = int(-(length + 2), length + 2)
+        case 0: { // splice：start 故意允许负数、越界与小数（Array#splice 的合法输入域，
+            // ToIntegerOrInfinity 会截断小数，F32 曾因未归一化小数 start 抛错）
+            const start = int(-(length + 2), length + 2) + (rng() < 0.25 ? 0.5 : 0)
             const deleteCount = int(0, 3)
             const items = newItems(int(0, length >= MAX_LENGTH ? 0 : 2))
             list.splice(start, deleteCount, ...items)
