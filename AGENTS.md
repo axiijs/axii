@@ -14,6 +14,15 @@ Gotchas:
 - There is no lint script. `npx tsc --noEmit -p tsconfig.json` reports **pre-existing** errors in `__tests__/*.typespec.tsx` and a few spec files; it is not wired into `build` (which uses `vite-plugin-dts`) or CI. Rely on `npm run build` + `npx vitest run` as the quality gates.
 - `data0` (the reactive core) resolves from the npm-installed package unless a sibling `../data0/src` checkout exists (see `vite.config.ts`); no sibling checkout is present here.
 
+## Performance is a core goal
+
+axii's stated identity is "a **high-performance** incremental-update frontend framework without Virtual DOM" (`package.json`). Performance — both speed and retained memory — is a first-class constraint on every change, not an afterthought:
+
+- **Hot paths must stay allocation-free.** `createElement`/`createHost` dispatch, attribute updates (`LightBindingEffect`), atom text updates, and RxList patches are the hot paths. Do not add per-instance closures, per-call object allocations, or always-on checks there. Follow the existing conventions documented in CAUTION comments: lazy field allocation (no initializers on optional fields), shared/prototype functions instead of per-instance closures, `CompactElementHost` for single-element list rows.
+- **Diagnostics are dev-only by design.** Anything O(n) or allocating (trace frames, range checks, list invariants like `AXII_LIST_ORDER_BROKEN`) must sit behind `isAxiiDiagnosticsEnabled()` / `__DEV__` so production pays at most a boolean check. New invariants/assertions must follow this pattern.
+- **Memory is part of performance.** Long-lived lists are the design center: one extra field or closure per row/binding is a measurable regression. `retainedObjectDiagnostics.ts` + the benchmark repo's leak assertions exist to keep "afterClear returns every counter to zero".
+- **Verify with the sibling `benchmark` repo** for perf-sensitive changes (rebuild `dist/` first, or run it with `AXII_BENCHMARK_SOURCE_AXII=true`); `__tests__/matrix.spec.tsx` contains timing-sensitive cases that will surface gross regressions.
+
 ## Bug-fixing & review discipline
 
 Six deep-review rounds (see `prompt/output/README.md`) showed that fatal bugs here cluster in input-shape corners and cross-layer assumptions, and that fixing only the crash site leaves siblings alive. When working on this repo:
