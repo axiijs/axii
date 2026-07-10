@@ -4,6 +4,7 @@ import {Host, PathContext} from "./Host";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {LightBindingEffect} from "./LightBindingEffect.js";
 import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
+import type {HostPosition} from "./createHost";
 
 
 function stringValue(v: any) {
@@ -25,9 +26,13 @@ function stringValue(v: any) {
  */
 export class AtomHost extends LightBindingEffect implements Host{
     element: Text|Comment
-    constructor(public source: Atom, public placeholder:Comment|Text, public pathContext: PathContext) {
+    // 「跳过 pathContext 克隆」时的轻量位置信息（见 createHost/collectInnerHost），
+    //  只在诊断里读取；declare：不走该路径的实例不付槽位
+    declare position?: HostPosition
+    constructor(public source: Atom, public placeholder:Comment|Text, public pathContext: PathContext, position?: HostPosition) {
         super(undefined, pathContext.skipIndicator as {skip: boolean}|undefined)
         this.element = placeholder
+        if (position) this.position = position
         // Host 的生命周期由宿主树显式管理，不能被创建时的 collect frame/父 effect 接管
         this.detachFromCreationContext()
     }
@@ -70,8 +75,8 @@ export class AtomHost extends LightBindingEffect implements Host{
                     type: 'atom-text',
                     operation: 'update-text',
                     hostType: 'AtomHost',
-                    elementPath: this.pathContext.elementPath,
-                    source: this.pathContext.debugSource,
+                    elementPath: this.position?.elementPath ?? this.pathContext.elementPath,
+                    source: this.position?.debugSource ?? this.pathContext.debugSource,
                 }, () => {
                     this.replace(this.source())
                 })

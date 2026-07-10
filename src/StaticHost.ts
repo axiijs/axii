@@ -25,6 +25,7 @@ import {
     trackStyleHostStateDestroyed
 } from "./retainedObjectDiagnostics.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
+import type {AxiiSource} from "./diagnostics";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发响应式值的读行为，不会泄漏到上层的 computed。
 // data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
@@ -682,6 +683,53 @@ export const StaticHostConfig = {
 
 /**
  * @internal
+ *
+ * 响应式属性绑定 effect。用带字段的子类而不是「LightBindingEffect + 构造器闭包」：
+ * 闭包要捕获 el/key/value/path/isSVG/host 等 6 个变量（一个闭包对象 + 一个 Context），
+ * 子类把它们放进实例槽位，每个属性绑定省 ~50B 常驻内存，触发路径还少一层间接调用。
+ */
+class ReactiveAttributeEffect extends LightBindingEffect {
+    // 开发期 JSX source，只在有值时赋（见 declare 说明）
+    declare debugSource?: AxiiSource
+    constructor(
+        public host: StaticHost,
+        public el: ExtendedElement,
+        public key: string,
+        public value: any,
+        public path: number[],
+        public isSVG: boolean,
+    ) {
+        super()
+    }
+    update() {
+        // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，
+        //  则报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），
+        //  否则保持向上抛出的行为。与 ComponentHost/FunctionHost 的错误钩子语义一致。
+        const host = this.host
+        try {
+            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
+            if (isAxiiDiagnosticsEnabled()) {
+                withReactiveTrace({
+                    type: 'static-attr',
+                    operation: 'update-attr',
+                    hostType: 'StaticHost',
+                    elementPath: this.path,
+                    source: this.debugSource ?? host.pathContext.debugSource,
+                    attrName: this.key,
+                }, () => {
+                    host.updateAttribute(this.el, this.key, this.value, this.path, this.isSVG)
+                })
+            } else {
+                host.updateAttribute(this.el, this.key, this.value, this.path, this.isSVG)
+            }
+        } catch (e) {
+            if (!host.pathContext.root.dispatch('error', e)) throw e
+        }
+    }
+}
+
+/**
+ * @internal
  */
 export class StaticHost implements Host {
     static styleManager = new StyleManager()
@@ -768,16 +816,29 @@ export class StaticHost implements Host {
         const { unhandledChildren } = result
 
         if (unhandledChildren) {
-            // 所有子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode
-            const hostPath = createLinkedNode<Host>(this, this.pathContext.hostPath)
-            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) =>
-                createHost(child, placeholder, {
+            // 所有（非函数）子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode。
+            // 惰性创建：全是 atom/函数 child（长列表行的典型形态）时一个都不分配。
+            let hostPath: LinkedNode<Host>|undefined
+            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) => {
+                // CAUTION atom/函数 child（最常见：每行的响应式文本）不克隆 pathContext：
+                //  它们的文本快速路径从不消费 hostPath，位置信息以一个 3 字段的 position
+                //  对象传入（诊断/结构渲染按需读取），比「克隆 context + LinkedNode」
+                //  少一半以上的每绑定常驻内存。
+                if (typeof child === 'function') {
+                    // debugSource 只存 child 自己的（host 使用处会回退到 pathContext.debugSource）
+                    return createHost(child, placeholder, this.pathContext, {
+                        owner: this,
+                        elementPath: path,
+                        debugSource: source,
+                    })
+                }
+                return createHost(child, placeholder, {
                     ...this.pathContext,
-                    hostPath,
+                    hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath),
                     elementPath: path,
                     debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
                 })
-            );
+            });
 
             result.unhandledChildren = undefined
         }
@@ -804,30 +865,8 @@ export class StaticHost implements Host {
                     if (key === 'style') {
                         this.usesStyleManager = true
                     }
-                    const effect = new LightBindingEffect(() => {
-                        // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，
-                        //  则报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），
-                        //  否则保持向上抛出的行为。与 ComponentHost/FunctionHost 的错误钩子语义一致。
-                        try {
-                            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
-                            if (isAxiiDiagnosticsEnabled()) {
-                                withReactiveTrace({
-                                    type: 'static-attr',
-                                    operation: 'update-attr',
-                                    hostType: 'StaticHost',
-                                    elementPath: path,
-                                    source: source ?? this.pathContext.debugSource,
-                                    attrName: key,
-                                }, () => {
-                                    this.updateAttribute(el, key, value, path, isSVG)
-                                })
-                            } else {
-                                this.updateAttribute(el, key, value, path, isSVG)
-                            }
-                        } catch (e) {
-                            if (!this.pathContext.root.dispatch('error', e)) throw e
-                        }
-                    })
+                    const effect = new ReactiveAttributeEffect(this, el, key, value, path, isSVG)
+                    if (source) effect.debugSource = source
                     trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
                     effect.run()
                     attrEffects.push(effect)
@@ -865,10 +904,15 @@ export class StaticHost implements Host {
         }
     }
     collectRefHandles() {
-        this.refHandles = (this.source as ExtendedElement).refHandles
+        // CAUTION 只在真的有 refHandles 时才写实例属性：无条件赋 undefined 会让每个
+        //  元素 host 多出超出 in-object 容量的属性槽位（V8 退到 PropertyArray），
+        //  长列表里每行 ~20B 的纯浪费。detachStyledChildren 同理。
+        const refHandles = (this.source as ExtendedElement).refHandles
+        if (refHandles) this.refHandles = refHandles
     }
     collectDetachStyledChildren() {
-        this.detachStyledChildren = (this.source as ExtendedElement).detachStyledChildren
+        const detachStyledChildren = (this.source as ExtendedElement).detachStyledChildren
+        if (detachStyledChildren) this.detachStyledChildren = detachStyledChildren
     }
     generateTestId(el: ExtendedElement, elementPath: number[]) {
         // 增加全局开关控制

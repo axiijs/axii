@@ -64,8 +64,20 @@ const HOST_TYPE_NAMES = [
 
 /**
  * @internal
+ *
+ * position 参数只服务于 atom/函数 child（AtomHost/FunctionHost）：它们从不消费
+ * context.hostPath（文本快速路径），所以父元素 host 不再为每个这样的 child 克隆
+ * pathContext，而是把「宿主元素 host + child 在其中的 elementPath + JSX source」
+ * 作为轻量位置信息传进来，由 host 按需（诊断/结构渲染）读取。
+ * 其余 host 类型仍然接收已就绪的完整 context，position 被忽略。
  */
-export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext) {
+export type HostPosition = {
+    owner: Host,
+    elementPath: number[],
+    debugSource?: ReturnType<typeof getAxiiSource>,
+}
+
+export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext, position?: HostPosition) {
     assert(placeholder instanceof Comment || placeholder instanceof Text, 'incorrect placeholder type')
     // 节点自带的 JSX source 优先，否则沿用（继承自最近父级的）context.debugSource。
     // CAUTION 只有 source 真的更具体时才克隆 context，createHost 是高频路径，生产环境（无 __axiiSource）零额外分配。
@@ -80,10 +92,10 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     if (sourceType === 'function') {
         // atom 本身也是 function，必须先判断
         if (isAtom(source)) {
-            host = new AtomHost(source, placeholder, pathContext)
+            host = new AtomHost(source, placeholder, pathContext, position)
             typeIndex = 7
         } else {
-            host = new FunctionHost(source, placeholder, pathContext)
+            host = new FunctionHost(source, placeholder, pathContext, position)
             typeIndex = 8
         }
     } else if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){

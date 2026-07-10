@@ -118,14 +118,18 @@ export class ComponentHost implements Host{
     public itemConfig!: {[k:string]:ConfigItem}
     public children: any
     public frame?: ManualCleanup[]
-    public name: string
+    // getter 而不是构造期拷贝的字段：只有诊断/调试读它，不值得每实例占一个槽位
+    public get name(): string {
+        return this.type.name
+    }
     _exposed?: {[k:string]:any}
     public renderContext?: RenderContext
     // context.set 的存储，只有真正用到 context 的组件才会分配（见 ensureDataContext）
     dataContext?: DataContext
     // CAUTION 命名子组件（as=xxx）的 ref 会被合并成数组（用户 ref + 内部 refs[name] 收集回调）
-    public refProp?: RefObject|RefFn|(RefObject|RefFn)[]
-    public thisProp?: RefObject|RefFn
+    //  declare + 构造器条件赋值：绝大多数组件没有 ref/__this，不为它们付实例槽位
+    declare public refProp?: RefObject|RefFn|(RefObject|RefFn)[]
+    declare public thisProp?: RefObject|RefFn
     public inputProps: Props
     deleteLayoutEffectCallback?: () => void
     // 惰性缓存的 renderContext 闭包（只有组件解构对应能力时才分配）
@@ -143,10 +147,9 @@ export class ComponentHost implements Host{
             ComponentHost.typeIds.set(type, ComponentHost.nextTypeId++)
         }
 
-        this.name = type.name
         this.type = type
-        this.refProp = inputProps.ref
-        this.thisProp = inputProps.__this
+        if (inputProps.ref) this.refProp = inputProps.ref
+        if (inputProps.__this) this.thisProp = inputProps.__this
         this.inputProps = inputProps
         this.children = children
     }
@@ -651,6 +654,10 @@ export class ComponentHost implements Host{
 
                 normalizedProps.children = this.children
                 this.props = normalizedProps
+                // CAUTION 组件永不 rerender，inputProps 只在上面的 props 合并里消费。
+                //  及时换成共享空对象，让 JSX 调用点的 props 对象（以及只被它引用的值）
+                //  可以被回收，每个组件实例少保留一个对象
+                this.inputProps = EMPTY_COMPONENT_PROP
 
                 // CAUTION ref 不只来自 inputProps：boundProps（bindProps 包装的 HOC）也可以
                 //  提供 ref，mergeProp 会把两者合并成数组。构造期只捕获了 inputProps.ref，
