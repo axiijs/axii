@@ -162,6 +162,28 @@ export function isEventName(name: string) {
 
 
 const svgForceDashStyleAttributes = /^(strokeWidth|strokeLinecap|strokeLinejoin|strokeMiterlimit|strokeDashoffset|strokeDasharray|strokeOpacity|fillOpacity|stopOpacity)/
+// Automatic JSX runtime evaluates children before their parent, so it cannot infer an SVG
+// namespace from ancestry the way a VDOM renderer can. Create tags that only exist in SVG in
+// the correct namespace immediately. Ambiguous HTML/SVG tags (a/script/style/title) deliberately
+// stay on the HTML path; inside SVG they should use the explicit createSVGElement factory.
+const svgOnlyElementNames = new Set([
+    'animate', 'animateMotion', 'animateTransform', 'circle', 'clipPath', 'defs', 'desc',
+    'ellipse', 'feBlend', 'feColorMatrix', 'feComponentTransfer', 'feComposite',
+    'feConvolveMatrix', 'feDiffuseLighting', 'feDisplacementMap', 'feDistantLight',
+    'feDropShadow', 'feFlood', 'feFuncA', 'feFuncB', 'feFuncG', 'feFuncR',
+    'feGaussianBlur', 'feImage', 'feMerge', 'feMergeNode', 'feMorphology', 'feOffset',
+    'fePointLight', 'feSpecularLighting', 'feSpotLight', 'feTile', 'feTurbulence',
+    'filter', 'foreignObject', 'g', 'image', 'line', 'linearGradient', 'marker', 'mask',
+    'metadata', 'mpath', 'path', 'pattern', 'polygon', 'polyline', 'radialGradient',
+    'rect', 'set', 'stop', 'svg', 'switch', 'symbol', 'text', 'textPath', 'tspan',
+    'use', 'view',
+])
+
+function getJSXRuntimeFactory(type: JSXElementType): typeof createElement {
+    return (typeof type === 'string' && svgOnlyElementNames.has(type) ?
+        createSVGElement :
+        createElement) as typeof createElement
+}
 /**
  * @internal
  */
@@ -844,7 +866,7 @@ export function insertAfter(newEl: Comment | HTMLElement | DocumentFragment | SV
 }
 
 export function createSVGElement(type: string, props: AttributesArg, ...children: any[]) {
-    return createElement(type, {_isSVG: true, ...(props || {})}, children)
+    return createElement(type, {_isSVG: true, ...(props || {})}, ...children)
 }
 
 /**
@@ -927,11 +949,12 @@ export class StyleSize {
 
 // for jsx-dev-runtime
 export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return createElement(type, rawProps, ...children)
+    return getJSXRuntimeFactory(type)(type, rawProps, ...children)
 }
 export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     // CAUTION 无 children 时不能把 undefined 当作一个实参传下去，否则组件拿到的是 [undefined] 而不是 []
-    return children === undefined ? createElement(type, rawProps) : createElement(type, rawProps, children)
+    const factory = getJSXRuntimeFactory(type)
+    return children === undefined ? factory(type, rawProps) : factory(type, rawProps, children)
 }
 // React automatic dev runtime 签名：jsxDEV(type, props, key, isStaticChildren, source, self)
 export function jsxDEV(
@@ -943,7 +966,8 @@ export function jsxDEV(
     self?: unknown
 ): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     const props = source || self ? {...rawProps, __source: source, __self: self} : rawProps
-    if (Array.isArray(children)) return createElement(type, props, ...children)
+    const factory = getJSXRuntimeFactory(type)
+    if (Array.isArray(children)) return factory(type, props, ...children)
     // CAUTION 同 jsx：无 children 时不能传 undefined 占位
-    return children === undefined ? createElement(type, props) : createElement(type, props, children)
+    return children === undefined ? factory(type, props) : factory(type, props, children)
 }
