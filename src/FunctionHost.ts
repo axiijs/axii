@@ -43,7 +43,16 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         const cleanups = this.cleanups
         if (cleanups?.length) {
             this.cleanups = undefined
-            for (const cleanup of cleanups) cleanup()
+            // CAUTION 与 ComponentHost cleanup 的错误语义一致：注册了 root error
+            // 钩子时，一个 cleanup 抛错不能中断兄弟 cleanup、函数节点重算或整棵
+            // root 的销毁。未注册钩子时仍保持向上抛出的旧行为。
+            for (const cleanup of cleanups) {
+                try {
+                    cleanup()
+                } catch (error) {
+                    if (!this.pathContext.root.dispatch('error', error)) throw error
+                }
+            }
         }
     }
     render(): void {

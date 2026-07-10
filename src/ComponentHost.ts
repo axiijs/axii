@@ -35,7 +35,7 @@ import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
-import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
+import {assertRangeReachable, isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 
 
 function ensureArray(o: any) {
@@ -627,6 +627,7 @@ export class ComponentHost implements Host{
         //  （闭包/refs 对象/DataContext 都在第一次访问时才分配）。
         this.renderContext = new ComponentRenderContext(this)
 
+        let renderFailed = false
         withReactiveTrace({
             type: 'component-render',
             operation: 'render',
@@ -660,6 +661,7 @@ export class ComponentHost implements Host{
                 // 组件 render 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空，
                 // 否则保持向上抛出的行为。
                 if (!this.pathContext.root.dispatch('error', e)) throw e
+                renderFailed = true
             } finally {
                 // CAUTION 无论组件是否抛错，都必须弹出 collect frame，
                 //  否则 collect frame 栈会错位，后续渲染收集的 effect 会泄漏到错误的 frame 里。
@@ -669,10 +671,33 @@ export class ComponentHost implements Host{
             }
             // CAUTION collect effects end
             // 就用当前 component 的 placeholder
-            this.innerHost = createHost(node, this.placeholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            const childContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
+            try {
+                this.innerHost = createHost(node, this.placeholder, childContext)
+            } catch (e) {
+                // 组件函数成功返回、但返回值不是合法 child 时，错误同样属于本组件的
+                // render 阶段。错误钩子消费后用 EmptyHost 保持区域可销毁，而不是让
+                // root.render 同步击穿并留下一个已占用的 root.host。
+                if (!this.pathContext.root.dispatch('error', e)) throw e
+                renderFailed = true
+                this.innerHost = createHost(null, this.placeholder, childContext)
+            }
             this.innerHost.render()
         })
 
+        if (renderFailed) {
+            // render 未提交：useEffect/layoutEffect/ref 不得执行。render 期间已经创建的
+            // cleanup/computed/reusable 资源要立即释放，否则空 UI 后面仍会保留订阅。
+            this.destroyCallback?.forEach(callback => this.runWithErrorHook(callback))
+            this.destroyCallback = undefined
+            this.frame?.forEach(manualCleanupObject => this.runWithErrorHook(() => manualCleanupObject.destroy()))
+            this.frame = undefined
+            this.innerReusedHosts?.forEach(host => host.destroyReusable())
+            this.innerReusedHosts = undefined
+            this.effects = undefined
+            this.layoutEffects = undefined
+            return
+        }
 
         // for test use
         /* v8 ignore next 3 */
@@ -685,8 +710,11 @@ export class ComponentHost implements Host{
             //  继续执行其余 effect（否则一个抛错的 effect 会让 root.render 中断，
             //  已渲染好的树永远挂不上容器）；未注册时保持向上抛出的行为。
             const handle = this.runWithErrorHook(effect)
-            // 也支持 async function return promise，只不过不做处理
-            if (typeof handle === 'function') (this.destroyCallback ??= new Set()).add(handle)
+            if (typeof handle === 'function') {
+                (this.destroyCallback ??= new Set()).add(handle)
+            } else {
+                this.observeAsyncEffect(handle)
+            }
         })
 
         // 没有 layoutEffect 也没有 ref 的组件（绝大多数）完全不需要参与 attach 流程
@@ -718,6 +746,18 @@ export class ComponentHost implements Host{
             if (!this.pathContext.root.dispatch('error', e)) throw e
         }
     }
+    observeAsyncEffect(handle: any) {
+        if (!handle || typeof handle.then !== 'function') return
+        const root = this.pathContext.root
+        void Promise.resolve(handle).catch(error => {
+            // Promise rejection 发生在同步 runWithErrorHook 之外，必须显式桥接到
+            // root error 钩子。未消费时保留 unhandled rejection，并先输出诊断。
+            if (!root.dispatch('error', error)) {
+                reportAxiiError(error)
+                throw error
+            }
+        })
+    }
     runLayoutEffect() {
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
         if (this.refProp) {
@@ -727,7 +767,11 @@ export class ComponentHost implements Host{
         this.layoutEffects?.forEach(layoutEffect => {
             // CAUTION layoutEffect 抛错走 error 钩子，否则会打断同批其他 layoutEffect/ref
             const handle = this.runWithErrorHook(layoutEffect)
-            if (typeof handle === 'function') (this.layoutEffectDestroyHandles ??= new Set()).add(handle)
+            if (typeof handle === 'function') {
+                (this.layoutEffectDestroyHandles ??= new Set()).add(handle)
+            } else {
+                this.observeAsyncEffect(handle)
+            }
         })
     }
     destroy(parentHandle?: boolean) {
