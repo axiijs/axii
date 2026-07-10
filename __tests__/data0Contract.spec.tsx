@@ -15,6 +15,10 @@
  * 4. reorder(pairs) 以 method === 'reorder' 到达：argv[0] 是 pairs（语义 data[to] = old[from]），
  *    并携带 reorderInfo（kind/affectedRange），swap/reposition/sortSelf 都收敛到它。
  * 5. 派生列表（map）收到的 patch 形态与源列表一致（axii 渲染 list.map(...) 时依赖这一点）。
+ * 6. （data0 >= 2.2）同步 computed 的 applyPatch 抛出的异常**同步传播到变更调用点**
+ *    （list.splice(...) 等），不再变成 unhandled rejection；computed 状态复位为 dirty，
+ *    下一次变更可恢复。RxListHost 的错误出口（catch -> root error 钩子 -> rethrow）
+ *    以及 errorHandling.spec 的断言方式都依赖这一条。
  */
 import {describe, expect, test} from "vitest";
 import {
@@ -207,5 +211,39 @@ describe('data0 -> axii trigger info contract', () => {
         expect(list.data).toEqual([])
 
         sub.destroy()
+    })
+
+    test('7. a throwing sync applyPatch propagates synchronously to the mutation site; failed batch is NOT replayed', () => {
+        // data0 2.1 的行为是变成 unhandled rejection（root error 钩子拿不到、数据静默陈旧）；
+        // 2.2 起同步抛到变更点。RxListHost 的 catch -> dispatch('error') -> rethrow 依赖这一点。
+        const list = new RxList(['a', 'b'])
+        const received: TriggerInfo[] = []
+        let shouldThrow = true
+        const c = computed(
+            function computation(this: Computed) {
+                this.manualTrack(list, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
+                return null
+            },
+            function applyPatch(this: Computed, _, triggerInfos) {
+                if (shouldThrow) throw new Error('patch boom')
+                received.push(...triggerInfos)
+            },
+            true
+        )
+
+        expect(() => list.push('c')).toThrow('patch boom')
+        // source 数据已写入（patch 失败不回滚 source）
+        expect(list.data).toEqual(['a', 'b', 'c'])
+
+        // 恢复语义：错误后 computed 复位为 dirty，下一次变更正常走 patch；
+        // 失败批次的 triggerInfos 被丢弃、不重放（消费方要么返回 false 走全量，
+        // 要么像 RxListHost 一样 fail-stop 等待上层销毁/恢复）。
+        shouldThrow = false
+        expect(() => list.push('d')).not.toThrow()
+        expect(list.data).toEqual(['a', 'b', 'c', 'd'])
+        expect(received.length).toBe(1)
+        expect(received[0]).toMatchObject({method: 'splice', argv: [3, 0, 'd']})
+
+        destroyComputed(c)
     })
 })
