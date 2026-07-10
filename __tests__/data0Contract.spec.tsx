@@ -208,4 +208,32 @@ describe('data0 -> axii trigger info contract', () => {
 
         sub.destroy()
     })
+
+    test('7. sync patch errors propagate synchronously to the mutation site and tracking state survives', () => {
+        // data0 >= 2.2：同步 computed 的 patch/getter 在同步路径上执行，未被消费的错误
+        //  同步抛回到变更调用点（旧版本是 async fullRecompute/patchRecompute，只能变成
+        //  unhandled rejection）。RxListHost 的「未注册 error 钩子时 report + throw 保持
+        //  可观测」出口依赖这一点（errorHandling.spec 的 AxiiError trace 用例）。
+        const list = new RxList(['a'])
+        const c = computed(
+            function computation(this: Computed) {
+                this.manualTrack(list, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
+                return null
+            },
+            function applyPatch() {
+                throw new Error('patch failed')
+            }
+        )
+        expect(() => list.push('b')).toThrow('patch failed')
+
+        // 抛错后全局追踪状态必须完好：后续 reactive 依赖照常工作
+        const other = new RxList([1])
+        const doubled = other.map(x => x * 2)
+        other.push(2)
+        expect(doubled.data).toEqual([2, 4])
+
+        destroyComputed(c)
+        doubled.destroy()
+        other.destroy()
+    })
 })

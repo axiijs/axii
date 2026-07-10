@@ -111,12 +111,13 @@ export class RxListHost implements Host{
                         }
                         insertBefore(host.renderNewHosts(hosts), host.placeholder)
                     } catch (error) {
-                        // CAUTION 初始行渲染也发生在 data0 computed 的 computation 里（fullRecompute
-                        //  是 async 函数），向上抛只会变成 unhandled rejection：root error 钩子拿不到
-                        //  错误，该区域永远卡死，后续销毁还会对未初始化的 computed/hosts 再抛错。
-                        //  与 applyPatch 的错误出口对齐：已创建的行全部回收（DOM 还在脱离文档的
-                        //  fragment 里，直接丢弃），区域渲染为空；错误交给 root error 钩子，
-                        //  未消费时先 reportAxiiError 输出结构化报告再继续抛出保持可观测。
+                        // CAUTION 初始行渲染发生在 data0 computed 的 computation 里。data0 >= 2.2
+                        //  同步 computed 全程同步执行，向上抛会同步抛回变更/创建调用点；但错误
+                        //  边界仍在这里：不回收的话该区域卡死，后续销毁还会对未初始化的
+                        //  computed/hosts 再抛错。与 applyPatch 的错误出口对齐：已创建的行全部
+                        //  回收（DOM 还在脱离文档的 fragment 里，直接丢弃），区域渲染为空；
+                        //  错误交给 root error 钩子，未消费时先 reportAxiiError 输出结构化报告
+                        //  再继续抛出保持可观测。
                         for (const created of hosts) created.destroy(true)
                         hosts.length = 0
                         if (!host.pathContext.root.dispatch('error', error)) {
@@ -140,10 +141,11 @@ export class RxListHost implements Host{
                 try {
                     let patchFailed = false
                     for (const info of triggerInfos) {
-                        // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled rejection。
-                        //  外部通过 root.on('error') 注册了处理器时交给处理器（应用保持存活，
-                        //  该列表区域可能处于不一致状态）；否则先 reportAxiiError 输出结构化报告，
-                        //  再继续抛出保持可观测。
+                        // CAUTION patch 在 data0 的 computed 里执行。data0 >= 2.2 同步 patch 是
+                        //  同步执行的：向上抛会同步抛回到变更调用点（list.push 等）。外部通过
+                        //  root.on('error') 注册了处理器时交给处理器（应用保持存活，该列表区域
+                        //  可能处于不一致状态）；否则先 reportAxiiError 输出结构化报告，
+                        //  再继续抛出保持可观测（data0Contract.spec 条款 7 锁定同步抛出行为）。
                         try {
                             if (isAxiiDiagnosticsEnabled()) {
                                 const {method, argv, key, methodResult, type} = info
