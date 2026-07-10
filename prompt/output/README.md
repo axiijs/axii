@@ -22,6 +22,8 @@
 | [14-review-2026-07-round9.md](./14-review-2026-07-round9.md) | 2026-07 深度 review 第九轮（F33-F34 / I36-I38，**已全部修复**）：select/optgroup 与 form 关联的 DOM 协议、property/attribute 双路径、RxList 初始渲染错误出口、事件谓词与 ref 形态的同类猎杀 |
 | [15-review-2026-07-round10.md](./15-review-2026-07-round10.md) | 2026-07 深度 review 第十轮（F35-F38 / I39-I41，**已全部修复**）：multiple select 数组 value、boolean style 值残留、option 文本即 value、AOP 配置函数输入形态、清理函数与 DOM 拆除顺序 |
 | [16-review-2026-07-round11.md](./16-review-2026-07-round11.md) | 2026-07 深度 review 第十一轮（F39-F41 / I42，**已全部修复**）：表单控件 prop 应用顺序（value/checked vs type/multiple/min/max）、propTypes 默认值/幽灵 undefined 覆盖 bindProps 值、coerce 双重执行、RxDOMRect 事件目标 ref 时序 |
+| [17-review-2026-07-round12.md](./17-review-2026-07-round12.md) | 2026-07 深度 review 第十二轮（F42-F48，**已全部修复**，补记索引）：SVG runtime namespace、错误恢复生命周期（render 失败不提交 effects、非法输出、cleanup/async effect 错误边界）、range 约束重放、稀疏 RxList.set 契约错误 |
+| [18-review-2026-07-round13.md](./18-review-2026-07-round13.md) | 2026-07 深度 review 第十三轮（F49-F51 / I43-I49，**已全部修复**）：value 的 null/undefined × 元素种类（progress/meter 崩溃、option/button 字面量）、reusable 子树的 context 可见性、SVG 路由跨编译入口统一、用户回调（error 监听器/ref）错误隔离、style 字面形态（[number, keyword]、animation 数组、空字符串）、已消费元素重复渲染的 dev 警告、Form 缺省 values |
 
 ## 结论摘要
 
