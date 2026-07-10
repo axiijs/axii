@@ -539,14 +539,6 @@ describe('error handling examples', () => {
 
     test('adds RxList patch information to AxiiError reactive traces', async () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
-        let rejectedError: unknown
-        const unhandledRejection = new Promise<void>(resolve => {
-            window.addEventListener('unhandledrejection', (event) => {
-                event.preventDefault()
-                rejectedError = event.reason
-                resolve()
-            }, {once: true})
-        })
         // CAUTION 单元素行会走 CompactElementHost（没有独立的行占位符，也没有可破坏的区间），
         //  这里用 Fragment 行保持「元素 ... 行占位符」的真实 DOM 区间，才能构造边界破坏场景。
         const list = new RxList([
@@ -560,12 +552,18 @@ describe('error handling examples', () => {
         )!
         rootEl.insertBefore(firstItemPlaceholder, rootEl.firstChild)
 
-        list.splice(0, 1)
-        await unhandledRejection
+        // CAUTION data0 >= 2.2 的同步 computed patch 是同步执行的：未被 error 钩子消费的
+        //  patch 错误会同步抛回到变更调用点（旧版本只能变成 unhandled rejection）。
+        let thrown: unknown
+        try {
+            list.splice(0, 1)
+        } catch (error) {
+            thrown = error
+        }
 
         const error = consoleError.mock.calls[0][0]
         expect(error).toBeInstanceOf(AxiiError)
-        expect(rejectedError).toBe(error)
+        expect(thrown).toBe(error)
         const axiiError = error as AxiiError
         expect(axiiError.reactiveTrace.some(frame =>
             frame.type === 'rx-list-patch' &&
