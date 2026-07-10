@@ -324,6 +324,13 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         }
         (node as HTMLDataElement).value = value
 
+        if (node.tagName === 'INPUT') {
+            // CAUTION input 的 value 解释依赖 type（checkbox 的 value 即 checked、range 会按
+            //  min/max 截断）。type 可以是响应式的（type={visible ? 'text' : 'password'} 是
+            //  自然写法），翻转后必须能按新 type 重放 value——这里存下原始值。
+            ;(node as InputWithAxiiValue).__axiiInputValue__ = value
+        }
+
         if (node.tagName === 'OPTION') {
             // 当 option 的 value 发生变化的时候也要 reset 一下，因为可能这个时候与 select value 相等的 option 才出现
             // CAUTION option 可能包在 optgroup 里（合法且常见的 HTML），不能只认直接父级是 select 的形态
@@ -363,6 +370,28 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             node.removeAttribute('disabled')
         }
 
+    } else if (name === 'multiple' && node.tagName === 'SELECT') {
+        (node as unknown as HTMLSelectElement).multiple = !!value
+        // CAUTION multiple 翻转会改变 value 的应用语义（数组 value 只有多选才能整体生效）：
+        //  存过 value 的 select 必须重放一次，否则 multiple={cond} 翻转为 true 后
+        //  之前被单选语义塌掉的数组选中永远恢复不了。
+        resetOptionParentSelectValue(node as unknown as HTMLSelectElement)
+    } else if (name === 'type' && node.tagName === 'INPUT') {
+        if (value == null || value === false) {
+            node.removeAttribute('type')
+        } else {
+            node.setAttribute('type', value)
+        }
+        // CAUTION 目标 type 会改变 value 的解释（checkbox/radio 的 value 即 checked 语义、
+        //  range 按 min/max 截断）时，存过 value 的 input 按新 type 重放一次。
+        //  text/password 这类翻转（密码可见性切换是自然写法）不重放，
+        //  否则用户已输入的内容会被初始 value 覆盖。
+        if (value === 'checkbox' || value === 'radio' || value === 'range') {
+            const storedValue = (node as InputWithAxiiValue).__axiiInputValue__
+            if (storedValue !== undefined) {
+                setAttribute(node, 'value', storedValue, isSvg)
+            }
+        }
     } else if (name === 'dangerouslySetInnerHTML') {
         // CAUTION nullish 表示清空：innerHTML 的 IDL 对 null 走 LegacyNullToEmptyString，
         //  但 undefined 会被字符串化成字面 "undefined" 渲染到页面上
@@ -467,6 +496,14 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     let refHandles: RefHandleInfo[] | undefined
     let detachStyledChildren: DetachStyledInfo[] | undefined
 
+    // CAUTION select 的 multiple 必须先于 option children 应用：多个带 selected 的 option
+    //  在单选语义的 select 里插入时会互相顶掉，只剩最后一个被选中。静态真值在这里预应用；
+    //  响应式 multiple（函数/atom）由 setAttribute 的 multiple 分支在翻转时重放存值。
+    //  下面的 props 循环会再次应用 multiple，重复设置同值无害。
+    if (type === 'select' && rawProps?.multiple && typeof rawProps.multiple !== 'function') {
+        setAttribute(container as ExtendedElement, 'multiple', rawProps.multiple, _isSVG)
+    }
+
     // Process children in a single pass
     const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || EMPTY_CHILDREN)
     const childrenLength = children.length
@@ -553,10 +590,20 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     // Process props after children for proper Select/Option behavior
     if (rawProps) {
+        // CAUTION value/checked 的语义依赖同元素的其他 prop 已经就位：
+        //  select 的数组 value 依赖 multiple（单选 select 上逐个 selected 会互相顶掉），
+        //  input 的 value/checked 解释依赖 type（value={true} type="checkbox" 是 checked 语义），
+        //  range 的 value 会被 min/max 截断。JSX 属性顺序是用户的书写顺序，不能要求用户
+        //  把 value 写在最后——这两个 key 统一延后到其余 prop 全部应用之后再处理。
+        let hasDeferredFormProps = false
         for (const key in rawProps) {
             // key 目前不参与运行时逻辑（保留给未来的 diff），直接跳过；
             // __source/__self 是开发期元数据，绝不能作为普通 attr 落到 DOM 上
             if (key === '_isSVG' || key === 'children' || key === 'key' || key === '__source' || key === '__self') continue
+            if (key === 'value' || key === 'checked') {
+                hasDeferredFormProps = true
+                continue
+            }
             const value = rawProps[key]
             if (key === 'ref') {
                 // ref handles should be attached before children
@@ -580,6 +627,19 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
             } else {
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
+            }
+        }
+        if (hasDeferredFormProps) {
+            for (const key in rawProps) {
+                if (key !== 'value' && key !== 'checked') continue
+                const value = rawProps[key]
+                // 响应式 value/checked 同样延后登记，保证 LightBindingEffect 的初始求值
+                // 也发生在 type/multiple 等（可能也是响应式的）属性之后
+                if (!createElement.isValidAttribute(key, value)) {
+                    (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
+                } else {
+                    setAttribute(container as ExtendedElement, key, value, _isSVG)
+                }
             }
         }
     }
@@ -694,6 +754,8 @@ function findOwnerSelect(parent: Element | null): HTMLSelectElement | null {
 }
 
 type SelectWithAxiiValue = HTMLElement & { __axiiSelectValue__?: string | any[] }
+// input 的原始 value（type 翻转时按新 type 重放用），见 setAttribute 的 value/type 分支
+type InputWithAxiiValue = HTMLElement & { __axiiInputValue__?: any }
 
 /**
  * 把 value 应用到 select 上。
