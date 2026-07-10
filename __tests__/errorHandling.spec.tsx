@@ -552,9 +552,8 @@ describe('error handling examples', () => {
         )!
         rootEl.insertBefore(firstItemPlaceholder, rootEl.firstChild)
 
-        // data0 >= 2.2 契约（见 data0Contract.spec 条款 7）：同步 computed 的 patch 异常
-        // 同步传播到变更调用点。RxListHost catch 后 rethrow 的 AxiiError 在这里被捕获，
-        // 不再像 data0 2.1 那样变成 unhandled rejection。
+        // CAUTION data0 >= 2.2 的同步 computed patch 是同步执行的：未被 error 钩子消费的
+        //  patch 错误会同步抛回到变更调用点（旧版本只能变成 unhandled rejection）。
         let thrown: unknown
         try {
             list.splice(0, 1)
@@ -562,7 +561,6 @@ describe('error handling examples', () => {
             thrown = error
         }
 
-        expect(thrown).toBeInstanceOf(AxiiError)
         const error = consoleError.mock.calls[0][0]
         expect(error).toBeInstanceOf(AxiiError)
         expect(thrown).toBe(error)

@@ -15,10 +15,11 @@
  * 4. reorder(pairs) 以 method === 'reorder' 到达：argv[0] 是 pairs（语义 data[to] = old[from]），
  *    并携带 reorderInfo（kind/affectedRange），swap/reposition/sortSelf 都收敛到它。
  * 5. 派生列表（map）收到的 patch 形态与源列表一致（axii 渲染 list.map(...) 时依赖这一点）。
- * 6. （data0 >= 2.2）同步 computed 的 applyPatch 抛出的异常**同步传播到变更调用点**
- *    （list.splice(...) 等），不再变成 unhandled rejection；computed 状态复位为 dirty，
- *    下一次变更可恢复。RxListHost 的错误出口（catch -> root error 钩子 -> rethrow）
- *    以及 errorHandling.spec 的断言方式都依赖这一条。
+ * 6.（见条款 7/8 的测试）data0 >= 2.2 的错误传播契约：同步 computed 的 applyPatch 抛出的
+ *    异常**同步传播到变更调用点**（list.splice(...) 等），不再变成 unhandled rejection；
+ *    全局追踪状态在抛错后保持完好；computed 复位为 dirty，失败批次的 triggerInfos 不重放。
+ *    RxListHost 的错误出口（catch -> root error 钩子 -> rethrow）与 fail-stop 恢复策略、
+ *    errorHandling.spec 的断言方式都依赖这些条款。
  */
 import {describe, expect, test} from "vitest";
 import {
@@ -213,9 +214,38 @@ describe('data0 -> axii trigger info contract', () => {
         sub.destroy()
     })
 
-    test('7. a throwing sync applyPatch propagates synchronously to the mutation site; failed batch is NOT replayed', () => {
-        // data0 2.1 的行为是变成 unhandled rejection（root error 钩子拿不到、数据静默陈旧）；
-        // 2.2 起同步抛到变更点。RxListHost 的 catch -> dispatch('error') -> rethrow 依赖这一点。
+    test('7. sync patch errors propagate synchronously to the mutation site and tracking state survives', () => {
+        // data0 >= 2.2：同步 computed 的 patch/getter 在同步路径上执行，未被消费的错误
+        //  同步抛回到变更调用点（旧版本是 async fullRecompute/patchRecompute，只能变成
+        //  unhandled rejection）。RxListHost 的「未注册 error 钩子时 report + throw 保持
+        //  可观测」出口依赖这一点（errorHandling.spec 的 AxiiError trace 用例）。
+        const list = new RxList(['a'])
+        const c = computed(
+            function computation(this: Computed) {
+                this.manualTrack(list, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
+                return null
+            },
+            function applyPatch() {
+                throw new Error('patch failed')
+            }
+        )
+        expect(() => list.push('b')).toThrow('patch failed')
+
+        // 抛错后全局追踪状态必须完好：后续 reactive 依赖照常工作
+        const other = new RxList([1])
+        const doubled = other.map(x => x * 2)
+        other.push(2)
+        expect(doubled.data).toEqual([2, 4])
+
+        destroyComputed(c)
+        doubled.destroy()
+        other.destroy()
+    })
+
+    test('8. after a throwing patch the computed resets to dirty; the failed batch is NOT replayed', () => {
+        // 恢复语义：错误后 computed 复位为 dirty，下一次变更正常走 patch；
+        // 失败批次的 triggerInfos 被丢弃、不重放（消费方要么返回 false 走全量，
+        // 要么像 RxListHost 一样 fail-stop 等待上层销毁/恢复）。
         const list = new RxList(['a', 'b'])
         const received: TriggerInfo[] = []
         let shouldThrow = true
@@ -235,9 +265,6 @@ describe('data0 -> axii trigger info contract', () => {
         // source 数据已写入（patch 失败不回滚 source）
         expect(list.data).toEqual(['a', 'b', 'c'])
 
-        // 恢复语义：错误后 computed 复位为 dirty，下一次变更正常走 patch；
-        // 失败批次的 triggerInfos 被丢弃、不重放（消费方要么返回 false 走全量，
-        // 要么像 RxListHost 一样 fail-stop 等待上层销毁/恢复）。
         shouldThrow = false
         expect(() => list.push('d')).not.toThrow()
         expect(list.data).toEqual(['a', 'b', 'c', 'd'])
