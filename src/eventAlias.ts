@@ -128,11 +128,13 @@ export function createEventTransfer(transform?: (e: Event) => Event|null|undefin
 }
 /**
  * @category Event Utility
+ * CAUTION 这些包装器必须透传 handle 的返回值（与 eventAlias 一致）：
+ *  事件返回值会被 invokeEventEntries 收集（$eventTarget 转发场景），吞掉会静默丢结果。
  */
 export function withCurrentRange<T extends Event>(handle: (e: T, range: Range|undefined) => any) {
     return (e: T) => {
         const range = (document.getSelection() && document.getSelection()!.rangeCount > 0) ? document.getSelection()?.getRangeAt(0) : undefined
-        handle(e, range)
+        return handle(e, range)
     }
 }
 /**
@@ -141,7 +143,7 @@ export function withCurrentRange<T extends Event>(handle: (e: T, range: Range|un
 export function withPreventDefault<T extends Event>(handle: (e: T) => any) {
     return (e: T) => {
         e.preventDefault()
-        handle(e)
+        return handle(e)
     }
 }
 /**
@@ -150,6 +152,6 @@ export function withPreventDefault<T extends Event>(handle: (e: T) => any) {
 export function withStopPropagation<T extends Event>(handle: (e: T) => any) {
     return (e: T) => {
         e.stopPropagation()
-        handle(e)
+        return handle(e)
     }
 }

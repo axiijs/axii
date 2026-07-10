@@ -578,7 +578,9 @@ ${this.stringifyKeyFrameObject(styleObject['@keyframes'])}
         }
 
         if (styleObject.animation) {
-            const animationValue = (Array.isArray(styleObject.animation) ? styleObject.animation.join(' ') : styleObject.animation)!.replace(/@self/, animationName)
+            // CAUTION 多个动画的分隔符是逗号（与 CSS animation 简写语法一致），空格连接会让
+            //  整条声明非法、被浏览器静默丢弃；@self 用 /g 全部替换，数组里每一项都可能引用它。
+            const animationValue = (Array.isArray(styleObject.animation) ? styleObject.animation.join(', ') : styleObject.animation)!.replace(/@self/g, animationName)
             animationContent.push(`
 ${selector} {
     animation: ${animationValue};
@@ -682,6 +684,30 @@ export const StaticHostConfig = {
     autoGenerateTestId: false
 }
 
+// 开发期：已被消费过响应式元数据（unhandledChildren/unhandledAttr/refHandles/detachStyle）
+//  的元素。axii 的 JSX 元素是真实 DOM，元数据在第一次渲染时被一次性取走——
+//  同一个元素实例再次渲染（组件里缓存元素跨条件分支复用、同一元素写在两个位置）时
+//  绑定已经不存在，文本/属性永远停在旧值且没有任何报错。开发期给出明确警告。
+//  纯静态元素（本来就没有元数据）不受影响，不进这个集合。
+const consumedReactiveElements = new WeakSet<object>()
+function warnIfRenderingConsumedElement(source: object) {
+    if (consumedReactiveElements.has(source)) {
+        /* eslint-disable no-console */
+        console.error(
+            '[axii] This element has already been rendered once: its reactive bindings ' +
+            '(function/atom children, reactive attributes, refs) were consumed by the previous ' +
+            'render and will NOT work here. Create a fresh element each time (e.g. build JSX inside ' +
+            'the function child), or use reusable() from RenderContext to move a subtree.'
+        )
+        /* eslint-enable no-console */
+        return
+    }
+    const el = source as ExtendedElement
+    if (el.unhandledChildren || el.unhandledAttr || el.refHandles || el.detachStyledChildren) {
+        consumedReactiveElements.add(source)
+    }
+}
+
 // CAUTION 小 elementPath 驻留池：同一模板位置在长列表的每一行都会产生一个内容
 //  相同的 path 数组（如每行文本绑定的 [0]），驻留后全列表共享一份（每行省一个
 //  数组 ~28B）。驻留的数组语义上是 frozen 的：所有消费方（样式 id、诊断、
@@ -777,6 +803,7 @@ export class StaticHost implements Host {
     element: HTMLElement | Comment | SVGElement = this.placeholder
     render(): void {
         assert(this.element === this.placeholder, 'should never rerender')
+        if (isAxiiDiagnosticsEnabled()) warnIfRenderingConsumedElement(this.source)
 
         // CAUTION 如果是 fragment，我们用一个 comment 节点来作为第一个元素，这样后面  destroy 的时候就能一次性 remove 掉。
         this.element = this.source instanceof DocumentFragment ? document.createComment('fragment start') : this.source
@@ -1005,6 +1032,17 @@ export class StaticHost implements Host {
             createElement.attachRef(el, handle)
         })
     }
+    // ref 回调是用户代码：detach（ref(null)）抛错不能中断兄弟 ref 和后续的 DOM 拆除，
+    //  否则一个抛错的 ref 会让整段区间泄漏在文档里。错误语义与 ComponentHost 的 cleanup 一致。
+    detachRefsWithErrorHook() {
+        this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
+            try {
+                createElement.detachRef(handle)
+            } catch (e) {
+                if (!this.pathContext.root.dispatch('error', e)) throw e
+            }
+        })
+    }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
         this.destroyAttrEffects()
@@ -1013,9 +1051,7 @@ export class StaticHost implements Host {
 
         this.destroyReactiveHosts()
 
-        this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
-            createElement.detachRef(handle)
-        })
+        this.detachRefsWithErrorHook()
 
         // CAUTION removeElements 只有在等待离场动画时才是异步的。
         //  同步路径（绝大多数）直接内联处理，避免每个元素销毁都分配 Promise/微任务；
@@ -1158,6 +1194,7 @@ export class CompactElementHost extends StaticHost {
         this.element = source
     }
     render(): void {
+        if (isAxiiDiagnosticsEnabled()) warnIfRenderingConsumedElement(this.source)
         this.collectInnerHost()
         this.collectReactiveAttr()
         this.collectRefHandles()
@@ -1181,9 +1218,7 @@ export class CompactElementHost extends StaticHost {
         this.destroyAttrEffects()
         this.removeAttachListener?.()
         this.destroyReactiveHosts()
-        this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
-            createElement.detachRef(handle)
-        })
+        this.detachRefsWithErrorHook()
         if (!parentHandle) {
             (this.element as HTMLElement).remove()
         }

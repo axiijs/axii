@@ -123,7 +123,9 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
 
 Form.propTypes = {
     name: PropTypes.string.isRequired,
-    values: PropTypes.rxMap<string, any>(),
+    // CAUTION 必须有默认值：不传 values 时 register 里的 values.set 会直接 TypeError
+    //  崩掉整棵渲染树（Form 只是想托管状态、外部不消费 values 是自然用法）。
+    values: PropTypes.rxMap<string, any>().default(() => new RxMap<string, any>({})),
     children: PropTypes.any.isRequired,
     onChange: PropTypes.function,
     onSubmit: PropTypes.function,

@@ -2,6 +2,7 @@ import {createHost} from "./createHost";
 import {ComponentNode} from "./types";
 import {PathContext, Host} from "./Host";
 import {assert} from "./util";
+import {reportAxiiError} from "./diagnostics";
 
 
 type EventCallback = (e: any) => void
@@ -96,15 +97,33 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             //  新条目直接落进新的队列，由本轮循环外的下一次 flush 处理。
             const entries = attachQueue
             attachQueue = []
+            // CAUTION 一个条目（某个组件的 layoutEffect/ref）抛错不能中断同批其他条目：
+            //  队列快照已经取走，中断意味着剩余组件的 layoutEffect/ref 永久丢失。
+            //  错误交给 root error 钩子；未注册钩子时保留第一个错误，批次完成后向上抛
+            //  （与其余错误出口「无钩子保持可观测」的语义一致）。
+            let firstError: unknown
+            let hasError = false
             for (const entry of entries) {
                 if (entry.cancelled) continue
                 if (entry.node.isConnected) {
-                    entry.run()
+                    try {
+                        entry.run()
+                    } catch (e) {
+                        if (!root.dispatch('error', e)) {
+                            if (!hasError) {
+                                hasError = true
+                                firstError = e
+                            } else {
+                                reportAxiiError(e)
+                            }
+                        }
+                    }
                 } else {
                     // 仍在更外层的 fragment 里，等外层插入后的 flush
                     attachQueue.push(entry)
                 }
             }
+            if (hasError) throw firstError
         },
         // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
         on(event: string, callback: EventCallback, options?: EventOptions) {
@@ -112,9 +131,14 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             if (!callbacks) {
                 eventCallbacks.set(event, (callbacks = new Set()))
             }
+            // CAUTION once 的退订必须放 finally：callback 抛错时不退订的话，
+            //  下一次事件会再次触发本应只执行一次的回调（layoutEffect 重复执行）。
             const savedCallback = options?.once ? (arg: any) => {
-                callback(arg)
-                callbacks!.delete(savedCallback)
+                try {
+                    callback(arg)
+                } finally {
+                    callbacks!.delete(savedCallback)
+                }
             }: callback
 
             callbacks.add(savedCallback)
@@ -134,7 +158,17 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
             const callbacks = eventCallbacks.get(event)
             const consumed = !!callbacks?.size
             if (consumed) {
-                callbacks!.forEach(callback => callback(arg))
+                callbacks!.forEach(callback => {
+                    // CAUTION 一个监听器抛错不能中断兄弟监听器，更不能把新错误传播回框架的
+                    //  错误恢复路径——dispatch('error') 的调用点都在 catch 块里，向上抛会
+                    //  覆盖原始错误、把 fail-stop 变成二次崩溃。监听器自身的错误收敛到
+                    //  reportAxiiError（结构化打印 + onError 回调），保持可观测。
+                    try {
+                        callback(arg)
+                    } catch (handlerError) {
+                        reportAxiiError(handlerError)
+                    }
+                })
             }
             // CAUTION 手动 dispatch('attach')（容器脱离文档后重新连通是公开用法）也必须
             //  flush deferred-attach 队列：root.attached 为 true 期间动态创建、但插入时

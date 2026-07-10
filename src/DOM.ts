@@ -18,6 +18,11 @@ export function autoUnit(num: number|string) {
 
 export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 
+// [number, string] 简写（[12, 'px'] => '12px'）只对真正的 CSS 单位生效：
+// margin: [0, 'auto'] 这类「数字 + 关键字」的空格简写是自然写法，误判成单位会拼出
+// "0auto" 这种非法值，浏览器静默拒绝整条声明（样式无效且没有任何报错）。
+const CSS_UNIT_VALUE = /^(px|em|rem|%|vw|vh|vmin|vmax|pt|pc|in|cm|mm|q|ex|ch|ic|cap|lh|rlh|fr|s|ms|deg|rad|grad|turn|dpi|dpcm|dppx|cqw|cqh|cqi|cqb|cqmin|cqmax|svw|svh|lvw|lvh|dvw|dvh)$/i
+
 export function stringifyStyleValue(k:string, v: any): string {
     // CAUTION style 对象的值可以是 atom/函数（style={{color: colorAtom}} 是自然写法），
     //  这里统一求值。调用点都在响应式绑定（LightBindingEffect / StyleManager.update）内，
@@ -42,7 +47,7 @@ export function stringifyStyleValue(k:string, v: any): string {
                 parts.push(i)
             }
             return parts.join(',')
-        } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string') {
+        } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
             // [12, 'px'] => 12px
             return `${v[0]}${v[1]}`
         } else {
@@ -52,7 +57,11 @@ export function stringifyStyleValue(k:string, v: any): string {
         }
     }
     // number/string/StyleSize
-    return (!(v instanceof StyleSize) && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v||0) : v.toString()
+    // CAUTION 空字符串的语义是「清除该 key」（与 React 一致），绝不能被 `v||0` 塞成 "0px"：
+    //  {width: cond ? 100 : ''} 的条件写法翻转后宽度会静默变成 0 而不是恢复默认。
+    //  到达这里的 v 不可能是 null/undefined（开头已 return），无需 fallback。
+    if (v === '') return ''
+    return (!(v instanceof StyleSize) && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v) : v.toString()
 }
 
 
@@ -162,10 +171,14 @@ export function isEventName(name: string) {
 
 
 const svgForceDashStyleAttributes = /^(strokeWidth|strokeLinecap|strokeLinejoin|strokeMiterlimit|strokeDashoffset|strokeDasharray|strokeOpacity|fillOpacity|stopOpacity)/
-// Automatic JSX runtime evaluates children before their parent, so it cannot infer an SVG
-// namespace from ancestry the way a VDOM renderer can. Create tags that only exist in SVG in
-// the correct namespace immediately. Ambiguous HTML/SVG tags (a/script/style/title) deliberately
+// JSX evaluates children before their parent, so the runtime cannot infer an SVG namespace
+// from ancestry the way a VDOM renderer can. Create tags that only exist in SVG in the
+// correct namespace immediately. Ambiguous HTML/SVG tags (a/script/style/title) deliberately
 // stay on the HTML path; inside SVG they should use the explicit createSVGElement factory.
+// CAUTION 这个判断必须在 createElement 内部做（而不是只在 jsx/jsxs/jsxDEV runtime 路由）：
+//  classic pragma（/* @jsx createElement */）和组件 renderContext 的 createElement 都不经过
+//  runtime factory，只在 runtime 路由的话这两条链路里 <svg> 会被创建成 HTMLUnknownElement，
+//  整个图形静默不显示——同一个 JSX 在两种编译模式下行为分叉。
 const svgOnlyElementNames = new Set([
     'animate', 'animateMotion', 'animateTransform', 'circle', 'clipPath', 'defs', 'desc',
     'ellipse', 'feBlend', 'feColorMatrix', 'feComponentTransfer', 'feComposite',
@@ -179,11 +192,6 @@ const svgOnlyElementNames = new Set([
     'use', 'view',
 ])
 
-function getJSXRuntimeFactory(type: JSXElementType): typeof createElement {
-    return (typeof type === 'string' && svgOnlyElementNames.has(type) ?
-        createSVGElement :
-        createElement) as typeof createElement
-}
 /**
  * @internal
  */
@@ -344,7 +352,29 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             applySelectValue(node as unknown as HTMLSelectElement, storedValue)
             return
         }
-        (node as HTMLDataElement).value = value
+        // CAUTION null/undefined 的语义是「清除 value」，但这个分支绕过了 setProperty 的
+        //  try/catch，直接 property 赋值对不同元素的 value 类型并不安全：
+        //  - PROGRESS/METER 的 value 是 WebIDL double，undefined（NaN）赋值直接 TypeError
+        //    崩溃渲染（value={cond ? n : undefined} 是自然写法），null 会静默变成 0；
+        //  - OPTION/BUTTON/DATA/OUTPUT 等的 value property 反射 attribute，null/undefined
+        //    会字符串化成字面 "null"/"undefined"——option 的 value 从此永远匹配不上
+        //    select 的存值，选中静默丢失。
+        //  除 INPUT/TEXTAREA（受控输入用 '' 表示清空，见下）外统一移除 attribute。
+        if (value == null && node.tagName !== 'INPUT' && node.tagName !== 'TEXTAREA') {
+            node.removeAttribute('value')
+            if (node.tagName === 'OPTION') {
+                // 移除 value attr 后 option 的 value 回退为文本，此刻可能才与 select 存值匹配
+                const ownerSelect = findOwnerSelect(node.parentElement)
+                if (ownerSelect) {
+                    resetOptionParentSelectValue(ownerSelect)
+                }
+            }
+            return
+        }
+        // CAUTION 所有 input 类型（不只 type=text）和 textarea：value 为 undefined/null 时
+        //  显示空字符串，否则会渲染出字面 "undefined"/"null"（checkbox 的 value property
+        //  同样不能残留 "null"，它是表单提交值）。
+        (node as HTMLDataElement).value = value == null ? '' : value
 
         if (node.tagName === 'INPUT') {
             // CAUTION input 的 value 解释依赖 type（checkbox 的 value 即 checked、range 会按
@@ -375,10 +405,6 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 (node as HTMLInputElement).checked = false
                 node.removeAttribute('checked')
             }
-        } else if ((node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') && value == null) {
-            // CAUTION 所有 input 类型（不只 type=text）和 textarea：value 为 undefined/null 时
-            //  显示空字符串，否则会渲染出字面 "undefined"/"null"
-            (node as HTMLDataElement).value = ''
         }
     } else if (name === 'checked' && node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
         // checkbox 的 checked 支持用 boolean 表示
@@ -526,7 +552,11 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         return {type, props, children, __axiiSource: debugSource} as ComponentNode
     }
 
-    const _isSVG = rawProps ? rawProps._isSVG : undefined
+    // CAUTION svg-only 标签（circle/path/svg 等）无论从哪个入口进来都必须落在 SVG namespace，
+    //  见 svgOnlyElementNames 的说明。显式 _isSVG（createSVGElement 传入）优先，
+    //  未显式指定时按标签名兜底；每个元素只多一次 Set 查找（原 jsx runtime 路由的同款成本）。
+    const _isSVG = (rawProps ? rawProps._isSVG : undefined) ??
+        (type !== Fragment && svgOnlyElementNames.has(type as string))
 
     // Create container with proper type assertion
     const container = type === Fragment
@@ -974,13 +1004,14 @@ export class StyleSize {
 }
 
 // for jsx-dev-runtime
+// CAUTION svg-only 标签的 namespace 路由统一在 createElement 内部完成（见 svgOnlyElementNames），
+//  runtime 这里不再做二次路由，避免同一次创建查两遍 Set。
 export function jsxs(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
-    return getJSXRuntimeFactory(type)(type, rawProps, ...children)
+    return createElement(type, rawProps, ...children)
 }
 export function jsx(type: JSXElementType, {children, ...rawProps}: AttributesArg): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     // CAUTION 无 children 时不能把 undefined 当作一个实参传下去，否则组件拿到的是 [undefined] 而不是 []
-    const factory = getJSXRuntimeFactory(type)
-    return children === undefined ? factory(type, rawProps) : factory(type, rawProps, children)
+    return children === undefined ? createElement(type, rawProps) : createElement(type, rawProps, children)
 }
 // React automatic dev runtime 签名：jsxDEV(type, props, key, isStaticChildren, source, self)
 export function jsxDEV(
@@ -992,8 +1023,7 @@ export function jsxDEV(
     self?: unknown
 ): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     const props = source || self ? {...rawProps, __source: source, __self: self} : rawProps
-    const factory = getJSXRuntimeFactory(type)
-    if (Array.isArray(children)) return factory(type, props, ...children)
+    if (Array.isArray(children)) return createElement(type, props, ...children)
     // CAUTION 同 jsx：无 children 时不能传 undefined 占位
-    return children === undefined ? factory(type, props) : factory(type, props, children)
+    return children === undefined ? createElement(type, props) : createElement(type, props, children)
 }
