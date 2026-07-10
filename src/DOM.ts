@@ -426,6 +426,17 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     } else if (name !== 'list' && name !== 'type' && name !== 'form' && !isSvg && name in node) {
         setProperty(node, name, value === null ? '' : value)
         if (value === null || value === undefined) node.removeAttribute(name)
+        // range 会在 min/max/step 约束变化时就地 sanitize 当前 value。这里必须重放
+        // 框架保存的声明值，否则约束之后放宽，DOM 仍永久停留在旧的截断值。
+        // 属性更新热路径只增加常量字符串/标签判断，不产生额外分配。
+        if ((name === 'min' || name === 'max' || name === 'step') &&
+            node.tagName === 'INPUT' &&
+            (node as HTMLInputElement).type === 'range') {
+            const storedValue = (node as InputWithAxiiValue).__axiiInputValue__
+            if (storedValue !== undefined) {
+                setAttribute(node, 'value', storedValue, isSvg)
+            }
+        }
     } else {
         /* v8 ignore next 4 */
         const ns = isSvg && (name !== (name = name.replace(/^xlink\:?/, '')))
