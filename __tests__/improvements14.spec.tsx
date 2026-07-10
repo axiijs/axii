@@ -104,6 +104,57 @@ describe('improvements regression (2026-07 round-14 review)', () => {
             expect(el.classList.contains('extra')).toBe(true)
             root.destroy()
         })
+
+        test('root-level nested $self:$inner:prop reaches the inner AOP config', () => {
+            function Comp({}: any, {createElement}: RenderContext) {
+                return <div as="inner" id="self-nested">x</div>
+            }
+            const root = createRoot(rootEl)
+            // JSX 属性名只允许一个冒号，嵌套 AOP key 的真实形态来自 spread/程序化 props
+            root.render(<Comp {...{'$self:$inner:className': 'from-nested'}}/>)
+            expect(document.getElementById('self-nested')!.classList.contains('from-nested')).toBe(true)
+            root.destroy()
+        })
+    })
+
+    /**
+     * I54: aria- 与 data- 属性的 false 是有语义的值（aria-expanded="false" 表示「收起」，
+     * 缺席表示「不可展开」，屏幕阅读器行为完全不同），静态路径曾按「移除」处理；
+     * 响应式 data- 属性（dataset 赋值）本来就产出 "false"，静态与响应式行为分叉。
+     * null/undefined 维持移除语义。
+     */
+    describe('I54: false keeps its literal meaning on aria-*/data-* attributes', () => {
+        test('static and reactive aria-expanded={false} render the literal "false"', async () => {
+            const root = createRoot(rootEl)
+            const expanded = atom(false)
+            root.render(<div>
+                <button id="static-aria" aria-expanded={false} data-active={false}>s</button>
+                <button id="reactive-aria" aria-expanded={() => expanded()}>r</button>
+            </div>)
+            const staticButton = document.getElementById('static-aria')!
+            const reactiveButton = document.getElementById('reactive-aria')!
+            expect(staticButton.getAttribute('aria-expanded')).toBe('false')
+            // data-* 静态路径与响应式（dataset）路径一致
+            expect(staticButton.getAttribute('data-active')).toBe('false')
+            expect(reactiveButton.getAttribute('aria-expanded')).toBe('false')
+
+            expanded(true)
+            await wait(10)
+            expect(reactiveButton.getAttribute('aria-expanded')).toBe('true')
+            expanded(false)
+            await wait(10)
+            expect(reactiveButton.getAttribute('aria-expanded')).toBe('false')
+            root.destroy()
+        })
+
+        test('null/undefined still remove the attribute', () => {
+            const root = createRoot(rootEl)
+            root.render(<button id="removed" aria-expanded={null} data-active={undefined}>x</button>)
+            const el = document.getElementById('removed')!
+            expect(el.hasAttribute('aria-expanded')).toBe(false)
+            expect(el.hasAttribute('data-active')).toBe(false)
+            root.destroy()
+        })
     })
 
     /**

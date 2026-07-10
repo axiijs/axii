@@ -563,9 +563,14 @@ export class ComponentHost implements Host{
                 //  classic pragma / automatic runtime 等不经过组件包装的入口（root.render 的顶层
                 //  JSX）会把它原样送进 inputProps。语义必须与组件内一致：merge 进自身 props——
                 //  否则它会落进 itemConfig['self']（'self' 是保留名，永远不会被应用），静默丢失。
+                //  嵌套形态 $self:$inner:xxx 与包装路径一致：作为自身的 AOP 配置继续解析。
                 if (key.startsWith('$self:')) {
                     const selfKey = key.slice(6)
-                    last.props[selfKey] = mergeProp(selfKey, last.props[selfKey], value)
+                    if (selfKey[0] === '$') {
+                        last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, selfKey, value, current)
+                    } else {
+                        last.props[selfKey] = mergeProp(selfKey, last.props[selfKey], value)
+                    }
                 } else {
                     last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, key, value, current)
                 }
