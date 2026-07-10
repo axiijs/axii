@@ -522,7 +522,8 @@ export type UnhandledAttrInfo = {
 
 export type RefHandleInfo = {
     el: any,
-    handle: RefFn | RefObject,
+    // 数组形态来自用户的 ref 数组与 AOP 的 ref 合并（mergeProp）
+    handle: RefFn | RefObject | (RefFn | RefObject)[],
     path: number[]
 }
 

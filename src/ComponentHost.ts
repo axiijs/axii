@@ -559,7 +559,16 @@ export class ComponentHost implements Host{
             if( key === INNER_CONFIG_PROP) {
                 // 透传过来的 config 这里不处理，外部已经处理了
             } else if (key[0] === '$')  {
-                last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, key, value, current)
+                // CAUTION $self: 在组件 renderContext 的 createElement（separateProps）里已被消费；
+                //  classic pragma / automatic runtime 等不经过组件包装的入口（root.render 的顶层
+                //  JSX）会把它原样送进 inputProps。语义必须与组件内一致：merge 进自身 props——
+                //  否则它会落进 itemConfig['self']（'self' 是保留名，永远不会被应用），静默丢失。
+                if (key.startsWith('$self:')) {
+                    const selfKey = key.slice(6)
+                    last.props[selfKey] = mergeProp(selfKey, last.props[selfKey], value)
+                } else {
+                    last.itemConfig = this.parseItemConfigFromProp(last.itemConfig, key, value, current)
+                }
             } else {
                 last.props[key] = mergeProp(key, last.props[key], value)
             }
@@ -808,9 +817,13 @@ export class ComponentHost implements Host{
             this.runWithErrorHook(() => this.detachRef(this.refProp!))
         }
 
-        // render 期间收集到的 computed 等由自己清理
+        // render 期间收集到的 computed 等由自己清理。
+        // CAUTION computed 的 destroy 会执行用户注册的 onCleanup/onDestroy（用户代码）：
+        //  抛错必须走 error 钩子，否则一个抛错的 cleanup 会中断兄弟 computed 的销毁、
+        //  innerHost 的 DOM 拆除（区域残留旧内容），错误还会沿函数节点重算路径变成
+        //  uncaught error。与 renderFailed 分支及 destroyCallback 的错误语义一致（I43 同类）。
         this.frame?.forEach(manualCleanupObject =>
-            manualCleanupObject.destroy()
+            this.runWithErrorHook(() => manualCleanupObject.destroy())
         )
         // CAUTION 注意这里， ComponentHost 自己是不处理 dom 的。
         // innerHost 可能不存在（render 抛错被中断的场景）
@@ -1011,23 +1024,33 @@ export class ReusableHost implements Host{
     destroy(parentHandle?: boolean) {
         // do nothing
         if (!parentHandle) {
+            // CAUTION 整段区间已脱离 DOM / 父节点失配，说明区间已被外部整体清理
+            //  （例如 root 容器被直接清空），内容已无法搬出保留，跳过搬移。
+            //  与 StaticHost 对外部清理的容忍语义一致；「同父但兄弟链断了」的破坏
+            //  仍交给下面的 assertRangeReachable 诊断。
+            const rangeStart = this.innerHost.element
+            const rangeEnd = this.innerHost.placeholder
+            if (!rangeEnd.parentNode || rangeStart.parentNode !== rangeEnd.parentNode) {
+                this.reusePlaceholder?.remove()
+                return
+            }
             const frag = document.createDocumentFragment()
             if (isAxiiDiagnosticsEnabled()) {
                 assertRangeReachable({
                     ownerHost: this,
-                    start: this.innerHost.element,
-                    end: this.innerHost.placeholder,
+                    start: rangeStart,
+                    end: rangeEnd,
                     boundaryKind: 'reusable-range',
                     operation: 'destroy',
                 })
             }
-            let start = this.innerHost.element
-            while(start !== this.innerHost.placeholder) {
+            let start = rangeStart
+            while(start !== rangeEnd) {
                 const next = start.nextSibling as HTMLElement|Comment|Text|SVGElement
                 frag.appendChild(start)
                 start = next
             }
-            frag.appendChild(this.innerHost.placeholder)
+            frag.appendChild(rangeEnd)
             // 这个reusePlaceholder不要了，如果再被渲染，会有新的 placeholder
             if (this.reusePlaceholder) {
                 this.reusePlaceholder.remove()
