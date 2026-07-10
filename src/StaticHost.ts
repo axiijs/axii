@@ -682,6 +682,24 @@ export const StaticHostConfig = {
     autoGenerateTestId: false
 }
 
+// CAUTION 小 elementPath 驻留池：同一模板位置在长列表的每一行都会产生一个内容
+//  相同的 path 数组（如每行文本绑定的 [0]），驻留后全列表共享一份（每行省一个
+//  数组 ~28B）。驻留的数组语义上是 frozen 的：所有消费方（样式 id、诊断、
+//  StyleManager）都只读。上限防御动态生成的超宽模板把池撑爆——超限后退回
+//  独享数组，只是少省内存，不影响正确性。
+const INTERNED_PATH_LIMIT = 4096
+const internedPaths = new Map<string, number[]>()
+function internElementPath(path: number[]): number[] {
+    if (path.length > 3) return path
+    const key = path.join(',')
+    let interned = internedPaths.get(key)
+    if (interned === undefined) {
+        if (internedPaths.size >= INTERNED_PATH_LIMIT) return path
+        internedPaths.set(key, interned = path)
+    }
+    return interned
+}
+
 /**
  * @internal
  *
@@ -740,7 +758,11 @@ export class StaticHost implements Host {
     // 如果有 detachStyledChildren，会设为 true
     public forceHandleElement?: boolean
     // CAUTION 单个时直接存对象而不是包一层数组：一个元素恰好一个响应式 child/attr
-    //  是长列表行的典型形态，每行省一个数组（16B 头 + elements store）
+    //  是长列表行的典型形态，每行省一个数组（16B 头 + elements store）。
+    //  这两个字段在构造器里显式预置 undefined（与上面的 declare 策略相反）：
+    //  它们是渲染期最常写入的两个字段，构造期不预留的话 V8 slack tracking 会把
+    //  in-object 槽位收缩到构造器字段数，渲染期再写就会退到 PropertyArray
+    //  （带绑定的每行 host 平白多一个 ~20B 的堆对象）。
     reactiveHosts?: Host[] | Host
     attrEffects?: LightBindingEffect[] | LightBindingEffect
     // 是否有 style 类型的响应式属性，只有这种情况才需要 StyleManager 的 mount/unmount 记账
@@ -749,6 +771,8 @@ export class StaticHost implements Host {
     detachStyledChildren?: DetachStyledInfo[]
     removeAttachListener?: () => void
     constructor(public source: HTMLElement | SVGElement | DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+        this.reactiveHosts = undefined
+        this.attrEffects = undefined
     }
     element: HTMLElement | Comment | SVGElement = this.placeholder
     render(): void {
@@ -854,14 +878,14 @@ export class StaticHost implements Host {
             // debugSource 只存 child 自己的（host 使用处会回退到 pathContext.debugSource）
             return createHost(child, placeholder, this.pathContext, {
                 owner: this,
-                elementPath: path,
+                elementPath: internElementPath(path),
                 debugSource: source,
             })
         }
         return createHost(child, placeholder, {
             ...this.pathContext,
             hostPath: sharedHostPath ?? createLinkedNode<Host>(this, this.pathContext.hostPath),
-            elementPath: path,
+            elementPath: internElementPath(path),
             debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
         })
     }
@@ -909,7 +933,7 @@ export class StaticHost implements Host {
                     if (key === 'style') {
                         this.usesStyleManager = true
                     }
-                    const effect = new ReactiveAttributeEffect(this, el, key, value, path, isSVG)
+                    const effect = new ReactiveAttributeEffect(this, el, key, value, internElementPath(path), isSVG)
                     if (source) effect.debugSource = source
                     trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
                     // CAUTION 先登记再 run：初始求值抛错（无 error 钩子）时 effect 已在
