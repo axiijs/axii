@@ -26,7 +26,7 @@
 | --- | --- |
 | 1 | splice 的 argv 是**用户原始参数**：start 可以是负数/越界（Array#splice 语义），消费方必须自行归一化；methodResult 是真实删除的元素数组 |
 | 2 | push/pop/shift/unshift 一律以 splice patch 到达，argv 已换算成索引 |
-| 3 | set(index, v) 以 EXPLICIT_KEY_CHANGE 到达，key 是数字 index；越界 set 产生稀疏数组，属契约外用法（由列表不变量兜底报错） |
+| 3 | set(index, v) 以 EXPLICIT_KEY_CHANGE 到达，key 是数字 index；越界 set 产生稀疏数组，属契约外用法（消费前置守卫直接报 `AXII_LIST_ORDER_BROKEN`，不能等锚点访问产生原生 TypeError） |
 | 4 | reorder/swap/reposition/sortSelf 全部收敛为一个 reorder patch（pairs 语义 `data[to] = old[from]`）+ reorderInfo |
 | 5 | 派生列表（map）收到的 patch 形态与源一致 |
 | 6 | clear 型 splice 快速路径同样交付原始 argv |

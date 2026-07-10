@@ -138,6 +138,7 @@ export class RxListHost implements Host{
             function applyPatch(this: Computed, _, triggerInfos) {
                 this.pauseCollectChild()
                 try {
+                    let patchFailed = false
                     for (const info of triggerInfos) {
                         // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled rejection。
                         //  外部通过 root.on('error') 注册了处理器时交给处理器（应用保持存活，
@@ -165,6 +166,7 @@ export class RxListHost implements Host{
                                 host.applyTriggerInfo(info)
                             }
                         } catch (error) {
+                            patchFailed = true
                             if (!host.pathContext.root.dispatch('error', error)) {
                                 reportAxiiError(error)
                                 throw error
@@ -174,7 +176,9 @@ export class RxListHost implements Host{
                     // CAUTION 开发期列表不变量：每个 patch 批次结束后校验「hosts 数 === data 数」
                     //  与「行区间在 DOM 中按数组顺序排列」。这类破坏（契约外的稀疏 set、
                     //  外部代码搬动行节点等）不校验的话不会抛任何错，只会永远渲染错的顺序。
-                    if (isAxiiDiagnosticsEnabled()) {
+                    // patch 已经失败并交给 error 钩子时不再跑批末不变量，避免同一根因连续
+                    // 上报两次错误；失败 patch 自身必须负责产出结构化错误。
+                    if (!patchFailed && isAxiiDiagnosticsEnabled()) {
                         try {
                             host.assertListInvariants()
                         } catch (error) {
@@ -392,8 +396,19 @@ export class RxListHost implements Host{
     }
     handleExplicitKeyChange(index: number) {
         const hosts = this.hosts!
+        // data0 的 set(index, value) 可以像数组赋值一样扩大 length，但 RxListHost 的
+        // 增量替换契约只支持已有稠密索引。必须在销毁旧行/写 hosts[index] 之前拒绝，
+        // 否则 hosts 会先变成稀疏数组，随后锚点查找以原生 TypeError 崩溃。
+        if (!Number.isInteger(index) || index < 0 || index >= hosts.length || !hosts[index]) {
+            throw createListOrderError({
+                ownerHost: this,
+                start: this.element,
+                end: this.placeholder,
+                operation: 'splice',
+            }, `RxList.set received out-of-range index ${index}; rendered host count is ${hosts.length}. set() can only replace an existing dense row.`)
+        }
         const oldHost = hosts[index]
-        oldHost?.destroy()
+        oldHost.destroy()
 
         const newHost = this.createChildHost(this.source.data[index])
         hosts[index] = newHost
