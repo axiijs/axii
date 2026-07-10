@@ -16,7 +16,7 @@ import {
     RenderContext,
     RxList,
 } from "@framework";
-import {atom} from "data0";
+import {atom, batch} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 
 const sleep = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms))
@@ -48,7 +48,9 @@ describe('fatal bug regression (2026-07 round-12 review)', () => {
         test('automatic JSX runtime creates common SVG tags in the SVG namespace', () => {
             const circle = jsxDEV('circle', {id: 'circle'}, undefined, false)
             const line = jsx('line', {strokeWidth: 2})
-            const svg = jsxs('svg', {children: [circle, line]})
+            const htmlChild = jsx('div', {children: 'html'})
+            const foreignObject = jsx('foreignObject', {children: htmlChild})
+            const svg = jsxs('svg', {children: [circle, line, foreignObject]})
             const root = createRoot(rootEl)
 
             root.render(svg as JSX.Element)
@@ -56,6 +58,8 @@ describe('fatal bug regression (2026-07 round-12 review)', () => {
             expect(svg).toBeInstanceOf(SVGElement)
             expect(circle).toBeInstanceOf(SVGElement)
             expect(line).toBeInstanceOf(SVGElement)
+            expect(foreignObject).toBeInstanceOf(SVGElement)
+            expect(htmlChild).toBeInstanceOf(HTMLDivElement)
             expect((svg as SVGElement).namespaceURI).toBe('http://www.w3.org/2000/svg')
             expect((line as SVGElement).getAttribute('stroke-width')).toBe('2')
             expect((line as SVGElement).getAttribute('strokeWidth')).toBeNull()
@@ -154,16 +158,23 @@ describe('fatal bug regression (2026-07 round-12 review)', () => {
         test('unknown child output becomes an empty region instead of poisoning root.render', () => {
             const root = createRoot(rootEl)
             const errors: unknown[] = []
+            let effectRuns = 0
+            let cleanupRuns = 0
             root.on('error', error => errors.push(error))
-            function InvalidChild() {
+            function InvalidChild({}: any, {useEffect, onCleanup}: RenderContext) {
+                useEffect(() => { effectRuns++ })
+                onCleanup(() => { cleanupRuns++ })
                 return {bad: true} as unknown as JSX.Element
             }
 
             expect(() => root.render(<InvalidChild/>)).not.toThrow()
             expect(errors).toHaveLength(1)
             expect(String(errors[0])).toContain('unknown child type')
+            expect(effectRuns).toBe(0)
+            expect(cleanupRuns).toBe(1)
             expect(rootEl.textContent).toBe('')
             expect(() => root.destroy()).not.toThrow()
+            expect(cleanupRuns).toBe(1)
             expect(root.host).toBeUndefined()
         })
     })
@@ -194,6 +205,23 @@ describe('fatal bug regression (2026-07 round-12 review)', () => {
                 root.destroy()
             }
         )
+
+        test('a user-selected value is not overwritten by a later constraint change', async () => {
+            const max = atom(100)
+            const root = createRoot(rootEl)
+            root.render(<input type="range" value={150} max={max}/>)
+            const input = rootEl.querySelector('input')!
+            expect(input.value).toBe('100')
+
+            // Native user interaction mutates the DOM property without changing the declared prop.
+            input.value = '80'
+            input.dispatchEvent(new Event('input', {bubbles: true}))
+            max(200)
+            await sleep()
+
+            expect(input.value).toBe('80')
+            root.destroy()
+        })
     })
 
     describe('F47: sparse RxList.set reports a structured contract error', () => {
@@ -214,6 +242,47 @@ describe('fatal bug regression (2026-07 round-12 review)', () => {
             expect(errors[0]).toBeInstanceOf(AxiiError)
             expect((errors[0] as AxiiError).code).toBe('AXII_LIST_ORDER_BROKEN')
             expect(String(errors[0])).toContain('out-of-range')
+            expect(rootEl.textContent).toBe('ab')
+            root.destroy()
+        })
+
+        test.each([-1, 2])('index %s is rejected before mutating row hosts', async index => {
+            const root = createRoot(rootEl)
+            const errors: unknown[] = []
+            root.on('error', error => errors.push(error))
+            const list = new RxList([
+                <span>a</span>,
+                <span>b</span>,
+            ])
+            root.render(list as unknown as JSX.Element)
+
+            list.set(index, <span>z</span>)
+            await sleep()
+
+            expect(errors).toHaveLength(1)
+            expect(errors[0]).toBeInstanceOf(AxiiError)
+            expect(rootEl.textContent).toBe('ab')
+            root.destroy()
+        })
+
+        test('a failed sparse set stops later patches from the same batch', async () => {
+            const root = createRoot(rootEl)
+            const errors: unknown[] = []
+            root.on('error', error => errors.push(error))
+            const list = new RxList([
+                <span>a</span>,
+                <span>b</span>,
+            ])
+            root.render(list as unknown as JSX.Element)
+
+            batch(() => {
+                list.set(4, <span>z</span>)
+                list.push(<span>c</span>)
+            })
+            await sleep()
+
+            expect(errors).toHaveLength(1)
+            expect(errors[0]).toBeInstanceOf(AxiiError)
             expect(rootEl.textContent).toBe('ab')
             root.destroy()
         })
@@ -248,6 +317,37 @@ describe('fatal bug regression (2026-07 round-12 review)', () => {
             } finally {
                 window.removeEventListener('unhandledrejection', onUnhandled)
                 root.destroy()
+            }
+        })
+
+        test('an async effect settling after destroy cannot escape the dead root', async () => {
+            const root = createRoot(rootEl)
+            const errors: unknown[] = []
+            const unhandled: unknown[] = []
+            let rejectEffect!: (reason?: unknown) => void
+            const onUnhandled = (event: PromiseRejectionEvent) => {
+                event.preventDefault()
+                unhandled.push(event.reason)
+            }
+            window.addEventListener('unhandledrejection', onUnhandled)
+            root.on('error', error => errors.push(error))
+
+            function App({}: any, {createElement, useEffect}: RenderContext) {
+                useEffect(() => new Promise<void>((_resolve, reject) => {
+                    rejectEffect = reject
+                }))
+                return <div>mounted</div>
+            }
+
+            try {
+                root.render(<App/>)
+                root.destroy()
+                rejectEffect(new Error('late async effect failure'))
+                await sleep()
+                expect(errors).toHaveLength(0)
+                expect(unhandled).toHaveLength(0)
+            } finally {
+                window.removeEventListener('unhandledrejection', onUnhandled)
             }
         })
     })
