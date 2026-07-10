@@ -350,7 +350,13 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             // CAUTION input 的 value 解释依赖 type（checkbox 的 value 即 checked、range 会按
             //  min/max 截断）。type 可以是响应式的（type={visible ? 'text' : 'password'} 是
             //  自然写法），翻转后必须能按新 type 重放 value——这里存下原始值。
-            ;(node as InputWithAxiiValue).__axiiInputValue__ = value
+            const input = node as InputWithAxiiValue
+            input.__axiiInputValue__ = value
+            // range 约束更新时只在 DOM 仍等于框架最后一次写入值时重放；
+            // 用户拖动或外部脚本改过 value 后必须保留当前交互值。
+            if ((node as HTMLInputElement).type === 'range') {
+                input.__axiiInputAppliedValue__ = (node as HTMLInputElement).value
+            }
         }
 
         if (node.tagName === 'OPTION') {
@@ -424,14 +430,20 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     //  直接 TypeError（sloppy 模式下静默无效），属性永远设不上去——
     //  form="xxx"（控件关联非祖先 form）会静默失效。这类 name 必须走 attribute 路径。
     } else if (name !== 'list' && name !== 'type' && name !== 'form' && !isSvg && name in node) {
+        let replayRangeValue = false
+        if ((name === 'min' || name === 'max' || name === 'step') &&
+            node.tagName === 'INPUT' &&
+            (node as HTMLInputElement).type === 'range') {
+            const input = node as InputWithAxiiValue
+            replayRangeValue = input.__axiiInputAppliedValue__ !== undefined &&
+                (node as HTMLInputElement).value === input.__axiiInputAppliedValue__
+        }
         setProperty(node, name, value === null ? '' : value)
         if (value === null || value === undefined) node.removeAttribute(name)
         // range 会在 min/max/step 约束变化时就地 sanitize 当前 value。这里必须重放
         // 框架保存的声明值，否则约束之后放宽，DOM 仍永久停留在旧的截断值。
         // 属性更新热路径只增加常量字符串/标签判断，不产生额外分配。
-        if ((name === 'min' || name === 'max' || name === 'step') &&
-            node.tagName === 'INPUT' &&
-            (node as HTMLInputElement).type === 'range') {
+        if (replayRangeValue) {
             const storedValue = (node as InputWithAxiiValue).__axiiInputValue__
             if (storedValue !== undefined) {
                 setAttribute(node, 'value', storedValue, isSvg)
@@ -788,7 +800,10 @@ function findOwnerSelect(parent: Element | null): HTMLSelectElement | null {
 
 type SelectWithAxiiValue = HTMLElement & { __axiiSelectValue__?: string | any[] }
 // input 的原始 value（type 翻转时按新 type 重放用），见 setAttribute 的 value/type 分支
-type InputWithAxiiValue = HTMLElement & { __axiiInputValue__?: any }
+type InputWithAxiiValue = HTMLElement & {
+    __axiiInputValue__?: any
+    __axiiInputAppliedValue__?: string
+}
 
 /**
  * 把 value 应用到 select 上。

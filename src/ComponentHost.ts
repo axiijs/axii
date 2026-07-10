@@ -35,7 +35,7 @@ import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
-import {assertRangeReachable, isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
+import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 
 
 function ensureArray(o: any) {
@@ -136,6 +136,8 @@ export class ComponentHost implements Host{
     _onCleanup?: OnCleanupFn
     _expose?: ExposeFn
     _reusable?: ReuseFn
+    // 仅 async effect 实例按需分配；组件销毁后使尚未 settle 的 Promise 静默失活。
+    asyncEffectState?: {active: boolean}
     constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
         if (!ComponentHost.typeIds.has(type)) {
             ComponentHost.typeIds.set(type, ComponentHost.nextTypeId++)
@@ -748,14 +750,15 @@ export class ComponentHost implements Host{
     }
     observeAsyncEffect(handle: any) {
         if (!handle || typeof handle.then !== 'function') return
+        const state = this.asyncEffectState ??= {active: true}
         const root = this.pathContext.root
         void Promise.resolve(handle).catch(error => {
             // Promise rejection 发生在同步 runWithErrorHook 之外，必须显式桥接到
-            // root error 钩子。未消费时保留 unhandled rejection，并先输出诊断。
-            if (!root.dispatch('error', error)) {
-                reportAxiiError(error)
-                throw error
-            }
+            // root error 钩子。组件已经销毁时 effect 生命周期也已结束，不能再向
+            // 已清空监听器的 root 泄漏 unhandled rejection。
+            if (!state.active) return
+            // 未注册钩子时重新 reject，保留原先的 unhandled-rejection 可观测语义。
+            if (!root.dispatch('error', error)) throw error
         })
     }
     runLayoutEffect() {
@@ -776,6 +779,7 @@ export class ComponentHost implements Host{
     }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
+        if (this.asyncEffectState) this.asyncEffectState.active = false
         // CAUTION 清理函数（layoutEffect 返回值 / useEffect 返回值 / onCleanup）必须在
         //  DOM 拆除、ref 置空、render 期 computed 销毁**之前**执行：
         //  onCleanup(() => observer.unobserve(ref.current)) 是最自然的写法，

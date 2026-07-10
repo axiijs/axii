@@ -171,6 +171,10 @@ export class RxListHost implements Host{
                                 reportAxiiError(error)
                                 throw error
                             }
+                            // source 已经完成整批数据写入，但当前 DOM patch 失败后继续消费
+                            // 后续 triggerInfo 只会在不一致状态上继续修改 hosts。错误被边界
+                            // 消费时采用 fail-stop：保留最后一个完整 DOM，等待上层销毁/恢复。
+                            break
                         }
                     }
                     // CAUTION 开发期列表不变量：每个 patch 批次结束后校验「hosts 数 === data 数」
