@@ -70,7 +70,9 @@ describe('rxList render', () => {
         expect(rootEl.firstElementChild!.children[5].innerHTML).toBe('3')
         expect(rootEl.firstElementChild!.children[6].innerHTML).toBe('4')
 
-        const rxListHost = (host.innerHost as StaticHost).reactiveHosts![0] as RxListHost
+        // reactiveHosts 单个 child 时直接存 host（内存优化），数组形态只在多 child 时出现
+        const reactiveHosts = (host.innerHost as StaticHost).reactiveHosts!
+        const rxListHost = (Array.isArray(reactiveHosts) ? reactiveHosts[0] : reactiveHosts) as RxListHost
         expect((rxListHost.element as HTMLElement).innerHTML).toBe('0')
 
     })

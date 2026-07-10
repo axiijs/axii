@@ -7,6 +7,7 @@ import {
     RefHandleInfo,
     setAttribute,
     stringifyStyleValue,
+    UnhandledChildInfo,
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
@@ -738,8 +739,10 @@ export class StaticHost implements Host {
     //  无初始化器的字段不产生构造期赋值）。
     // 如果有 detachStyledChildren，会设为 true
     public forceHandleElement?: boolean
-    reactiveHosts?: Host[]
-    attrEffects?: LightBindingEffect[]
+    // CAUTION 单个时直接存对象而不是包一层数组：一个元素恰好一个响应式 child/attr
+    //  是长列表行的典型形态，每行省一个数组（16B 头 + elements store）
+    reactiveHosts?: Host[] | Host
+    attrEffects?: LightBindingEffect[] | LightBindingEffect
     // 是否有 style 类型的响应式属性，只有这种情况才需要 StyleManager 的 mount/unmount 记账
     usesStyleManager?: boolean
     refHandles?: RefHandleInfo[]
@@ -769,7 +772,7 @@ export class StaticHost implements Host {
         if (this.detachStyledChildren?.length) {
             this.forceHandleElement = true
         }
-        this.reactiveHosts?.forEach(host => host.render())
+        this.renderReactiveHosts()
         //
         insertBefore(this.element, this.placeholder)
         // 如果是 fragment，那么还要插入真实内容
@@ -810,35 +813,77 @@ export class StaticHost implements Host {
             }
         }
     }
+    // 遍历 reactiveHosts（单个/数组两种形态）
+    renderReactiveHosts() {
+        const hosts = this.reactiveHosts
+        if (!hosts) return
+        if (Array.isArray(hosts)) {
+            for (const host of hosts) host.render()
+        } else {
+            hosts.render()
+        }
+    }
+    destroyReactiveHosts() {
+        const hosts = this.reactiveHosts
+        if (!hosts) return
+        if (Array.isArray(hosts)) {
+            for (const host of hosts) host.destroy(true)
+        } else {
+            hosts.destroy(true)
+        }
+    }
+    destroyAttrEffects() {
+        const effects = this.attrEffects
+        if (!effects) return
+        if (Array.isArray(effects)) {
+            for (const effect of effects) {
+                trackLightBindingDestroyed(effect)
+                effect.destroy()
+            }
+        } else {
+            trackLightBindingDestroyed(effects)
+            effects.destroy()
+        }
+    }
+    // CAUTION atom/函数 child（最常见：每行的响应式文本）不克隆 pathContext：
+    //  它们的文本快速路径从不消费 hostPath，位置信息以一个 3 字段的 position
+    //  对象传入（诊断/结构渲染按需读取），比「克隆 context + LinkedNode」
+    //  少一半以上的每绑定常驻内存。
+    createInnerHost({ placeholder, child, path, source }: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
+        if (typeof child === 'function') {
+            // debugSource 只存 child 自己的（host 使用处会回退到 pathContext.debugSource）
+            return createHost(child, placeholder, this.pathContext, {
+                owner: this,
+                elementPath: path,
+                debugSource: source,
+            })
+        }
+        return createHost(child, placeholder, {
+            ...this.pathContext,
+            hostPath: sharedHostPath ?? createLinkedNode<Host>(this, this.pathContext.hostPath),
+            elementPath: path,
+            debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
+        })
+    }
     collectInnerHost() {
         const result = this.source as ExtendedElement
 
         const { unhandledChildren } = result
 
         if (unhandledChildren) {
-            // 所有（非函数）子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode。
-            // 惰性创建：全是 atom/函数 child（长列表行的典型形态）时一个都不分配。
-            let hostPath: LinkedNode<Host>|undefined
-            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) => {
-                // CAUTION atom/函数 child（最常见：每行的响应式文本）不克隆 pathContext：
-                //  它们的文本快速路径从不消费 hostPath，位置信息以一个 3 字段的 position
-                //  对象传入（诊断/结构渲染按需读取），比「克隆 context + LinkedNode」
-                //  少一半以上的每绑定常驻内存。
-                if (typeof child === 'function') {
-                    // debugSource 只存 child 自己的（host 使用处会回退到 pathContext.debugSource）
-                    return createHost(child, placeholder, this.pathContext, {
-                        owner: this,
-                        elementPath: path,
-                        debugSource: source,
-                    })
-                }
-                return createHost(child, placeholder, {
-                    ...this.pathContext,
-                    hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath),
-                    elementPath: path,
-                    debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
-                })
-            });
+            if (unhandledChildren.length === 1) {
+                // 单 child（长列表行的典型形态）直接存 host，省一层数组
+                this.reactiveHosts = this.createInnerHost(unhandledChildren[0])
+            } else {
+                // 所有（非函数）子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode。
+                // 惰性创建：全是 atom/函数 child 时一个都不分配。
+                let hostPath: LinkedNode<Host>|undefined
+                this.reactiveHosts = unhandledChildren.map(info =>
+                    this.createInnerHost(info, typeof info.child === 'function' ?
+                        undefined :
+                        (hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)))
+                )
+            }
 
             result.unhandledChildren = undefined
         }
@@ -849,7 +894,6 @@ export class StaticHost implements Host {
         const { unhandledAttr } = result
 
         if(unhandledAttr) {
-            const attrEffects: LightBindingEffect[] = this.attrEffects = []
             for (const { el, key, value, path, source } of unhandledAttr) {
                 // CAUTION isSVG 必须按属性所属的元素判断，而不是按整个静态子树的根：
                 //  HTML 子树里可以嵌套 SVG 元素（反之亦然），按根判断会让嵌套侧的
@@ -868,8 +912,17 @@ export class StaticHost implements Host {
                     const effect = new ReactiveAttributeEffect(this, el, key, value, path, isSVG)
                     if (source) effect.debugSource = source
                     trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
+                    // CAUTION 先登记再 run：初始求值抛错（无 error 钩子）时 effect 已在
+                    //  attrEffects 里，host 销毁仍能退订它的依赖。单个时直接存 effect 本身。
+                    const current = this.attrEffects
+                    if (current === undefined) {
+                        this.attrEffects = effect
+                    } else if (Array.isArray(current)) {
+                        current.push(effect)
+                    } else {
+                        this.attrEffects = [current, effect]
+                    }
                     effect.run()
-                    attrEffects.push(effect)
                 }
             }
             result.unhandledAttr = undefined
@@ -930,16 +983,11 @@ export class StaticHost implements Host {
     }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
-        if (this.attrEffects) {
-            for (const effect of this.attrEffects) {
-                trackLightBindingDestroyed(effect)
-                effect.destroy()
-            }
-        }
+        this.destroyAttrEffects()
 
         this.removeAttachListener?.()
 
-        this.reactiveHosts?.forEach(host => host.destroy(true))
+        this.destroyReactiveHosts()
 
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
@@ -1093,7 +1141,7 @@ export class CompactElementHost extends StaticHost {
         if (this.detachStyledChildren?.length) {
             this.forceHandleElement = true
         }
-        this.reactiveHosts?.forEach(host => host.render())
+        this.renderReactiveHosts()
         // CAUTION 自己的插入由 RxListHost 完成，这里不做，
         //  layoutEffect/ref 的 flush 也由 RxListHost 在插入后统一触发。
 
@@ -1106,14 +1154,9 @@ export class CompactElementHost extends StaticHost {
         // CAUTION 先减 compact 计数再登记 destroyed，顺序反了会被去重逻辑跳过
         trackCompactHostDestroyed(this)
         trackHostDestroyed(this)
-        if (this.attrEffects) {
-            for (const effect of this.attrEffects) {
-                trackLightBindingDestroyed(effect)
-                effect.destroy()
-            }
-        }
+        this.destroyAttrEffects()
         this.removeAttachListener?.()
-        this.reactiveHosts?.forEach(host => host.destroy(true))
+        this.destroyReactiveHosts()
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
         })
