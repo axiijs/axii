@@ -7,6 +7,7 @@ import {
     RefHandleInfo,
     setAttribute,
     stringifyStyleValue,
+    UnhandledChildInfo,
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
@@ -25,6 +26,7 @@ import {
     trackStyleHostStateDestroyed
 } from "./retainedObjectDiagnostics.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
+import type {AxiiSource} from "./diagnostics";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发响应式值的读行为，不会泄漏到上层的 computed。
 // data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
@@ -680,6 +682,71 @@ export const StaticHostConfig = {
     autoGenerateTestId: false
 }
 
+// CAUTION 小 elementPath 驻留池：同一模板位置在长列表的每一行都会产生一个内容
+//  相同的 path 数组（如每行文本绑定的 [0]），驻留后全列表共享一份（每行省一个
+//  数组 ~28B）。驻留的数组语义上是 frozen 的：所有消费方（样式 id、诊断、
+//  StyleManager）都只读。上限防御动态生成的超宽模板把池撑爆——超限后退回
+//  独享数组，只是少省内存，不影响正确性。
+const INTERNED_PATH_LIMIT = 4096
+const internedPaths = new Map<string, number[]>()
+function internElementPath(path: number[]): number[] {
+    if (path.length > 3) return path
+    const key = path.join(',')
+    let interned = internedPaths.get(key)
+    if (interned === undefined) {
+        if (internedPaths.size >= INTERNED_PATH_LIMIT) return path
+        internedPaths.set(key, interned = path)
+    }
+    return interned
+}
+
+/**
+ * @internal
+ *
+ * 响应式属性绑定 effect。用带字段的子类而不是「LightBindingEffect + 构造器闭包」：
+ * 闭包要捕获 el/key/value/path/isSVG/host 等 6 个变量（一个闭包对象 + 一个 Context），
+ * 子类把它们放进实例槽位，每个属性绑定省 ~50B 常驻内存，触发路径还少一层间接调用。
+ */
+class ReactiveAttributeEffect extends LightBindingEffect {
+    // 开发期 JSX source，只在有值时赋（见 declare 说明）
+    declare debugSource?: AxiiSource
+    constructor(
+        public host: StaticHost,
+        public el: ExtendedElement,
+        public key: string,
+        public value: any,
+        public path: number[],
+        public isSVG: boolean,
+    ) {
+        super()
+    }
+    update() {
+        // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，
+        //  则报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），
+        //  否则保持向上抛出的行为。与 ComponentHost/FunctionHost 的错误钩子语义一致。
+        const host = this.host
+        try {
+            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
+            if (isAxiiDiagnosticsEnabled()) {
+                withReactiveTrace({
+                    type: 'static-attr',
+                    operation: 'update-attr',
+                    hostType: 'StaticHost',
+                    elementPath: this.path,
+                    source: this.debugSource ?? host.pathContext.debugSource,
+                    attrName: this.key,
+                }, () => {
+                    host.updateAttribute(this.el, this.key, this.value, this.path, this.isSVG)
+                })
+            } else {
+                host.updateAttribute(this.el, this.key, this.value, this.path, this.isSVG)
+            }
+        } catch (e) {
+            if (!host.pathContext.root.dispatch('error', e)) throw e
+        }
+    }
+}
+
 /**
  * @internal
  */
@@ -690,14 +757,22 @@ export class StaticHost implements Host {
     //  无初始化器的字段不产生构造期赋值）。
     // 如果有 detachStyledChildren，会设为 true
     public forceHandleElement?: boolean
-    reactiveHosts?: Host[]
-    attrEffects?: LightBindingEffect[]
+    // CAUTION 单个时直接存对象而不是包一层数组：一个元素恰好一个响应式 child/attr
+    //  是长列表行的典型形态，每行省一个数组（16B 头 + elements store）。
+    //  这两个字段在构造器里显式预置 undefined（与上面的 declare 策略相反）：
+    //  它们是渲染期最常写入的两个字段，构造期不预留的话 V8 slack tracking 会把
+    //  in-object 槽位收缩到构造器字段数，渲染期再写就会退到 PropertyArray
+    //  （带绑定的每行 host 平白多一个 ~20B 的堆对象）。
+    reactiveHosts?: Host[] | Host
+    attrEffects?: LightBindingEffect[] | LightBindingEffect
     // 是否有 style 类型的响应式属性，只有这种情况才需要 StyleManager 的 mount/unmount 记账
     usesStyleManager?: boolean
     refHandles?: RefHandleInfo[]
     detachStyledChildren?: DetachStyledInfo[]
     removeAttachListener?: () => void
     constructor(public source: HTMLElement | SVGElement | DocumentFragment, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+        this.reactiveHosts = undefined
+        this.attrEffects = undefined
     }
     element: HTMLElement | Comment | SVGElement = this.placeholder
     render(): void {
@@ -721,7 +796,7 @@ export class StaticHost implements Host {
         if (this.detachStyledChildren?.length) {
             this.forceHandleElement = true
         }
-        this.reactiveHosts?.forEach(host => host.render())
+        this.renderReactiveHosts()
         //
         insertBefore(this.element, this.placeholder)
         // 如果是 fragment，那么还要插入真实内容
@@ -762,22 +837,77 @@ export class StaticHost implements Host {
             }
         }
     }
+    // 遍历 reactiveHosts（单个/数组两种形态）
+    renderReactiveHosts() {
+        const hosts = this.reactiveHosts
+        if (!hosts) return
+        if (Array.isArray(hosts)) {
+            for (const host of hosts) host.render()
+        } else {
+            hosts.render()
+        }
+    }
+    destroyReactiveHosts() {
+        const hosts = this.reactiveHosts
+        if (!hosts) return
+        if (Array.isArray(hosts)) {
+            for (const host of hosts) host.destroy(true)
+        } else {
+            hosts.destroy(true)
+        }
+    }
+    destroyAttrEffects() {
+        const effects = this.attrEffects
+        if (!effects) return
+        if (Array.isArray(effects)) {
+            for (const effect of effects) {
+                trackLightBindingDestroyed(effect)
+                effect.destroy()
+            }
+        } else {
+            trackLightBindingDestroyed(effects)
+            effects.destroy()
+        }
+    }
+    // CAUTION atom/函数 child（最常见：每行的响应式文本）不克隆 pathContext：
+    //  它们的文本快速路径从不消费 hostPath，位置信息以一个 3 字段的 position
+    //  对象传入（诊断/结构渲染按需读取），比「克隆 context + LinkedNode」
+    //  少一半以上的每绑定常驻内存。
+    createInnerHost({ placeholder, child, path, source }: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
+        if (typeof child === 'function') {
+            // debugSource 只存 child 自己的（host 使用处会回退到 pathContext.debugSource）
+            return createHost(child, placeholder, this.pathContext, {
+                owner: this,
+                elementPath: internElementPath(path),
+                debugSource: source,
+            })
+        }
+        return createHost(child, placeholder, {
+            ...this.pathContext,
+            hostPath: sharedHostPath ?? createLinkedNode<Host>(this, this.pathContext.hostPath),
+            elementPath: internElementPath(path),
+            debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
+        })
+    }
     collectInnerHost() {
         const result = this.source as ExtendedElement
 
         const { unhandledChildren } = result
 
         if (unhandledChildren) {
-            // 所有子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode
-            const hostPath = createLinkedNode<Host>(this, this.pathContext.hostPath)
-            this.reactiveHosts = unhandledChildren.map(({ placeholder, child, path, source }) =>
-                createHost(child, placeholder, {
-                    ...this.pathContext,
-                    hostPath,
-                    elementPath: path,
-                    debugSource: source ?? child?.__axiiSource ?? this.pathContext.debugSource,
-                })
-            );
+            if (unhandledChildren.length === 1) {
+                // 单 child（长列表行的典型形态）直接存 host，省一层数组
+                this.reactiveHosts = this.createInnerHost(unhandledChildren[0])
+            } else {
+                // 所有（非函数）子 host 共享同一个 hostPath 节点，避免每个子节点都分配一个 LinkedNode。
+                // 惰性创建：全是 atom/函数 child 时一个都不分配。
+                let hostPath: LinkedNode<Host>|undefined
+                this.reactiveHosts = unhandledChildren.map(info =>
+                    this.createInnerHost(info, typeof info.child === 'function' ?
+                        undefined :
+                        (hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)))
+                )
+            }
 
             result.unhandledChildren = undefined
         }
@@ -788,7 +918,6 @@ export class StaticHost implements Host {
         const { unhandledAttr } = result
 
         if(unhandledAttr) {
-            const attrEffects: LightBindingEffect[] = this.attrEffects = []
             for (const { el, key, value, path, source } of unhandledAttr) {
                 // CAUTION isSVG 必须按属性所属的元素判断，而不是按整个静态子树的根：
                 //  HTML 子树里可以嵌套 SVG 元素（反之亦然），按根判断会让嵌套侧的
@@ -804,33 +933,20 @@ export class StaticHost implements Host {
                     if (key === 'style') {
                         this.usesStyleManager = true
                     }
-                    const effect = new LightBindingEffect(() => {
-                        // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，
-                        //  则报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），
-                        //  否则保持向上抛出的行为。与 ComponentHost/FunctionHost 的错误钩子语义一致。
-                        try {
-                            // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，属性更新是热路径
-                            if (isAxiiDiagnosticsEnabled()) {
-                                withReactiveTrace({
-                                    type: 'static-attr',
-                                    operation: 'update-attr',
-                                    hostType: 'StaticHost',
-                                    elementPath: path,
-                                    source: source ?? this.pathContext.debugSource,
-                                    attrName: key,
-                                }, () => {
-                                    this.updateAttribute(el, key, value, path, isSVG)
-                                })
-                            } else {
-                                this.updateAttribute(el, key, value, path, isSVG)
-                            }
-                        } catch (e) {
-                            if (!this.pathContext.root.dispatch('error', e)) throw e
-                        }
-                    })
+                    const effect = new ReactiveAttributeEffect(this, el, key, value, internElementPath(path), isSVG)
+                    if (source) effect.debugSource = source
                     trackLightBindingCreated(effect, 'ReactiveAttributeBinding')
+                    // CAUTION 先登记再 run：初始求值抛错（无 error 钩子）时 effect 已在
+                    //  attrEffects 里，host 销毁仍能退订它的依赖。单个时直接存 effect 本身。
+                    const current = this.attrEffects
+                    if (current === undefined) {
+                        this.attrEffects = effect
+                    } else if (Array.isArray(current)) {
+                        current.push(effect)
+                    } else {
+                        this.attrEffects = [current, effect]
+                    }
                     effect.run()
-                    attrEffects.push(effect)
                 }
             }
             result.unhandledAttr = undefined
@@ -865,10 +981,15 @@ export class StaticHost implements Host {
         }
     }
     collectRefHandles() {
-        this.refHandles = (this.source as ExtendedElement).refHandles
+        // CAUTION 只在真的有 refHandles 时才写实例属性：无条件赋 undefined 会让每个
+        //  元素 host 多出超出 in-object 容量的属性槽位（V8 退到 PropertyArray），
+        //  长列表里每行 ~20B 的纯浪费。detachStyledChildren 同理。
+        const refHandles = (this.source as ExtendedElement).refHandles
+        if (refHandles) this.refHandles = refHandles
     }
     collectDetachStyledChildren() {
-        this.detachStyledChildren = (this.source as ExtendedElement).detachStyledChildren
+        const detachStyledChildren = (this.source as ExtendedElement).detachStyledChildren
+        if (detachStyledChildren) this.detachStyledChildren = detachStyledChildren
     }
     generateTestId(el: ExtendedElement, elementPath: number[]) {
         // 增加全局开关控制
@@ -886,16 +1007,11 @@ export class StaticHost implements Host {
     }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
-        if (this.attrEffects) {
-            for (const effect of this.attrEffects) {
-                trackLightBindingDestroyed(effect)
-                effect.destroy()
-            }
-        }
+        this.destroyAttrEffects()
 
         this.removeAttachListener?.()
 
-        this.reactiveHosts?.forEach(host => host.destroy(true))
+        this.destroyReactiveHosts()
 
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
@@ -1049,7 +1165,7 @@ export class CompactElementHost extends StaticHost {
         if (this.detachStyledChildren?.length) {
             this.forceHandleElement = true
         }
-        this.reactiveHosts?.forEach(host => host.render())
+        this.renderReactiveHosts()
         // CAUTION 自己的插入由 RxListHost 完成，这里不做，
         //  layoutEffect/ref 的 flush 也由 RxListHost 在插入后统一触发。
 
@@ -1062,14 +1178,9 @@ export class CompactElementHost extends StaticHost {
         // CAUTION 先减 compact 计数再登记 destroyed，顺序反了会被去重逻辑跳过
         trackCompactHostDestroyed(this)
         trackHostDestroyed(this)
-        if (this.attrEffects) {
-            for (const effect of this.attrEffects) {
-                trackLightBindingDestroyed(effect)
-                effect.destroy()
-            }
-        }
+        this.destroyAttrEffects()
         this.removeAttachListener?.()
-        this.reactiveHosts?.forEach(host => host.destroy(true))
+        this.destroyReactiveHosts()
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
             createElement.detachRef(handle)
         })

@@ -1,6 +1,6 @@
 import {Notifier, ReactiveEffect} from "data0";
 import {Host, PathContext} from "./Host";
-import {createHost} from "./createHost";
+import {createHost, HostPosition} from "./createHost";
 import {insertBefore, resetOptionOwnerSelect} from './DOM'
 import {createLinkedNode} from "./LinkedList";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
@@ -27,10 +27,27 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     textNode: Text|null = null
     cleanups?: (() => any)[]
     sourceContext?: FunctionNodeContext
-    constructor(public source: FunctionNode, public placeholder:Comment|Text, public pathContext: PathContext) {
+    // 「跳过 pathContext 克隆」时的轻量位置信息（见 createHost/collectInnerHost）：
+    //  文本快速路径（绝大多数函数节点）从不消费 hostPath，函数返回结构内容时才用它
+    //  惰性物化完整的子 context（见 childPathContext）。declare：不走该路径的实例不付槽位
+    declare position?: HostPosition
+    constructor(public source: FunctionNode, public placeholder:Comment|Text, public pathContext: PathContext, position?: HostPosition) {
         super()
+        if (position) this.position = position
         // Host 的生命周期由宿主树显式管理，不能被创建时的 collect frame/父 effect 接管
         this.detachFromCreationContext()
+    }
+    // 结构路径的子 context：与旧实现（父元素 host 为每个 child 克隆 context）逐字段等价，
+    //  hostPath 链为 [...父链, 宿主元素 host, this]
+    childPathContext(): PathContext {
+        const base = this.pathContext
+        const parentChain = this.position ? createLinkedNode<Host>(this.position.owner, base.hostPath) : base.hostPath
+        const context: PathContext = {...base, hostPath: createLinkedNode<Host>(this, parentChain)}
+        if (this.position) {
+            context.elementPath = this.position.elementPath
+            if (this.position.debugSource) context.debugSource = this.position.debugSource
+        }
+        return context
     }
     get element() : HTMLElement|Comment|Text|SVGElement{
         return this.textNode || this.innerHost?.element || this.placeholder
@@ -79,18 +96,20 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     renderSource(effect: DeferredBindingEffect) {
         // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，函数节点重算是热路径
         if (isAxiiDiagnosticsEnabled()) {
+            const elementPath = this.position?.elementPath ?? this.pathContext.elementPath
+            const source = this.position?.debugSource ?? this.pathContext.debugSource
             withReactiveTrace(this.renderedOnce ? {
                 type: 'function-node-recompute',
                 operation: 'recompute',
                 hostType: 'FunctionHost',
-                elementPath: this.pathContext.elementPath,
-                source: this.pathContext.debugSource,
+                elementPath,
+                source,
             } : {
                 type: 'function-node',
                 operation: 'render',
                 hostType: 'FunctionHost',
-                elementPath: this.pathContext.elementPath,
-                source: this.pathContext.debugSource,
+                elementPath,
+                source,
             }, () => {
                 this.renderSourceWithoutTrace(effect)
             })
@@ -164,7 +183,7 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         effect.pauseCollectChild()
         let host: Host | undefined
         try {
-            host = createHost(node, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            host = createHost(node, newPlaceholder, this.childPathContext())
             host.render()
         } catch (e) {
             // CAUTION 结构重建抛错（unknown child type 断言等）：重算发生在微任务里，

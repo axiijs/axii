@@ -37,7 +37,10 @@ describe('function render', () => {
 
         const host = root.render(<App ref={ref}/>)
         await wait(50)
-        expect((((host as ComponentHost).innerHost as StaticHost)!.reactiveHosts![0].element as HTMLElement).innerText).toBe('hello world')
+        // reactiveHosts 单个 child 时直接存 host（内存优化），数组形态只在多 child 时出现
+        const reactiveHosts = ((host as ComponentHost).innerHost as StaticHost)!.reactiveHosts!
+        const firstReactiveHost = Array.isArray(reactiveHosts) ? reactiveHosts[0] : reactiveHosts
+        expect((firstReactiveHost.element as HTMLElement).innerText).toBe('hello world')
     })
 
     test('function returns a atom', async() => {

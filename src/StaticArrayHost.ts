@@ -30,6 +30,8 @@ export class StaticArrayHost implements Host{
         if (this.element === this.placeholder) {
             const frag = document.createDocumentFragment()
 
+            // 所有（非函数）子 host 共享同一个 hostPath 节点；全函数/atom 项时一个都不分配
+            let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
             this.source.forEach((item, index) => {
                 if (typeof item === 'string' || typeof item === 'number') {
                     const el = document.createTextNode(item.toString())
@@ -46,7 +48,14 @@ export class StaticArrayHost implements Host{
                     // 其他未知节点了
                     const newPlaceholder: Comment = document.createComment('array item')
                     frag.appendChild(newPlaceholder)
-                    const newHost = createHost(item, newPlaceholder, {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                    // CAUTION atom/函数项与 StaticHost.collectInnerHost 同款：不克隆 pathContext，
+                    //  位置信息通过 position 传入（数组项没有独立 elementPath，沿用父级的）
+                    const newHost = typeof item === 'function' ?
+                        createHost(item, newPlaceholder, this.pathContext, {
+                            owner: this,
+                            elementPath: this.pathContext.elementPath,
+                        }) :
+                        createHost(item, newPlaceholder, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                     this.childHosts.push(newHost)
                     if (index === 0) this.firstChild = newHost
                 }
