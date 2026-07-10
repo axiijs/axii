@@ -415,7 +415,12 @@ export class ComponentHost implements Host{
     }
     get reusable(): ReuseFn {
         return this._reusable ??= (reusableNode: any) => {
-            const reusedHost = new ReusableHost(reusableNode, new Comment('reusable'), this.pathContext)
+            // CAUTION 子树的 pathContext 必须像普通 innerHost 一样包含本组件自身：
+            //  reusable 内容语义上属于本组件，组件 set 的 context（Form/ContextProvider 场景）
+            //  对它必须可见。直接用 this.pathContext（父级路径）会让 DataContext.get
+            //  沿 hostPath 静默跳过本组件，reusable 里的子组件拿不到 context 且没有任何报错。
+            const childContext: PathContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
+            const reusedHost = new ReusableHost(reusableNode, new Comment('reusable'), childContext)
             ;(this.innerReusedHosts ??= []).push(reusedHost)
             return reusedHost
         }
@@ -770,8 +775,9 @@ export class ComponentHost implements Host{
     }
     runLayoutEffect() {
         // CAUTION 一定是渲染之后才调用 ref，这样才能获得 dom 信息。
+        //  ref 回调是用户代码：抛错走 error 钩子，否则会把同组件的 layoutEffects 一并跳过。
         if (this.refProp) {
-            this.attachRef(this.refProp)
+            this.runWithErrorHook(() => this.attachRef(this.refProp!))
         }
 
         this.layoutEffects?.forEach(layoutEffect => {
@@ -796,8 +802,10 @@ export class ComponentHost implements Host{
         this.layoutEffectDestroyHandles?.forEach(handle => this.runWithErrorHook(handle))
         this.destroyCallback?.forEach(callback => this.runWithErrorHook(callback))
 
+        // ref 回调是用户代码：detach（ref(null)）抛错不能中断剩余销毁流程（frame/innerHost），
+        //  否则一个抛错的 ref 会让整棵子树泄漏。与 cleanup 的错误语义一致（I39/I43）。
         if (this.refProp) {
-            this.detachRef(this.refProp)
+            this.runWithErrorHook(() => this.detachRef(this.refProp!))
         }
 
         // render 期间收集到的 computed 等由自己清理
