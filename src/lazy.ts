@@ -9,8 +9,12 @@ import { Component, JSXElement, RenderContext } from "./types"
  *
  * load 失败时不会产生 unhandled rejection：错误存入 error atom 并传给 fallback，
  * 由 fallback 决定如何展示错误态（不传参数的旧签名 fallback 不受影响）。
+ *
+ * CAUTION fallback 是可选的（I63）：React.lazy 根本没有 fallback 参数，`lazy(load)`
+ *  是自然写法。不传时加载期间渲染为空（null），不能对 undefined 调用
+ *  （否则加载期间每次渲染都 TypeError，钩子噪音/无钩子直接崩）。
  */
-export function lazy(load: () => Promise<any>, fallback: (error?: unknown) => JSXElement){
+export function lazy(load: () => Promise<any>, fallback?: (error?: unknown) => JSXElement){
     const LazyComponent = atom<Component | null>(null)
     const loadError = atom<unknown>(null)
     let started = false
@@ -31,7 +35,7 @@ export function lazy(load: () => Promise<any>, fallback: (error?: unknown) => JS
             if (LoadedLazyComponent) {
                 return createElement(LoadedLazyComponent, props)
             } else {
-                return fallback(loadError())
+                return fallback ? fallback(loadError()) : null
             }
         }
     } as unknown as Component

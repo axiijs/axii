@@ -33,7 +33,9 @@ export class StaticArrayHost implements Host{
             // 所有（非函数）子 host 共享同一个 hostPath 节点；全函数/atom 项时一个都不分配
             let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
             this.source.forEach((item, index) => {
-                if (typeof item === 'string' || typeof item === 'number') {
+                const itemType = typeof item
+                // bigint 与 string/number 同为文本形态（I61）
+                if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') {
                     const el = document.createTextNode(item.toString())
                     frag.appendChild(el)
                     ;(this.directNodes ??= []).push(el)

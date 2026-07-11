@@ -91,6 +91,22 @@ function GetPathToLastComponent(hostPath: LinkedNode<Host>) {
     return pathToGenerateId
 }
 
+// CAUTION 组件名要作为 stylesheet 的 CSS class 使用，而 JS 的函数名远比 CSS identifier
+//  宽（F54）：对象字面量 key 推断的 name 可以是任意字符串（{'ns.card': fn} 的注册表写法
+//  推断出带 '.' 的名字），HOC/工厂返回的箭头函数 name 是 ''：
+//  - 名字里的 '.' 会让 selector 变成复合选择器（.ns.card0P... 要求同时具有两个 class），
+//    永远匹配不上元素——嵌套样式/boundProps 样式静默丢失且没有任何报错（insertRule 成功）；
+//  - 空名让 id 以 typeId 数字开头，`.3P...` 是非法 selector，整张 stylesheet 被 insertRule
+//    整条拒绝——样式全部静默丢失。
+//  这里把 CSS ident 之外的字符归一成 '_'（unicode 名字是合法 ident，保留；旧的 \s/$ 替换
+//  被该规则覆盖），首字符不是合法 ident 起始（空/数字/'-'）时补前缀。唯一性由 typeId 保证，
+//  归一化不会让两个组件冲突。
+const CSS_UNSAFE_IDENT_CHARS = /[^a-zA-Z0-9_\u00A0-\uFFFF-]/g
+function toCssSafeComponentName(name: string) {
+    const safe = name.replace(CSS_UNSAFE_IDENT_CHARS, '_')
+    return /^[a-zA-Z_\u00A0-\uFFFF]/.test(safe) ? safe : `C${safe}`
+}
+
 function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     // CAUTION path[0] 只有在 GetPathToLastComponent 真的找到组件时才是 ComponentHost：
     //  整棵子树都不在任何组件里（root.render 直接渲染元素/函数节点/列表）时，
@@ -98,9 +114,7 @@ function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     //  绝不能对它读 .type/.typeId——普通 host 没有 type 字段，直接 TypeError。
     const lastComponentHost = path[0] instanceof ComponentHost ? path[0] as ComponentHost : undefined
     const pathToGenerateId = lastComponentHost ? path.slice(1) : path
-    // CAUTION 一定要有个字母开始 id，不然 typeId 可能是数字，不能作为 class 开头
-    // CAUTION 压缩工具可能使得 name 以 $ 开头
-    const componentName = lastComponentHost ? lastComponentHost.type.name.toString().replace(/(\s|\$)/g, '_') : 'GLOBAL'
+    const componentName = lastComponentHost ? toCssSafeComponentName(lastComponentHost.type.name.toString()) : 'GLOBAL'
     return `${componentName}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
 
@@ -1180,10 +1194,15 @@ export class StaticHost implements Host {
                 // CAUTION 注意这里的计算规则和 updateAttribute 里的不太一样，这里只要找 key 就行了
                 // CAUTION 先求值再判断数组：detachStyle 是函数/atom 时可以返回数组，
                 //  先判数组的话函数返回的数组会被当成对象、styleKeys 变成数组下标。
+                // CAUTION 条件离场动画（detachStyle={() => cond() ? {...} : null}，
+                //  prefers-reduced-motion 开关是自然写法）的 falsy 求值结果按「无离场样式」
+                //  处理（F55）：Object.keys(null) 直接 TypeError——destroy 被中断，
+                //  节点**永久残留在文档里**（诊断开关都一样）。静态 falsy 在注册时就被
+                //  guard 掉了，函数/atom 的 falsy 求值结果是唯一会走到这里的形态。
                 const evaluated = isAtomLike(value) ? value() : value
                 const finalStyle: StyleObject = Array.isArray(evaluated) ?
                     Object.assign({}, ...evaluated.map(v => isAtomLike(v) ? v() : v)) :
-                    evaluated
+                    (evaluated && typeof evaluated === 'object' ? evaluated : {})
 
                 const styleKeys = Object.keys(finalStyle)
                 const hasTransition = transitionProperties.includes('all') || styleKeys.some(key => transitionProperties.includes(key))
@@ -1212,6 +1231,10 @@ export class StaticHost implements Host {
                 const final = Array.isArray(value) ?
                     value.map(v => isAtomLike(v) ? v() : v) :
                     isAtomLike(value) ? value() : value
+                // falsy 求值结果（条件离场动画未启用，F55）：什么都不应用。
+                //  不能把 falsy 交给 setAttribute 的 style 分支——那是「清空 inline style」
+                //  语义，会把元素移除前一帧的样式整体抹掉。
+                if (final == null || typeof final === 'boolean') return
                 setAttribute(el, 'style', final, el instanceof SVGElement)
             })
 

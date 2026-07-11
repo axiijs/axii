@@ -34,7 +34,7 @@ class EmptyHost implements Host{
  */
 class PrimitiveHost implements Host{
     element = this.placeholder
-    constructor(public source: string|number|boolean, public placeholder:Comment|Text, public pathContext: PathContext) {
+    constructor(public source: string|number|boolean|bigint, public placeholder:Comment|Text, public pathContext: PathContext) {
     }
     render() {
         // CAUTION boolean 渲染为空文本：{cond && <el/>} 的 falsy 结果不应该出现字面 "false"，
@@ -101,7 +101,8 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     } else if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
         host = new StaticHost(source, placeholder, pathContext)
         typeIndex = 0
-    } else if( sourceType === 'string' || sourceType === 'number' || sourceType === 'boolean'){
+    // CAUTION bigint 与 string/number 同为文本形态（后端 bigint id 是自然输入，I61）
+    } else if( sourceType === 'string' || sourceType === 'number' || sourceType === 'boolean' || sourceType === 'bigint'){
         host = new PrimitiveHost(source, placeholder, pathContext)
         typeIndex = 1
     } else if ( Array.isArray(source)  ) {
