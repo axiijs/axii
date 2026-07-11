@@ -128,4 +128,52 @@ describe('improvements regression (2026-07 round-15 review)', () => {
             root.destroy()
         })
     })
+
+    describe('I57: stylesheet path must not let a style value break out of its rule', () => {
+        test('a value that tries to close the rule cannot inject a global rule', () => {
+            document.adoptedStyleSheets = []
+            const root = createRoot(rootEl)
+            const originalBodyBg = getComputedStyle(document.body).backgroundColor
+            // stylesheet 路径（嵌套样式）的值经字符串拼接进规则文本。恶意/畸形的值试图用 '}'
+            // 闭合当前规则并注入一条全局 `body { ... }` 规则——曾经 replaceSync 会让它逃逸生效。
+            const evil = '100px; } body { background: rgb(0, 128, 0); } .z {'
+            function App({}: any, {createElement}: RenderContext) {
+                return <div id="c" style={{'&:hover': {width: evil}}}>x</div>
+            }
+            root.render(<App/>)
+            // 注入的 body 规则被 insertRule 判为多规则语法错误整条拒绝，没有越界成全局样式
+            expect(getComputedStyle(document.body).backgroundColor).toBe(originalBodyBg)
+            const injected = document.adoptedStyleSheets.some(sheet =>
+                Array.from(sheet.cssRules).some(rule => rule.cssText.includes('body')))
+            expect(injected).toBe(false)
+            root.destroy()
+        })
+
+        test('a legit value containing braces inside quotes is preserved', () => {
+            document.adoptedStyleSheets = []
+            const root = createRoot(rootEl)
+            function App({}: any, {createElement}: RenderContext) {
+                return <div id="c" style={{'&::before': {content: '"a}b{c"'}}}>x</div>
+            }
+            root.render(<App/>)
+            // 引号内的 '}' 不闭合规则，合法值照常保留
+            const rules = document.adoptedStyleSheets.flatMap(sheet => Array.from(sheet.cssRules).map(r => r.cssText))
+            expect(rules.some(r => r.includes('content: "a}b{c"'))).toBe(true)
+            root.destroy()
+        })
+
+        test('normal nested styles still apply (control)', async () => {
+            document.adoptedStyleSheets = []
+            const root = createRoot(rootEl)
+            function App({}: any, {createElement}: RenderContext) {
+                return <div id="c" style={{color: 'rgb(1, 2, 3)', '& .inner': {color: 'rgb(4, 5, 6)'}}}>
+                    <div class="inner" id="inner">x</div>
+                </div>
+            }
+            root.render(<App/>)
+            expect(getComputedStyle(document.getElementById('c')!).color).toBe('rgb(1, 2, 3)')
+            expect(getComputedStyle(document.getElementById('inner')!).color).toBe('rgb(4, 5, 6)')
+            root.destroy()
+        })
+    })
 })
