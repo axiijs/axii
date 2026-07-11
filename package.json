@@ -1,6 +1,6 @@
 {
   "name": "axii",
-  "version": "4.4.3",
+  "version": "4.4.4",
   "description": "A high-performance incremental-update frontend framework without Virtual DOM.",
   "repository": {
     "type": "git",
