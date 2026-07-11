@@ -12,7 +12,7 @@ type FunctionNodeContext = {
 }
 // CAUTION 动态结构节点。返回原始值（string/number/boolean/null）时走文本快速路径，原地更新
 //  Text 节点；返回结构节点时整体重建（未来考虑做 dom diff）。
-type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|string|number|null|boolean
+type FunctionNode = (context:FunctionNodeContext) => ChildNode|DocumentFragment|string|number|bigint|null|boolean
 /**
  * @internal
  *
@@ -91,7 +91,17 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     renderedOnce = false
     // DeferredBindingEffect 触发时的回调（以原型方法提供，替代构造器闭包）
     update() {
-        this.renderSource(this)
+        // CAUTION 与 AtomHost/ReactiveAttributeEffect 的 update 对齐错误钩子语义（I58）：
+        //  renderSource 内部已对 source()/结构重建的错误做了钩子处理，但文本快速路径与
+        //  结构路径的 DOM 锚点操作（placeholder 被外部清空后 text->结构 切换的 insertBefore）
+        //  会直接抛原生 TypeError——重算发生在微任务里，不接钩子就是 uncaught error，
+        //  FunctionHost 是唯一分叉的绑定更新路径。注册了钩子时报告并跳过本次重算
+        //  （effect 保持活跃），未注册时保持向上抛出。内部已消费的错误不会再到达这里。
+        try {
+            this.renderSource(this)
+        } catch (e) {
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+        }
     }
     renderSource(effect: DeferredBindingEffect) {
         // CAUTION 诊断关闭（生产环境）时不分配 trace frame 对象，函数节点重算是热路径
@@ -132,11 +142,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         }
 
         const valueType = typeof node
-        if (node == null || valueType === 'string' || valueType === 'number' || valueType === 'boolean') {
+        if (node == null || valueType === 'string' || valueType === 'number' || valueType === 'boolean' || valueType === 'bigint') {
             // 文本快速路径：不需要 comment 占位和完整的 host 子树，
             //  依赖变化时只更新 Text.nodeValue。
             // CAUTION boolean 渲染为空文本而不是字面 "true"/"false"：
             //  () => cond() && <el/> 是最常见的条件渲染写法，false 不应该出现在页面上。
+            // CAUTION bigint 与 string/number 同为文本形态（I61），String(10n) === '10'。
             const text = (node == null || valueType === 'boolean') ? '' : String(node)
             if (this.textNode) {
                 this.textNode.nodeValue = text

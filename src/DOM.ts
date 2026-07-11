@@ -1,7 +1,8 @@
 /// <reference lib="dom" />
+import {isAtom} from "data0";
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
-import {reportAxiiError} from "./diagnostics";
+import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 
 export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
@@ -138,8 +139,14 @@ function invokeEventEntries(el: ExtendedElement, entries: EventListenerEntries|u
         if (Array.isArray(listener)) {
             const arrayResult = new Array(listener.length)
             for (let i = 0; i < listener.length; i++) {
+                // CAUTION 数组中的 falsy 条件项（onClick={[a, cond && b]}）按「条件不满足」跳过：
+                //  style/className 数组的 falsy 项、单个 falsy handler（解绑）都是这个语义，
+                //  唯独这里曾对 false 直接调用（false 不是 nullish，?. 拦不住）——每次事件
+                //  触发都 TypeError。对应返回值槽位保持 undefined。
+                const item = listener[i]
+                if (item == null || typeof item === 'boolean') continue
                 try {
-                    arrayResult[i] = listener[i]?.(e, ...args)
+                    arrayResult[i] = item(e, ...args)
                 } catch (err) {
                     if (!hasError) { hasError = true; firstError = err } else reportAxiiError(err)
                 }
@@ -260,6 +267,19 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             (node._listeners || (node._listeners = {}))
 
         if (value) {
+            // CAUTION 开发期警告（I65）：atom 本身是 function，被直接绑成事件 handler 时
+            //  事件分发会以「写入」形态调用它（atom(event)）——事件对象被静默写进 atom，
+            //  handler 不执行且状态损坏，没有任何报错。事件按设计是非响应式的（绑定一次），
+            //  正确写法是 onClick={(e) => handlerAtom()(e)}。绑定只在元素创建时发生一次，
+            //  诊断关闭（生产）时只付一个布尔检查。
+            if (isAxiiDiagnosticsEnabled() &&
+                (Array.isArray(value) ? value.some(isAtom) : isAtom(value))) {
+                /* eslint-disable no-console */
+                console.error(`[axii] "${name}" received an atom as its event handler. ` +
+                    'Dispatching the event would WRITE the event object into the atom instead of calling the stored handler ' +
+                    '(events are bound once and are not reactive). Use a wrapper like onClick={(e) => handlerAtom()(e)}.')
+                /* eslint-enable no-console */
+            }
             // CAUTION 同一个 proxy 重复 addEventListener 会被 DOM 自动去重，这里无需判断
             node.addEventListener(eventName, proxy, useCapture)
             // CAUTION onChange 会被别名成 input 事件，与用户同时写的 onInput 落到同一个事件名下，
@@ -402,7 +422,12 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         // CAUTION 所有 input 类型（不只 type=text）和 textarea：value 为 undefined/null 时
         //  显示空字符串，否则会渲染出字面 "undefined"/"null"（checkbox 的 value property
         //  同样不能残留 "null"，它是表单提交值）。
-        (node as HTMLDataElement).value = value == null ? '' : value
+        // CAUTION 经 setProperty 而不是裸赋值（I62，F49 同类残留）：PROGRESS/METER 的 value
+        //  是 WebIDL double，非数字字符串（来自后端的垃圾数据）直接赋值会 TypeError 崩溃
+        //  整棵渲染树——同元素的 max/min（通用分支）对同样的垃圾值走 setProperty 的
+        //  try/catch 优雅降级（回退 setAttribute，浏览器按 0 处理），value 必须一致。
+        //  INPUT/TEXTAREA/OPTION 等 DOMString 类 value 的赋值永不抛错，行为不变。
+        setProperty(node, 'value', value == null ? '' : value)
 
         if (node.tagName === 'INPUT') {
             // CAUTION input 的 value 解释依赖 type（checkbox 的 value 即 checked、range 会按
@@ -595,11 +620,17 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         (type !== Fragment && svgOnlyElementNames.has(type as string))
 
     // Create container with proper type assertion
+    // CAUTION is（customized built-in element）必须在 createElement 时以选项传入（I64）：
+    //  元素升级只发生在创建时刻，事后 setAttribute('is') 不会触发升级——元素静默缺少
+    //  自定义行为。attribute 本身仍由下面的 props 循环写上（序列化/CSS 选择器语义）。
+    //  热路径成本：仅在 rawProps 存在时多一次属性读。
     const container = type === Fragment
         ? document.createDocumentFragment()
         : (_isSVG 
             ? document.createElementNS('http://www.w3.org/2000/svg', type as string) as SVGElement
-            : document.createElement(type as string)) as HTMLElement
+            : (rawProps && typeof rawProps.is === 'string'
+                ? document.createElement(type as string, {is: rawProps.is})
+                : document.createElement(type as string))) as HTMLElement
 
     // CAUTION 元数据数组按需分配，绝大多数元素一个都不需要
     let unhandledAttr: UnhandledAttrInfo[] | undefined
@@ -616,9 +647,13 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     }
 
     // Process children in a single pass
+    // CAUTION 文本 child 的判定包含 bigint（后端 bigint id 直接渲染是自然输入，I61）：
+    //  atom 入口（stringValue 走 toString）本来就支持 bigint，静态/数组/函数/列表行
+    //  的入口必须一致，否则同一个值换个入口就崩溃（unknown child type）。
     const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || EMPTY_CHILDREN)
     const childrenLength = children.length
-    if (type !== Fragment && childrenLength === 1 && (typeof children[0] === 'string' || typeof children[0]  === 'number')) {
+    const firstChildType = childrenLength === 1 ? typeof children[0] : undefined
+    if (type !== Fragment && childrenLength === 1 && (firstChildType === 'string' || firstChildType === 'number' || firstChildType === 'bigint')) {
         (container as HTMLElement).textContent = children[0].toString()
     } else if (childrenLength) {
         // CAUTION container 此时还没有插入文档，直接 append 不会触发布局，无需中转 fragment
@@ -626,7 +661,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             const child = children[index]
             if (child == null) continue // Handles both undefined and null
 
-            if (typeof child === 'string' || typeof child === 'number') {
+            const childType = typeof child
+            if (childType === 'string' || childType === 'number' || childType === 'bigint') {
                 container.appendChild(document.createTextNode(child.toString()))
             } else if (child instanceof Node) { // Covers HTMLElement, DocumentFragment, SVGElement
                 container.appendChild(child)
@@ -806,11 +842,15 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
 export type RefFn = (el: any) => void
 export type RefObject = { current: any }
 // 附加在 createElement 上，
+// CAUTION 数组中的 falsy 条件项（ref={[r, cond && r2]}）按「条件不满足」跳过（I60）：
+//  与 style/className/事件数组的条件项语义一致。单个 falsy ref 在登记时（RefHandleInfo
+//  的 if (value) 守卫）就被跳过，数组项是唯一会走到这里的 falsy 形态。
 createElement.attachRef = function (el: HTMLElement, ref: (RefFn | RefObject) | (RefFn | RefObject)[]) {
     if (Array.isArray(ref)) {
         ref.forEach(r => createElement.attachRef(el, r))
         return
     }
+    if (ref == null || typeof ref === 'boolean') return
 
     if (typeof ref === 'function') {
         ref(el)
@@ -827,6 +867,7 @@ createElement.detachRef = function (ref: (RefFn | RefObject) | (RefFn | RefObjec
         ref.forEach(r => createElement.detachRef(r))
         return
     }
+    if (ref == null || typeof ref === 'boolean') return
 
     if (typeof ref === 'function') {
         ref(null)

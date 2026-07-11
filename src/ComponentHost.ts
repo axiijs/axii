@@ -485,6 +485,9 @@ export class ComponentHost implements Host{
             ref.forEach(r => this.attachRef(r))
             return
         }
+        // 数组中的 falsy 条件项（ref={[r, cond && r2]}）按「条件不满足」跳过（I60），
+        //  与元素 ref/style/className/事件数组的条件项语义一致。
+        if (ref == null || typeof ref === 'boolean') return
         const refValue = {
             ...this._exposed,
             refs: this.refs
@@ -509,6 +512,8 @@ export class ComponentHost implements Host{
            ref.forEach(r => this.detachRef(r))
            return
        }
+       // 数组中的 falsy 条件项与 attachRef 同语义跳过（I60）
+       if (ref == null || typeof ref === 'boolean') return
        if(typeof ref === 'function') {
            ref(null)
        } else {
