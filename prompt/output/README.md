@@ -25,7 +25,7 @@
 | [17-review-2026-07-round12.md](./17-review-2026-07-round12.md) | 2026-07 深度 review 第十二轮（F42-F48，**已全部修复**，补记索引）：SVG runtime namespace、错误恢复生命周期（render 失败不提交 effects、非法输出、cleanup/async effect 错误边界）、range 约束重放、稀疏 RxList.set 契约错误 |
 | [18-review-2026-07-round13.md](./18-review-2026-07-round13.md) | 2026-07 深度 review 第十三轮（F49-F51 / I43-I49，**已全部修复**）：value 的 null/undefined × 元素种类（progress/meter 崩溃、option/button 字面量）、reusable 子树的 context 可见性、SVG 路由跨编译入口统一、用户回调（error 监听器/ref）错误隔离、style 字面形态（[number, keyword]、animation 数组、空字符串）、已消费元素重复渲染的 dev 警告、Form 缺省 values |
 | [19-review-2026-07-round14.md](./19-review-2026-07-round14.md) | 2026-07 深度 review 第十四轮（F52-F53 / I50-I54，**已全部修复**）：fragment 整段删除 vs forceHandleElement 子树自理（reusable 内容拆散崩溃）、RxListHost 行 forceHandleElement 透传、render 期 computed 用户 cleanup 抛错中断销毁、fragment 复用静默空白的 dev 警告、元素 ref attach 同步路径错误隔离、外部清空区间下 reusable 销毁容忍、$self: 直达组件的 merge 语义、aria-/data- 的 false 字面化 |
-| [20-review-2026-07-round15.md](./20-review-2026-07-round15.md) | 2026-07 深度 review 第十五轮（I55-I56，**已全部修复**；本轮未发现新致命问题）：事件回调的兄弟错误隔离（`invokeEventEntries` 是 I43/I51 错误隔离体系的最后一个缺口，onChange 别名到 input 后与 onInput 相互影响）、`children` 是 boundProps/bindProps 里唯一被静默覆盖失效的 prop；CSS 值注入、data-camelCase 静态/响应式属性名分叉判定为设计边界 |
+| [20-review-2026-07-round15.md](./20-review-2026-07-round15.md) | 2026-07 深度 review 第十五轮（I55-I57，**已全部修复**；本轮未发现新致命问题）：事件回调的兄弟错误隔离（`invokeEventEntries` 是 I43/I51 错误隔离体系的最后一个缺口，onChange 别名到 input 后与 onInput 相互影响）、`children` 是 boundProps/bindProps 里唯一被静默覆盖失效的 prop、stylesheet 路径样式值经 `}` 越界注入全局 CSS（改逐条 insertRule）；data-camelCase 静态/响应式属性名分叉判定为无法干净统一的设计边界 |
 
 ## 结论摘要
 
