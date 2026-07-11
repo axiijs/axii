@@ -737,6 +737,18 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     // Process props after children for proper Select/Option behavior
     if (rawProps) {
+        // CAUTION 开发期警告（I66）：dangerouslySetInnerHTML 与 children 并存时，
+        //  innerHTML 赋值会把刚 append 的 children（含响应式 child 的占位符）整体抹掉——
+        //  静态内容消失，atom/函数 child 从此写进脱离文档的占位符，「更新不生效」且没有
+        //  任何报错。React 对这个组合直接抛错；这里保持渲染语义不变（innerHTML 胜出），
+        //  开发期给出明确警告。诊断关闭（生产）时只付一个布尔检查。
+        if (childrenLength && isAxiiDiagnosticsEnabled() && rawProps.dangerouslySetInnerHTML !== undefined) {
+            /* eslint-disable no-console */
+            console.error('[axii] an element received both "dangerouslySetInnerHTML" and children. ' +
+                'innerHTML overwrites the children (including reactive child placeholders), so the children ' +
+                'will not render and reactive children will silently stop updating. Provide only one of them.')
+            /* eslint-enable no-console */
+        }
         // CAUTION value/checked 的语义依赖同元素的其他 prop 已经就位：
         //  select 的数组 value 依赖 multiple（单选 select 上逐个 selected 会互相顶掉），
         //  input 的 value/checked 解释依赖 type（value={true} type="checkbox" 是 checked 语义），

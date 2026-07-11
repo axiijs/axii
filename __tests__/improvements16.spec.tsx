@@ -238,4 +238,39 @@ describe('improvements regression (2026-07 round-16 review)', () => {
             consoleError.mockRestore()
         }
     })
+
+    // I66: dangerouslySetInnerHTML 与 children 并存时，innerHTML 赋值把刚 append 的
+    //  children（含响应式 child 的占位符）整体抹掉——atom/函数 child 从此写进脱离文档的
+    //  占位符，「更新不生效」且没有任何报错（React 对这个组合直接抛错）。开发期应警告。
+    it('I66: dangerouslySetInnerHTML together with children warns in dev', () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            const text = atom('a')
+            const root = createRoot(container)
+            root.render(<div id="i66" dangerouslySetInnerHTML="<b>html</b>">{text}</div>)
+            const warned = consoleError.mock.calls.some(args =>
+                args.some(a => typeof a === 'string' && a.includes('dangerouslySetInnerHTML')))
+            expect(warned).toBe(true)
+            // 渲染语义保持：innerHTML 胜出
+            expect(container.querySelector('#i66')!.innerHTML).toBe('<b>html</b>')
+            root.destroy()
+        } finally {
+            consoleError.mockRestore()
+        }
+    })
+
+    // I66 对照：只有 dangerouslySetInnerHTML（无 children）不应警告
+    it('I66-control: dangerouslySetInnerHTML alone does not warn', () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            const root = createRoot(container)
+            root.render(<div id="i66c" dangerouslySetInnerHTML="<b>html</b>"/>)
+            const warned = consoleError.mock.calls.some(args =>
+                args.some(a => typeof a === 'string' && a.includes('dangerouslySetInnerHTML')))
+            expect(warned).toBe(false)
+            root.destroy()
+        } finally {
+            consoleError.mockRestore()
+        }
+    })
 })
