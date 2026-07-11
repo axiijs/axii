@@ -252,7 +252,29 @@ class StyleManager {
     }
     public createStyleSheet(id:string, styleObject:StyleObject) {
         const styleSheet = new CSSStyleSheet()
-        styleSheet.replaceSync(this.generateStyleContent(`.${id}`, styleObject).join('\n'))
+        // CAUTION 逐条 insertRule，而不是把所有规则拼成一个字符串 replaceSync：
+        //  stylesheet 路径（嵌套样式/boundProps/keyframes）的值经 stringifyStyleObject
+        //  直接字符串拼接，样式值里的 '}' 能闭合当前规则、把后面的字符当成新的全局规则注入
+        //  （style={{'&:hover': {width: untrusted}}} 逃逸成 `.x:hover{width:100px} body{...}`）。
+        //  insertRule 只接受单条规则，这种「一个字符串里多条规则」会被浏览器判为语法错误
+        //  整条拒绝，注入无法越界成全局样式。generateStyleContent 已把内容拆成「每个元素
+        //  恰好一条规则 / 一个 @-rule 块」，逐条插入与之前 join 的语义一致；合法的带引号
+        //  值（content: "a}b"）浏览器解析时 '}' 在引号内不闭合规则，照常保留。
+        const rules = this.generateStyleContent(`.${id}`, styleObject)
+        for (const rule of rules) {
+            try {
+                styleSheet.insertRule(rule, styleSheet.cssRules.length)
+            } catch (e) {
+                // 被拒绝的规则（注入企图产生的多规则、浏览器不认的 at-rule 等）跳过而不是
+                //  让整个 stylesheet 构建崩溃。开发期给出可见提示，帮助定位是哪条样式出了问题。
+                if (__DEV__) {
+                    /* eslint-disable no-console */
+                    console.error('[axii] skipped an invalid CSS rule while building a stylesheet. ' +
+                        'A style value may contain characters that break out of its rule (e.g. "}"): ', rule, e)
+                    /* eslint-enable no-console */
+                }
+            }
+        }
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
         return styleSheet
     }
