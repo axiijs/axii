@@ -671,7 +671,14 @@ export class ComponentHost implements Host{
                     this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps, precoerced) :
                     componentProps
 
-                normalizedProps.children = this.children
+                // CAUTION JSX 使用点提供的 children 优先级最高；使用点没写 children 时
+                //  （this.children 是空数组），保留 props 合并链里已有的 children——它可能
+                //  来自 boundProps（bindProps(Comp, {children:[...]}) 预设内容是自然的 HOC 写法）。
+                //  过去无条件用 this.children 覆盖，会让 children 成为 boundProps 里唯一静默失效的
+                //  prop。两者都没有时仍用 this.children（[]）兜底，保证组件解构 children 不为 undefined。
+                if ((this.children && this.children.length) || normalizedProps.children === undefined) {
+                    normalizedProps.children = this.children
+                }
                 this.props = normalizedProps
                 // CAUTION 组件永不 rerender，inputProps 只在上面的 props 合并里消费。
                 //  及时换成共享空对象，让 JSX 调用点的 props 对象（以及只被它引用的值）

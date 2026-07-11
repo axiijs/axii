@@ -90,4 +90,42 @@ describe('improvements regression (2026-07 round-15 review)', () => {
             root.destroy()
         })
     })
+
+    describe('I56: bindProps can provide children when the JSX usage site omits them', () => {
+        test('bound children render when no JSX children are given', () => {
+            const root = createRoot(rootEl)
+            function Sub({children}: any, {createElement}: RenderContext) {
+                return <div id="c">{children}</div>
+            }
+            const Bound = bindProps(Sub, {children: [createElement('b', null, 'bound')]})
+            // JSX 使用点没有提供任何 children——曾经 render 里 normalizedProps.children = this.children([])
+            // 会无条件覆盖 boundProps 提供的 children，导致 bound children 静默丢失。
+            root.render(createElement(Bound, {}) as any)
+            expect(rootEl.querySelector('b')?.textContent).toBe('bound')
+            root.destroy()
+        })
+
+        test('JSX children still win over bound children', () => {
+            const root = createRoot(rootEl)
+            function Sub({children}: any, {createElement}: RenderContext) {
+                return <div id="c">{children}</div>
+            }
+            const Bound = bindProps(Sub, {children: [createElement('b', null, 'bound')]})
+            root.render(createElement(Bound, null, createElement('i', null, 'jsx')) as any)
+            // 使用点显式提供 children 时，JSX children 优先（覆盖 bound children）
+            expect(rootEl.querySelector('i')?.textContent).toBe('jsx')
+            expect(rootEl.querySelector('b')).toBeNull()
+            root.destroy()
+        })
+
+        test('a plain component with JSX children is unaffected (control)', () => {
+            const root = createRoot(rootEl)
+            function Sub({children}: any, {createElement}: RenderContext) {
+                return <div id="c">{children}</div>
+            }
+            root.render(createElement(Sub, null, createElement('span', null, 'plain')) as any)
+            expect(rootEl.querySelector('span')?.textContent).toBe('plain')
+            root.destroy()
+        })
+    })
 })
