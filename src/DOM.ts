@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
+import {reportAxiiError} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 
 export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
@@ -122,9 +123,35 @@ function invokeEventEntries(el: ExtendedElement, entries: EventListenerEntries|u
     let firstResult: any
     let hasFirst = false
     let results: any[] | undefined
+    // CAUTION 事件回调是用户代码，且同一个事件名下会聚合多个相互独立的来源：
+    //  数组形态（onClick={[a, b]}）、以及 onChange 别名成 input 后与用户显式 onInput
+    //  落到同一事件名下。一个 handler 抛错绝不能静默跳过其余兄弟——这既违反直觉，也和
+    //  浏览器「每个 addEventListener 相互独立」的语义不一致（这是框架里最后一个没做
+    //  兄弟错误隔离的用户回调聚合点，与 ref/cleanup/effect/flush 的 I43/I51 语义对齐）。
+    //  逐个隔离执行，首个错误批末重新抛出保持可观测，其余经 reportAxiiError 结构化上报。
+    //  无抛错时（绝大多数）try/catch 在 V8 上零成本，返回值收集逻辑不变。
+    let firstError: unknown
+    let hasError = false
     for (const key in entries) {
         const listener = entries[key]
-        const value = Array.isArray(listener) ? listener.map(l => l?.(e, ...args)) : listener?.(e, ...args)
+        let value: any
+        if (Array.isArray(listener)) {
+            const arrayResult = new Array(listener.length)
+            for (let i = 0; i < listener.length; i++) {
+                try {
+                    arrayResult[i] = listener[i]?.(e, ...args)
+                } catch (err) {
+                    if (!hasError) { hasError = true; firstError = err } else reportAxiiError(err)
+                }
+            }
+            value = arrayResult
+        } else {
+            try {
+                value = listener?.(e, ...args)
+            } catch (err) {
+                if (!hasError) { hasError = true; firstError = err } else reportAxiiError(err)
+            }
+        }
         if (!hasFirst) {
             hasFirst = true
             if (Array.isArray(listener)) {
@@ -141,6 +168,7 @@ function invokeEventEntries(el: ExtendedElement, entries: EventListenerEntries|u
             }
         }
     }
+    if (hasError) throw firstError
     return results ?? firstResult
 }
 
