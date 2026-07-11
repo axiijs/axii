@@ -689,21 +689,30 @@ export const StaticHostConfig = {
 //  同一个元素实例再次渲染（组件里缓存元素跨条件分支复用、同一元素写在两个位置）时
 //  绑定已经不存在，文本/属性永远停在旧值且没有任何报错。开发期给出明确警告。
 //  纯静态元素（本来就没有元数据）不受影响，不进这个集合。
+//  CAUTION fragment 无条件登记：fragment 的内容节点在第一次渲染时被整体搬进文档，
+//  fragment 自身从此变空——纯静态元素的复用碰巧可用（元素被搬移），
+//  纯静态 fragment 的复用一定渲染成空白，是更隐蔽的静默错误。
 const consumedReactiveElements = new WeakSet<object>()
 function warnIfRenderingConsumedElement(source: object) {
     if (consumedReactiveElements.has(source)) {
         /* eslint-disable no-console */
         console.error(
-            '[axii] This element has already been rendered once: its reactive bindings ' +
-            '(function/atom children, reactive attributes, refs) were consumed by the previous ' +
-            'render and will NOT work here. Create a fresh element each time (e.g. build JSX inside ' +
-            'the function child), or use reusable() from RenderContext to move a subtree.'
+            source instanceof DocumentFragment ?
+                '[axii] This fragment has already been rendered once: its child nodes were moved ' +
+                'into the document by the previous render, so rendering it again produces NOTHING. ' +
+                'Create a fresh fragment each time (e.g. build JSX inside the function child), ' +
+                'or use reusable() from RenderContext to move a subtree.' :
+                '[axii] This element has already been rendered once: its reactive bindings ' +
+                '(function/atom children, reactive attributes, refs) were consumed by the previous ' +
+                'render and will NOT work here. Create a fresh element each time (e.g. build JSX inside ' +
+                'the function child), or use reusable() from RenderContext to move a subtree.'
         )
         /* eslint-enable no-console */
         return
     }
     const el = source as ExtendedElement
-    if (el.unhandledChildren || el.unhandledAttr || el.refHandles || el.detachStyledChildren) {
+    if (source instanceof DocumentFragment ||
+        el.unhandledChildren || el.unhandledAttr || el.refHandles || el.detachStyledChildren) {
         consumedReactiveElements.add(source)
     }
 }
@@ -781,8 +790,28 @@ export class StaticHost implements Host {
     // CAUTION 下面这些可选字段都不带初始化器：StaticHost/CompactElementHost 是数量最大的
     //  host（长列表每行一个），不用的能力不占实例槽位（useDefineForClassFields=false 下
     //  无初始化器的字段不产生构造期赋值）。
-    // 如果有 detachStyledChildren，会设为 true
-    public forceHandleElement?: boolean
+    // CAUTION getter 而不是字段：
+    //  1. 有 detachStyledChildren（离场动画）时必须自己处理 DOM；
+    //  2. fragment 源的响应式子区间是本区间的「顶层」节点（元素源的子区间嵌在根元素内部，
+    //     不受整段删除影响），子树声明的 forceHandleElement（reusable 内容保留、
+    //     离场动画）必须向上传播——否则父级的整段删除（removeNodesBetween/Range）会把
+    //     这些子区间的节点逐个拆散：reusable 内容的兄弟链断裂，下一次挂载直接崩溃。
+    //  该 getter 只在销毁决策点（列表 bulk delete 候选、父区间销毁）被读取，不在渲染热路径上。
+    get forceHandleElement(): boolean {
+        if (this.detachStyledChildren?.length) return true
+        if (this.source instanceof DocumentFragment) {
+            const hosts = this.reactiveHosts
+            if (!hosts) return false
+            if (Array.isArray(hosts)) {
+                for (const host of hosts) {
+                    if (host.forceHandleElement) return true
+                }
+                return false
+            }
+            return !!hosts.forceHandleElement
+        }
+        return false
+    }
     // CAUTION 单个时直接存对象而不是包一层数组：一个元素恰好一个响应式 child/attr
     //  是长列表行的典型形态，每行省一个数组（16B 头 + elements store）。
     //  这两个字段在构造器里显式预置 undefined（与上面的 declare 策略相反）：
@@ -820,9 +849,6 @@ export class StaticHost implements Host {
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.collectDetachStyledChildren()
-        if (this.detachStyledChildren?.length) {
-            this.forceHandleElement = true
-        }
         this.renderReactiveHosts()
         //
         insertBefore(this.element, this.placeholder)
@@ -877,10 +903,17 @@ export class StaticHost implements Host {
     destroyReactiveHosts() {
         const hosts = this.reactiveHosts
         if (!hosts) return
+        // CAUTION fragment 源的子区间节点就是本区间的顶层节点：声明了 forceHandleElement 的
+        //  子树（reusable 内容必须搬出保留、离场动画子树）必须以 destroy(false) 自己处理 DOM，
+        //  否则本区间的整段删除会把它们的节点逐个拆散——reusable 内容的兄弟链断裂，
+        //  下一次挂载直接崩溃。子树的自我移除都是「连续子区间删除/搬移」，不会打断剩余
+        //  节点的兄弟链，随后的 removeNodesBetween 仍然可以安全清理剩余部分。
+        //  元素源的子区间嵌在根元素内部，整段删除只移除根元素本身，维持廉价的 destroy(true)。
+        const isFragment = this.source instanceof DocumentFragment
         if (Array.isArray(hosts)) {
-            for (const host of hosts) host.destroy(true)
+            for (const host of hosts) host.destroy(!(isFragment && host.forceHandleElement))
         } else {
-            hosts.destroy(true)
+            hosts.destroy(!(isFragment && hosts.forceHandleElement))
         }
     }
     destroyAttrEffects() {
@@ -1025,21 +1058,36 @@ export class StaticHost implements Host {
         const testId = generateGlobalElementStaticId(this.pathContext.hostPath, elementPath)
         setAttribute(el, 'data-testid', testId)
     }
+    // ref 回调是用户代码：单个 ref 抛错不能中断兄弟 ref（含数组形态：用户 ref 数组、
+    //  AOP 合并出的 ref 数组）与框架后续流程，错误交给 root error 钩子（I43/I51）。
+    runRefWithErrorHook(fn: () => void) {
+        try {
+            fn()
+        } catch (e) {
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+        }
+    }
     // CAUTION 原型方法而不是实例箭头函数：每个元素 host 都有这个字段的话，长列表每行多一个闭包。
     //  需要脱离 this 使用的注册点（root.on('attach')）自己包一层箭头函数，只有带 ref 的元素才分配。
+    //  attach 抛错不能中断同元素的兄弟 ref 与后续渲染流程
+    //  （flush 队列路径已逐条隔离，这里的同步连通路径必须对齐），错误语义与 detach 一致。
     attachRefs() {
         this.refHandles?.forEach(({ handle, el }: RefHandleInfo) => {
-            createElement.attachRef(el, handle)
+            if (Array.isArray(handle)) {
+                for (const item of handle) this.runRefWithErrorHook(() => createElement.attachRef(el, item))
+            } else {
+                this.runRefWithErrorHook(() => createElement.attachRef(el, handle))
+            }
         })
     }
     // ref 回调是用户代码：detach（ref(null)）抛错不能中断兄弟 ref 和后续的 DOM 拆除，
     //  否则一个抛错的 ref 会让整段区间泄漏在文档里。错误语义与 ComponentHost 的 cleanup 一致。
     detachRefsWithErrorHook() {
         this.refHandles?.forEach(({ handle }: RefHandleInfo) => {
-            try {
-                createElement.detachRef(handle)
-            } catch (e) {
-                if (!this.pathContext.root.dispatch('error', e)) throw e
+            if (Array.isArray(handle)) {
+                for (const item of handle) this.runRefWithErrorHook(() => createElement.detachRef(item))
+            } else {
+                this.runRefWithErrorHook(() => createElement.detachRef(handle))
             }
         })
     }
@@ -1199,9 +1247,6 @@ export class CompactElementHost extends StaticHost {
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.collectDetachStyledChildren()
-        if (this.detachStyledChildren?.length) {
-            this.forceHandleElement = true
-        }
         this.renderReactiveHosts()
         // CAUTION 自己的插入由 RxListHost 完成，这里不做，
         //  layoutEffect/ref 的 flush 也由 RxListHost 在插入后统一触发。

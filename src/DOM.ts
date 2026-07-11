@@ -481,7 +481,14 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         if (value == null || value === false) {
             if (ns) {
                 node.removeAttributeNS('http://www.w3.org/1999/xlink', name.toLowerCase())
-            } else if (name.toLowerCase() === 'contenteditable' && value === false) {
+            } else if (value === false &&
+                (name.toLowerCase() === 'contenteditable' ||
+                    ((name[0] === 'a' || name[0] === 'd') && (/^aria-/.test(name) || /^data-/.test(name))))) {
+                // CAUTION aria-*/data-* 的 false 是有语义的值，不是「移除」：
+                //  aria-expanded/aria-checked 等状态属性缺席与 "false" 对屏幕阅读器完全不同
+                //  （缺席 = 不可展开/不是开关，"false" = 收起/未选中）。React 同样字面化渲染。
+                //  data-* 的响应式路径（dataset 赋值）本来就产出 "false"，静态路径必须一致。
+                //  null/undefined 仍然是移除语义（条件属性的自然写法）。
                 node.setAttribute(name, 'false')
             } else {
                 node.removeAttribute(name)
@@ -522,7 +529,8 @@ export type UnhandledAttrInfo = {
 
 export type RefHandleInfo = {
     el: any,
-    handle: RefFn | RefObject,
+    // 数组形态来自用户的 ref 数组与 AOP 的 ref 合并（mergeProp）
+    handle: RefFn | RefObject | (RefFn | RefObject)[],
     path: number[]
 }
 

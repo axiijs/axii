@@ -61,6 +61,19 @@ export class RxListHost implements Host{
         return this.hosts?.[0]?.element || this.placeholder
     }
 
+    // CAUTION 行的 forceHandleElement（reusable 内容保留、离场动画）必须向上传播，
+    //  与 ComponentHost/FunctionHost/StaticArrayHost 一致：列表挂在 fragment 里时，
+    //  行的节点就是 fragment 区间的顶层节点，父级不透传就会把这些行整段拆散。
+    //  只在销毁决策点被读取，不在渲染/patch 热路径上。
+    get forceHandleElement(): boolean {
+        const hosts = this.hosts
+        if (!hosts) return false
+        for (const host of hosts) {
+            if (host.forceHandleElement) return true
+        }
+        return false
+    }
+
     createChildHost(item: any) {
         // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符
         if ((item instanceof HTMLElement || item instanceof SVGElement) && !(item as ExtendedElement).detachStyledChildren) {
