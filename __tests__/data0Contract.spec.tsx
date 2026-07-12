@@ -242,15 +242,23 @@ describe('data0 -> axii trigger info contract', () => {
         other.destroy()
     })
 
-    test('8. after a throwing patch the computed resets to dirty; the failed batch is NOT replayed', () => {
-        // 恢复语义：错误后 computed 复位为 dirty，下一次变更正常走 patch；
-        // 失败批次的 triggerInfos 被丢弃、不重放（消费方要么返回 false 走全量，
-        // 要么像 RxListHost 一样 fail-stop 等待上层销毁/恢复）。
+    test('8. after a throwing patch the failed batch is NOT replayed; recovery is version-dependent (2.9+: rerun computation)', () => {
+        // 恢复语义按 data0 版本分两代：
+        // - data0 <= 2.8：错误后 computed 复位 dirty，下一次变更继续走增量 patch。
+        //   CAUTION 抛错批次的 triggerInfos 已丢失——派生数据可能与 source 永久分叉
+        //   （data0 2026-H2 review 的缺陷类 4）。
+        // - data0 >= 2.9（缺陷类 4 修复）：错误后回退到全量重算阶段，下一次变更
+        //   **重跑 computation**（applyPatch 不收 info），保证派生 ≡ 终态 source；
+        //   再下一次恢复增量。消费方必须支持 computation 重跑（RxListHost 的重跑
+        //   语义 = 销毁旧行 + 全量重建，见 data0RecoveryRerun.spec）。
+        // 本测试运行时探测语义代，双代都锁定「失败批次不重放」这一共同条款。
         const list = new RxList(['a', 'b'])
         const received: TriggerInfo[] = []
+        let computationRuns = 0
         let shouldThrow = true
         const c = computed(
             function computation(this: Computed) {
+                computationRuns++
                 this.manualTrack(list, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
                 return null
             },
@@ -260,6 +268,7 @@ describe('data0 -> axii trigger info contract', () => {
             },
             true
         )
+        expect(computationRuns).toBe(1)
 
         expect(() => list.push('c')).toThrow('patch boom')
         // source 数据已写入（patch 失败不回滚 source）
@@ -268,8 +277,22 @@ describe('data0 -> axii trigger info contract', () => {
         shouldThrow = false
         expect(() => list.push('d')).not.toThrow()
         expect(list.data).toEqual(['a', 'b', 'c', 'd'])
-        expect(received.length).toBe(1)
-        expect(received[0]).toMatchObject({method: 'splice', argv: [3, 0, 'd']})
+
+        const rerunsAfterError = computationRuns > 1
+        if (rerunsAfterError) {
+            // data0 >= 2.9：错误后第一次变更全量重跑，applyPatch 不收 info
+            expect(computationRuns).toBe(2)
+            expect(received.length).toBe(0)
+            // 再下一次变更恢复增量 patch
+            list.push('e')
+            expect(computationRuns).toBe(2)
+            expect(received.length).toBe(1)
+            expect(received[0]).toMatchObject({method: 'splice', argv: [4, 0, 'e']})
+        } else {
+            // data0 <= 2.8：错误后下一次变更仍走增量 patch；失败批次('c')不重放
+            expect(received.length).toBe(1)
+            expect(received[0]).toMatchObject({method: 'splice', argv: [3, 0, 'd']})
+        }
 
         destroyComputed(c)
     })
