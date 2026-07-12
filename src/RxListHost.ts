@@ -117,6 +117,16 @@ export class RxListHost implements Host{
                 this.pauseCollectChild()
                 try {
                     const hosts = host.hosts!
+                    // CAUTION data0 >= 2.9 的错误恢复契约(data0Contract.spec 条款 8):
+                    //  patch 抛错(rethrow 出口)后 data0 把该 computed 回退到全量重算阶段,
+                    //  下一次源变更会**重跑本 computation**(而不是继续 patch)。重跑语义
+                    //  即全量重建:先销毁上一轮的行(自摘 DOM),再按当前 data 重建。
+                    //  旧实现假定 computation 只跑一次,重跑时残留 hosts 会让行组件撞上
+                    //  "should never rerender" 断言,列表区域从此永久崩坏。
+                    if (hosts.length) {
+                        for (const previous of hosts) previous.destroy()
+                        hosts.length = 0
+                    }
                     const data = source.data
                     try {
                         for (let i = 0; i < data.length; i++) {
