@@ -283,7 +283,10 @@ export class RxListHost implements Host{
         } else if(method === 'reorder') {
             this.handleReorder(argv![0], (info as any).reorderInfo)
         } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
-            this.handleExplicitKeyChange(key as number)
+            // CAUTION 必须传 info.newValue（操作时的值），不能在 handler 里回读
+            //  source.data[key]：key 是操作时位置，source.data 是重放时终态——
+            //  batch 内 set+splice 时终态下标上已是别的元素（data0 RxList.map 同款注释）。
+            this.handleExplicitKeyChange(key as number, info.newValue)
           /* v8 ignore next 3 */
         } else {
             throw new Error('unknown trigger info')
@@ -423,7 +426,7 @@ export class RxListHost implements Host{
             anchor = childHost.element
         }
     }
-    handleExplicitKeyChange(index: number) {
+    handleExplicitKeyChange(index: number, newValue: any) {
         const hosts = this.hosts!
         // data0 的 set(index, value) 可以像数组赋值一样扩大 length，但 RxListHost 的
         // 增量替换契约只支持已有稠密索引。必须在销毁旧行/写 hosts[index] 之前拒绝，
@@ -439,7 +442,7 @@ export class RxListHost implements Host{
         const oldHost = hosts[index]
         oldHost.destroy()
 
-        const newHost = this.createChildHost(this.source.data[index])
+        const newHost = this.createChildHost(newValue)
         hosts[index] = newHost
         // compact host 没有独立占位符，直接定位元素本身
         const newHostAnchorNode = newHost instanceof CompactElementHost ? newHost.element : newHost.placeholder
