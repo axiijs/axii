@@ -10,8 +10,10 @@
  * 1. splice 的 argv 是用户传入的原始参数：start 可以是负数、可以越界（Array#splice 语义），
  *    消费方必须自行归一化；methodResult 是真实删除的元素数组（长度即真实删除数）。
  * 2. push/pop/shift/unshift 等便捷方法一律以 splice patch 的形态到达，argv 已换算成索引。
- * 3. set(index, v) 以 EXPLICIT_KEY_CHANGE 到达：key 是 index（数字），methodResult 是旧值。
- *    CAUTION index 越界的 set 会产生稀疏数组，属于契约外用法（由 dev 模式的列表不变量兜底报错）。
+ * 3. set(index, v) 以 EXPLICIT_KEY_CHANGE 到达：key 是 index（数字），newValue 是操作时新值，
+ *    methodResult 是旧值。RxListHost 必须用 newValue 建行，禁止回读 source.data[key]
+ *    （batch 多 info 重放时 source 已是终态）。CAUTION index 越界的 set 会产生稀疏数组，
+ *    属于契约外用法（由 dev 模式的列表不变量兜底报错）。
  * 4. reorder(pairs) 以 method === 'reorder' 到达：argv[0] 是 pairs（语义 data[to] = old[from]），
  *    并携带 reorderInfo（kind/affectedRange），swap/reposition/sortSelf 都收敛到它。
  * 5. 派生列表（map）收到的 patch 形态与源列表一致（axii 渲染 list.map(...) 时依赖这一点）。
@@ -132,7 +134,7 @@ describe('data0 -> axii trigger info contract', () => {
         sub.destroy()
     })
 
-    test('3. set() arrives as EXPLICIT_KEY_CHANGE with numeric key and old value as methodResult', () => {
+    test('3. set() arrives as EXPLICIT_KEY_CHANGE with numeric key, newValue, and old value as methodResult', () => {
         const list = new RxList(['a', 'b', 'c'])
         const sub = captureTriggerInfos(list)
 
@@ -142,6 +144,7 @@ describe('data0 -> axii trigger info contract', () => {
         expect(keyChange).toBeTruthy()
         expect(keyChange.key).toBe(1)
         expect(typeof keyChange.key).toBe('number')
+        expect(keyChange.newValue).toBe('B')
         expect(keyChange.methodResult).toBe('b')
         expect(list.data).toEqual(['a', 'B', 'c'])
 

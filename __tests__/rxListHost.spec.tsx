@@ -1,6 +1,6 @@
 /** @jsx createElement */
 import {ComponentHost, createElement, createRoot, StaticHost} from "@framework";
-import {atom, RxList, RxMap} from "data0";
+import {atom, batch, RxList, RxMap} from "data0";
 import {beforeEach, describe, expect, test} from "vitest";
 import {RxListHost} from "../src/RxListHost";
 
@@ -292,6 +292,30 @@ describe('rxList render', () => {
 
         arr.swap(0, 2)
         expect(rootEl.children[0].innerHTML).toBe('a')
+    })
+
+    test('batch set+splice: EKC must use info.newValue (not source.data[key])', () => {
+        // data0 multi-info digest: EKC key is operation-time index while source.data
+        // is final state. Reading source.data[key] after set(1,'X')+splice(0,1)
+        // yields the wrong row and permanently desyncs hosts from data.
+        const arr = new RxList(['a', 'b', 'c'])
+
+        function App() {
+            return <div>
+                {arr.map((item) => <span>{item}</span>)}
+            </div>
+        }
+
+        root.render(<App/>)
+        expect([...rootEl.firstElementChild!.children].map(el => el.innerHTML)).toEqual(['a', 'b', 'c'])
+
+        batch(() => {
+            arr.set(1, 'X')
+            arr.splice(0, 1)
+        })
+
+        expect(arr.data).toEqual(['X', 'c'])
+        expect([...rootEl.firstElementChild!.children].map(el => el.innerHTML)).toEqual(['X', 'c'])
     })
 
 })
