@@ -12,7 +12,7 @@ Services / commands (see `package.json` scripts):
 Gotchas:
 - Browser tests need the Playwright chromium browser **and** its system libraries. The update script runs `npx playwright install chromium`, but the OS libraries (`--with-deps`, needs sudo) are part of the base image, not the update script.
 - There is no lint script. `npx tsc --noEmit -p tsconfig.json` reports **pre-existing** errors in `__tests__/*.typespec.tsx` and a few spec files; it is not wired into `build` (which uses `vite-plugin-dts`) or CI. Rely on `npm run build` + `npx vitest run` as the quality gates.
-- `data0` (the reactive core) resolves from the npm-installed package unless a sibling `../data0/src` checkout exists (see `vite.config.ts`); no sibling checkout is present here.
+- `data0` (the reactive core) resolves from the npm-installed package unless a sibling `../data0/src` checkout exists (the alias is applied in `vitest.config.ts`; it is commented out in `vite.config.ts`). When `axii`, `data0`, and `axle` are checked out side by side (as in the combined `axiijs` workspace), `npx vitest run` runs against `../data0/src` directly, so edits to `data0` source are picked up live without rebuilding/reinstalling.
 
 ## Performance is a core goal
 
