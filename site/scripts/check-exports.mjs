@@ -55,7 +55,7 @@ const knownExports = new Set([
   // propTypes.ts
   'PropTypes', 'TypeChecker',
   // render.ts
-  'createRoot',
+  'createRoot', 'hydrateRoot',
   // createHost.ts
   'createHost',
   // Host.ts
@@ -107,7 +107,17 @@ const knownExports = new Set([
 ])
 for (const n of namedExports) knownExports.add(n)
 
-// --- Scan source files for `from 'axii'` imports and bare API calls ---
+// Symbols exported from the Node-safe `axii/ssr` entry (src/ssr.ts), not src/index.ts.
+const ssrExports = new Set([
+  'renderToString',
+  'createElement',
+  'Fragment',
+  'isFunctionHostTextSnapshot',
+  'assertNoRawTextTerminator',
+  'isAcceptableSingleCssRule',
+])
+
+// --- Scan source files for `from 'axii'` / `from 'axii/ssr'` imports ---
 function scanFile(filePath, content) {
   const issues = []
   // import { A, B, C } from 'axii'
@@ -120,6 +130,18 @@ function scanFile(filePath, content) {
       if (!name) continue
       if (!knownExports.has(name)) {
         issues.push({ file: filePath, symbol: name, kind: 'import-from-axii' })
+      }
+    }
+  }
+  // import { renderToString, ... } from 'axii/ssr'
+  for (const m of content.matchAll(/import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]axii\/ssr['"]/g)) {
+    for (const part of m[1].split(',')) {
+      const raw = part.trim()
+      if (!raw) continue
+      const name = raw.replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim()
+      if (!name) continue
+      if (!ssrExports.has(name)) {
+        issues.push({ file: filePath, symbol: name, kind: 'import-from-axii/ssr' })
       }
     }
   }

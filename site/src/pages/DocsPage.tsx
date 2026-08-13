@@ -40,7 +40,7 @@ export function DocsPage(_: {}, {}: RenderContext): JSXElement {
         <p style={{ color: 'var(--axii-fg-muted)', fontSize: '17px' }}>
           axii is a high-performance incremental-update frontend framework without
           Virtual DOM. This page documents the core concepts that ship from{' '}
-          <code>src/index.ts</code>.
+          <code>src/index.ts</code> and the Node-safe SSR entry <code>axii/ssr</code>.
         </p>
 
         {docGroups.map((group) =>

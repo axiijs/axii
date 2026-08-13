@@ -37,6 +37,9 @@ export default defineConfig(({ mode }) => ({
       // C-04: consume the library source directly during development so the site
       // always reflects the current src/. Using 'axii' as the alias name lets
       // examples self-document the public package name (`from 'axii'`).
+      // More-specific `axii/ssr` must be listed before `axii` so Node-safe SSR
+      // docs/snippets resolve to src/ssr.ts (package.json exports['./ssr']).
+      'axii/ssr': fileURLToPath(new URL('../src/ssr.ts', import.meta.url)),
       axii: fileURLToPath(new URL('../src/index.ts', import.meta.url)),
       ...(useSiblingData0 ? { data0: siblingData0 } : {}),
     },

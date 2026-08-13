@@ -22,6 +22,7 @@ const concepts = [
   { id: 'context', keywords: ['createContext', 'ContextProvider'] },
   { id: 'rxdom', keywords: ['RxDOMRect', 'RxDOMSize', 'RxDOMScrollPosition', 'RxDOMFocused', 'RxDOMHovered'] },
   { id: 'lazy', keywords: ['lazy'] },
+  { id: 'ssr', keywords: ['renderToString', 'hydrateRoot', 'axii/ssr'] },
   { id: 'diagnostics', keywords: ['enableAxiiRetainedObjectDiagnostics'] },
 ]
 

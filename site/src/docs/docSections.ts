@@ -33,6 +33,8 @@ import rxdomRaw from './snippets/rxdom-state.ts?raw'
 import rxdomHtml from './snippets/rxdom-state.ts?shiki'
 import lazyRaw from './snippets/lazy.ts?raw'
 import lazyHtml from './snippets/lazy.ts?shiki'
+import ssrRaw from './snippets/ssr.ts?raw'
+import ssrHtml from './snippets/ssr.ts?shiki'
 import diagnosticsRaw from './snippets/diagnostics.ts?raw'
 import diagnosticsHtml from './snippets/diagnostics.ts?shiki'
 
@@ -159,7 +161,9 @@ export const docGroups: DocGroup[] = [
         prose:
           'Portal renders a subtree into a different DOM container (typically document.body for modals, ' +
           'tooltips, popovers). The subtree is a real axii tree with its reactive graph intact; it is ' +
-          'destroyed when the Portal unmounts.',
+          'destroyed when the Portal unmounts. Under SSR, pass a string id, { id }, or portalKey instead of a ' +
+          'real HTMLElement — content is emitted into renderToString().portals[key], and hydrateRoot ' +
+          'activates it via options.portals[key] (or document.getElementById).',
         raw: portalRaw,
         html: portalHtml,
         language: 'tsx',
@@ -216,9 +220,28 @@ export const docGroups: DocGroup[] = [
         group: 'Infrastructure',
         prose:
           'lazy(loader, fallback?) defers loading a component module until first render. Useful for route-level ' +
-          'code splitting without a router. Pass a fallback JSX element for the initial loading state.',
+          'code splitting without a router. Pass a fallback JSX element for the initial loading state. On the ' +
+          'server, renderToString always emits the fallback (or null) synchronously and does not call load() — ' +
+          'hydrateRoot claims that fallback, then the client starts loading as in CSR.',
         raw: lazyRaw,
         html: lazyHtml,
+        language: 'tsx',
+      },
+      {
+        id: 'ssr',
+        title: 'SSR — renderToString + hydrateRoot',
+        group: 'Infrastructure',
+        prose:
+          'Server rendering uses the Node-safe entry axii/ssr: renderToString(source) returns ' +
+          '{ html, styles, portals } with no DOM globals. html ends with <!--root-->. Inject styles ' +
+          '(e.g. <style data-axii-ssr>) and write each portals[key].html into the matching container before ' +
+          'activation. On the client, hydrateRoot(container, source, { portals? }) claims existing nodes ' +
+          'instead of rebuilding them; matched identity is preserved, mismatches report HydrationMismatchError ' +
+          'and rebuild only the failing unit. Keep the component tree and reactive data identical between ' +
+          'SSR and hydrate — axii does not dehydrate application state. Streaming SSR and state transfer are ' +
+          'out of scope. Full design contracts live under docs/ssr-support/.',
+        raw: ssrRaw,
+        html: ssrHtml,
         language: 'tsx',
       },
       {

@@ -67,6 +67,11 @@ export function HomePage(_: {}, {}: RenderContext): JSXElement {
             title="Dev diagnostics"
             description="enableAxiiRetainedObjectDiagnostics catches leaked hosts and broken list order in development. Production pays only a boolean check."
           />
+          <FeatureCard
+            icon="☰"
+            title="SSR + hydrate"
+            description="axii/ssr renderToString produces HTML without DOM globals; hydrateRoot claims server nodes so matched identity is preserved."
+          />
         </div>
       </section>
 

@@ -5,14 +5,15 @@
 `axii` is a frontend framework **library**, not a standalone app. `npm start` launches Vite but there is no root `index.html`, so it does not serve a meaningful page — the way to "run" this repo is its test suite, and the sibling `benchmark` repo is the runnable UI that consumes it.
 
 Services / commands (see `package.json` scripts):
-- Tests run in a **real browser** via Vitest + Playwright (chromium, headless). One-shot: `npx vitest run` (the default `vitest.config.ts` always enables browser mode + coverage). `npm test` starts watch mode.
+- Tests run in a **real browser** via Vitest + Playwright (chromium, headless). One-shot: `npx vitest run` (the default `vitest.config.ts` always enables browser mode + coverage). `npm test` starts watch mode. When a sibling `../data0` checkout would fail contract tests, use the release gate: `AXII_DATA0_FORCE_NPM=1 npx vitest run`.
 - Node-environment tests (a separate config): `npx vitest run --config vitest.node.config.ts`.
-- Build: `npm run build` → emits `dist/` (bundle + `.d.ts`). The sibling `benchmark` repo imports `../axii/dist/axii.js` by default, so **rebuild after changing `src/` for the benchmark to pick up changes** (or run the benchmark with `AXII_BENCHMARK_SOURCE_AXII=true` to consume `src/` directly).
+- Build: `npm run build` → emits `dist/` (bundle + `.d.ts`), including the Node-safe SSR entry `dist/ssr.*` (`package.json` `exports['./ssr']`). The sibling `benchmark` repo imports `../axii/dist/axii.js` by default, so **rebuild after changing `src/` for the benchmark to pick up changes** (or run the benchmark with `AXII_BENCHMARK_SOURCE_AXII=true` to consume `src/` directly).
+- **SSR**: `renderToString` from `axii/ssr` (no DOM); `hydrateRoot` from the main `axii` package (claim-based activation). Design contracts: `docs/ssr-support/`. User-facing docs: README + `site/` docs section `ssr`.
 
 Gotchas:
 - Browser tests need the Playwright chromium browser **and** its system libraries. The update script runs `npx playwright install chromium`, but the OS libraries (`--with-deps`, needs sudo) are part of the base image, not the update script.
 - There is no lint script. `npx tsc --noEmit -p tsconfig.json` reports **pre-existing** errors in `__tests__/*.typespec.tsx` and a few spec files; it is not wired into `build` (which uses `vite-plugin-dts`) or CI. Rely on `npm run build` + `npx vitest run` as the quality gates.
-- `data0` (the reactive core) resolves from the npm-installed package unless a sibling `../data0/src` checkout exists (see `vite.config.ts`); no sibling checkout is present here.
+- `data0` (the reactive core) resolves from the npm-installed package unless a sibling `../data0/src` checkout exists (see `vite.config.ts` / `vitest.config.ts`). Prefer `AXII_DATA0_FORCE_NPM=1` for release-shaped gate runs when the sibling is present but out of sync.
 
 ## Performance is a core goal
 

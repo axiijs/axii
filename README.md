@@ -119,9 +119,59 @@ Check out [https://axii.dev](https://axii.dev) for detailed documentation in bot
 2. Principles of reactivity and dynamic DOM rendering  
 3. Component encapsulation, inter-component data passing, and the component AOP mechanism  
 4. Side-effect and destruction logic (`useEffect`, `useLayoutEffect`, `ManualCleanup`, etc.)  
-5. How to effectively apply these features in real-world projects  
+5. Server-side rendering: `renderToString` / `hydrateRoot`, Portal and lazy contracts  
+6. How to effectively apply these features in real-world projects  
 
 We provide progressively organized examples and explanations in the documentation, which we believe will help you better understand and utilize the unique ideas of this framework.
+
+## 🌐 Server-Side Rendering (SSR)
+
+axii can string-render on the server and activate the same DOM in the browser without a Virtual DOM pass.
+
+| API | Package | Role |
+|---|---|---|
+| `renderToString(source)` | `axii/ssr` | Node-safe HTML serialization — **no DOM globals** |
+| `hydrateRoot(container, source, options?)` | `axii` | Claim existing nodes; bind events and reactive hosts |
+
+```jsx
+/* @jsx createElement */
+// server (Node)
+import { createElement, atom } from 'axii'
+import { renderToString } from 'axii/ssr'
+
+function App() {
+  const title = atom('Hello')
+  return <h1>{title}</h1>
+}
+
+const { html, styles, portals } = renderToString(<App />)
+// html ends with <!--root-->. Put `styles` in <style data-axii-ssr>.
+// Write portals[key].html into the matching container before hydrate.
+```
+
+```jsx
+/* @jsx createElement */
+// browser
+import { createElement, hydrateRoot, atom } from 'axii'
+
+function App() {
+  const title = atom('Hello')
+  return <h1>{title}</h1>
+}
+
+const root = document.getElementById('root')
+root.innerHTML = /* server html */
+hydrateRoot(root, <App />)
+// Matched nodes keep identity; later updates use the same paths as createRoot().render().
+```
+
+**Contracts (short):**
+
+- Keep the component tree and reactive data **identical** between `renderToString` and `hydrateRoot`. axii does **not** dehydrate application state.
+- **Portal** under SSR: use `container` as `string | { id }` (or `portalKey`). Content is in `portals[key]`; pass filled elements via `hydrateRoot(..., { portals })`.
+- **lazy**: the server always emits the fallback (or `null`) and does not await `load()`; the client starts loading after hydrate.
+- Not in scope: streaming (`renderToStream`), app-state serialization.
+- Design detail and host/marker contracts: `docs/ssr-support/`.
 
 ### Design notes / limitations
 

@@ -106,15 +106,65 @@ createRoot(document.getElementById('root')).render(<ListApp />)
 只要 `items` 列表发生变化，该变化会以*增量更新*的方式映射到 DOM 上，不会触发整个列表的重渲染。🍀
 
 
+## 🌐 服务端渲染（SSR）
+
+axii 可在服务端输出 HTML 字符串，并在浏览器中**认领**同一份 DOM 完成激活（无需 Virtual DOM）。
+
+| API | 包入口 | 作用 |
+|---|---|---|
+| `renderToString(source)` | `axii/ssr` | Node 安全的字符串序列化，**不依赖 DOM 全局** |
+| `hydrateRoot(container, source, options?)` | `axii` | 认领已有节点，绑定事件与响应式 Host |
+
+```jsx
+/* @jsx createElement */
+// 服务端（Node）
+import { createElement, atom } from 'axii'
+import { renderToString } from 'axii/ssr'
+
+function App() {
+  const title = atom('Hello')
+  return <h1>{title}</h1>
+}
+
+const { html, styles, portals } = renderToString(<App />)
+// html 以 <!--root--> 结尾；styles 放入 <style data-axii-ssr>
+// portals[key].html 需在 hydrate 前写入对应容器
+```
+
+```jsx
+/* @jsx createElement */
+// 浏览器
+import { createElement, hydrateRoot, atom } from 'axii'
+
+function App() {
+  const title = atom('Hello')
+  return <h1>{title}</h1>
+}
+
+const root = document.getElementById('root')
+root.innerHTML = /* 服务端 html */
+hydrateRoot(root, <App />)
+// 匹配节点保持 identity；之后的更新与 createRoot().render() 同一路径
+```
+
+**简要约定：**
+
+- `renderToString` 与 `hydrateRoot` 时刻的组件树与响应式数据必须一致；框架**不**提供应用状态 dehydrate。
+- **Portal** 在 SSR 中使用 `string | { id }`（或 `portalKey`）作为容器键；内容在 `portals[key]`，经 `hydrateRoot(..., { portals })` 激活。
+- **lazy**：服务端只同步输出 fallback（或 `null`），不 await `load()`；客户端 hydrate 后再加载。
+- 非目标：流式 SSR（`renderToStream`）、应用状态序列化协议。
+- 完整契约见 `docs/ssr-support/`。
+
 ## 📚 学习更多
 
-查看 [https://axii.dev)](https://axii.dev)，内含详细的中英文使用教程，涵盖：
+查看 [https://axii.dev](https://axii.dev)，内含详细的中英文使用教程，涵盖：
 
 1. 基础概念：从 atom 到 RxList/RxMap/RxSet 的使用与示例
 2. 响应式与动态 DOM 渲染原理
 3. 组件封装、组件间透传、组件 AOP 机制
 4. 副作用与销毁逻辑（`useEffect`, `useLayoutEffect`, `ManualCleanup` 等）
-5. 在实际项目中如何高效应用这些特性
+5. 服务端渲染：`renderToString` / `hydrateRoot`、Portal 与 lazy 约定
+6. 在实际项目中如何高效应用这些特性
 
 我们在文档中准备了由浅入深的示例与说明，相信能帮助你更好地理解与运用本框架的独特理念。
 
