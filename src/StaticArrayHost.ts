@@ -3,8 +3,47 @@ import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {removeNodesBetween} from "./util";
 import {createLinkedNode} from "./LinkedList";
-import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
+import {isAxiiRetainedObjectDiagnosticsEnabled, trackHostCreated, trackHostDestroyed} from "./retainedObjectDiagnostics.js";
+import {
+    advanceCursorUntilComment,
+    advancePastNode,
+    claimCommentAtCursor,
+    claimDirectNodeText,
+    getChildCursor,
+    isHydrating,
+    setChildCursor,
+} from "./hydration";
+import type {UnhandledChildInfo} from "./DOM";
+import {RxList} from "data0";
+import {ReusableHost} from "./ComponentHost";
 
+/** Previous-host boundary comments (not part of this StaticArray content). */
+function isArrayRegionBoundaryComment(data: string): boolean {
+    // Only true inter-host separators. Do NOT treat `reusable` / `fragment start` /
+    // `array item` as boundaries — they belong to items inside this array's own region.
+    return data === 'rx list item'
+        || data === 'unhandledChild'
+        || data === 'root'
+        || data === 'empty'
+        || data === 'computed node'
+}
+
+/**
+ * Leftmost DOM node of this array's content (siblings before `placeholder`),
+ * or null when the array is empty (placeholder-only).
+ */
+function findArrayContentStart(placeholder: Comment): ChildNode | null {
+    let n: ChildNode | null = placeholder.previousSibling
+    let first: ChildNode | null = null
+    while (n) {
+        if (n.nodeType === Node.COMMENT_NODE && isArrayRegionBoundaryComment((n as Comment).data)) {
+            break
+        }
+        first = n
+        n = n.previousSibling
+    }
+    return first
+}
 
 /**
  * @internal
@@ -28,6 +67,148 @@ export class StaticArrayHost implements Host{
     }
     render(): void {
         if (this.element === this.placeholder) {
+            // Hydrate DirectNodes / item hosts claimed during createElement
+            if (isHydrating()) {
+                const hydrateDirect = (this.source as any).__axiiHydrateDirectNodes as Text[] | undefined
+                const hydrateItems = (this.source as any).__axiiHydrateItemHosts as UnhandledChildInfo[] | undefined
+                if (hydrateDirect || hydrateItems) {
+                    if (hydrateDirect) {
+                        this.directNodes = hydrateDirect
+                        if (hydrateDirect.length) this.firstChild = hydrateDirect[0]
+                    }
+                    if (hydrateItems?.length) {
+                        let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
+                        for (const info of hydrateItems) {
+                            const item = info.child
+                            const newHost = typeof item === 'function' ?
+                                createHost(item, info.placeholder, this.pathContext, {
+                                    owner: this,
+                                    elementPath: this.pathContext.elementPath,
+                                }) :
+                                createHost(item, info.placeholder, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                            this.childHosts.push(newHost)
+                            if (!this.firstChild) this.firstChild = newHost
+                        }
+                        this.childHosts.forEach(host => host.render())
+                    }
+                    if (!this.firstChild) this.firstChild = this.placeholder
+                    delete (this.source as any).__axiiHydrateDirectNodes
+                    delete (this.source as any).__axiiHydrateItemHosts
+                    if (this.placeholder.isConnected) {
+                        this.pathContext.root.flushAttachQueue()
+                    }
+                    return
+                }
+                // No createElement stash (e.g. G3-A RxList row): forward-claim from content start → placeholder
+                const parent = this.placeholder.parentNode
+                if (!parent) throw new Error('[axii] hydrate StaticArrayHost without parent')
+                const startNode = findArrayContentStart(this.placeholder)
+                let startIdx = 0
+                if (startNode) {
+                    const kids = parent.childNodes
+                    let found = false
+                    for (let i = 0; i < kids.length; i++) {
+                        if (kids[i] === startNode) {
+                            startIdx = i
+                            found = true
+                            break
+                        }
+                    }
+                    if (!found) throw new Error('[axii] hydrate mismatch: StaticArray content start not in parent')
+                } else {
+                    // Empty array: cursor at placeholder
+                    const kids = parent.childNodes
+                    for (let i = 0; i < kids.length; i++) {
+                        if (kids[i] === this.placeholder) {
+                            startIdx = i
+                            break
+                        }
+                    }
+                }
+                setChildCursor(parent, startIdx)
+
+                let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
+                this.source.forEach((item, index) => {
+                    const itemType = typeof item
+                    if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') {
+                        const text = claimDirectNodeText()
+                        ;(this.directNodes ??= []).push(text)
+                        if (index === 0) this.firstChild = text
+                    } else if (item instanceof Text) {
+                        advancePastNode(item)
+                        ;(this.directNodes ??= []).push(item)
+                        if (index === 0) this.firstChild = item
+                    } else if (item instanceof DocumentFragment) {
+                        // Fragment content lives under parent (<!--fragment start-->…), not on the DF
+                        advanceCursorUntilComment('array item')
+                        const itemPh = claimCommentAtCursor('array item')
+                        const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                        this.childHosts.push(newHost)
+                        if (index === 0) this.firstChild = newHost
+                    } else if (item instanceof HTMLElement || item instanceof SVGElement) {
+                        advancePastNode(item)
+                        const itemPh = claimCommentAtCursor('array item')
+                        const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                        this.childHosts.push(newHost)
+                        if (index === 0) this.firstChild = newHost
+                    } else if (item instanceof RxList) {
+                        // Mark content start so RxListHost.render can hydrateRowsFromCursor (same as element-child RxList)
+                        const cursor = getChildCursor()
+                        ;(item as any).__axiiHydrateListParent = cursor.parent
+                        ;(item as any).__axiiHydrateListStart = cursor.index
+                        advanceCursorUntilComment('array item')
+                        const itemPh = claimCommentAtCursor('array item')
+                        const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                        this.childHosts.push(newHost)
+                        if (index === 0) this.firstChild = newHost
+                    } else if (item instanceof ReusableHost) {
+                        const src = (item.innerHost as any)?.source
+                        if (src instanceof Node && src.parentNode) {
+                            advancePastNode(src)
+                        }
+                        advanceCursorUntilComment('reusable')
+                        const reusablePh = claimCommentAtCursor('reusable')
+                        ;(item as any).innerPlaceholder = reusablePh
+                        if (item.innerHost) {
+                            ;(item.innerHost as any).placeholder = reusablePh
+                            ;(item.innerHost as any).element = reusablePh
+                        }
+                        advanceCursorUntilComment('array item')
+                        const itemPh = claimCommentAtCursor('array item')
+                        item.moveTo(itemPh)
+                        item.pathContext = {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)}
+                        ;(item as any).__axiiHydrating = true
+                        if (isAxiiRetainedObjectDiagnosticsEnabled()) {
+                            trackHostCreated(item, 'ReusableHost')
+                        }
+                        this.childHosts.push(item)
+                        if (index === 0) this.firstChild = item
+                    } else if (typeof item === 'function') {
+                        advanceCursorUntilComment('array item')
+                        const itemPh = claimCommentAtCursor('array item')
+                        const newHost = createHost(item, itemPh, this.pathContext, {
+                            owner: this,
+                            elementPath: this.pathContext.elementPath,
+                        })
+                        this.childHosts.push(newHost)
+                        if (index === 0) this.firstChild = newHost
+                    } else {
+                        // ComponentNode / nested Array / null / etc. — content then <!--array item-->
+                        advanceCursorUntilComment('array item')
+                        const itemPh = claimCommentAtCursor('array item')
+                        const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
+                        this.childHosts.push(newHost)
+                        if (index === 0) this.firstChild = newHost
+                    }
+                })
+                this.childHosts.forEach(host => host.render())
+                if (!this.firstChild) this.firstChild = this.placeholder
+                if (this.placeholder.isConnected) {
+                    this.pathContext.root.flushAttachQueue()
+                }
+                return
+            }
+
             const frag = document.createDocumentFragment()
 
             // 所有（非函数）子 host 共享同一个 hostPath 节点；全函数/atom 项时一个都不分配

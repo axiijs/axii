@@ -18,7 +18,7 @@ export type CreateStateFromRefFn = <T>(transform:StateTransformer<T>, options?: 
 /**
  * @category Basic
  */
-export type CreatePortalFn = (children: JSXElement|Function, container: HTMLElement) => JSXElement
+export type CreatePortalFn = (children: JSXElement|Function, container: HTMLElement | string | { id: string }) => JSXElement
 /**
  * @category Basic
  */

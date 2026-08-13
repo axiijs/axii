@@ -1,0 +1,190 @@
+{
+  "stamp": "adjudication-d7-2026-08-06",
+  "createChildHostGate": {
+    "compactWhen": "item instanceof HTMLElement|SVGElement && !detachStyledChildren",
+    "else": "createHost(item, Comment('rx list item'))",
+    "source": "src/RxListHost.ts createChildHost ~77-87"
+  },
+  "compactElementRows": {
+    "csrShape": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "unhandledChild"
+      }
+    ],
+    "comments": [
+      "unhandledChild"
+    ],
+    "rxListItemCount": 0,
+    "spanCount": 2,
+    "note": "HTMLElement rows \u2192 CompactElementHost; no per-row rx list item in document"
+  },
+  "compactReorder": {
+    "afterSwap": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "unhandledChild"
+      }
+    ],
+    "texts": [
+      "2",
+      "1"
+    ],
+    "stillNoRxListItem": true,
+    "hostLastNodeIsElement": true
+  },
+  "atomRowsCommentPh": {
+    "csrShape": [
+      {
+        "type": "Text",
+        "data": "a"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      },
+      {
+        "type": "Text",
+        "data": "b"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      },
+      {
+        "type": "Comment",
+        "data": "unhandledChild"
+      }
+    ],
+    "comments": [
+      "rx list item",
+      "rx list item",
+      "unhandledChild"
+    ],
+    "rxListItemCount": 2
+  },
+  "functionReturningElementRows": {
+    "csrShape": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "computed node"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      },
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "computed node"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      },
+      {
+        "type": "Comment",
+        "data": "unhandledChild"
+      }
+    ],
+    "comments": [
+      "computed node",
+      "rx list item",
+      "computed node",
+      "rx list item",
+      "unhandledChild"
+    ],
+    "rxListItemCount": 2,
+    "hasComputedNode": true,
+    "note": "item is Function \u2192 createHost + rx list item; FunctionHost may insert computed node"
+  },
+  "fragmentRows": {
+    "csrShape": [
+      {
+        "type": "Comment",
+        "data": "fragment start"
+      },
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      },
+      {
+        "type": "Comment",
+        "data": "fragment start"
+      },
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      },
+      {
+        "type": "Comment",
+        "data": "unhandledChild"
+      }
+    ],
+    "rxListItemCount": 2
+  },
+  "wrongSsrEmittingRxListItemForCompact": {
+    "csrRxListItemCount": 0,
+    "wrongRxListItemCount": 2,
+    "compactEqualsWrong": false,
+    "extraPerRowComments": 2
+  },
+  "detachStyledChildrenGate": {
+    "csrShape": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      },
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "unhandledChild"
+      }
+    ],
+    "comments": [
+      "rx list item",
+      "unhandledChild"
+    ],
+    "rxListItemCount": 1,
+    "note": "el1 has detachStyledChildren \u2192 non-Compact (rx list item); el2 clean HTMLElement \u2192 Compact (no row comment)",
+    "mixed": true
+  }
+}

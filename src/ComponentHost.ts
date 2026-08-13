@@ -30,12 +30,14 @@ import {
     UseLayoutEffectFn,
 } from "./types";
 import {assert} from "./util";
-import {Portal} from "./Portal.js";
+import {Portal, type PortalContainerRef} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
+import {isHydrating} from "./hydration";
+import {getComponentTypeId, componentTypeIds} from "./styleSerialize";
 
 
 function ensureArray(o: any) {
@@ -93,7 +95,7 @@ const EMPTY_ITEM_CONFIG: Record<string, ConfigItem> = {}
 const EMPTY_COMPONENT_PROP: Props = {}
 
 // createPortal 不依赖组件实例，所有组件共享同一个函数
-function createPortalShared(content: JSX.Element|ComponentNode|Function, container: HTMLElement) {
+function createPortalShared(content: JSX.Element|ComponentNode|Function, container: PortalContainerRef) {
     return createElement(Portal, {container, content})
 }
 /**
@@ -102,8 +104,8 @@ function createPortalShared(content: JSX.Element|ComponentNode|Function, contain
 export class ComponentHost implements Host{
     // CAUTION WeakMap + 计数器而不是 Map + size：bindProps/lazy/HOC 每次调用都会产生新的
     //  组件函数，普通 Map 会把这些函数永久 pin 住（样式 id 注册表无上限增长）。
-    static typeIds = new WeakMap<Function, number>()
-    static nextTypeId = 0
+    //  与 SSR 共用 styleSerialize.componentTypeIds，保证 hydrate class 对齐。
+    static typeIds = componentTypeIds
     type: Component
     public innerHost?: Host
     // CAUTION 以下所有容器/闭包字段全部惰性分配：一个典型的小组件（不用
@@ -143,9 +145,7 @@ export class ComponentHost implements Host{
     // 仅 async effect 实例按需分配；组件销毁后使尚未 settle 的 Promise 静默失活。
     asyncEffectState?: {active: boolean}
     constructor({ type, props: inputProps = {}, children }: ComponentNode, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
-        if (!ComponentHost.typeIds.has(type)) {
-            ComponentHost.typeIds.set(type, ComponentHost.nextTypeId++)
-        }
+        getComponentTypeId(type)
 
         this.type = type
         if (inputProps.ref) this.refProp = inputProps.ref
@@ -215,7 +215,7 @@ export class ComponentHost implements Host{
         return itemConfig
     }
     get typeId() {
-        return ComponentHost.typeIds.get(this.type)!
+        return getComponentTypeId(this.type)
     }
     // CAUTION innerHost 可能是动态的，所以 element 也可能会变，因此每次都要实时去读
     get element() : HTMLElement|Comment|SVGElement|Text {
@@ -1006,6 +1006,13 @@ export class ReusableHost implements Host{
     }
     rendered = false
     render() {
+        if (isHydrating() || (this as any).__axiiHydrating) {
+            ;(this as any).__axiiHydrating = false
+            // Placeholders already claimed; content in place — only run innerHost once.
+            this.innerHost.render()
+            this.rendered = true
+            return
+        }
         // 第一次渲染
         if (!this.rendered) {
             insertBefore(this.innerPlaceholder, this.reusePlaceholder!)

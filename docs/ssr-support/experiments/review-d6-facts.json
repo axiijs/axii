@@ -1,0 +1,169 @@
+{
+  "stamp": "review-d6-2026-08-06",
+  "createElementStaticSiblings": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "html": "helloworld",
+    "parsedSnap": [
+      {
+        "type": 3,
+        "data": "helloworld"
+      }
+    ],
+    "mergeToOneText": true,
+    "wrappedSnap": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 8,
+        "data": "axii:/t"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      },
+      {
+        "type": 8,
+        "data": "axii:/t"
+      }
+    ],
+    "afterClaimStrip": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "twoTextsAfterStrip": true,
+    "claimedAreElementChildren": true,
+    "hasStaticArrayHostDirectNodes": false,
+    "isTextPhHost": false,
+    "isDirectNodes": false
+  },
+  "createElementEmptyStaticSibling": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "html": "world",
+    "parsedSnap": [
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "emptyDropped": true,
+    "singleChildEmptyViaTextContent_childCount": 0,
+    "needsAxii0AmongSiblings": true,
+    "notCommentPh": true,
+    "notTextPhHost": true,
+    "notDirectNodes": true
+  },
+  "staticArrayContrast": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ],
+    "html": "helloworld<!--unhandledChild-->",
+    "hasStructureComment": true
+  },
+  "m01StaticPlusAtomShape": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": "static-"
+      },
+      {
+        "type": 3,
+        "data": "atomVal"
+      }
+    ],
+    "html": "static-atomVal",
+    "mergeWithoutMarkers": true
+  },
+  "destroyOwnership": {
+    "staticTextsGoneWithElementRemove": false,
+    "staticRemainsAfterSiblingAtomTextRemove": true
+  },
+  "createElementPathDistinction": {
+    "multiStatic": {
+      "childSnap": [
+        "3:hello",
+        "3:world"
+      ],
+      "unhandledCount": 0,
+      "owner": "element.childNodes (StaticHost source element); NOT directNodes; NOT Text-ph Host"
+    },
+    "staticPlusAtom": {
+      "childSnap": [
+        "3:static-",
+        "3:"
+      ],
+      "unhandledKinds": [
+        "Text-ph"
+      ],
+      "staticHalfIsHost": false,
+      "atomHalfIsTextPh": true
+    },
+    "arrayChild": {
+      "childSnap": [
+        "8:unhandledChild"
+      ],
+      "unhandledKinds": [
+        "StaticArrayHost"
+      ],
+      "isStaticArrayHostPath": true
+    },
+    "emptyPlusWorld": {
+      "childSnap": [
+        "3:\"\"",
+        "3:\"world\""
+      ],
+      "html": "world",
+      "emptySurvivesInCSR": true,
+      "emptySurvivesInHTML": true
+    },
+    "singleEmptyFastPath": {
+      "childCount": 0,
+      "html": ""
+    },
+    "pathsAreDistinct": true
+  }
+}

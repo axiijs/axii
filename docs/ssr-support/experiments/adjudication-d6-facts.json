@@ -1,0 +1,132 @@
+{
+  "stamp": "adjudication-d6-2026-08-06",
+  "elementChildTextAdjacent": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "html": "helloworld",
+    "parsedSnap": [
+      {
+        "type": 3,
+        "data": "helloworld"
+      }
+    ],
+    "mergeToOneText": true,
+    "afterClaimStrip": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "twoTexts": true,
+    "claimedAreElementChildren": true,
+    "hasStructureComment": false,
+    "notDirectNodes": true,
+    "notTextPhHost": true
+  },
+  "elementChildTextEmptySibling": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "html": "world",
+    "parsedSnap": [
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "emptyDropped": true,
+    "afterHydrate": [
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "twoTextsIncludingEmpty": true,
+    "needsAxii0": true
+  },
+  "singleEmptyTextContent": {
+    "childCount": 0,
+    "html": "",
+    "noAxii0Needed": true
+  },
+  "singleNonEmptyTextContent": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": "hello"
+      }
+    ],
+    "html": "hello",
+    "parsedSnap": [
+      {
+        "type": 3,
+        "data": "hello"
+      }
+    ],
+    "oneText": true,
+    "claimIdentity": true
+  },
+  "m01StaticPlusAtom": {
+    "mergeWithoutMarkers": true,
+    "afterHydrateStrip": [
+      "static-",
+      "atomVal"
+    ],
+    "afterAtomDestroy": [
+      {
+        "type": 3,
+        "data": "static-"
+      }
+    ],
+    "staticRemains": true,
+    "staticIsElementChildNotHost": true
+  },
+  "directNodesContrast": {
+    "snap": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ],
+    "html": "helloworld<!--unhandledChild-->",
+    "hasStructureComment": true
+  },
+  "pathKinds": {
+    "elementChildText": "createElement string|number|bigint children → element.childNodes Text; no Host; no directNodes; no structure Comment",
+    "textPh": "createElement function/atom → Text placeholder Host",
+    "commentPh": "RxList/StaticArray non-primitive / FunctionHost structure → Comment placeholder + Text element",
+    "directNodes": "StaticArrayHost string|number|bigint items → directNodes[] + array placeholder Comment",
+    "fourKindsExhaustive": true
+  }
+}

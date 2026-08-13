@@ -1,0 +1,61 @@
+{
+  "stamp": "adjudication-d14-2026-08-06",
+  "environment": "Vitest browser mode + Playwright chromium",
+  "sourceAuthority": [
+    "src/FunctionHost.ts ~144–145: text path iff null|string|number|boolean|bigint",
+    "atom / Function / Element / Array / RxList / ReusableHost / ComponentNode → structure path + computed node"
+  ],
+  "predicate": "isFunctionHostTextSnapshot ≡ FunctionHost.ts text fast path",
+  "predicateMatrix": [
+    { "label": "null", "expectText": true, "got": true, "ok": true },
+    { "label": "undefined", "expectText": true, "got": true, "ok": true },
+    { "label": "false", "expectText": true, "got": true, "ok": true },
+    { "label": "true", "expectText": true, "got": true, "ok": true },
+    { "label": "emptyString", "expectText": true, "got": true, "ok": true },
+    { "label": "string", "expectText": true, "got": true, "ok": true },
+    { "label": "number0", "expectText": true, "got": true, "ok": true },
+    { "label": "number1", "expectText": true, "got": true, "ok": true },
+    { "label": "bigint", "expectText": true, "got": true, "ok": true },
+    { "label": "atom", "expectText": false, "got": false, "ok": true },
+    { "label": "function", "expectText": false, "got": false, "ok": true }
+  ],
+  "fnReturnsAtom_textPh_FTS": {
+    "case": "fnReturnsAtom_textPh_FTS",
+    "shape": ["#text:\"world\"", "<!--computed node-->", "#text:\"\""],
+    "html": "world<!--computed node-->",
+    "hasComputed": true,
+    "trailingEmptyText": true,
+    "wrongAsTextPhEqualsCsrHtml": false,
+    "expectedSsrSketch": "world<!--computed node--><!--axii:0-->",
+    "note": "SSR must emit computed + axii:0; must NOT treat atom return as Text-ph text state"
+  },
+  "fnReturnsString_textPh": {
+    "case": "fnReturnsString_textPh",
+    "shape": ["#text:\"hi\""],
+    "html": "hi",
+    "hasComputed": false
+  },
+  "fnRowReturnsAtom_G3F": {
+    "case": "fnRowReturnsAtom_G3F",
+    "shape": ["#text:\"hi\"", "<!--computed node-->", "<!--rx list item-->", "<!--unhandledChild-->"],
+    "html": "hi<!--computed node--><!--rx list item--><!--unhandledChild-->",
+    "hasComputed": true,
+    "hasEmpty": false
+  },
+  "fnRowReturnsNull_G4F": {
+    "case": "fnRowReturnsNull_G4F",
+    "shape": ["#text:\"\"", "<!--rx list item-->", "<!--unhandledChild-->"],
+    "html": "<!--rx list item--><!--unhandledChild-->",
+    "hasComputed": false,
+    "hasEmpty": false
+  },
+  "claims": {
+    "textSnapshotEqualsFunctionHostPredicate": true,
+    "atomIsStructureNotText": true,
+    "ftsFunctionToAtomHasComputedAndTrailingEmpty": true,
+    "bareTextHtmlIsWrongForFunctionToAtom": true,
+    "g3fFunctionRowToAtomHasComputed": true,
+    "g4fFunctionRowToNullHasNoComputedNoEmpty": true,
+    "colloquialElementFragmentClosedSetRejected": true
+  }
+}

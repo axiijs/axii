@@ -1,0 +1,105 @@
+{
+  "stamp": "review-d8-checkbox-2026-08-06",
+  "environment": "Playwright Chromium",
+  "proposition": "checkbox value={truthy} CSR writes value attr AND checked; checked-only SSR yields .value===\"on\" ≠ CSR .value===\"true\"",
+  "csrValueTrue": {
+    "input": true,
+    "outerHTML": "<input type=\"checkbox\" value=\"true\" checked=\"true\">",
+    "valueProp": "true",
+    "checked": true,
+    "valueAttr": "true",
+    "checkedAttr": "true"
+  },
+  "designSameAsCheckedRow": {
+    "html": "<input type=\"checkbox\" checked=\"true\">",
+    "valueProp": "on",
+    "checked": true,
+    "valueAttr": null,
+    "checkedAttr": "true"
+  },
+  "idlMismatchIfFollowDesign": {
+    "csrValue": "true",
+    "ssrCheckedOnlyValue": "on",
+    "equal": false
+  },
+  "correctSsrBoth": {
+    "html": "<input type=\"checkbox\" value=\"true\" checked=\"true\">",
+    "valueProp": "true",
+    "checked": true,
+    "valueAttr": "true",
+    "checkedAttr": "true"
+  },
+  "idlMatchIfBoth": {
+    "csrValue": "true",
+    "ssrBothValue": "true",
+    "equal": true,
+    "checkedEqual": true
+  },
+  "matrix": {
+    "true": {
+      "input": true,
+      "outerHTML": "<input type=\"checkbox\" value=\"true\" checked=\"true\">",
+      "valueProp": "true",
+      "checked": true,
+      "valueAttr": "true",
+      "checkedAttr": "true"
+    },
+    "false": {
+      "input": false,
+      "outerHTML": "<input type=\"checkbox\" value=\"false\">",
+      "valueProp": "false",
+      "checked": false,
+      "valueAttr": "false",
+      "checkedAttr": null
+    },
+    "null": {
+      "input": null,
+      "outerHTML": "<input type=\"checkbox\" value=\"\">",
+      "valueProp": "",
+      "checked": false,
+      "valueAttr": "",
+      "checkedAttr": null
+    },
+    "undefined": {
+      "input": "(undefined)",
+      "outerHTML": "<input type=\"checkbox\" value=\"\">",
+      "valueProp": "",
+      "checked": false,
+      "valueAttr": "",
+      "checkedAttr": null
+    },
+    "hello": {
+      "input": "hello",
+      "outerHTML": "<input type=\"checkbox\" value=\"hello\" checked=\"true\">",
+      "valueProp": "hello",
+      "checked": true,
+      "valueAttr": "hello",
+      "checkedAttr": "true"
+    },
+    "empty": {
+      "input": "",
+      "outerHTML": "<input type=\"checkbox\" value=\"\">",
+      "valueProp": "",
+      "checked": false,
+      "valueAttr": "",
+      "checkedAttr": null
+    },
+    "zero": {
+      "input": 0,
+      "outerHTML": "<input type=\"checkbox\" value=\"0\">",
+      "valueProp": "0",
+      "checked": false,
+      "valueAttr": "0",
+      "checkedAttr": null
+    },
+    "one": {
+      "input": 1,
+      "outerHTML": "<input type=\"checkbox\" value=\"1\" checked=\"true\">",
+      "valueProp": "1",
+      "checked": true,
+      "valueAttr": "1",
+      "checkedAttr": "true"
+    }
+  },
+  "source": "src/DOM.ts setAttribute value branch for INPUT type=checkbox (~452-460)"
+}

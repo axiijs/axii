@@ -6,7 +6,6 @@ import {
     isEventName,
     RefHandleInfo,
     setAttribute,
-    stringifyStyleValue,
     UnhandledChildInfo,
     UnhandledPlaceholder
 } from "./DOM";
@@ -27,6 +26,19 @@ import {
 } from "./retainedObjectDiagnostics.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
+import {claimFragmentStartBefore, isHydrating, reconcileFragmentHydrateChildren, stripAxiiTextBoundariesBetween} from "./hydration";
+import {rematerializeDeferredFragmentChildren} from "./DOM";
+import {
+    computeStyleSignature,
+    containsReactiveStyleValue,
+    generateStyleContent as generateStyleContentShared,
+    generateInlineAnimationContent as generateInlineAnimationContentShared,
+    getComponentTypeId,
+    isNestedStyleObject as isNestedStyleObjectShared,
+    splitStyleObject as splitStyleObjectShared,
+    stringifyStyleObject as stringifyStyleObjectShared,
+    toCssSafeComponentName,
+} from "./styleSerialize";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发响应式值的读行为，不会泄漏到上层的 computed。
 // data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
@@ -98,14 +110,7 @@ function GetPathToLastComponent(hostPath: LinkedNode<Host>) {
 //    永远匹配不上元素——嵌套样式/boundProps 样式静默丢失且没有任何报错（insertRule 成功）；
 //  - 空名让 id 以 typeId 数字开头，`.3P...` 是非法 selector，整张 stylesheet 被 insertRule
 //    整条拒绝——样式全部静默丢失。
-//  这里把 CSS ident 之外的字符归一成 '_'（unicode 名字是合法 ident，保留；旧的 \s/$ 替换
-//  被该规则覆盖），首字符不是合法 ident 起始（空/数字/'-'）时补前缀。唯一性由 typeId 保证，
-//  归一化不会让两个组件冲突。
-const CSS_UNSAFE_IDENT_CHARS = /[^a-zA-Z0-9_\u00A0-\uFFFF-]/g
-function toCssSafeComponentName(name: string) {
-    const safe = name.replace(CSS_UNSAFE_IDENT_CHARS, '_')
-    return /^[a-zA-Z_\u00A0-\uFFFF]/.test(safe) ? safe : `C${safe}`
-}
+//  归一化逻辑见 styleSerialize.toCssSafeComponentName。
 
 function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     // CAUTION path[0] 只有在 GetPathToLastComponent 真的找到组件时才是 ComponentHost：
@@ -115,7 +120,8 @@ function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     const lastComponentHost = path[0] instanceof ComponentHost ? path[0] as ComponentHost : undefined
     const pathToGenerateId = lastComponentHost ? path.slice(1) : path
     const componentName = lastComponentHost ? toCssSafeComponentName(lastComponentHost.type.name.toString()) : 'GLOBAL'
-    return `${componentName}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
+    const typeId = lastComponentHost ? getComponentTypeId(lastComponentHost.type) : ''
+    return `${componentName}${typeId}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
 
 // CAUTION 只有 object/function 才能 defineProperty。style 的合法取值还包括字符串
@@ -172,39 +178,41 @@ export function isDynamicProp(obj: any) {
     return !!(obj && obj['__dynamic'])
 }
 
-// F30：静态样式对象 -> 内容签名 的缓存。boundProps 等跨实例共享的对象引用直接命中；
-//  JSX 字面量对象随元素同生共死，WeakMap 不延长其生命周期。
-//  key 顺序不同的等价对象会得到不同签名——代价只是退化为元素独享 stylesheet，语义仍然正确。
-const styleSignatureCache = new WeakMap<object, string>()
-function computeStyleSignature(styleObject: any): string | undefined {
-    if (typeof styleObject !== 'object' || styleObject === null) return undefined
-    const cached = styleSignatureCache.get(styleObject)
-    if (cached !== undefined) return cached
-    let signature: string | undefined
-    try {
-        signature = JSON.stringify(styleObject)
-        /* v8 ignore next 3 */
-    } catch {
-        signature = undefined
+/** Reclaim SSR rolling base id (`${staticId}R…`) from element classList during hydrate. */
+function reclaimRollingStyleId(el: HTMLElement, staticId: string): string | null {
+    const prefix = staticId + 'R'
+    for (const cls of Array.from(el.classList)) {
+        if (!cls.startsWith(prefix)) continue
+        // Class forms: `${base}F${i}` or `${base}F${i}I${n}` — base is `${staticId}R${seq}`
+        const fIndex = cls.indexOf('F', prefix.length)
+        if (fIndex < 0) continue
+        const base = cls.slice(0, fIndex)
+        if (/^R\d+$/.test(base.slice(staticId.length))) return base
     }
-    if (signature !== undefined) styleSignatureCache.set(styleObject, signature)
-    return signature
+    return null
 }
 
-// 深度扫描 style 对象中是否有 atom/函数值（style={{color: colorAtom}} / 嵌套样式中的 atom）
-function containsReactiveStyleValue(styleObject: any): boolean {
-    for (const key in styleObject) {
-        const value = styleObject[key]
-        if (typeof value === 'function') return true
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                if (typeof item === 'function') return true
-            }
-        } else if (isPlainObject(value) && containsReactiveStyleValue(value)) {
-            return true
+/**
+ * After hydrate adoptedStyleSheets are live, remove SSR `<style data-axii-ssr>` tags.
+ */
+export function migrateSsrStyleTags(container?: ParentNode | null) {
+    const roots: ParentNode[] = []
+    if (container) roots.push(container)
+    if (typeof document !== 'undefined') {
+        roots.push(document)
+    }
+    const seen = new Set<Element>()
+    for (const root of roots) {
+        const nodes = (root as ParentNode & {querySelectorAll?: typeof document.querySelectorAll})
+            .querySelectorAll?.('style[data-axii-ssr]')
+        if (!nodes) continue
+        for (let i = 0; i < nodes.length; i++) {
+            const el = nodes[i]
+            if (seen.has(el)) continue
+            seen.add(el)
+            el.remove()
         }
     }
-    return false
 }
 
 // class name 中的字母含义
@@ -233,7 +241,9 @@ class StyleManager {
     //  静态样式对象可以携带每实例不同的数据（style={{'& b': {color: item.color}}}），
     //  签名不一致时该实例必须退化为元素独享的 rolling id，否则所有实例都套用第一个实例的样式。
     public idToStaticStyleSignature = new Map<string, string>()
-    getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
+    /** Deterministic rolling-id sequence (replaces Math.random); hydrate reclaims SSR classes. */
+    private nextRollingSeq = 0
+    getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null, hydrateReclaimEl?: ExtendedElement | null) {
         const pathToLastComponent = GetPathToLastComponent(hostPath)
         // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
         const staticId = generateComponentElementStaticId(pathToLastComponent, elementPath)
@@ -242,7 +252,18 @@ class StyleManager {
         if (el || hasFunctionHostInPathToLastComponent) {
             const styleId = el  ? this.elToStyleId.get(el) : null
             if (!styleId) {
-                const newStyleId = `${staticId}R${Math.random().toString(36).slice(2)}`
+                // Hydrate: reclaim SSR-emitted rolling id from classList (deterministic R* suffix).
+                // FunctionHost static styles call with el=null (no I-itor / no elToStyleId) but still
+                // need reclaim via hydrateReclaimEl so SSR class is reused.
+                const reclaimEl = el ?? hydrateReclaimEl ?? null
+                if (reclaimEl && isHydrating()) {
+                    const reclaimed = reclaimRollingStyleId(reclaimEl, staticId)
+                    if (reclaimed) {
+                        if (el) this.elToStyleId.set(el, reclaimed)
+                        return reclaimed
+                    }
+                }
+                const newStyleId = `${staticId}R${this.nextRollingSeq++}`
                 if (el) this.elToStyleId.set(el, newStyleId)
                 return newStyleId
             } else {
@@ -253,16 +274,7 @@ class StyleManager {
         }
     }
     stringifyStyleObject(styleObject: { [k: string]: any }): string {
-        return Object.entries(styleObject).map(([key, value]) => {
-            // CAUTION CSS 自定义属性（--main-color / --mainColor）大小写敏感，
-            //  绝不能做驼峰转连字符/小写化，否则 var(--mainColor) 永远读不到值。
-            //  inline 路径（setAttribute 的 setProperty 分支）本来就保留原样，这里必须对齐。
-            const property = (key[0] === '-' && key[1] === '-') ?
-                key :
-                key.replace(/([A-Z])/g, '-$1').toLowerCase()
-            // value 是数字类型的 attr，自动加上 单位
-            return `${property}:${stringifyStyleValue(key, value)};`
-        }).join('\n')
+        return stringifyStyleObjectShared(styleObject)
     }
     public createStyleSheet(id:string, styleObject:StyleObject) {
         const styleSheet = new CSSStyleSheet()
@@ -431,7 +443,9 @@ class StyleManager {
             }
             const styleSheetId = isDynamic ?
                 this.getStyleSheetId(hostPath, elementPath, el) :
-                (sharedStaticBaseId ?? this.getStyleSheetId(hostPath, elementPath, null))
+                // FunctionHost path (sharedStaticBaseId null): keep el=null for CSR (no elToStyleId
+                // cleanup), but pass el as hydrateReclaimEl so SSR rolling class is reused.
+                (sharedStaticBaseId ?? this.getStyleSheetId(hostPath, elementPath, null, el))
             const styleSheetIdWithIndex = `${styleSheetId}F${index}`
             const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
             return {
@@ -566,34 +580,10 @@ class StyleManager {
         setAttribute(el, 'style', stylePatches, el instanceof SVGElement)
     }
     isNestedStyleObject(key: string, styleObject: any): boolean {
-        // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
-        return key !== '@keyframes' && isPlainObject(styleObject)
+        return isNestedStyleObjectShared(key, styleObject)
     }
     splitStyleObject(styleObject: StyleObject): { simpleStyles: StyleObject, nestedStyles: StyleObject } {
-        if (typeof styleObject === 'string') {
-          return { simpleStyles: styleObject, nestedStyles: {} }
-        }
-        // CAUTION null/undefined 返回空对象而不是空字符串：'' 作为 patch 会在 setAttribute
-        //  里整体覆写 cssText，把数组里其他 style 对象刚写入的值一起清掉
-        //  （style={[base, () => cond() ? {...} : null]} 是自然写法）。
-        //  上一轮残留 key 的清除由 elToInlineStyleKeys 的 diff 逻辑负责，不需要 '' 兜底。
-        if (styleObject === null || styleObject === undefined) {
-          return { simpleStyles: {}, nestedStyles: {} }
-        }
-
-        const simpleStyles: StyleObject = {}
-        const nestedStyles: StyleObject = {}
-        for (const key in styleObject) {
-            // 除了值是 PlainObject 的情况，@keyframes 和 animation 也是依赖 CSS selector 的
-            // 因此也被按照 nested style 处理
-            if (key === '@keyframes' || key === 'animation' || this.isNestedStyleObject(key, styleObject[key])) {
-                nestedStyles[key] = styleObject[key]
-            } else {
-                simpleStyles[key] = styleObject[key]
-            }
-        }
-        
-        return { simpleStyles, nestedStyles }
+        return splitStyleObjectShared(styleObject) as { simpleStyles: StyleObject, nestedStyles: StyleObject }
     }
     stringifyKeyFrameObject(keyframeObject: StyleObject): string {
         return Object.entries(keyframeObject).map(([key, value]) => {
@@ -603,110 +593,11 @@ class StyleManager {
         }).join('\n')
     }
     generateInlineAnimationContent(selector: string, styleObject: StyleObject) {
-        const animationContent: string[] = []
-        let animationName = ''
-        animationName = `animation-${Math.random().toString(36).slice(2)}`
-        if (styleObject['@keyframes']) {
-            const keyframeContent = `@keyframes ${animationName} {
-${this.stringifyKeyFrameObject(styleObject['@keyframes'])}
-}`
-            animationContent.push(keyframeContent)
-        }
-
-        if (styleObject.animation) {
-            // CAUTION 多个动画的分隔符是逗号（与 CSS animation 简写语法一致），空格连接会让
-            //  整条声明非法、被浏览器静默丢弃；@self 用 /g 全部替换，数组里每一项都可能引用它。
-            const animationValue = (Array.isArray(styleObject.animation) ? styleObject.animation.join(', ') : styleObject.animation)!.replace(/@self/g, animationName)
-            animationContent.push(`
-${selector} {
-    animation: ${animationValue};
-}
-`)
-        }
-
-        return animationContent
+        return generateInlineAnimationContentShared(selector, styleObject)
     }
     generateStyleContent(selector: string, styleObject: StyleObject): string[] {
-
-        const valueStyleObject = { ...styleObject }
-        const nestedStyleEntries: [string, any][] = []
-        const keyframeObj: StyleObject = {}
-
-        for (const key in valueStyleObject) {
-            if (key === '@keyframes' || key === 'animation') {
-                keyframeObj[key] = valueStyleObject[key]
-                delete valueStyleObject[key]
-            } else if (this.isNestedStyleObject(key, valueStyleObject[key])) {
-                nestedStyleEntries.push([key, valueStyleObject[key]])
-                delete valueStyleObject[key]
-            } else if(valueStyleObject[key] === null|| valueStyleObject[key] === undefined || typeof valueStyleObject[key] === 'boolean') {
-                // boolean 来自 {fontWeight: cond && 'bold'} 的条件写法，语义同 null（F36 同类）
-                delete valueStyleObject[key]
-            }
-        }
-
-        const contents: string[] = [`${selector} {
-${this.stringifyStyleObject(valueStyleObject)}
-}`]
-
-        const animateContent = this.generateInlineAnimationContent(selector, keyframeObj)
-        contents.push(...animateContent)
-
-        return nestedStyleEntries.reduce((acc, [key, nestedObject]: [string, any]) => {
-            // 支持 at-rules for media/container query
-            if (key.startsWith('@')) {
-                // CAUTION 递归结果是 string[]，必须显式 join('\n')：
-                //  直接内插进模板字符串会按 ',' 连接，at-rule 里第一条之后的所有规则
-                //  （嵌套 selector、@keyframes/animation）都会变成非法 CSS 被浏览器静默丢弃。
-                return acc.concat(`${key} {
-    ${this.generateStyleContent(selector, nestedObject).join('\n')}
-}`)
-            }
-
-            return acc.concat(this.generateStyleContent(scopeNestedSelector(selector, key), nestedObject))
-        }, contents)
-
+        return generateStyleContentShared(selector, styleObject)
     }
-}
-
-/**
- * 把嵌套样式 key 作用域化到 selector 下。
- * CAUTION 必须逐个处理逗号分隔的 selector，且 '&' 要全部替换：
- *  - 'X, Y' 的每个部分都要被作用域化，否则第一个之后的 selector 要么带着残留的
- *    顶层 '&' 永不匹配，要么（不含 & 时）变成未作用域的全局 selector 污染组件外元素；
- *  - 残留在顶层 stylesheet 里的 '&' 还会让整条规则的匹配在 Chromium 下不稳定。
- *  逗号切分要跳过括号/方括号/引号内部（:is(.a, .b)、[data-x="1,2"] 里的逗号不是分隔符）。
- */
-function scopeNestedSelector(selector: string, key: string): string {
-    return splitSelectorList(key).map(part => {
-        const trimmed = part.trim()
-        return trimmed.includes('&') ? trimmed.replaceAll('&', selector) : `${selector} ${trimmed}`
-    }).join(', ')
-}
-
-// 按顶层逗号切分 selector 列表（忽略 () / [] / 引号内部的逗号）
-function splitSelectorList(input: string): string[] {
-    const parts: string[] = []
-    let depth = 0
-    let quote: string | null = null
-    let start = 0
-    for (let i = 0; i < input.length; i++) {
-        const ch = input[i]
-        if (quote) {
-            if (ch === quote && input[i - 1] !== '\\') quote = null
-        } else if (ch === '"' || ch === "'") {
-            quote = ch
-        } else if (ch === '(' || ch === '[') {
-            depth++
-        } else if (ch === ')' || ch === ']') {
-            depth--
-        } else if (ch === ',' && depth === 0) {
-            parts.push(input.slice(start, i))
-            start = i + 1
-        }
-    }
-    parts.push(input.slice(start))
-    return parts
 }
 
 type StyleObject = { [k: string]: any }
@@ -870,28 +761,42 @@ export class StaticHost implements Host {
         assert(this.element === this.placeholder, 'should never rerender')
         if (isAxiiDiagnosticsEnabled()) warnIfRenderingConsumedElement(this.source)
 
+        const hydrating = isHydrating()
         // CAUTION 如果是 fragment，我们用一个 comment 节点来作为第一个元素，这样后面  destroy 的时候就能一次性 remove 掉。
-        this.element = this.source instanceof DocumentFragment ? document.createComment('fragment start') : this.source
-
-        // FIXME 应该要先 render 完所有的里面的 host。再插入自己才对。不然里面的 host render 会触发 layout.
-        // insertBefore(this.element, this.placeholder)
-        //
-        // // 如果是 fragment，那么还要插入真实内容
-        // if (this.source instanceof DocumentFragment) {
-        //     insertBefore(this.source, this.placeholder)
-        // }
+        // Hydrate：认领已有 <!--fragment start-->（§3.2.4 FTS / G3-Fr），禁止新建。
+        if (this.source instanceof DocumentFragment) {
+            this.element = hydrating
+                ? claimFragmentStartBefore(this.placeholder)
+                : document.createComment('fragment start')
+            if (hydrating) {
+                // Rematerialize main-root deferred element children, then claim placeholders
+                // in the fragment region (createElement left stubs under §3.3.d force-defer).
+                rematerializeDeferredFragmentChildren(this.source)
+                reconcileFragmentHydrateChildren(this.source, this.element, this.placeholder)
+                // Leftover static axii:t / axii:0 (no unhandledChildren path)
+                stripAxiiTextBoundariesBetween(this.element, this.placeholder)
+            }
+        } else {
+            this.element = this.source
+        }
 
         this.collectInnerHost()
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.collectDetachStyledChildren()
         this.renderReactiveHosts()
-        //
-        insertBefore(this.element, this.placeholder)
-        // 如果是 fragment，那么还要插入真实内容
-        if (this.source instanceof DocumentFragment) {
-            insertBefore(this.source, this.placeholder)
+
+        if (!hydrating) {
+            insertBefore(this.element, this.placeholder)
+            // 如果是 fragment，那么还要插入真实内容
+            if (this.source instanceof DocumentFragment) {
+                insertBefore(this.source, this.placeholder)
+            }
+        } else if (!(this.source instanceof DocumentFragment)) {
+            // 元素已在 placeholder 前；校正顺序（已正确时 insertBefore 为无操作）
+            insertBefore(this.element, this.placeholder)
         }
+        // hydrating Fragment：内容已在 fragment start 与 placeholder 之间，DocumentFragment 为空
 
         this.setupRefHandles()
         // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，

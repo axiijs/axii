@@ -42,6 +42,11 @@
       "types": "./dist/vite-plugin.d.ts",
       "import": "./dist/vite-plugin.js",
       "require": "./dist/vite-plugin.cjs"
+    },
+    "./ssr": {
+      "types": "./dist/ssr.d.ts",
+      "import": "./dist/ssr.js",
+      "require": "./dist/ssr.cjs"
     }
   },
   "type": "module",

@@ -1,0 +1,66 @@
+{
+  "stamp": "adjudication-d13-2026-08-06",
+  "environment": "Vitest browser mode + Playwright chromium",
+  "sourceAuthority": [
+    "src/createHost.ts branches (ordered): function→Atom|Function; Element|SVG|Fragment→StaticHost; primitive→PrimitiveHost; Array→StaticArrayHost; null→EmptyHost; RxList→RxListHost; ReusableHost→moveTo; ComponentNode→ComponentHost; else assert",
+    "src/RxListHost.ts createChildHost: Compact iff Element&&!detachStyledChildren; else createHost(item, Comment('rx list item'))",
+    "src/ComponentHost.ts ReusableHost: innerPlaceholder Comment('reusable'); list row outer placeholder is rx list item"
+  ],
+  "nestedRxListRow": {
+    "shape": [
+      "#text:\"1\"",
+      "<!--rx list item-->",
+      "#text:\"2\"",
+      "<!--rx list item-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "1<!--rx list item-->2<!--rx list item--><!--rx list item--><!--unhandledChild-->",
+    "hasComputed": false,
+    "hasEmpty": false,
+    "rxListItemCount": 3,
+    "equalCsrHtml": true,
+    "wrongG3FEqualsCsr": false,
+    "wrongG4FlattenEqualsCsr": false,
+    "note": "item instanceof RxList → nested RxListHost + outer rx list item; NOT G1–G4-F/G4"
+  },
+  "nestedAfterInnerSplice": {
+    "html": "2<!--rx list item--><!--rx list item--><!--unhandledChild-->",
+    "note": "inner splice keeps outer rx list item; nested host interval intact"
+  },
+  "reusableHostAsRxListRow": {
+    "shape": [
+      "DIV",
+      "<!--reusable-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<div id=\"reused\">R</div><!--reusable--><!--rx list item--><!--unhandledChild-->",
+    "hasReusable": true,
+    "hasRxListItem": true,
+    "hasComputed": false,
+    "hasEmpty": false,
+    "text": "R",
+    "note": "ReusableHost first paint: content + <!--reusable--> + row <!--rx list item-->"
+  },
+  "createHostBranchClosure": {
+    "createHostBranches": [
+      "function→AtomHost",
+      "function→FunctionHost",
+      "HTMLElement|SVGElement|DocumentFragment→StaticHost",
+      "string|number|boolean|bigint→PrimitiveHost",
+      "Array→StaticArrayHost",
+      "null|undefined→EmptyHost",
+      "RxList→RxListHost",
+      "ReusableHost→moveTo/reuse",
+      "ComponentNode→ComponentHost",
+      "else→assert unknown"
+    ],
+    "compactBypass": "Element && !detachStyledChildren → CompactElementHost (createChildHost only)",
+    "requiredNewGRows": [
+      "G3-RL: item instanceof RxList",
+      "G3-RU: item instanceof ReusableHost"
+    ]
+  },
+  "nodeBaseline": "npx vitest run --config vitest.node.config.ts → 2 files / 6 tests passed"
+}

@@ -1,0 +1,167 @@
+{
+  "stamp": "adjudication-d8-2026-08-06",
+  "environment": "Playwright Chromium (Node script)",
+  "source": "mirrors src/DOM.ts setAttribute value/checked for INPUT checkbox; createElement deferred key order",
+  "matrix": {
+    "true": {
+      "outerHTML": "<input type=\"checkbox\" value=\"true\" checked=\"true\">",
+      "valueProp": "true",
+      "checked": true,
+      "valueAttr": "true",
+      "checkedAttr": "true"
+    },
+    "false": {
+      "outerHTML": "<input type=\"checkbox\" value=\"false\">",
+      "valueProp": "false",
+      "checked": false,
+      "valueAttr": "false",
+      "checkedAttr": null
+    },
+    "null": {
+      "outerHTML": "<input type=\"checkbox\" value=\"\">",
+      "valueProp": "",
+      "checked": false,
+      "valueAttr": "",
+      "checkedAttr": null
+    },
+    "undefined": {
+      "outerHTML": "<input type=\"checkbox\" value=\"\">",
+      "valueProp": "",
+      "checked": false,
+      "valueAttr": "",
+      "checkedAttr": null
+    },
+    "hello": {
+      "outerHTML": "<input type=\"checkbox\" value=\"hello\" checked=\"true\">",
+      "valueProp": "hello",
+      "checked": true,
+      "valueAttr": "hello",
+      "checkedAttr": "true"
+    },
+    "empty": {
+      "outerHTML": "<input type=\"checkbox\" value=\"\">",
+      "valueProp": "",
+      "checked": false,
+      "valueAttr": "",
+      "checkedAttr": null
+    },
+    "zero": {
+      "outerHTML": "<input type=\"checkbox\" value=\"0\">",
+      "valueProp": "0",
+      "checked": false,
+      "valueAttr": "0",
+      "checkedAttr": null
+    },
+    "one": {
+      "outerHTML": "<input type=\"checkbox\" value=\"1\" checked=\"true\">",
+      "valueProp": "1",
+      "checked": true,
+      "valueAttr": "1",
+      "checkedAttr": "true"
+    }
+  },
+  "checkedOnlyTrue": {
+    "outerHTML": "<input type=\"checkbox\" checked=\"true\">",
+    "valueProp": "on",
+    "checked": true,
+    "valueAttr": null,
+    "checkedAttr": "true"
+  },
+  "checkedOnlyFalse": {
+    "outerHTML": "<input type=\"checkbox\">",
+    "valueProp": "on",
+    "checked": false,
+    "valueAttr": null,
+    "checkedAttr": null
+  },
+  "valueThenChecked": {
+    "outerHTML": "<input type=\"checkbox\" value=\"true\">",
+    "valueProp": "true",
+    "checked": false,
+    "valueAttr": "true",
+    "checkedAttr": null
+  },
+  "checkedThenValue": {
+    "outerHTML": "<input type=\"checkbox\" value=\"true\" checked=\"true\">",
+    "valueProp": "true",
+    "checked": true,
+    "valueAttr": "true",
+    "checkedAttr": "true"
+  },
+  "valueFalseThenCheckedTrue": {
+    "outerHTML": "<input type=\"checkbox\" value=\"false\" checked=\"true\">",
+    "valueProp": "false",
+    "checked": true,
+    "valueAttr": "false",
+    "checkedAttr": "true"
+  },
+  "checkedTrueThenValueFalse": {
+    "outerHTML": "<input type=\"checkbox\" value=\"false\">",
+    "valueProp": "false",
+    "checked": false,
+    "valueAttr": "false",
+    "checkedAttr": null
+  },
+  "radioValueTrue": {
+    "outerHTML": "<input type=\"radio\" value=\"true\">",
+    "valueProp": "true",
+    "checked": false,
+    "valueAttr": "true",
+    "checkedAttr": null
+  },
+  "parse": {
+    "designSameAsChecked": {
+      "outerHTML": "<input type=\"checkbox\" checked=\"true\">",
+      "valueProp": "on",
+      "checked": true,
+      "valueAttr": null,
+      "checkedAttr": "true"
+    },
+    "bothParsed": {
+      "outerHTML": "<input type=\"checkbox\" value=\"true\" checked=\"true\">",
+      "valueProp": "true",
+      "checked": true,
+      "valueAttr": "true",
+      "checkedAttr": "true"
+    },
+    "falsyParsed": {
+      "outerHTML": "<input type=\"checkbox\" value=\"false\">",
+      "valueProp": "false",
+      "checked": false,
+      "valueAttr": "false",
+      "checkedAttr": null
+    },
+    "zeroParsed": {
+      "outerHTML": "<input type=\"checkbox\" value=\"0\">",
+      "valueProp": "0",
+      "checked": false,
+      "valueAttr": "0",
+      "checkedAttr": null
+    },
+    "emptyParsed": {
+      "outerHTML": "<input type=\"checkbox\" value=\"\">",
+      "valueProp": "",
+      "checked": false,
+      "valueAttr": "",
+      "checkedAttr": null
+    }
+  },
+  "idlMismatchIfFollowDesign": {
+    "csrValue": "true",
+    "ssrCheckedOnlyValue": "on",
+    "equal": false
+  },
+  "idlMatchIfBoth": {
+    "csrValue": "true",
+    "ssrBothValue": "true",
+    "equal": true,
+    "checkedEqual": true
+  },
+  "orderWins": {
+    "valueThenChecked_checked": false,
+    "checkedThenValue_checked": true,
+    "valueFalseThenCheckedTrue_checked": true,
+    "checkedTrueThenValueFalse_checked": false,
+    "note": "Later deferred prop wins for .checked; when value present, value attr always emitted from applied value string"
+  }
+}

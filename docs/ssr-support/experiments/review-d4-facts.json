@@ -1,0 +1,79 @@
+{
+  "stamp": "review-d4-2026-08-06",
+  "styleBreak": {
+    "styleText": ".a{content:\"",
+    "pExists": true,
+    "childHTML": "<style>.a{content:\"</style>\"}<p id=\"p5\">after</p>"
+  },
+  "styleEntityNotDecoded": {
+    "styleText": ".a{content:\"&lt;/style>\"}",
+    "pExists": true,
+    "note": "RAWTEXT does not decode entities; &lt;/style> avoids early close but content is literal &lt;"
+  },
+  "scriptBreak": {
+    "scriptText": "x",
+    "pExists": true
+  },
+  "textareaRcdataEntitiesDecoded": {
+    "value": "</textarea>",
+    "note": "RCDATA decodes entities; text escapes work for textarea"
+  },
+  "emptyTextPlusStructComment": {
+    "csrHtml": "<!--rx list item-->",
+    "parseCount": 1,
+    "types": [
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ],
+    "note": "Empty Text disappears; structure Comment alone remains as claim slot"
+  },
+  "wrongE4AfterReorder": {
+    "types": [
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ],
+    "note": "Structure comments stay put; Text-only move leaves comments mis-paired — CSR would move Text+Comment as host range"
+  },
+  "correctShapeAfterReorder": {
+    "types": [
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ],
+    "note": "Text+Comment pairs stay intact"
+  },
+  "emptyTextOnlyHtml": "",
+  "staticArrayAdjacentMerge": {
+    "html": "ab",
+    "parseCount": 1
+  }
+}

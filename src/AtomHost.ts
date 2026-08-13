@@ -1,10 +1,12 @@
-import {Atom, ReactiveEffect} from "data0";
+import {Atom, Notifier, ReactiveEffect} from "data0";
 import {resetOptionOwnerSelect} from "./DOM";
 import {Host, PathContext} from "./Host";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {LightBindingEffect} from "./LightBindingEffect.js";
 import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 import type {HostPosition} from "./createHost";
+import {isHydrating} from "./hydration";
+import {claimTextBeforeCommentPlaceholder} from "./hydration";
 
 
 function stringValue(v: any) {
@@ -90,6 +92,18 @@ export class AtomHost extends LightBindingEffect implements Host{
 
     render(): void {
         trackLightBindingCreated(this, 'AtomTextBinding')
+        // Hydrate Comment-ph：认领 placeholder 前已有 Text（含 axii:t 包边），或插入空 Text
+        // §3.7 / D12: pass client snapshot so value drift reports + rebuilds (not silent run() fix)
+        if (isHydrating() && this.placeholder instanceof Comment && this.element === this.placeholder) {
+            Notifier.instance.pauseTracking()
+            let expected: string
+            try {
+                expected = stringValue(this.source())
+            } finally {
+                Notifier.instance.resetTracking()
+            }
+            this.element = claimTextBeforeCommentPlaceholder(this.placeholder, expected)
+        }
         this.run()
     }
     destroy(parentHandle?: boolean) {

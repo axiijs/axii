@@ -1,0 +1,82 @@
+{
+  "stamp": "review-d13-2026-08-06",
+  "environment": "Vitest browser mode + Playwright chromium",
+  "sourceAuthority": [
+    "src/createHost.ts: function→Atom/Function; Element; primitive; Array; null→EmptyHost; RxList→RxListHost; ReusableHost; ComponentNode",
+    "src/RxListHost.ts createChildHost: Compact for Element without detachStyledChildren, else createHost(item, Comment('rx list item'))",
+    "src/FunctionHost.ts text path only for null/string/number/boolean/bigint — atom/function/element/array/RxList returns are structure"
+  ],
+  "fnReturnsAtom_textPh": {
+    "shape": [
+      "#text:\"world\"",
+      "<!--computed node-->",
+      "#text:\"\""
+    ],
+    "html": "world<!--computed node-->",
+    "hasComputed": true,
+    "note": "Function→atom is structure (FTS), NOT text fast path / NOT G4-F"
+  },
+  "fnReturnsFn_element": {
+    "shape": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--computed node-->",
+      "#text:\"\""
+    ],
+    "html": "<span>x</span><!--computed node--><!--computed node-->",
+    "computedCount": 2
+  },
+  "rxListItemIsRxList": {
+    "shape": [
+      "#text:\"1\"",
+      "<!--rx list item-->",
+      "#text:\"2\"",
+      "<!--rx list item-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "1<!--rx list item-->2<!--rx list item--><!--rx list item--><!--unhandledChild-->",
+    "hasComputed": false,
+    "rxListItemCount": 3,
+    "note": "item instanceof RxList → nested RxListHost + outer rx list item; NO computed; NOT in G1–G4-F/G4 table"
+  },
+  "fnRowReturnsAtom": {
+    "shape": [
+      "#text:\"hi\"",
+      "<!--computed node-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "hi<!--computed node--><!--rx list item--><!--unhandledChild-->",
+    "hasComputed": true,
+    "equalG4F": false,
+    "note": "Function→atom list row is G3-F/FCS, not G4-F"
+  },
+  "fnRowReturnsFnElement": {
+    "shape": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--computed node-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "computedCount": 2
+  },
+  "gTableCoverageVsCreateHost": {
+    "covered": [
+      "G1/G2 Element±detach",
+      "G3-F Function structure",
+      "G3-C ComponentNode",
+      "G3-Fr Fragment",
+      "G3-A Array",
+      "G3-E null/undefined",
+      "G4-F Function text",
+      "G4 atom/primitive/boolean"
+    ],
+    "missingFromGTable": [
+      "instanceof RxList → RxListHost",
+      "ReusableHost (createHost branch; rare on SSR first paint)"
+    ],
+    "designClaim": "§3.2.3 门闩与 createChildHost 逐条件对齐；有限且穷尽；判定次序只列到 G3-C/Fr/A/E 与 G4"
+  }
+}

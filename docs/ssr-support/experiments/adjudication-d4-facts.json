@@ -1,0 +1,189 @@
+{
+  "stamp": "adjudication-d4-2026-08-06",
+  "csrEmptyListRows": {
+    "html": "<!--rx list item--><!--rx list item-->",
+    "snap": [
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ]
+  },
+  "parsedFromEmptyListRows": {
+    "html": "<!--rx list item--><!--rx list item-->",
+    "snap": [
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ]
+  },
+  "wrongAfterHydrateE4": [
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    },
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    }
+  ],
+  "wrongE4AfterReorder": [
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    }
+  ],
+  "correctShapeAfterReorder": [
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    },
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    }
+  ],
+  "omitAxii0CommentPhHydrate": [
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    },
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    }
+  ],
+  "omitAxii0AfterReorder": [
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    },
+    {
+      "type": 3,
+      "data": ""
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    }
+  ],
+  "nonEmptyCommentPhHtml": {
+    "html": "a<!--rx list item-->b<!--rx list item-->",
+    "snap": [
+      {
+        "type": 3,
+        "data": "a"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 3,
+        "data": "b"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ]
+  },
+  "nonEmptyCommentPhParsed": [
+    {
+      "type": 3,
+      "data": "a"
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    },
+    {
+      "type": 3,
+      "data": "b"
+    },
+    {
+      "type": 8,
+      "data": "rx list item"
+    }
+  ],
+  "styleBreak": {
+    "styleText": ".a{content:\"",
+    "pExists": true,
+    "childHTML": "<style>.a{content:\"</style>\"}<p id=\"p5\">after</p>"
+  },
+  "styleEntityNotDecoded": {
+    "styleText": ".a{content:\"&lt;/style>\"}",
+    "pExists": true,
+    "note": "RAWTEXT does not decode entities"
+  },
+  "styleBreak2": {
+    "styleText": ".a{content:\"",
+    "pExists": true
+  },
+  "textareaRcdataEntitiesDecoded": {
+    "value": "</textarea>",
+    "note": "RCDATA decodes entities"
+  },
+  "styleBreakCaseInsensitive": {
+    "styleText": "a",
+    "pExists": true,
+    "html": "<style>a</style><p id=\"ci\">z</p>"
+  }
+}

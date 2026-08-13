@@ -6,6 +6,7 @@ import {createLinkedNode} from "./LinkedList";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {DeferredBindingEffect} from "./LightBindingEffect.js";
 import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
+import {claimComputedNodeBefore, claimTextBeforeCommentPlaceholder, isHydrating} from "./hydration";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -161,6 +162,10 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
                 this.placeholder.nodeValue = text
                 this.textNode = this.placeholder
+            } else if (isHydrating()) {
+                // Comment-ph（G4-F / H3）：认领 placeholder 前 Text（含 axii:t），或插入空 Text
+                // §3.7 / D12: pass expected so drift reports + rebuilds (aligned with Text-ph)
+                this.textNode = claimTextBeforeCommentPlaceholder(this.placeholder as Comment, text)
             } else {
                 this.textNode = document.createTextNode(text)
                 // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它。
@@ -184,8 +189,14 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             this.textNode = null
         }
         this.destroyInnerHost()
-        const newPlaceholder = document.createComment('computed node')
-        insertBefore(newPlaceholder, this.placeholder)
+        // Hydrate FTS/FCS：认领已有 <!--computed node-->，禁止新建（§3.2.4 FS2 / §3.2.5）
+        const hydrating = isHydrating()
+        const newPlaceholder = hydrating
+            ? claimComputedNodeBefore(this.placeholder)
+            : document.createComment('computed node')
+        if (!hydrating) {
+            insertBefore(newPlaceholder, this.placeholder)
+        }
         // CAUTION 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
         //  否则内层的响应式内容变化会导致整个函数节点重算。
         //  AtomHost/FunctionHost 这类 host 本身就是 effect，对象创建时就可能被父 effect
@@ -204,7 +215,7 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             if (host) {
                 // render 中途抛错：部分渲染的子树交给下一次重建/销毁做尽力清理
                 this.innerHost = host
-            } else {
+            } else if (!hydrating) {
                 newPlaceholder.remove()
             }
             if (!this.pathContext.root.dispatch('error', e)) throw e

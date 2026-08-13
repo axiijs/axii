@@ -1,0 +1,135 @@
+{
+  "stamp": "review-d5-2026-08-06",
+  "staticArrayAdjacent": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ],
+    "html": "helloworld<!--unhandledChild-->",
+    "parsedSnap": [
+      {
+        "type": 3,
+        "data": "helloworld"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ],
+    "mergeToOneText": true,
+    "wrappedBefore": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 8,
+        "data": "axii:/t"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      },
+      {
+        "type": 8,
+        "data": "axii:/t"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ],
+    "afterClaimStrip": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ],
+    "twoTextsAfterStrip": true,
+    "structureCommentKept": true,
+    "claimTargetIsDirectNodesNotHost": true
+  },
+  "styleBreakout": {
+    "rule": ".axii-d5-break{width:100px} body{outline:1px solid red;}",
+    "insertRejected": true,
+    "insertRuleCount": 0,
+    "styleTagRuleCount": 2,
+    "styleTagHasMultipleRules": true,
+    "cssText": ".axii-d5-break { width: 100px; }\nbody { outline: red solid 1px; }",
+    "bodyOutline": "rgb(255, 0, 0) solid 1px",
+    "styleCloseInPayloadWouldBreakHtml": true
+  },
+  "rxListString": {
+    "csrSnap": [
+      {
+        "type": 3,
+        "data": "a"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 3,
+        "data": "b"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ],
+    "html": "a<!--rx list item-->b<!--rx list item--><!--unhandledChild-->",
+    "parsedSnap": [
+      {
+        "type": 3,
+        "data": "a"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 3,
+        "data": "b"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 8,
+        "data": "unhandledChild"
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "stamp": "review-d7-2026-08-06",
+  "source": "__tests__/ssrReviewCompact.tmp.spec.tsx + RxListHost.createChildHost",
+  "compactElementRows": {
+    "csrShape": [
+      "span",
+      "span",
+      "unhandledChild"
+    ],
+    "rxListItemCount": 0,
+    "note": "HTMLElement/SVGElement rows use CompactElementHost; shared placeholder never in document"
+  },
+  "atomRowsCommentPh": {
+    "csrShape": [
+      "Text",
+      "rx list item",
+      "Text",
+      "rx list item",
+      "unhandledChild"
+    ],
+    "rxListItemCount": 2
+  },
+  "functionReturningElementRows": {
+    "csrShape": [
+      "span",
+      "computed node",
+      "rx list item",
+      "span",
+      "computed node",
+      "rx list item",
+      "unhandledChild"
+    ],
+    "rxListItemCount": 2,
+    "note": "FunctionHost structure path inserts computed node before row placeholder"
+  },
+  "wrongSsrEmittingRxListItemForCompact": {
+    "wouldMatchCsr": false,
+    "extraPerRowComments": 2
+  },
+  "createChildHostGate": {
+    "compactWhen": "item instanceof HTMLElement|SVGElement && !detachStyledChildren",
+    "else": "createHost(item, Comment(rx list item))"
+  }
+}

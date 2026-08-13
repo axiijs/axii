@@ -1,0 +1,113 @@
+{
+  "rootFunctionStructure": {
+    "before": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--root-->"
+    ],
+    "html": "<span>x</span><!--computed node--><!--root-->",
+    "after": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--root-->"
+    ],
+    "preserved": true
+  },
+  "ftsFunctionStructure": {
+    "before": [
+      "SPAN",
+      "<!--computed node-->",
+      "#text:\"\""
+    ],
+    "html": "<span>x</span><!--computed node-->",
+    "after": [
+      "SPAN",
+      "<!--computed node-->"
+    ],
+    "lostTrailingEmptyText": true
+  },
+  "rootStaticElement": {
+    "html": "<div>hi</div><!--root-->",
+    "after": [
+      "DIV",
+      "<!--root-->"
+    ],
+    "hasRootComment": true
+  },
+  "omitRootVsCsr": {
+    "csrShape": [
+      "DIV",
+      "<!--root-->"
+    ],
+    "ssrShape": [
+      "DIV"
+    ],
+    "equal": false
+  },
+  "emptyHostOnRoot": {
+    "html": "<!--empty--><!--root-->",
+    "after": [
+      "<!--empty-->",
+      "<!--root-->"
+    ],
+    "preserved": true
+  },
+  "rootFunctionEmptyText": {
+    "html": "<!--root-->",
+    "after": [
+      "<!--root-->"
+    ],
+    "emptyTextLost": true
+  },
+  "wrongFtsOnRoot": {
+    "csrShape": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--root-->"
+    ],
+    "wrongSsrShape": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--axii:0-->"
+    ],
+    "afterWrongHydrate": [
+      "SPAN",
+      "<!--computed node-->",
+      "#text:\"\""
+    ],
+    "equalsCsr": false,
+    "notes": "Wrong FTS on root yields trailing Text instead of Comment(root); shape ≠ CSR"
+  },
+  "arrayFnStructure": {
+    "before": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--array item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<span>x</span><!--computed node--><!--array item--><!--unhandledChild-->",
+    "after": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--array item-->",
+      "<!--unhandledChild-->"
+    ],
+    "preserved": true
+  },
+  "g3LiteralMismatch": {
+    "csr": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--array item-->",
+      "<!--unhandledChild-->"
+    ],
+    "ifEmitRxListItem": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "equal": false
+  },
+  "createRootSource": "src/render.ts:67 document.createComment('root')"
+}

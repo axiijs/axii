@@ -1,0 +1,99 @@
+{
+  "stamp": "review-d11-emptyhost-2026-08-06",
+  "environment": "Vitest browser mode + Playwright chromium (real axii createRoot/createHost)",
+  "sourceAuthority": [
+    "src/createHost.ts EmptyHost (Comment('empty') as element, outer placeholder separate)",
+    "src/FunctionHost.ts null/boolean → text fast path (not EmptyHost)",
+    "src/RxListHost.ts createChildHost → createHost(item, Comment('rx list item'))",
+    "src/ComponentHost.ts createHost(null, this.placeholder) → EmptyHost"
+  ],
+  "rootNull": {
+    "shape": ["<!--empty-->", "<!--root-->"],
+    "html": "<!--empty--><!--root-->"
+  },
+  "rootFnNull": {
+    "shape": ["#text:\"\"", "<!--root-->"],
+    "html": "<!--root-->",
+    "note": "FunctionHost text path; null→''; not EmptyHost"
+  },
+  "listNull": {
+    "shape": [
+      "<!--empty-->",
+      "<!--rx list item-->",
+      "<!--empty-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<!--empty--><!--rx list item--><!--empty--><!--rx list item--><!--unhandledChild-->"
+  },
+  "listNullAfterSwap": {
+    "shape": [
+      "<!--empty-->",
+      "<!--rx list item-->",
+      "<!--empty-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ]
+  },
+  "arrayFnNull": {
+    "shape": ["#text:\"\"", "<!--array item-->", "<!--unhandledChild-->"],
+    "html": "<!--array item--><!--unhandledChild-->"
+  },
+  "componentNull": {
+    "shape": ["<!--empty-->", "<!--root-->"],
+    "html": "<!--empty--><!--root-->"
+  },
+  "listAtomEmpty": {
+    "shape": ["#text:\"\"", "<!--rx list item-->", "<!--unhandledChild-->"],
+    "html": "<!--rx list item--><!--unhandledChild-->",
+    "note": "Comment-ph empty text (A1c); distinct from listNull EmptyHost"
+  },
+  "listComponentRows": {
+    "shape": [
+      "SPAN",
+      "<!--rx list item-->",
+      "SPAN",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<span>x</span><!--rx list item--><span>x</span><!--rx list item--><!--unhandledChild-->",
+    "hasComputedNode": false
+  },
+  "listFragmentRow": {
+    "shape": [
+      "<!--fragment start-->",
+      "SPAN",
+      "SPAN",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<!--fragment start--><span>a</span><span>b</span><!--rx list item--><!--unhandledChild-->",
+    "hasComputedNode": false
+  },
+  "wrongA1cForNullList": {
+    "ssrHtml": "<!--rx list item--><!--rx list item--><!--unhandledChild-->",
+    "equalCsr": false
+  },
+  "correctEmptyForNullList": {
+    "ssrHtml": "<!--empty--><!--rx list item--><!--empty--><!--rx list item--><!--unhandledChild-->",
+    "equalCsr": true
+  },
+  "wrongFcsForNullList": {
+    "ssrHtml": "<!--computed node--><!--rx list item--><!--computed node--><!--rx list item--><!--unhandledChild-->",
+    "equalCsr": false
+  },
+  "claims": {
+    "listNullHasEmpty": true,
+    "listNullHasComputed": false,
+    "listNullEqualsAtomEmpty": false,
+    "rootNullIsEmptyThenRoot": true,
+    "rootFnNullIsTextNotEmptyHost": true,
+    "componentNullIsEmptyHost": true,
+    "emptyCommentIsEmptyHostElementNotOuterPlaceholder": true,
+    "a1cOnlyStructureMismatchesNullList": true,
+    "correctEmptyMatchesNullList": true,
+    "fcsComputedMismatchesNullList": true,
+    "componentRowsAreNotFcs": true,
+    "fragmentRowsHaveFragmentStartNotOnlyFcs": true
+  }
+}

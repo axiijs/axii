@@ -1,0 +1,105 @@
+{
+  "stamp": "adjudication-d12-2026-08-06",
+  "environment": "Vitest browser mode + Playwright chromium (independent of review-d12)",
+  "sourceAuthority": [
+    "src/RxListHost.ts createChildHost → createHost(item, Comment('rx list item')) for non-Compact",
+    "src/createHost.ts function (non-atom) → FunctionHost",
+    "src/FunctionHost.ts null/boolean/string/number/bigint → text fast path (no EmptyHost, no computed node)"
+  ],
+  "fnNullListRow": {
+    "shape": [
+      "#text:\"\"",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<!--rx list item--><!--unhandledChild-->",
+    "hasEmpty": false,
+    "hasComputed": false,
+    "parseShape": [
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "note": "Function→null is Comment-ph A1c (empty Text lost in HTML), NOT EmptyHost, NOT FCS"
+  },
+  "fnFalseListRow": {
+    "shape": [
+      "#text:\"\"",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<!--rx list item--><!--unhandledChild-->",
+    "hasEmpty": false,
+    "hasComputed": false
+  },
+  "fnStringListRow": {
+    "shape": [
+      "#text:\"hi\"",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "hi<!--rx list item--><!--unhandledChild-->",
+    "hasComputed": false
+  },
+  "g3eNullItem": {
+    "shape": [
+      "<!--empty-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<!--empty--><!--rx list item--><!--unhandledChild-->"
+  },
+  "g4AtomEmpty": {
+    "shape": [
+      "#text:\"\"",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<!--rx list item--><!--unhandledChild-->"
+  },
+  "g3fFnElement": {
+    "shape": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<span>x</span><!--computed node--><!--rx list item--><!--unhandledChild-->",
+    "hasComputed": true
+  },
+  "wrongG3eForFnNull": {
+    "wrongHtml": "<!--empty--><!--rx list item--><!--unhandledChild-->",
+    "csrHtml": "<!--rx list item--><!--unhandledChild-->",
+    "equalCsr": false,
+    "parseWrong": [
+      "<!--empty-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "parseCsr": [
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ]
+  },
+  "wrongFcsForFnNull": {
+    "wrongHtml": "<!--computed node--><!--rx list item--><!--unhandledChild-->",
+    "csrHtml": "<!--rx list item--><!--unhandledChild-->",
+    "equalCsr": false,
+    "parseWrong": [
+      "<!--computed node-->",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "parseCsr": [
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ]
+  },
+  "a1cMatchesCsrHtml": {
+    "a1cHtml": "<!--rx list item--><!--unhandledChild-->",
+    "equalCsrHtml": true,
+    "parseShape": [
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ]
+  }
+}

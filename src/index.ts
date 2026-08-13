@@ -1,6 +1,6 @@
 export * from './DOM'
 export { default as PropTypes, type TypeChecker } from './propTypes.js'
-export { createRoot } from './render.js'
+export { createRoot, hydrateRoot } from './render.js'
 export { createHost } from './createHost.js'
 export * from './eventAlias.js'
 export * from './Host.js'

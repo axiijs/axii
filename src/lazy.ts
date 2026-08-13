@@ -1,5 +1,6 @@
 import { atom } from "data0"
 import { Component, JSXElement, RenderContext } from "./types"
+import { isSsrPass } from "./ssrContext.js"
 
 /**
  * 懒加载组件。
@@ -13,6 +14,9 @@ import { Component, JSXElement, RenderContext } from "./types"
  * CAUTION fallback 是可选的（I63）：React.lazy 根本没有 fallback 参数，`lazy(load)`
  *  是自然写法。不传时加载期间渲染为空（null），不能对 undefined 调用
  *  （否则加载期间每次渲染都 TypeError，钩子噪音/无钩子直接崩）。
+ *
+ * CAUTION SSR（§3.3.a）：renderToString 同步输出 fallback（或 null），不得调用 startLoad()，
+ *  否则会污染模块级 started / LazyComponent，导致随后客户端 hydrate 跳过真实加载。
  */
 export function lazy(load: () => Promise<any>, fallback?: (error?: unknown) => JSXElement){
     const LazyComponent = atom<Component | null>(null)
@@ -29,7 +33,7 @@ export function lazy(load: () => Promise<any>, fallback?: (error?: unknown) => J
     }
 
     return function LazyWrapper(props: {[k:string]: any}, {createElement}: RenderContext) {
-        startLoad()
+        if (!isSsrPass()) startLoad()
         return () => {
             const LoadedLazyComponent = LazyComponent()
             if (LoadedLazyComponent) {

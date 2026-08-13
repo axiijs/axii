@@ -1,0 +1,16 @@
+{
+  "stamp": "review-d3-rcdata-2026-08-06",
+  "environment": "Playwright Chromium",
+  "proposition": "Inside RCDATA/RAWTEXT elements, comment syntax is character data — axii:t markers do not become Comment nodes",
+  "textareaMarkersAsText": {
+    "childCount": 1,
+    "value": "<!--axii:t-->hi<!--axii:/t-->",
+    "firstChildType": 3,
+    "firstChildData": "<!--axii:t-->hi<!--axii:/t-->"
+  },
+  "styleMarkers": {
+    "childCount": 1,
+    "text": "<!--axii:t-->.a{}<!--axii:/t-->"
+  },
+  "implication": "§3.2.1 emit table cannot wrap text units inside textarea/script/style/title/etc.; textarea must stay on §3.6.2 value→child-text path (no markers)"
+}

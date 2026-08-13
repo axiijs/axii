@@ -28,6 +28,14 @@ describe('BUG 6: package.json entry points', () => {
         })
     })
 
+    test('ssr (Node string serialization) is a separate subpath export', () => {
+        expect(pkg.exports['./ssr']).toEqual({
+            types: './dist/ssr.d.ts',
+            import: './dist/ssr.js',
+            require: './dist/ssr.cjs',
+        })
+    })
+
     test('data0 is available as a devDependency so a fresh clone can run tests', () => {
         expect(pkg.devDependencies.data0).toBeTruthy()
     })

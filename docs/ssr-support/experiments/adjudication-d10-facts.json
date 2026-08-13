@@ -1,0 +1,124 @@
+{
+  "stamp": "adjudication-d10-2026-08-06",
+  "environment": "Playwright Chromium (Node script)",
+  "createCommentLiterals": {
+    "fromSource": [
+      "root",
+      "rx list item",
+      "array item",
+      "unhandledChild",
+      "empty",
+      "computed node",
+      "fragment start",
+      "compact host shared placeholder"
+    ],
+    "note": "compact shared never in document; FunctionHost may hold any of root/rx list item/array item/computed node/empty as placeholder"
+  },
+  "rootFunctionStructure": {
+    "before": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--root-->"
+    ],
+    "html": "<span>x</span><!--computed node--><!--root-->",
+    "after": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--root-->"
+    ],
+    "preserved": true
+  },
+  "ftsContrast": {
+    "before": [
+      "SPAN",
+      "<!--computed node-->",
+      "#text:\"\""
+    ],
+    "html": "<span>x</span><!--computed node-->",
+    "after": [
+      "SPAN",
+      "<!--computed node-->"
+    ],
+    "lostTrailingEmptyText": true
+  },
+  "omitRootVsCsr": {
+    "csrShape": [
+      "DIV",
+      "<!--root-->"
+    ],
+    "ssrShape": [
+      "DIV"
+    ],
+    "equal": false,
+    "withRootHtml": "<div>hi</div><!--root-->",
+    "withRootAfter": [
+      "DIV",
+      "<!--root-->"
+    ],
+    "withRootEqualsCsr": true
+  },
+  "wrongFtsOnRoot": {
+    "csrShape": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--root-->"
+    ],
+    "afterWrongHydrate": [
+      "SPAN",
+      "<!--computed node-->",
+      "#text:\"\""
+    ],
+    "equalsCsr": false
+  },
+  "arrayFnStructure": {
+    "before": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--array item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<span>x</span><!--computed node--><!--array item--><!--unhandledChild-->",
+    "after": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--array item-->",
+      "<!--unhandledChild-->"
+    ],
+    "preserved": true,
+    "g3LiteralMismatch": {
+      "csr": [
+        "SPAN",
+        "<!--computed node-->",
+        "<!--array item-->",
+        "<!--unhandledChild-->"
+      ],
+      "ifEmitRxListItem": [
+        "SPAN",
+        "<!--computed node-->",
+        "<!--rx list item-->",
+        "<!--unhandledChild-->"
+      ],
+      "equal": false
+    }
+  },
+  "rootFunctionEmptyText": {
+    "before": [
+      "#text:\"\"",
+      "<!--root-->"
+    ],
+    "html": "<!--root-->",
+    "after": [
+      "<!--root-->"
+    ],
+    "emptyTextLost": true
+  },
+  "nestedComputedAsPlaceholder": {
+    "html": "<span>y</span><!--computed node--><!--computed node-->",
+    "after": [
+      "SPAN",
+      "<!--computed node-->",
+      "<!--computed node-->"
+    ],
+    "preserved": true
+  }
+}
