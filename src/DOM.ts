@@ -30,7 +30,6 @@ import {
     takeHydrateReclaimPayload,
     tryClaimElement,
     unclaimHydrateElement,
-    withHydrateClaimAllowed,
 } from "./hydration";
 
 export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
@@ -626,9 +625,7 @@ const EMPTY_CHILDREN: any[] = []
 /** Rematerialize a main-root deferred stub with claiming enabled. */
 export function materializeHydrateDeferred(el: Element): Node {
     const payload = takeHydrateDeferredPayload(el)
-    return withHydrateClaimAllowed(() =>
-        createElement(payload.type, payload.rawProps, ...payload.rawChildren),
-    ) as Node
+    return createElement(payload.type, payload.rawProps, ...payload.rawChildren) as Node
 }
 
 /**

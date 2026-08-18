@@ -597,10 +597,8 @@ function serializeStructureResult(
         serializeStaticArray(result, out, undefined, null, selectSo)
         return
     }
-    if (result === undefined || result === null) {
-        out.push('<!--empty-->')
-        return
-    }
+    // result cannot be null/undefined here — serializeFunctionHost only calls this on
+    // the non-text-snapshot path (isFunctionHostTextSnapshot(null|undefined) === true).
     serializeChild(result, out, undefined, true, selectSo)
 }
 

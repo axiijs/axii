@@ -82,12 +82,6 @@ let hydrateRootEl: ParentNode | null = null
 let hydratePortalEls: Record<string, HTMLElement> | undefined
 /** Nested Portal hydrate: outer container stack while claiming portal subtree */
 const hydrateRootStack: ParentNode[] = []
-/**
- * When false on the main hydrate root, createElement must not deep-claim (eager Portal
- * content args run before pushHydrateRoot and would steal later same-tag main siblings).
- * Rematerialization under a parent cursor / createHost uses withHydrateClaimAllowed.
- */
-let hydrateClaimAllowed = false
 /** Per-element child cursor while processing that element's createElement children */
 let childCursorParent: ParentNode | null = null
 let childCursorIndex = 0
@@ -103,25 +97,6 @@ export function isHydrating(): boolean {
     return hydrating
 }
 
-/** True while claiming is permitted on the outermost hydrate root (not Portal-deferred). */
-export function isHydrateClaimAllowed(): boolean {
-    return hydrateClaimAllowed
-}
-
-/**
- * Run `fn` with main-root element claiming enabled (rematerialize deferred stubs).
- * Nestable; restores the previous flag.
- */
-export function withHydrateClaimAllowed<T>(fn: () => T): T {
-    const prev = hydrateClaimAllowed
-    hydrateClaimAllowed = true
-    try {
-        return fn()
-    } finally {
-        hydrateClaimAllowed = prev
-    }
-}
-
 /** Outermost hydrate root (not inside pushHydrateRoot / Portal container). */
 export function isHydrateOnMainRoot(): boolean {
     return hydrating && hydrateRootStack.length === 0
@@ -132,7 +107,6 @@ export function beginHydration(container: ParentNode, portals?: Record<string, H
     hydrateRootEl = container
     hydratePortalEls = portals
     hydrateRootStack.length = 0
-    hydrateClaimAllowed = false
     childCursorParent = null
     childCursorIndex = 0
     childCursorStack.length = 0
@@ -144,7 +118,6 @@ export function endHydration(): void {
     hydrateRootEl = null
     hydratePortalEls = undefined
     hydrateRootStack.length = 0
-    hydrateClaimAllowed = false
     childCursorParent = null
     childCursorIndex = 0
     childCursorStack.length = 0
@@ -1042,10 +1015,6 @@ export function peekAxii0(): boolean {
     return !!node && isCommentData(node, 'axii:0')
 }
 
-export function peekCommentData(data: string): boolean {
-    return isCommentData(currentChild(), data)
-}
-
 /** Advance child cursor until current node is Comment(data); do not consume it. */
 export function advanceCursorUntilComment(data: string): void {
     const parent = childCursorParent
@@ -1351,9 +1320,10 @@ function walkFragmentHydrateChildren(
         } else if (typeof child === 'function') {
             if (isAtom(child)) {
                 const snapshot = child()
+                // Same stringValue semantics as AtomHost / ssr.ts (toString-less objects → JSON)
                 const text = (snapshot === undefined || snapshot === null || typeof snapshot === 'boolean')
                     ? ''
-                    : String((snapshot as any)?.toString ? (snapshot as any).toString() : snapshot)
+                    : String((snapshot as any)?.toString ? (snapshot as any).toString() : JSON.stringify(snapshot))
                 assignPlaceholder(claimAtomTextPlaceholder(text))
             } else {
                 assignPlaceholder(claimFunctionTextPlaceholder())
