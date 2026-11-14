@@ -65,6 +65,99 @@ export function computeStyleSignature(styleObject: any): string | undefined {
     return signature
 }
 
+// ─── content-addressed stylesheet ids ───
+//
+// Entries that cannot share a path-based id (function styles, bound styles, static nested
+// styles under a function child, F30-diverged static entries) are keyed by their evaluated
+// content instead: same content ⇒ same class ⇒ one shared stylesheet. CSR (StyleManager) and
+// SSR (collectElementStyles) both call contentStyleId, so the ids match and hydrate just reuses
+// the SSR class.
+
+// CAUTION 用 JSON 序列化求值后的样式对象，不用 computeStyleSignature 的按对象身份缓存：
+//  - 样式里可以有 atom/函数值（F31），JSON.stringify 会把函数值整个丢掉，
+//    两个不同 atom 值会算出同一个签名、共用同一张表（静默用错样式）。replacer 把函数值
+//    解开成当前值；这与 generateStyleContent → stringifyCssValue 对函数值的读法相同，
+//    读 atom 发生在 update 的追踪上下文里，依赖照常建立。
+//  - 动态条目每次重算都可能返回同一个被原地改过的对象，按身份缓存会拿到旧签名。
+//  序列化失败（循环引用、BigInt 等）返回 undefined，调用方退回逐元素路径。
+function resolveReactiveStyleValue(_key: string, value: any) {
+    return typeof value === 'function' ? value() : value
+}
+
+export function serializeStyleContent(styleObject: any): string | undefined {
+    try {
+        return JSON.stringify(styleObject, resolveReactiveStyleValue)
+    } catch {
+        return undefined
+    }
+}
+
+// cyrb53：53 位、Node 与浏览器结果相同。32 位哈希在几千种内容时碰撞概率已到千分之几，
+//  碰撞的后果是两种内容共用一张表（静默用错样式），所以用 53 位。
+export function hashStyleContent(str: string): string {
+    let h1 = 0xdeadbeef
+    let h2 = 0x41c6ce57
+    for (let i = 0; i < str.length; i++) {
+        const ch = str.charCodeAt(i)
+        h1 = Math.imul(h1 ^ ch, 2654435761)
+        h2 = Math.imul(h2 ^ ch, 1597334677)
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507)
+    h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507)
+    h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
+}
+
+export const CONTENT_STYLE_ID_PREFIX = 'axs-'
+
+/** `axs-<hash>F<entryIndex>`, or undefined when the content cannot be serialized. */
+export function contentStyleId(styleObject: any, entryIndex: number): string | undefined {
+    const serialized = serializeStyleContent(styleObject)
+    if (serialized === undefined) return undefined
+    return `${CONTENT_STYLE_ID_PREFIX}${hashStyleContent(serialized)}F${entryIndex}`
+}
+
+// CAUTION 判定只此一份：markBoundProp / markDynamicProp（StaticHost）写的不可枚举标记。
+//  必须对 null/undefined 安全，条件样式 style={cond ? {...} : null} 是很自然的写法。
+export function isBoundProp(obj: any) {
+    return !!(obj && obj['__bound'])
+}
+
+export function isDynamicProp(obj: any) {
+    return !!(obj && obj['__dynamic'])
+}
+
+export type EvaluatedStyleEntry = {value: any, entryIsDynamic: boolean, isBound: boolean}
+
+/**
+ * Evaluate + flatten a `style` value into entries. The entry's position in the returned
+ * array is its entry index (`F<n>` in class ids, cascade group in adoptedStyleSheets).
+ * Shared by StyleManager (CSR) and SSR so both number entries identically.
+ */
+export function evaluateStyleEntries(styleValue: any): EvaluatedStyleEntry[] {
+    // CAUTION 先求值再展开：响应式 style 函数可以返回数组（() => [base, extra] 是自然写法）。
+    //  不展开的话数组会被 splitStyleObject 当成 {0: {...}, 1: {...}} 的嵌套样式，
+    //  生成 `.cls 0 {...}` 这类非法 selector，整个样式静默失效。
+    const rawStyleObjects = Array.isArray(styleValue) ? styleValue : [styleValue]
+    const entries: EvaluatedStyleEntry[] = []
+    for (const raw of rawStyleObjects) {
+        const isBound = isBoundProp(raw)
+        const entryIsDynamic = typeof raw === 'function' || isDynamicProp(raw)
+        const evaluated = typeof raw === 'function' ? raw() : raw
+        if (Array.isArray(evaluated)) {
+            for (const item of evaluated) {
+                // 函数返回的数组项自身也可能是函数/atom
+                const evaluatedItem = typeof item === 'function' ? item() : item
+                entries.push({value: evaluatedItem, entryIsDynamic: true, isBound: isBound || isBoundProp(item)})
+            }
+        } else {
+            entries.push({value: evaluated, entryIsDynamic, isBound})
+        }
+    }
+    return entries
+}
+
 const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
 const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 const CSS_UNIT_VALUE = /^(px|em|rem|%|vw|vh|vmin|vmax|pt|pc|in|cm|mm|q|ex|ch|ic|cap|lh|rlh|fr|s|ms|deg|rad|grad|turn|dpi|dpcm|dppx|cqw|cqh|cqi|cqb|cqmin|cqmax|svw|svh|lvw|lvh|dvw|dvh)$/i
@@ -324,7 +417,7 @@ export function styleValueNeedsStylesheet(value: any): boolean {
     if (typeof value === 'string') return false
     if (Array.isArray(value)) return value.some(styleValueNeedsStylesheet)
     if (typeof value === 'object') {
-        if ((value as any).__bound) return true
+        if (isBoundProp(value)) return true
         const {nestedStyles} = splitStyleObject(value)
         return Object.keys(nestedStyles).length > 0
     }

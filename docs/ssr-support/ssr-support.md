@@ -1304,7 +1304,7 @@ function hydrateRoot(
 - **状态**：已完成
 - **reopen-count**：2
 - **reopen-domains**：{ssr-style-id: 2, ssr-style-atom-inline: 1}
-- **验收命令**：`__tests__/ssrStyles.spec.tsx`（浏览器；含逃逸负向 + 无闪变 + F30 StaticArray 分歧 + FunctionHost path reclaim + Chromium insertRule oracle + F31 reactive stylesheet rolling + simple atom inline 快照 + bound+reactive / array / function / CSR↔SSR I0）+ node 样式隔离快照
+- **验收命令**：`__tests__/ssrStyles.spec.tsx`（浏览器；含逃逸负向 + 无闪变 + F30 StaticArray 分歧 + FunctionHost path reclaim + Chromium insertRule oracle + F31 reactive stylesheet 内容 id + simple atom inline 快照 + bound+reactive / array / function / CSR↔SSR 内容 id 相同）+ node 样式隔离快照。注：自按内容定 id 的样式表起（`__tests__/contentAddressedStyles.spec.tsx`），动态条目与函数子节点下的条目不再输出 rolling `…R<n>F<i>I0`，SSR 与 CSR 都是 `axs-<哈希>F<i>`；rolling 只剩内容序列化失败的条目
 - **最新证据**：k=14 实现 + k14-audit：domain-review 闭合 `ssr-style-id` / `ssr-style-atom-inline`。审计加强 ssrStyles→16、node→62；缺陷注入短路 `containsReactiveStyleValue`→F31 红后还原。Closure：ssrStyles 16、hydrate 64、fuzz 2、CSR 23、node 62。`convergence-mode→normal`；`current-milestone→M-05`。
 
 ### M-05 生命周期、Portal、lazy、服务端隔离

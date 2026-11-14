@@ -12,7 +12,8 @@ import {beginSsrPass, endSsrPass} from './ssrContext.js'
 import {
     computeStyleSignature,
     containsReactiveStyleValue,
-    evaluateStyleSnapshot,
+    contentStyleId,
+    evaluateStyleEntries,
     gateStyleRules,
     generateStyleContent,
     generateStyleStaticId,
@@ -117,6 +118,8 @@ type SsrComponentFrame = {
 type SsrStyleState = {
     /** stylesheet id → gated CSS text (deduped) */
     sheets: Map<string, string>
+    /** stylesheet id → entry index (cascade group, mirrors CSR adoptedStyleSheets grouping) */
+    sheetGroups: Map<string, number>
     rollingSeq: number
     componentStack: SsrComponentFrame[]
     /** >0 while serializing FunctionHost structure under current ComponentHost (forces rolling). */
@@ -139,6 +142,7 @@ let ssrPortals: Record<string, {html: string, styles: string}> | null = null
 function beginSsrStyles() {
     ssrStyle = {
         sheets: new Map(),
+        sheetGroups: new Map(),
         rollingSeq: 0,
         componentStack: [],
         functionHostDepth: 0,
@@ -152,9 +156,19 @@ function endSsrStyles(): string {
     const state = ssrStyle
     ssrStyle = null
     if (!state || state.sheets.size === 0) return ''
-    const css = Array.from(state.sheets.values()).join('\n')
+    const css = joinSheetsByGroup(state, Array.from(state.sheets.keys()))
     assertNoRawTextTerminator(css, 'style')
     return css
+}
+
+/**
+ * CSR keeps axii stylesheets grouped by entry index (lower first, so a later entry on the same
+ * element wins). Emit SSR CSS in the same order so the cascade before and after hydrate matches.
+ * Array.prototype.sort is stable: within a group, first-seen order is kept.
+ */
+function joinSheetsByGroup(state: SsrStyleState, ids: string[]): string {
+    ids.sort((a, b) => (state.sheetGroups.get(a) ?? 0) - (state.sheetGroups.get(b) ?? 0))
+    return ids.map(id => state.sheets.get(id)!).join('\n')
 }
 
 function pushSsrComponent(type: Function) {
@@ -202,7 +216,8 @@ function collectElementStyles(
     const state = ssrStyle
     if (!state) return {classIds: [], inline: ''}
 
-    const rawEntries = Array.isArray(styleValue) ? styleValue : [styleValue]
+    // 与 CSR StyleManager.update 共用求值 + 展开：条目序号（F<n>）两边必须一致
+    const entries = evaluateStyleEntries(styleValue)
     const classIds: string[] = []
     const inlinePatches: string[] = []
     const staticBase = currentStyleStaticId(elementPath)
@@ -210,56 +225,58 @@ function collectElementStyles(
     // CSR: FunctionHost in path ⇒ no shared static base (getStyleSheetId always rolling)
     const sharedStaticBaseId = forceRolling ? null : staticBase
 
-    rawEntries.forEach((raw, index) => {
-        if (raw == null || raw === false) return
-        const isBound = !!(raw && (raw as any).__bound)
-        const entryIsDynamic = typeof raw === 'function' || !!(raw && (raw as any).__dynamic)
-        const evaluated = evaluateStyleSnapshot(raw)
-        if (evaluated == null || evaluated === false) return
-        const items = Array.isArray(evaluated) ? evaluated : [evaluated]
+    entries.forEach(({value: item, entryIsDynamic, isBound}, index) => {
+        if (item == null || typeof item === 'boolean') return
+        if (typeof item === 'string') {
+            inlinePatches.push(item)
+            return
+        }
+        if (typeof item !== 'object') return
 
-        for (const item of items) {
-            if (item == null || typeof item === 'boolean') continue
-            if (typeof item === 'string') {
-                inlinePatches.push(item)
-                continue
+        const {simpleStyles, nestedStyles} = splitStyleObject(item)
+        const usesSheet = isBound || Object.keys(nestedStyles).length > 0
+        if (!usesSheet) {
+            // Pure inline (no nested/bound): snapshot atom/function values (no FOUC)
+            const parts: string[] = []
+            for (const sk in simpleStyles) {
+                const sv = (simpleStyles as any)[sk]
+                if (sv == null || sv === false || sv === '') continue
+                const cssVal = stringifyCssValue(sk, sv)
+                if (!cssVal) continue
+                const cssKey = (sk[0] === '-' && sk[1] === '-')
+                    ? sk
+                    : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
+                parts.push(`${cssKey}:${cssVal}`)
             }
-            if (typeof item !== 'object') continue
+            if (parts.length) inlinePatches.push(parts.join(';'))
+            return
+        }
 
-            const {simpleStyles, nestedStyles} = splitStyleObject(item)
-            const usesSheet = isBound || Object.keys(nestedStyles).length > 0
-            if (!usesSheet) {
-                // Pure inline (no nested/bound): snapshot atom/function values (no FOUC)
-                const parts: string[] = []
-                for (const sk in simpleStyles) {
-                    const sv = (simpleStyles as any)[sk]
-                    if (sv == null || sv === false || sv === '') continue
-                    const cssVal = stringifyCssValue(sk, sv)
-                    if (!cssVal) continue
-                    const cssKey = (sk[0] === '-' && sk[1] === '-')
-                        ? sk
-                        : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
-                    parts.push(`${cssKey}:${cssVal}`)
-                }
-                if (parts.length) inlinePatches.push(parts.join(';'))
-                continue
+        // Mirror CSR StyleManager: F31 reactive-in-stylesheet → isDynamic → content id
+        // (rolling + I0 only when the content cannot be serialized). FunctionHost path
+        // (forceRolling) → content id too; its fallback is a rolling base without I0.
+        let isDynamic = entryIsDynamic || (usesSheet && containsReactiveStyleValue(item))
+        // F30: shared static id content-signature divergence → isDynamic → content id
+        // (rolling + I0 only when the content cannot be serialized)
+        if (usesSheet && !isDynamic && sharedStaticBaseId) {
+            const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
+            const signature = computeStyleSignature(item)
+            const existingSignature = state.idToStaticStyleSignature.get(sharedIdWithIndex)
+            if (signature === undefined || (existingSignature !== undefined && existingSignature !== signature)) {
+                isDynamic = true
+            } else if (existingSignature === undefined) {
+                state.idToStaticStyleSignature.set(sharedIdWithIndex, signature)
             }
+        }
 
-            // Mirror CSR StyleManager: F31 reactive-in-stylesheet → isDynamic (I-itor);
-            // FunctionHost path (forceRolling) only forces rolling base id, not I0.
-            let isDynamic = entryIsDynamic || (usesSheet && containsReactiveStyleValue(item))
-            // F30: shared static id content-signature divergence → rolling + I0
-            if (usesSheet && !isDynamic && sharedStaticBaseId) {
-                const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
-                const signature = computeStyleSignature(item)
-                const existingSignature = state.idToStaticStyleSignature.get(sharedIdWithIndex)
-                if (signature === undefined || (existingSignature !== undefined && existingSignature !== signature)) {
-                    isDynamic = true
-                } else if (existingSignature === undefined) {
-                    state.idToStaticStyleSignature.set(sharedIdWithIndex, signature)
-                }
-            }
-
+        // Mirror CSR: entries that cannot use the path id (dynamic / F30-diverged / FunctionHost
+        // path) get the content id — identical on both sides, so hydrate just keeps the class.
+        // Content that cannot be serialized falls back to the rolling id (CSR reclaims it).
+        const contentId = (isDynamic || forceRolling) ? contentStyleId(item, index) : undefined
+        let finalId: string
+        if (contentId !== undefined) {
+            finalId = contentId
+        } else {
             let styleSheetId: string
             if (isDynamic || forceRolling) {
                 styleSheetId = `${staticBase}R${state.rollingSeq++}`
@@ -267,13 +284,16 @@ function collectElementStyles(
                 styleSheetId = sharedStaticBaseId ?? staticBase
             }
             // CSR first frame for isDynamic uses …F{i}I0; emit the same so hydrate reclaims one class
-            const finalId = isDynamic ? `${styleSheetId}F${index}I0` : `${styleSheetId}F${index}`
-            const rules = generateStyleContent(`.${finalId}`, item)
-            const gated = gateStyleRules(rules)
-            if (gated) {
-                if (!state.sheets.has(finalId)) state.sheets.set(finalId, gated)
-                classIds.push(finalId)
+            finalId = isDynamic ? `${styleSheetId}F${index}I0` : `${styleSheetId}F${index}`
+        }
+        const rules = generateStyleContent(`.${finalId}`, item)
+        const gated = gateStyleRules(rules)
+        if (gated) {
+            if (!state.sheets.has(finalId)) {
+                state.sheets.set(finalId, gated)
+                state.sheetGroups.set(finalId, index)
             }
+            classIds.push(finalId)
         }
     })
 
@@ -1155,16 +1175,18 @@ function serializePortal(
         popSsrComponent()
     }
 
-    const portalStyleParts: string[] = []
+    let portalStyles = ''
     if (state) {
-        for (const [id, css] of state.sheets) {
-            if (!sheetsBefore.has(id)) {
-                portalStyleParts.push(css)
-                state.sheets.delete(id)
-            }
+        const portalIds: string[] = []
+        for (const id of state.sheets.keys()) {
+            if (!sheetsBefore.has(id)) portalIds.push(id)
+        }
+        portalStyles = joinSheetsByGroup(state, portalIds)
+        for (const id of portalIds) {
+            state.sheets.delete(id)
+            state.sheetGroups.delete(id)
         }
     }
-    const portalStyles = portalStyleParts.join('\n')
     if (portalStyles) assertNoRawTextTerminator(portalStyles, 'style')
     ssrPortals[key] = {html: portalOut.join(''), styles: portalStyles}
 }

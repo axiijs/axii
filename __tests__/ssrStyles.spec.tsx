@@ -14,17 +14,28 @@ import {
     RenderContext,
 } from '@framework'
 import {atom} from 'data0'
-import {beforeEach, describe, expect, test} from 'vitest'
+import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString, isAcceptableSingleCssRule} from '../src/ssr.js'
 import {markBoundProp} from '../src/StaticHost.js'
 
+// Content-addressed stylesheet class: `axs-<hash>F<entryIndex>` (see contentAddressedStyles.spec.tsx)
+const CONTENT_ID = /^axs-[0-9a-z]+F\d+$/
+
 describe('M-04 SSR styles', () => {
     let rootEl: HTMLElement
+    // Roots a test does not destroy itself. Destroy them before the next test wipes
+    //  adoptedStyleSheets: content-addressed stylesheets are shared by id, so a sheet still
+    //  referenced by a leaked root would be reused by the next test while no longer adopted.
+    let undestroyedRoots: {destroy(): void}[] = []
     beforeEach(() => {
         document.body.innerHTML = ''
         rootEl = document.createElement('div')
         document.body.appendChild(rootEl)
         document.adoptedStyleSheets = []
+    })
+    afterEach(() => {
+        for (const r of undestroyedRoots) r.destroy()
+        undestroyedRoots = []
     })
 
     test('nested &:hover and @media enter styles; hydrate migrates to adoptedStyleSheets', () => {
@@ -79,7 +90,7 @@ describe('M-04 SSR styles', () => {
         const el = rootEl.querySelector('#c') as HTMLElement
         const samples: string[] = []
         samples.push(getComputedStyle(el).color)
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         samples.push(getComputedStyle(el).color)
         expect(samples.every(c => c === 'rgb(10, 20, 30)')).toBe(true)
         expect(rootEl.querySelector('style[data-axii-ssr]')).toBeNull()
@@ -171,12 +182,12 @@ describe('M-04 SSR styles', () => {
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
         expect(getComputedStyle(rootEl.querySelector('#a')!).color).toBe('rgb(1, 2, 3)')
         expect(getComputedStyle(rootEl.querySelector('#b')!).color).toBe('rgb(4, 5, 6)')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         expect(getComputedStyle(rootEl.querySelector('#a')!).color).toBe('rgb(1, 2, 3)')
         expect(getComputedStyle(rootEl.querySelector('#b')!).color).toBe('rgb(4, 5, 6)')
     })
 
-    test('stylesheet id path: FunctionHost nested style SSR class reclaimable (matches CSR staticId+R*)', () => {
+    test('stylesheet id path: FunctionHost nested style SSR class equals CSR content id', () => {
         const show = atom(true as any)
         function App({}: any, {createElement}: RenderContext) {
             return <div id="r">{() => show()
@@ -195,17 +206,16 @@ describe('M-04 SSR styles', () => {
         const {html, styles} = renderToString(createElement(App, null as any))
         const ssrClass = (html.match(/id="inner"[^>]*class="([^"]+)"/) ||
             html.match(/class="([^"]+)"[^>]*id="inner"/))?.[1] || ''
-        // SSR rolling base must share CSR's staticId prefix so reclaimRollingStyleId can match
-        const csrBase = csrClass.replace(/I\d+$/, '').replace(/F\d+$/, '')
-        const ssrBase = ssrClass.replace(/F\d+$/, '')
-        expect(ssrBase.startsWith(csrBase.replace(/R\d+$/, '') + 'R') || ssrBase === csrBase).toBe(true)
+        // Static nested style under a function child: content-addressed on both sides, same id
+        expect(ssrClass).toMatch(CONTENT_ID)
+        expect(ssrClass).toBe(csrClass)
 
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         const hyd = rootEl.querySelector('#inner') as HTMLElement
         expect(getComputedStyle(hyd).color).toBe('rgb(7, 8, 9)')
-        // After hydrate, prefer single reclaim class — no orphan SSR id alongside a new rolling id
-        const styleClasses = Array.from(hyd.classList).filter(c => /R\d+F\d/.test(c))
+        // After hydrate, a single style class — no orphan SSR id alongside a new one
+        const styleClasses = Array.from(hyd.classList).filter(c => /F\d/.test(c))
         expect(styleClasses.length).toBe(1)
         expect(styleClasses[0]).toBe(ssrClass)
     })
@@ -235,7 +245,7 @@ describe('M-04 SSR styles', () => {
 
     // ─── k13-audit: F31 reactive-in-stylesheet + simple atom snapshot ───
 
-    test('F31: atom in nested stylesheet must SSR rolling (not static orphan)', () => {
+    test('F31: atom in nested stylesheet must SSR a content id (not static orphan)', () => {
         const color = atom('rgb(1, 2, 3)')
         function App({}: any, {createElement}: RenderContext) {
             return <div id="c" style={{color: color as any, '&:hover': {opacity: '0.5'}}}>x</div>
@@ -247,17 +257,17 @@ describe('M-04 SSR styles', () => {
         const csrClass = (csrEl.querySelector('#c') as HTMLElement).className
         csrRoot.destroy()
         csrEl.remove()
-        // CSR uses rolling + I-itor for reactive stylesheet values
-        expect(/R\d+F\d/.test(csrClass)).toBe(true)
+        // CSR keys reactive stylesheet values by evaluated content (not the static path id)
+        expect(csrClass).toMatch(CONTENT_ID)
 
         const {html, styles} = renderToString(createElement(App, null as any))
         expect(styles).toMatch(/rgb\(1,\s*2,\s*3\)/)
         const ssrClass = (html.match(/class="([^"]+)"/) || [])[1] || ''
-        // SSR must emit reclaimable rolling base (static App*PF0 orphans beside hydrate I-itor)
-        expect(/R\d+F/.test(ssrClass)).toBe(true)
+        // SSR must emit the same content id (a static App*PF0 would orphan beside the CSR id)
+        expect(ssrClass).toBe(csrClass)
 
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         const styleClasses = Array.from(el.classList).filter(c => /F\d/.test(c))
@@ -268,14 +278,14 @@ describe('M-04 SSR styles', () => {
         expect(Array.from(el.classList).filter(c => /F\d/.test(c)).length).toBe(1)
     })
 
-    test('F31 nested-only: atom inside &:hover still forces rolling', () => {
+    test('F31 nested-only: atom inside &:hover still forces a content id', () => {
         const color = atom('rgb(1, 2, 3)')
         function App({}: any, {createElement}: RenderContext) {
             return <div id="c" style={{opacity: '1', '&:hover': {color: color as any}}}>x</div>
         }
         const {html} = renderToString(createElement(App, null as any))
         const ssrClass = (html.match(/class="([^"]+)"/) || [])[1] || ''
-        expect(/R\d+F/.test(ssrClass)).toBe(true)
+        expect(ssrClass).toMatch(CONTENT_ID)
     })
 
     test('simple atom style without nested must SSR snapshot (no FOUC)', () => {
@@ -290,7 +300,7 @@ describe('M-04 SSR styles', () => {
         // Pre-hydrate must already reflect atom snapshot (Task req 1 / M-04 no FOUC)
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(el.getAttribute('style') || '').toMatch(/color/)
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         color('rgb(9, 8, 7)')
         expect(getComputedStyle(el).color).toBe('rgb(9, 8, 7)')
@@ -298,7 +308,7 @@ describe('M-04 SSR styles', () => {
 
     // ─── k14-audit: bound+reactive / array / function / CSR↔SSR I0 parity ───
 
-    test('bound+reactive: __bound nested with atom SSR rolling I0 and reclaim', () => {
+    test('bound+reactive: __bound nested with atom SSR content id and reclaim', () => {
         const color = atom('rgb(1, 2, 3)')
         const bound = markBoundProp({
             color: color as any,
@@ -310,10 +320,10 @@ describe('M-04 SSR styles', () => {
         const {html, styles} = renderToString(createElement(App, null as any))
         expect(styles).toMatch(/rgb\(1,\s*2,\s*3\)/)
         const ssrClass = (html.match(/class="([^"]+)"/) || [])[1] || ''
-        expect(/R\d+F\d+I0/.test(ssrClass)).toBe(true)
+        expect(ssrClass).toMatch(CONTENT_ID)
 
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(Array.from(el.classList).filter(c => /F\d/.test(c))).toEqual([ssrClass])
@@ -331,10 +341,10 @@ describe('M-04 SSR styles', () => {
         }
         const {html, styles} = renderToString(createElement(App, null as any))
         expect(styles).toMatch(/rgb\(1,\s*2,\s*3\)/)
-        expect(/R\d+F0I0/.test((html.match(/class="([^"]+)"/) || [])[1] || '')).toBe(true)
+        expect((html.match(/class="([^"]+)"/) || [])[1] || '').toMatch(/^axs-[0-9a-z]+F0$/)
         expect(html).toMatch(/font-weight:\s*700|font-weight:700/)
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(getComputedStyle(el).fontWeight).toMatch(/700|bold/)
@@ -342,7 +352,7 @@ describe('M-04 SSR styles', () => {
         expect(getComputedStyle(el).color).toBe('rgb(9, 8, 7)')
     })
 
-    test('function style returning nested+atom forces rolling reclaim', () => {
+    test('function style returning nested+atom gets a content id and reclaim', () => {
         const color = atom('rgb(1, 2, 3)')
         function App({}: any, {createElement}: RenderContext) {
             return <div id="c" style={() => ({
@@ -352,9 +362,9 @@ describe('M-04 SSR styles', () => {
         }
         const {html, styles} = renderToString(createElement(App, null as any))
         const ssrClass = (html.match(/class="([^"]+)"/) || [])[1] || ''
-        expect(/R\d+F/.test(ssrClass)).toBe(true)
+        expect(ssrClass).toMatch(CONTENT_ID)
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        hydrateRoot(rootEl, createElement(App, null as any))
+        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(Array.from(el.classList).filter(c => /F\d/.test(c)).length).toBe(1)
@@ -362,7 +372,7 @@ describe('M-04 SSR styles', () => {
         expect(getComputedStyle(el).color).toBe('rgb(9, 8, 7)')
     })
 
-    test('F31 CSR/SSR class shape parity (staticId + R* + F*I0)', () => {
+    test('F31 CSR/SSR class parity (same content id on both sides)', () => {
         const color = atom('rgb(1, 2, 3)')
         function App({}: any, {createElement}: RenderContext) {
             return <div id="c" style={{color: color as any, '&:hover': {opacity: '0.5'}}}>x</div>
@@ -377,9 +387,7 @@ describe('M-04 SSR styles', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         const ssrClass = (html.match(/class="([^"]+)"/) || [])[1] || ''
-        expect(ssrClass).toMatch(/I0$/)
-        expect(csrClass).toMatch(/I0$/)
-        const stripR = (c: string) => c.replace(/R\d+/, 'R#')
-        expect(stripR(ssrClass)).toBe(stripR(csrClass))
+        expect(ssrClass).toMatch(CONTENT_ID)
+        expect(ssrClass).toBe(csrClass)
     })
 })

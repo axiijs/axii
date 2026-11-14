@@ -31,6 +31,10 @@ import {rematerializeDeferredFragmentChildren} from "./DOM";
 import {
     computeStyleSignature,
     containsReactiveStyleValue,
+    contentStyleId,
+    evaluateStyleEntries,
+    isBoundProp,
+    isDynamicProp,
     generateStyleContent as generateStyleContentShared,
     generateInlineAnimationContent as generateInlineAnimationContentShared,
     getComponentTypeId,
@@ -166,17 +170,13 @@ export function markDynamicProp(obj: any) {
 
 // CAUTION 这些判断必须对 null/undefined 安全，
 //  条件样式 style={cond ? {...} : null} 是很自然的写法，value 可能是 null。
-export function isBoundProp(obj: any) {
-    return !!(obj && obj['__bound'])
-}
+// isBoundProp / isDynamicProp 定义在 styleSerialize（CSR 与 SSR 共用的唯一一份），这里再导出保持公开 API 不变
+export {isBoundProp, isDynamicProp}
 
 export function isAopProp(obj: any) {
     return !!(obj && obj['__aop'])
 }
 
-export function isDynamicProp(obj: any) {
-    return !!(obj && obj['__dynamic'])
-}
 
 /** Reclaim SSR rolling base id (`${staticId}R…`) from element classList during hydrate. */
 function reclaimRollingStyleId(el: HTMLElement, staticId: string): string | null {
@@ -234,7 +234,15 @@ class StyleManager {
     //  而不是 hostPath 上的父级 host：列表行共享同一个 hostPath 节点（RxListHost），
     //  按父级记账时稳态 churn（列表始终非空）的行永远等不到计数归零，
     //  被销毁行的 stylesheet 引用计数不释放，adoptedStyleSheets 无上限增长。
-    public hostToStyleIds = new WeakMap<Host, Set<string>>()
+    //  值是「id → 本 host 内的使用次数」：内容 id 跨元素共用，同一个 host 里的多个元素
+    //  （或同一元素先后换回同一份内容）会多次引用同一个 id，按 Set 记账会让引用计数只减一次、表永远不删。
+    public hostToStyleIds = new WeakMap<Host, Map<string, number>>()
+    // 元素 → 各条目当前挂着的内容 id（下标 = 条目序号）。内容 id 不进 elToStyleClassIds，
+    //  只用这一份数组记账：重算时同一下标换了 id 就释放旧的，条目消失/改走行内就释放。
+    public elToContentStyleIds = new WeakMap<HTMLElement, (string | undefined)[]>()
+    // 表 → 条目序号（层叠分组）。adoptedStyleSheets 里 axii 的表按序号从小到大排，
+    //  同一元素上写在后面的条目赢；不认识的表（别的库、宿主自己的）不在这里，插入时原样跳过。
+    public sheetToGroup = new WeakMap<CSSStyleSheet, number>()
     public hostMountCount = new WeakMap<Host, number>()
     public idToRefCount = new Map<string, number>()
     // 共享静态 stylesheet id -> 内容签名。「相同 path ⇒ 相同样式内容」只是猜测：
@@ -276,7 +284,7 @@ class StyleManager {
     stringifyStyleObject(styleObject: { [k: string]: any }): string {
         return stringifyStyleObjectShared(styleObject)
     }
-    public createStyleSheet(id:string, styleObject:StyleObject) {
+    public createStyleSheet(id:string, styleObject:StyleObject, group: number = 0) {
         const styleSheet = new CSSStyleSheet()
         // CAUTION 逐条 insertRule，而不是把所有规则拼成一个字符串 replaceSync：
         //  stylesheet 路径（嵌套样式/boundProps/keyframes）的值经 stringifyStyleObject
@@ -301,8 +309,30 @@ class StyleManager {
                 }
             }
         }
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
+        this.insertStyleSheet(styleSheet, group)
         return styleSheet
+    }
+    // CAUTION 仍用 setter 整体赋值（不用 push/splice）：宿主会挂 adoptedStyleSheets 的 setter
+    //  钩子做跨文档镜像，绕过 setter 的写法它看不到。内容共用之后表数是「不同内容的种数」，
+    //  整体赋值的开销不再随元素数增长。
+    //  插入位置：排在第一张「序号更大」的 axii 表之前；从尾部往前找，遇到序号不大于自己的
+    //  axii 表就停（axii 的表始终有序，前面不可能再有更大的）。常见情形（只有 F0）一步结束。
+    insertStyleSheet(styleSheet: CSSStyleSheet, group: number) {
+        this.sheetToGroup.set(styleSheet, group)
+        const current = document.adoptedStyleSheets
+        let insertAt = current.length
+        for (let i = current.length - 1; i >= 0; i--) {
+            const existingGroup = this.sheetToGroup.get(current[i])
+            if (existingGroup === undefined) continue
+            if (existingGroup > group) {
+                insertAt = i
+            } else {
+                break
+            }
+        }
+        document.adoptedStyleSheets = insertAt === current.length ?
+            [...current, styleSheet] :
+            [...current.slice(0, insertAt), styleSheet, ...current.slice(insertAt)]
     }
     deleteStyleSheet(id: string): CSSStyleSheet | null {
         const styleSheet = this.styleScripts.get(id)
@@ -319,12 +349,29 @@ class StyleManager {
     collect(host: Host, id: string) {
         let ids = this.hostToStyleIds.get(host)
         if (!ids) {
-            ids = new Set()
+            ids = new Map()
             this.hostToStyleIds.set(host, ids)
             trackStyleHostStateCreated()
         }
-        ids.add(id)
+        ids.set(id, (ids.get(id) ?? 0) + 1)
         this.updateRefCount(id, +1)
+    }
+    // 内容 id 的一次使用结束（元素换了内容、条目消失或改走行内）：引用归零立即删表。
+    //  内容 id 没有滚动 buffer：新旧内容各是一张表，元素换过去之后旧表没人用就该走。
+    release(host: Host, id: string) {
+        const ids = this.hostToStyleIds.get(host)
+        if (ids) {
+            const uses = (ids.get(id) ?? 0) - 1
+            if (uses > 0) ids.set(id, uses)
+            else ids.delete(id)
+        }
+        if (this.updateRefCount(id, -1) <= 0) {
+            const styleSheet = this.styleScripts.get(id)
+            this.styleScripts.delete(id)
+            if (styleSheet) {
+                document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== styleSheet)
+            }
+        }
     }
     mount(host: Host) {
         const count = ((this.hostMountCount.get(host) ?? 0) + 1)
@@ -345,24 +392,28 @@ class StyleManager {
         if (this.hostToStyleIds.has(host)) {
             trackStyleHostStateDestroyed()
         }
-        const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
-        const styleSheetsToDelete = new Set<CSSStyleSheet>()
-        ids.forEach(id => {
-            const count = this.updateRefCount(id, -1)
+        const ids = this.hostToStyleIds.get(host)
+        if (!ids) return
+        let styleSheetsToDelete: Set<CSSStyleSheet> | undefined
+        for (const [id, uses] of ids) {
+            const count = this.updateRefCount(id, -uses)
             if (count <= 0) {
                 const styleSheet = this.styleScripts.get(id)
                 if (styleSheet) {
-                    styleSheetsToDelete.add(styleSheet)
+                    (styleSheetsToDelete ??= new Set()).add(styleSheet)
                 }
                 this.styleScripts.delete(id);
                 // 共享静态 id 的内容签名随 stylesheet 一起退役（rolling id 不在签名表里，delete 无害）
                 this.idToStaticStyleSignature.delete(id)
             }
-        })
+        }
         this.hostToStyleIds.delete(host)
-        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => {
-            return !styleSheetsToDelete.has(sheet);
-        });
+        // CAUTION 没有要删的表就不赋值：共用之后列表行卸载时绝大多数只是减引用，
+        //  每行都整体赋值一次会让卸载 N 行变成 O(N × 表数)，并让宿主的 setter 钩子白跑 N 次。
+        if (styleSheetsToDelete) {
+            const toDelete = styleSheetsToDelete
+            document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => !toDelete.has(sheet))
+        }
     }
     updateRefCount(id: string, delta: number): number {
         const count = (this.idToRefCount.get(id) ?? 0) + delta
@@ -388,28 +439,15 @@ class StyleManager {
         if (ids) {
             for (const id of ids) el.classList.add(id)
         }
+        const contentIds = this.elToContentStyleIds.get(el)
+        if (contentIds) {
+            for (const id of contentIds) if (id !== undefined) el.classList.add(id)
+        }
     }
     update(owner: Host, hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
         // style 中有嵌套写法/animation/at-rules 等原生不能识别的，都会当做 unhandledAttr 走到这里。当然也包括 atom 和 function
-        const rawStyleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
-        // CAUTION 先求值再展开：响应式 style 函数可以返回数组（() => [base, extra] 是自然写法）。
-        //  不展开的话数组会被 splitStyleObject 当成 {0: {...}, 1: {...}} 的嵌套样式，
-        //  生成 `.cls 0 {...}` 这类非法 selector，整个样式静默失效。
-        const evaluatedEntries: {value: any, entryIsDynamic: boolean, isBound: boolean}[] = []
-        for (const raw of rawStyleObjects) {
-            const isBound = isBoundProp(raw)
-            const entryIsDynamic = typeof raw === 'function' || isDynamicProp(raw)
-            const evaluated = typeof raw === 'function' ? raw() : raw
-            if (Array.isArray(evaluated)) {
-                for (const item of evaluated) {
-                    // 函数返回的数组项自身也可能是函数/atom
-                    const evaluatedItem = typeof item === 'function' ? item() : item
-                    evaluatedEntries.push({value: evaluatedItem, entryIsDynamic: true, isBound: isBound || isBoundProp(item)})
-                }
-            } else {
-                evaluatedEntries.push({value: evaluated, entryIsDynamic, isBound})
-            }
-        }
+        // 求值 + 展开与 SSR 共用一份（条目序号两边必须一致，内容 id 里带序号）。
+        const evaluatedEntries = evaluateStyleEntries(styleObject)
 
         const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
         // 路径信息对所有条目相同，只算一次（之前每个条目都重新走一遍 hostPath）
@@ -422,15 +460,14 @@ class StyleManager {
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
             const usesStyleSheet = isBound || Object.keys(nestedStyles).length > 0
             // CAUTION stylesheet 路径（嵌套样式/boundProps）里出现 atom/函数值时必须按动态样式处理
-            //  （滚动重建 stylesheet）：stylesheet 只有第一次/滚动时才重建。必须扫描整个对象而不是
-            //  只扫 nestedStyles——atom 出现在 simple 部分（{color: colorAtom, '&:hover': {...}}）时
-            //  同样会进 stylesheet，按静态处理的话第一次生效后就永远不再更新（F31）。
+            //  （每次重算重新取内容）。必须扫描整个对象而不是只扫 nestedStyles——atom 出现在
+            //  simple 部分（{color: colorAtom, '&:hover': {...}}）时同样会进 stylesheet（F31）。
             //  普通（inline）样式不需要扫：它每次 update 都整体重新赋值。
             let isDynamic = entryIsDynamic || (usesStyleSheet && containsReactiveStyleValue(evaluatedStyleObject))
             // CAUTION 共享静态 stylesheet id 的内容一致性校验（F30）：「相同 path ⇒ 相同样式内容」
             //  对携带实例数据的静态样式（style={{'& b': {color: item.color}}} 的列表行/同类型兄弟组件）
-            //  不成立。第一个实例登记内容签名，后续实例签名不一致时退化为元素独享的 rolling id，
-            //  否则它们会静默套用第一个实例的 stylesheet。签名算不出来（循环引用等）时同样退化，保证正确性。
+            //  不成立。第一个实例登记内容签名，后续实例签名不一致时不再用路径 id（改用内容 id），
+            //  否则它们会静默套用第一个实例的 stylesheet。签名算不出来（循环引用等）时同样不用路径 id。
             if (usesStyleSheet && !isDynamic && sharedStaticBaseId) {
                 const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
                 const signature = computeStyleSignature(evaluatedStyleObject)
@@ -441,23 +478,31 @@ class StyleManager {
                     this.idToStaticStyleSignature.set(sharedIdWithIndex, signature)
                 }
             }
-            const styleSheetId = isDynamic ?
-                this.getStyleSheetId(hostPath, elementPath, el) :
-                // FunctionHost path (sharedStaticBaseId null): keep el=null for CSR (no elToStyleId
-                // cleanup), but pass el as hydrateReclaimEl so SSR rolling class is reused.
-                (sharedStaticBaseId ?? this.getStyleSheetId(hostPath, elementPath, null, el))
-            const styleSheetIdWithIndex = `${styleSheetId}F${index}`
-            const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
+            // 不能用路径 id 的条目（动态、F30 退化、路径上有函数子节点）按内容定 id：
+            //  同内容的元素共用一张表。内容序列化不了才退回逐元素的 rolling id（今天的路径）。
+            const contentId = usesStyleSheet && (isDynamic || !sharedStaticBaseId) ?
+                contentStyleId(evaluatedStyleObject, index) :
+                undefined
+            let styleSheetIdWithIndex: string | undefined
+            let styleSheetIdWithItorNum: string | undefined
+            if (usesStyleSheet && contentId === undefined) {
+                const styleSheetId = isDynamic ?
+                    this.getStyleSheetId(hostPath, elementPath, el) :
+                    // FunctionHost path (sharedStaticBaseId null): keep el=null for CSR (no elToStyleId
+                    // cleanup), but pass el as hydrateReclaimEl so SSR rolling class is reused.
+                    (sharedStaticBaseId ?? this.getStyleSheetId(hostPath, elementPath, null, el))
+                styleSheetIdWithIndex = `${styleSheetId}F${index}`
+                styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
+            }
             return {
               index,
               isDynamic,
-              isBound,
-              styleSheetId,
+              usesStyleSheet,
+              contentId,
               styleSheetIdWithIndex,
               styleSheetIdWithItorNum,
               evaluatedStyleObject,
               simpleStyles,
-              nestedStyles
             }
         })
         // 是否应该更新 itor？
@@ -466,17 +511,33 @@ class StyleManager {
         const stylePatches: StyleObject[] = []
         // 本轮仍然有效的 rolling stylesheet class（形态翻转清理时用来判断哪些是残留）
         let activeRollingClassIds: Set<string>|undefined
+        let contentIds = this.elToContentStyleIds.get(el)
         splitStyleObjects.forEach(so => {
             // 如果是 boundProps，优先使用 stylesheet，因为 boundProps 通常是组件级别的基础样式
             // 如果包含 nested style，只能使用 stylesheet，因为依赖于 CSS selector
-            const shouldUseStyleSheet = so.isBound || Object.keys(so.nestedStyles).length > 0;
-            if (shouldUseStyleSheet) {
+            if (so.contentId !== undefined) {
+                const previousId = contentIds?.[so.index]
+                // 内容没变：class、引用、表都不动
+                if (previousId === so.contentId) return
+                if (!this.styleScripts.has(so.contentId)) {
+                    this.styleScripts.set(so.contentId, this.createStyleSheet(so.contentId, so.evaluatedStyleObject, so.index))
+                }
+                el.classList.add(so.contentId)
+                this.collect(owner, so.contentId)
+                if (!contentIds) this.elToContentStyleIds.set(el, contentIds = [])
+                contentIds[so.index] = so.contentId
+                if (previousId !== undefined) {
+                    el.classList.remove(previousId)
+                    this.release(owner, previousId)
+                }
+            } else if (so.usesStyleSheet) {
                 // 如果样式是动态的，则使用 itor 滚动 classname
                 // 这里「动态」意味着它可能是
                 // - Atom 或者 function
                 // - 来自 boundProps 并且是通过 function evaluate 获得
+                // （内容 id 能算出来时不会走到这里，只剩序列化失败的条目）
                 const shouldUseRollingStyleId = so.isDynamic
-                const finalStyleSheetId = shouldUseRollingStyleId ? so.styleSheetIdWithItorNum : so.styleSheetIdWithIndex
+                const finalStyleSheetId = shouldUseRollingStyleId ? so.styleSheetIdWithItorNum! : so.styleSheetIdWithIndex!
                 if (shouldUseRollingStyleId) {
                     (activeRollingClassIds ??= new Set()).add(finalStyleSheetId)
                 }
@@ -484,7 +545,7 @@ class StyleManager {
                     shouldUpdateItor = true
 
                     // 如果是第一次应用样式，或者需要滚动生成样式，则生成 stylesheet
-                    const styleSheet = this.styleScripts.get(finalStyleSheetId) ?? this.createStyleSheet(finalStyleSheetId, so.evaluatedStyleObject)
+                    const styleSheet = this.styleScripts.get(finalStyleSheetId) ?? this.createStyleSheet(finalStyleSheetId, so.evaluatedStyleObject, so.index)
                     el.classList.add(finalStyleSheetId)
                     this.trackStyleClassAdded(el, finalStyleSheetId)
                     // 保存 stylesheet，更新引用计数
@@ -516,6 +577,18 @@ class StyleManager {
                 // nestedStyles 肯定是空的，这里就不用管了
             }
         })
+        // 内容 id 的「形态翻转」清理：上一轮某个条目挂着内容 id，这一轮它消失了、改走行内、
+        //  或退回了 rolling 路径——摘掉 class、释放引用，否则旧表里的嵌套规则永远生效。
+        if (contentIds) {
+            for (let i = 0; i < contentIds.length; i++) {
+                const id = contentIds[i]
+                if (id !== undefined && splitStyleObjects[i]?.contentId === undefined) {
+                    el.classList.remove(id)
+                    contentIds[i] = undefined
+                    this.release(owner, id)
+                }
+            }
+        }
         // CAUTION 响应式 style 的「形态翻转」清理：上一轮走了 stylesheet 路径（rolling class
         //  挂在元素上），这一轮同一个条目变成了纯 inline / null / 条目消失时，必须把残留的
         //  rolling class 摘掉，否则旧 stylesheet 里的嵌套规则（:hover、子元素选择器等）永远生效。
