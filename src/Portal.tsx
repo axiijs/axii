@@ -41,8 +41,15 @@ export function resolvePortalExportKey(container: PortalContainerRef, portalKey?
     throw new Error('[axii] Portal has no export key (need portalKey, string container, or non-empty container.id)')
 }
 
+// CAUTION 不能用 instanceof HTMLElement：同源 iframe 里的元素（把弹层挂到外层页面、或反过来）
+//  来自另一个 realm，它的原型链上是那个窗口的 HTMLElement，instanceof 恒为 false。
+//  4.6.8 直接把 container 当元素用，这类调用方一直能工作；按 nodeType 判断保持这个语义。
+function isElementContainer(container: unknown): container is HTMLElement {
+    return container != null && typeof container === 'object' && (container as {nodeType?: unknown}).nodeType === 1
+}
+
 function resolveCsrContainer(container: PortalContainerRef): HTMLElement {
-    if (typeof HTMLElement !== 'undefined' && container instanceof HTMLElement) {
+    if (isElementContainer(container)) {
         return container
     }
     if (typeof container === 'string') {

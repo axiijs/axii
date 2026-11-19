@@ -55,6 +55,30 @@ describe('portal', () => {
         expect(portalContainer.innerText).toBe('portal content updated\napp context')
     })
 
+    test('container element from another same-origin document (iframe) is used as is', async () => {
+        // 同源 iframe 的元素来自另一个 realm，instanceof HTMLElement 为 false；
+        //  4.7.0 把它当成 {id} 去本文档 getElementById，找不到就抛错。
+        const frame = document.createElement('iframe')
+        document.body.appendChild(frame)
+        const foreignDocument = frame.contentDocument!
+        const foreignContainer = foreignDocument.createElement('div')
+        foreignContainer.id = 'only-in-the-other-document'
+        foreignDocument.body.appendChild(foreignContainer)
+        expect(foreignContainer instanceof HTMLElement).toBe(false)
+
+        const text = atom('in the other document')
+        function App({}, { createElement, createPortal }: RenderContext) {
+            return <div>{createPortal(() => <span>{text}</span>, foreignContainer)}</div>
+        }
+        root.render(<App />)
+        expect(foreignContainer.textContent).toBe('in the other document')
+        text('updated')
+        expect(foreignContainer.textContent).toBe('updated')
+        root.destroy()
+        expect(foreignContainer.textContent).toBe('')
+        frame.remove()
+    })
+
     test('should warn if reuse content', async () => {
         const warn = vi.spyOn(console, 'error')
         const visible = atom(true)
