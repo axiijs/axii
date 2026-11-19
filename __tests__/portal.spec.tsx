@@ -79,6 +79,53 @@ describe('portal', () => {
         frame.remove()
     })
 
+    test('an ID descriptor with a nodeType field is resolved by ID', () => {
+        portalContainer.id = 'modal'
+        const container = {id: 'modal', nodeType: 1}
+        function App({}, {createPortal}: RenderContext) {
+            return createPortal(() => <span>portal content</span>, container)
+        }
+
+        root.render(<App />)
+        expect(portalContainer.textContent).toBe('portal content')
+        root.destroy()
+    })
+
+    test('a form with a named nodeType control is used as the container', () => {
+        const form = document.createElement('form')
+        const input = document.createElement('input')
+        input.name = 'nodeType'
+        form.appendChild(input)
+        document.body.appendChild(form)
+        expect(form.nodeType).toBe(input)
+
+        function App({}, {createPortal}: RenderContext) {
+            return createPortal(() => <span>portal content</span>, form)
+        }
+
+        root.render(<App />)
+        expect(form.textContent).toBe('portal content')
+        root.destroy()
+    })
+
+    test('an adopted iframe element is used while detached', () => {
+        const frame = document.createElement('iframe')
+        document.body.appendChild(frame)
+        const container = document.adoptNode(frame.contentDocument!.createElement('div'))
+        expect(container.ownerDocument).toBe(document)
+        expect(container instanceof HTMLElement).toBe(false)
+        expect(container.isConnected).toBe(false)
+
+        function App({}, {createPortal}: RenderContext) {
+            return createPortal(() => <span>portal content</span>, container)
+        }
+
+        root.render(<App />)
+        expect(container.textContent).toBe('portal content')
+        root.destroy()
+        frame.remove()
+    })
+
     test('should warn if reuse content', async () => {
         const warn = vi.spyOn(console, 'error')
         const visible = atom(true)
