@@ -146,7 +146,7 @@ function App() {
 
 const { html, styles, portals } = renderToString(<App />)
 // html ends with <!--root-->. Put `styles` in <style data-axii-ssr>.
-// Write portals[key].html into the matching container before hydrate.
+// Write each portal's html and its own <style data-axii-ssr> into the matching container.
 ```
 
 ```jsx
@@ -169,6 +169,7 @@ hydrateRoot(root, <App />)
 
 - Keep the component tree and reactive data **identical** between `renderToString` and `hydrateRoot`. axii does **not** dehydrate application state.
 - **Portal** under SSR: use `container` as `string | { id }` (or `portalKey`). Content is in `portals[key]`; pass filled elements via `hydrateRoot(..., { portals })`.
+- Later `style` array entries come later in stylesheet order. Within one entry index, sheets with direct declarations come first, followed by sheets with only nested rules. Each group uses a stable order based on the serialized CSS. The browser still applies CSS specificity and `!important`.
 - **lazy**: the server always emits the fallback (or `null`) and does not await `load()`; the client starts loading after hydrate.
 - Not in scope: streaming (`renderToStream`), app-state serialization.
 - Design detail and host/marker contracts: `docs/ssr-support/`.

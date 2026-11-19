@@ -77,6 +77,7 @@ function rebuildTextAtCursor(value: string, expectedDesc: string, actualDesc: st
 }
 
 let hydrating = false
+let claimedRollingStyleBases: WeakMap<Element, string> | undefined
 let hydrateRootEl: ParentNode | null = null
 /** hydrateRoot options.portals — key → already-filled container (§3.3.d) */
 let hydratePortalEls: Record<string, HTMLElement> | undefined
@@ -115,6 +116,7 @@ export function beginHydration(container: ParentNode, portals?: Record<string, H
 
 export function endHydration(): void {
     hydrating = false
+    claimedRollingStyleBases = undefined
     hydrateRootEl = null
     hydratePortalEls = undefined
     hydrateRootStack.length = 0
@@ -122,6 +124,14 @@ export function endHydration(): void {
     childCursorIndex = 0
     childCursorStack.length = 0
     elementChildCursorDepth = 0
+}
+
+export function rememberHydrateRollingStyleBase(el: Element, base: string): void {
+    (claimedRollingStyleBases ??= new WeakMap()).set(el, base)
+}
+
+export function getHydrateRollingStyleBase(el: Element): string | undefined {
+    return claimedRollingStyleBases?.get(el)
 }
 
 /** Switch claim root to a Portal container; must be paired with popHydrateRoot. */
