@@ -46,23 +46,69 @@ export function generateStyleStaticId(
     return `${name}${typeId ?? ''}P${pathPart}`
 }
 
-// F30：静态样式对象 → 内容签名。boundProps 等跨实例共享引用直接命中；
-//  JSX 字面量随元素同生共死，WeakMap 不延长其生命周期。
-//  key 顺序不同的等价对象会得到不同签名——代价只是退化为元素独享 stylesheet。
-const styleSignatureCache = new WeakMap<object, string>()
-export function computeStyleSignature(styleObject: any): string | undefined {
-    if (typeof styleObject !== 'object' || styleObject === null) return undefined
-    const cached = styleSignatureCache.get(styleObject)
-    if (cached !== undefined) return cached
-    let signature: string | undefined
-    try {
-        signature = JSON.stringify(styleObject)
-        /* v8 ignore next 3 */
-    } catch {
-        signature = undefined
+// cyrb53：53 位、Node 与浏览器结果相同。32 位哈希在几千种内容时碰撞概率已到千分之几，
+//  碰撞的后果是两种内容共用一张表（静默用错样式），所以用 53 位。
+export function hashStyleContent(str: string): string {
+    let h1 = 0xdeadbeef
+    let h2 = 0x41c6ce57
+    for (let i = 0; i < str.length; i++) {
+        const ch = str.charCodeAt(i)
+        h1 = Math.imul(h1 ^ ch, 2654435761)
+        h2 = Math.imul(h2 ^ ch, 1597334677)
     }
-    if (signature !== undefined) styleSignatureCache.set(styleObject, signature)
-    return signature
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507)
+    h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507)
+    h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
+}
+
+export const CONTENT_STYLE_ID_PREFIX = 'axs-'
+export const SSR_STYLE_CLASSES_ATTRIBUTE = 'data-axii-ssr-style-classes'
+const ACTIVE_STYLE_ANCHOR = `:where(:not([${SSR_STYLE_CLASSES_ATTRIBUTE}]))`
+
+export function contentStyleId(signature: string, entryIndex: number): string {
+    return `${CONTENT_STYLE_ID_PREFIX}${hashStyleContent(signature)}F${entryIndex}`
+}
+
+// CAUTION 判定只此一份：markBoundProp / markDynamicProp（StaticHost）写的不可枚举标记。
+//  必须对 null/undefined 安全，条件样式 style={cond ? {...} : null} 是很自然的写法。
+export function isBoundProp(obj: any) {
+    return !!(obj && obj['__bound'])
+}
+
+export function isDynamicProp(obj: any) {
+    return !!(obj && obj['__dynamic'])
+}
+
+export type EvaluatedStyleEntry = {value: any, entryIsDynamic: boolean, isBound: boolean}
+
+/**
+ * Evaluate + flatten a `style` value into entries. The entry's position in the returned
+ * array is its entry index (`F<n>` in class ids, cascade group in adoptedStyleSheets).
+ * Shared by StyleManager (CSR) and SSR so both number entries identically.
+ */
+export function evaluateStyleEntries(styleValue: any): EvaluatedStyleEntry[] {
+    // CAUTION 先求值再展开：响应式 style 函数可以返回数组（() => [base, extra] 是自然写法）。
+    //  不展开的话数组会被 splitStyleObject 当成 {0: {...}, 1: {...}} 的嵌套样式，
+    //  生成 `.cls 0 {...}` 这类非法 selector，整个样式静默失效。
+    const rawStyleObjects = Array.isArray(styleValue) ? styleValue : [styleValue]
+    const entries: EvaluatedStyleEntry[] = []
+    for (const raw of rawStyleObjects) {
+        const isBound = isBoundProp(raw)
+        const entryIsDynamic = typeof raw === 'function' || isDynamicProp(raw)
+        const evaluated = typeof raw === 'function' ? raw() : raw
+        if (Array.isArray(evaluated)) {
+            for (const item of evaluated) {
+                // 函数返回的数组项自身也可能是函数/atom
+                const evaluatedItem = typeof item === 'function' ? item() : item
+                entries.push({value: evaluatedItem, entryIsDynamic: true, isBound: isBound || isBoundProp(item)})
+            }
+        } else {
+            entries.push({value: evaluated, entryIsDynamic, isBound})
+        }
+    }
+    return entries
 }
 
 const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
@@ -74,15 +120,53 @@ function autoUnit(num: number | string): string {
     return `${num}px`
 }
 
-/** CSS value stringification for stylesheet rules (atom/fn already evaluated by caller). */
-export function stringifyCssValue(k: string, v: any): string {
-    if (typeof v === 'function') v = v()
+type StylePreparationState = {isReactive: boolean, shareable: boolean}
+
+function evaluateCssValue(value: any, state?: StylePreparationState): any {
+    if (typeof value !== 'function') return value
+    if (state) state.isReactive = true
+    return value()
+}
+
+function hasUnsupportedOpaqueState(value: object, ancestors?: Set<object>): boolean {
+    if (ancestors?.has(value)) return true
+    for (const key of Object.keys(value)) {
+        const property = Object.getOwnPropertyDescriptor(value, key)
+        if (!property || !('value' in property)) return true
+        const member = property.value
+        if (member === value || typeof member === 'bigint') return true
+        if (member && typeof member === 'object') {
+            ancestors ??= new Set()
+            ancestors.add(value)
+            const unsupported = hasUnsupportedOpaqueState(member, ancestors)
+            ancestors.delete(value)
+            if (unsupported) return true
+        }
+    }
+    return false
+}
+
+function resolveCssValue(value: any, state?: StylePreparationState): any {
+    value = evaluateCssValue(value, state)
+    // Preserve the rolling fallback for values that could not be serialized before,
+    // without invoking getters or toJSON to build the identity.
+    if (state?.shareable && (typeof value === 'bigint' || (
+        value && typeof value === 'object' && !Array.isArray(value) && hasUnsupportedOpaqueState(value)
+    ))) {
+        state.shareable = false
+    }
+    return value
+}
+
+/** CSS value stringification shared by stylesheet rules and SSR inline styles. */
+export function stringifyCssValue(k: string, v: any, state?: StylePreparationState): string {
+    v = resolveCssValue(v, state)
     if (v === undefined || v === null || typeof v === 'boolean') return ''
     if (Array.isArray(v)) {
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
             const parts: string[] = []
-            for (let i of v) {
-                if (typeof i === 'function') i = i()
+            for (const item of v) {
+                const i = resolveCssValue(item, state)
                 if (i === undefined || i === null || typeof i === 'boolean' || i === '') continue
                 parts.push(String(i))
             }
@@ -90,7 +174,7 @@ export function stringifyCssValue(k: string, v: any): string {
         } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
             return `${v[0]}${v[1]}`
         } else {
-            return v.map((i: any) => stringifyCssValue(k, i ?? 0)).join(' ')
+            return v.map((i: any) => stringifyCssValue(k, i ?? 0, state)).join(' ')
         }
     }
     if (v === '') return ''
@@ -101,13 +185,21 @@ export function stringifyCssValue(k: string, v: any): string {
     return (typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v) : String(v)
 }
 
-export function stringifyStyleObject(styleObject: StyleObject): string {
-    return Object.entries(styleObject).map(([key, value]) => {
-        const property = (key[0] === '-' && key[1] === '-')
-            ? key
-            : key.replace(/([A-Z])/g, '-$1').toLowerCase()
-        return `${property}:${stringifyCssValue(key, value)};`
-    }).join('\n')
+function stringifyDeclaration(key: string, value: any, state?: StylePreparationState): string {
+    const property = (key[0] === '-' && key[1] === '-')
+        ? key
+        : key.replace(/([A-Z])/g, '-$1').toLowerCase()
+    return `${property}:${stringifyCssValue(key, value, state)};`
+}
+
+export function stringifyStyleObject(styleObject: StyleObject, state?: StylePreparationState): string {
+    return Object.entries(styleObject).map(([key, value]) => stringifyDeclaration(key, value, state)).join('\n')
+}
+
+export function stringifyKeyFrameObject(keyframeObject: StyleObject, state?: StylePreparationState): string {
+    return Object.entries(keyframeObject).map(([frame, body]) => `${frame} {
+                ${stringifyStyleObject(body, state)}
+            }`).join('\n')
 }
 
 export function isNestedStyleObject(key: string, styleObject: any): boolean {
@@ -124,10 +216,11 @@ export function splitStyleObject(styleObject: StyleObject): {simpleStyles: Style
     const simpleStyles: StyleObject = {}
     const nestedStyles: StyleObject = {}
     for (const key in styleObject) {
-        if (key === '@keyframes' || key === 'animation' || isNestedStyleObject(key, styleObject[key])) {
-            nestedStyles[key] = styleObject[key]
+        const value = styleObject[key]
+        if (key === '@keyframes' || key === 'animation' || isNestedStyleObject(key, value)) {
+            nestedStyles[key] = value
         } else {
-            simpleStyles[key] = styleObject[key]
+            simpleStyles[key] = value
         }
     }
     return {simpleStyles, nestedStyles}
@@ -140,10 +233,16 @@ function splitSelectorList(input: string): string[] {
     let start = 0
     for (let i = 0; i < input.length; i++) {
         const ch = input[i]
-        if (quote) {
-            if (ch === quote && input[i - 1] !== '\\') quote = null
+        if (ch === '\\') {
+            i++
+        } else if (quote) {
+            if (ch === quote) quote = null
         } else if (ch === '"' || ch === "'") {
             quote = ch
+        } else if (ch === '/' && input[i + 1] === '*') {
+            const end = input.indexOf('*/', i + 2)
+            if (end < 0) break
+            i = end + 1
         } else if (ch === '(' || ch === '[') {
             depth++
         } else if (ch === ')' || ch === ']') {
@@ -157,33 +256,120 @@ function splitSelectorList(input: string): string[] {
     return parts
 }
 
-export function scopeNestedSelector(selector: string, key: string): string {
-    return splitSelectorList(key).map(part => {
-        const trimmed = part.trim()
-        return trimmed.includes('&') ? trimmed.replaceAll('&', selector) : `${selector} ${trimmed}`
-    }).join(', ')
-}
-
-function stringifyKeyFrameObject(keyframeObject: StyleObject): string {
-    return Object.entries(keyframeObject).map(([key, value]) => {
-        return `${key} {
-                ${stringifyStyleObject(value)}
-            }`
-    }).join('\n')
-}
-
-/**
- * Deterministic animation name from selector + keyframes signature (no Math.random).
- */
-export function deterministicAnimationName(selector: string, keyframeObj: StyleObject): string {
-    const sig = JSON.stringify(keyframeObj['@keyframes'] ?? null) + String(keyframeObj.animation ?? '')
-    let h = 2166136261
-    const s = selector + sig
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i)
-        h = Math.imul(h, 16777619)
+function splitNestingReferences(selector: string, state: StylePreparationState): string[] {
+    const segments: string[] = []
+    let start = 0
+    let functionDepth = 0
+    let quote: string | null = null
+    for (let i = 0; i < selector.length; i++) {
+        const ch = selector[i]
+        if (ch === '\\') {
+            i++
+        } else if (quote) {
+            if (ch === quote) quote = null
+        } else if (ch === '"' || ch === "'") {
+            quote = ch
+        } else if (ch === '/' && selector[i + 1] === '*') {
+            const end = selector.indexOf('*/', i + 2)
+            if (end < 0) break
+            i = end + 1
+        } else if (ch === '(') {
+            functionDepth++
+        } else if (ch === ')') {
+            functionDepth--
+        } else if (ch === '&') {
+            // Repeated references can match other instances. A reference in a
+            // selector function can also change the matching set, e.g. :not(&)
+            // and :nth-child(1 of &).
+            if (functionDepth > 0 || segments.length > 0) state.shareable = false
+            segments.push(selector.slice(start, i))
+            start = i + 1
+        }
     }
-    return `animation-${(h >>> 0).toString(36)}`
+    segments.push(selector.slice(start))
+    return segments
+}
+
+type PreparedStyleNode = {
+    declarations: string
+    keyframes?: string
+    animation?: string
+    nested?: {
+        scope: string | string[][]
+        node: PreparedStyleNode
+    }[]
+}
+
+export type PreparedStyleContent = StylePreparationState & {node: PreparedStyleNode}
+
+function prepareKeyframes(value: any, state?: StylePreparationState): string | undefined {
+    const frames = evaluateCssValue(value, state)
+    return frames ? stringifyKeyFrameObject(frames, state) : undefined
+}
+
+function prepareAnimation(value: any, state?: StylePreparationState): string | undefined {
+    const animation = resolveCssValue(value, state)
+    if (!animation) return undefined
+    return Array.isArray(animation)
+        ? animation.map(item => resolveCssValue(item, state)).join(', ')
+        : String(animation)
+}
+
+function prepareStyleNode(styleObject: StyleObject, state: StylePreparationState): PreparedStyleNode {
+    const declarations: string[] = []
+    const node: PreparedStyleNode = {declarations: ''}
+    for (const [key, value] of Object.entries(styleObject ?? {})) {
+        if (key === '@keyframes') {
+            node.keyframes = prepareKeyframes(value, state)
+        } else if (key === 'animation') {
+            node.animation = prepareAnimation(value, state)
+        } else if (isNestedStyleObject(key, value)) {
+            const selectors = key.startsWith('@') ? undefined
+                : splitSelectorList(key).map(part => splitNestingReferences(part.trim(), state))
+            const nested = node.nested ??= []
+            nested.push({scope: selectors ?? key, node: prepareStyleNode(value, state)})
+        } else if (value !== null && value !== undefined && typeof value !== 'boolean') {
+            declarations.push(stringifyDeclaration(key, value, state))
+        }
+    }
+    node.declarations = declarations.join('\n')
+    return node
+}
+
+/** Snapshot each declaration once so the cache key and the emitted rules use the same CSS text. */
+export function prepareStyleContent(styleObject: StyleObject): PreparedStyleContent {
+    const state: StylePreparationState = {isReactive: false, shareable: true}
+    const node = prepareStyleNode(styleObject, state)
+    return {node, ...state}
+}
+
+export function serializePreparedStyle(prepared: PreparedStyleContent): string {
+    // Serialize inert CSS text and selector structure, never the original values or their toJSON methods.
+    return JSON.stringify(prepared.node)
+}
+
+function renderStyleAnimation(
+    selector: string,
+    keyframes: string | undefined,
+    animation: string | undefined,
+    animationName?: string,
+    identitySelector = selector,
+): string[] {
+    const contents: string[] = []
+    const name = animationName ?? `animation-${hashStyleContent(JSON.stringify([identitySelector, keyframes, animation]))}`
+    if (keyframes !== undefined) {
+        contents.push(`@keyframes ${name} {
+${keyframes}
+}`)
+    }
+    if (animation !== undefined) {
+        contents.push(`
+${selector} {
+    animation: ${animation.replace(/@self/g, name)};
+}
+`)
+    }
+    return contents
 }
 
 export function generateInlineAnimationContent(
@@ -191,61 +377,54 @@ export function generateInlineAnimationContent(
     styleObject: StyleObject,
     animationName?: string,
 ): string[] {
-    const animationContent: string[] = []
-    const name = animationName ?? deterministicAnimationName(selector, styleObject)
-    if (styleObject['@keyframes']) {
-        animationContent.push(`@keyframes ${name} {
-${stringifyKeyFrameObject(styleObject['@keyframes'])}
-}`)
-    }
-    if (styleObject.animation) {
-        const animationValue = (Array.isArray(styleObject.animation)
-            ? styleObject.animation.join(', ')
-            : styleObject.animation)!.replace(/@self/g, name)
-        animationContent.push(`
-${selector} {
-    animation: ${animationValue};
+    return renderStyleAnimation(
+        selector,
+        prepareKeyframes(styleObject['@keyframes']),
+        prepareAnimation(styleObject.animation),
+        animationName,
+    )
 }
-`)
+
+function renderStyleNode(selector: string, node: PreparedStyleNode, activationGuard: string): string[] {
+    const contents = [`${selector} {
+${node.declarations}
+}`]
+
+    if (node.keyframes !== undefined || node.animation !== undefined) {
+        const identitySelector = activationGuard ? selector.replaceAll(activationGuard, '') : selector
+        contents.push(...renderStyleAnimation(selector, node.keyframes, node.animation, undefined, identitySelector))
     }
-    return animationContent
+    if (node.nested) {
+        for (const nested of node.nested) {
+            const {scope, node} = nested
+            if (typeof scope !== 'string') {
+                const scoped = scope.map(segments => segments.length > 1
+                    ? segments.join(selector)
+                    : `${selector} ${segments[0]}`).join(', ')
+                contents.push(...renderStyleNode(scoped, node, activationGuard))
+            } else {
+                contents.push(`${scope} {
+    ${renderStyleNode(selector, node, activationGuard).join('\n')}
+}`)
+            }
+        }
+    }
+    return contents
+}
+
+export function renderPreparedStyle(selector: string, prepared: PreparedStyleContent, activation?: 'active' | `!${string}`): string[] {
+    // A mounted root can already own this content sheet when another root's SSR markup arrives.
+    // Its adopted rules follow <style> in the cascade. Let pending anchors use their complete SSR
+    // rule order until claimed, without changing selector specificity or restarting @self animations.
+    // Pending rolling classes can repeat across SSR payloads, so also match their CSS token.
+    let activationGuard = ''
+    if (activation === 'active') activationGuard = ACTIVE_STYLE_ANCHOR
+    else if (activation) activationGuard = `:where([${SSR_STYLE_CLASSES_ATTRIBUTE}~="${activation}"])`
+    return renderStyleNode(activationGuard + selector, prepared.node, activationGuard)
 }
 
 export function generateStyleContent(selector: string, styleObject: StyleObject): string[] {
-    const valueStyleObject = {...styleObject}
-    const nestedStyleEntries: [string, any][] = []
-    const keyframeObj: StyleObject = {}
-
-    for (const key in valueStyleObject) {
-        if (key === '@keyframes' || key === 'animation') {
-            keyframeObj[key] = valueStyleObject[key]
-            delete valueStyleObject[key]
-        } else if (isNestedStyleObject(key, valueStyleObject[key])) {
-            nestedStyleEntries.push([key, valueStyleObject[key]])
-            delete valueStyleObject[key]
-        } else if (
-            valueStyleObject[key] === null ||
-            valueStyleObject[key] === undefined ||
-            typeof valueStyleObject[key] === 'boolean'
-        ) {
-            delete valueStyleObject[key]
-        }
-    }
-
-    const contents: string[] = [`${selector} {
-${stringifyStyleObject(valueStyleObject)}
-}`]
-
-    contents.push(...generateInlineAnimationContent(selector, keyframeObj))
-
-    return nestedStyleEntries.reduce((acc, [key, nestedObject]: [string, any]) => {
-        if (key.startsWith('@')) {
-            return acc.concat(`${key} {
-    ${generateStyleContent(selector, nestedObject).join('\n')}
-}`)
-        }
-        return acc.concat(generateStyleContent(scopeNestedSelector(selector, key), nestedObject))
-    }, contents)
+    return renderPreparedStyle(selector, prepareStyleContent(styleObject))
 }
 
 /**
@@ -296,27 +475,6 @@ export function gateStyleRules(rules: string[]): string {
     return kept.join('\n')
 }
 
-/**
- * Deep scan for atom/function values inside a style object (F31).
- * Shared by StyleManager (CSR) and SSR collectElementStyles — must stay identical.
- * Atoms are functions in data0, so `typeof === 'function'` covers them.
- */
-export function containsReactiveStyleValue(styleObject: any): boolean {
-    if (styleObject == null || typeof styleObject !== 'object') return false
-    for (const key in styleObject) {
-        const value = styleObject[key]
-        if (typeof value === 'function') return true
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                if (typeof item === 'function') return true
-            }
-        } else if (isPlainObject(value) && containsReactiveStyleValue(value)) {
-            return true
-        }
-    }
-    return false
-}
-
 /** True when a style value must go through StyleManager stylesheet path (not plain inline). */
 export function styleValueNeedsStylesheet(value: any): boolean {
     if (value == null || typeof value === 'boolean') return false
@@ -324,7 +482,7 @@ export function styleValueNeedsStylesheet(value: any): boolean {
     if (typeof value === 'string') return false
     if (Array.isArray(value)) return value.some(styleValueNeedsStylesheet)
     if (typeof value === 'object') {
-        if ((value as any).__bound) return true
+        if (isBoundProp(value)) return true
         const {nestedStyles} = splitStyleObject(value)
         return Object.keys(nestedStyles).length > 0
     }

@@ -1042,6 +1042,8 @@ type PortalContainerRef = HTMLElement | string | { id: string }
 
 **`renderToString` 返回**：`portals: Record<string, { html: string, styles: string }>`。不提供无实现的 `portalContainers` options 占位。
 
+主树和每个 Portal 分别输出其内容所用的样式表。同一条规则在多处使用时，每处的 `styles` 都包含该规则。嵌套 Portal 的规则随它自己的 `styles` 输出。
+
 **`hydrateRoot` 解析容器**：
 
 | 优先级 | 行为 |
@@ -1073,6 +1075,7 @@ type PortalContainerRef = HTMLElement | string | { id: string }
 3. 返回：`styles` 字符串；调用方负责放入 document（或 `renderToString` 提供拼好的完整片段选项）。推荐默认：主 HTML 前/旁带 `<style data-axii-ssr="…">`。写入前另适用 §3.6.1 `</style` 终止序列门闩。
 4. Hydrate：根据 DOM 上已有 axii style class 重建 `StyleManager` 映射与 refcount；创建等价 `CSSStyleSheet` 并入 `adoptedStyleSheets`（仍逐条 `insertRule`）；**在 adopted 生效后再移除** SSR `<style>`，避免闪变（实验：`noFlashMigrate.stable`）。
 5. 之后卸载/更新与 CSR 同一 `unmount`/`collect` 语义。
+6. 主树、各 Portal 和 CSR 的样式表都按 `style` 数组条目序号升序排列。同序号内，含直接声明的表先于仅含嵌套规则的表，再按序列化后的 CSS 稳定排序。此顺序决定规则在 CSS 优先级相同、需要比较书写顺序时的层叠结果。
 
 ### 3.6 HTML 安全与表单序列化
 
@@ -1304,7 +1307,7 @@ function hydrateRoot(
 - **状态**：已完成
 - **reopen-count**：2
 - **reopen-domains**：{ssr-style-id: 2, ssr-style-atom-inline: 1}
-- **验收命令**：`__tests__/ssrStyles.spec.tsx`（浏览器；含逃逸负向 + 无闪变 + F30 StaticArray 分歧 + FunctionHost path reclaim + Chromium insertRule oracle + F31 reactive stylesheet rolling + simple atom inline 快照 + bound+reactive / array / function / CSR↔SSR I0）+ node 样式隔离快照
+- **验收命令**：`__tests__/ssrStyles.spec.tsx`（浏览器；含逃逸负向 + 无闪变 + F30 StaticArray 分歧 + FunctionHost path reclaim + Chromium insertRule oracle + F31 reactive stylesheet 内容 id + simple atom inline 快照 + bound+reactive / array / function / CSR↔SSR 内容 id 相同）+ node 样式隔离快照。注：自按内容定 id 的样式表起（`__tests__/contentAddressedStyles.spec.tsx`），动态条目与函数子节点下的条目不再输出 rolling `…R<n>F<i>I0`，SSR 与 CSR 都是 `axs-<哈希>F<i>`；rolling 只剩内容序列化失败的条目
 - **最新证据**：k=14 实现 + k14-audit：domain-review 闭合 `ssr-style-id` / `ssr-style-atom-inline`。审计加强 ssrStyles→16、node→62；缺陷注入短路 `containsReactiveStyleValue`→F31 红后还原。Closure：ssrStyles 16、hydrate 64、fuzz 2、CSR 23、node 62。`convergence-mode→normal`；`current-milestone→M-05`。
 
 ### M-05 生命周期、Portal、lazy、服务端隔离

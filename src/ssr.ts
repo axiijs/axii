@@ -10,19 +10,23 @@ import type {Component, ComponentNode, Props, RenderContext} from './types'
 import {isAxiiPortalComponent, resolvePortalExportKey, Portal} from './Portal.js'
 import {beginSsrPass, endSsrPass} from './ssrContext.js'
 import {
-    computeStyleSignature,
-    containsReactiveStyleValue,
-    evaluateStyleSnapshot,
+    SSR_STYLE_CLASSES_ATTRIBUTE,
+    contentStyleId,
+    evaluateStyleEntries,
     gateStyleRules,
-    generateStyleContent,
     generateStyleStaticId,
     getComponentTypeId,
+    hashStyleContent,
     isAcceptableSingleCssRule,
+    prepareStyleContent,
+    renderPreparedStyle,
+    serializePreparedStyle,
     splitStyleObject,
     stringifyCssValue,
     styleValueNeedsStylesheet,
     toCssSafeComponentName,
 } from './styleSerialize'
+import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from './styleCascade'
 
 /** Local Fragment sentinel — avoid importing DOM.ts (browser createElement) into the SSR entry. */
 export function Fragment(_props?: any): any {
@@ -114,9 +118,11 @@ type SsrComponentFrame = {
     savedFunctionHostDepth: number
 }
 
+type SsrStyleSheet = StyleSheetOrder & {css: string}
+
 type SsrStyleState = {
-    /** stylesheet id → gated CSS text (deduped) */
-    sheets: Map<string, string>
+    /** Stylesheet id → gated CSS, deduped within the currently rendered payload. */
+    sheets: Map<string, SsrStyleSheet>
     rollingSeq: number
     componentStack: SsrComponentFrame[]
     /** >0 while serializing FunctionHost structure under current ComponentHost (forces rolling). */
@@ -151,8 +157,13 @@ function beginSsrStyles() {
 function endSsrStyles(): string {
     const state = ssrStyle
     ssrStyle = null
-    if (!state || state.sheets.size === 0) return ''
-    const css = Array.from(state.sheets.values()).join('\n')
+    return state ? serializeStyleSheets(state.sheets) : ''
+}
+
+function serializeStyleSheets(sheets: Map<string, SsrStyleSheet>): string {
+    if (sheets.size === 0) return ''
+    const sorted = Array.from(sheets.values()).sort(compareStyleSheetOrder)
+    const css = sorted.map(sheet => sheet.css).join('\n')
     assertNoRawTextTerminator(css, 'style')
     return css
 }
@@ -198,86 +209,84 @@ function currentStyleStaticId(elementPath: number[]): string {
 function collectElementStyles(
     styleValue: any,
     elementPath: number[],
-): {classIds: string[], inline: string} {
+): {classIds: string[], styleMarkers?: string[], inline: string} {
     const state = ssrStyle
     if (!state) return {classIds: [], inline: ''}
 
-    const rawEntries = Array.isArray(styleValue) ? styleValue : [styleValue]
+    // 与 CSR StyleManager.update 共用求值 + 展开：条目序号（F<n>）两边必须一致
+    const entries = evaluateStyleEntries(styleValue)
     const classIds: string[] = []
+    let styleMarkers: string[] | undefined
+    let rollingBaseId: string | undefined
     const inlinePatches: string[] = []
     const staticBase = currentStyleStaticId(elementPath)
-    const forceRolling = state.functionHostDepth > 0
-    // CSR: FunctionHost in path ⇒ no shared static base (getStyleSheetId always rolling)
-    const sharedStaticBaseId = forceRolling ? null : staticBase
+    const sharedStaticBaseId = state.functionHostDepth > 0 ? null : staticBase
 
-    rawEntries.forEach((raw, index) => {
-        if (raw == null || raw === false) return
-        const isBound = !!(raw && (raw as any).__bound)
-        const entryIsDynamic = typeof raw === 'function' || !!(raw && (raw as any).__dynamic)
-        const evaluated = evaluateStyleSnapshot(raw)
-        if (evaluated == null || evaluated === false) return
-        const items = Array.isArray(evaluated) ? evaluated : [evaluated]
+    entries.forEach(({value: item, entryIsDynamic, isBound}, index) => {
+        if (item == null || typeof item === 'boolean') return
+        if (typeof item === 'string') {
+            inlinePatches.push(item)
+            return
+        }
+        if (typeof item !== 'object') return
 
-        for (const item of items) {
-            if (item == null || typeof item === 'boolean') continue
-            if (typeof item === 'string') {
-                inlinePatches.push(item)
-                continue
+        const {simpleStyles, nestedStyles} = splitStyleObject(item)
+        const usesSheet = isBound || Object.keys(nestedStyles).length > 0
+        if (!usesSheet) {
+            // Pure inline (no nested/bound): snapshot atom/function values (no FOUC)
+            const parts: string[] = []
+            for (const sk in simpleStyles) {
+                const sv = (simpleStyles as any)[sk]
+                if (sv == null || sv === false || sv === '') continue
+                const cssVal = stringifyCssValue(sk, sv)
+                if (!cssVal) continue
+                const cssKey = (sk[0] === '-' && sk[1] === '-')
+                    ? sk
+                    : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
+                parts.push(`${cssKey}:${cssVal}`)
             }
-            if (typeof item !== 'object') continue
+            if (parts.length) inlinePatches.push(parts.join(';'))
+            return
+        }
 
-            const {simpleStyles, nestedStyles} = splitStyleObject(item)
-            const usesSheet = isBound || Object.keys(nestedStyles).length > 0
-            if (!usesSheet) {
-                // Pure inline (no nested/bound): snapshot atom/function values (no FOUC)
-                const parts: string[] = []
-                for (const sk in simpleStyles) {
-                    const sv = (simpleStyles as any)[sk]
-                    if (sv == null || sv === false || sv === '') continue
-                    const cssVal = stringifyCssValue(sk, sv)
-                    if (!cssVal) continue
-                    const cssKey = (sk[0] === '-' && sk[1] === '-')
-                        ? sk
-                        : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
-                    parts.push(`${cssKey}:${cssVal}`)
-                }
-                if (parts.length) inlinePatches.push(parts.join(';'))
-                continue
-            }
-
-            // Mirror CSR StyleManager: F31 reactive-in-stylesheet → isDynamic (I-itor);
-            // FunctionHost path (forceRolling) only forces rolling base id, not I0.
-            let isDynamic = entryIsDynamic || (usesSheet && containsReactiveStyleValue(item))
-            // F30: shared static id content-signature divergence → rolling + I0
-            if (usesSheet && !isDynamic && sharedStaticBaseId) {
-                const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
-                const signature = computeStyleSignature(item)
-                const existingSignature = state.idToStaticStyleSignature.get(sharedIdWithIndex)
-                if (signature === undefined || (existingSignature !== undefined && existingSignature !== signature)) {
-                    isDynamic = true
-                } else if (existingSignature === undefined) {
-                    state.idToStaticStyleSignature.set(sharedIdWithIndex, signature)
-                }
-            }
-
-            let styleSheetId: string
-            if (isDynamic || forceRolling) {
-                styleSheetId = `${staticBase}R${state.rollingSeq++}`
-            } else {
-                styleSheetId = sharedStaticBaseId ?? staticBase
-            }
-            // CSR first frame for isDynamic uses …F{i}I0; emit the same so hydrate reclaims one class
-            const finalId = isDynamic ? `${styleSheetId}F${index}I0` : `${styleSheetId}F${index}`
-            const rules = generateStyleContent(`.${finalId}`, item)
-            const gated = gateStyleRules(rules)
-            if (gated) {
-                if (!state.sheets.has(finalId)) state.sheets.set(finalId, gated)
-                classIds.push(finalId)
+        const prepared = prepareStyleContent(item)
+        const signature = prepared.shareable ? serializePreparedStyle(prepared) : undefined
+        let isDynamic = entryIsDynamic || prepared.isReactive || !prepared.shareable
+        if (signature !== undefined && !isDynamic && sharedStaticBaseId) {
+            const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
+            const existingSignature = state.idToStaticStyleSignature.get(sharedIdWithIndex)
+            if (existingSignature === undefined) {
+                state.idToStaticStyleSignature.set(sharedIdWithIndex, signature)
+            } else if (existingSignature !== signature) {
+                isDynamic = true
             }
         }
+
+        // Keep CSR and SSR aligned when a static path cannot identify a sheet.
+        const contentId = signature !== undefined && (isDynamic || !sharedStaticBaseId) ? contentStyleId(signature, index) : undefined
+        const isRolling = contentId === undefined && isDynamic
+        let finalId = contentId
+        if (isRolling) {
+            rollingBaseId ??= `${staticBase}R${state.rollingSeq++}`
+            finalId = `${rollingBaseId}F${index}I0`
+        } else {
+            finalId ??= `${staticBase}F${index}`
+        }
+        const cssSignature = signature ?? serializePreparedStyle(prepared)
+        const pendingMarker = isRolling
+            ? `!${hashStyleContent(finalId + ':' + cssSignature)}` as const
+            : undefined
+        if (!state.sheets.has(finalId)) {
+            const css = gateStyleRules(renderPreparedStyle(`.${finalId}`, prepared, pendingMarker))
+            if (!css) return
+            state.sheets.set(finalId, {...getStyleSheetOrder(index, prepared, cssSignature), css})
+        }
+        classIds.push(finalId)
+        if (pendingMarker) (styleMarkers ??= []).push(finalId, pendingMarker)
+        else if (contentId !== undefined) (styleMarkers ??= []).push(finalId)
     })
 
-    return {classIds, inline: inlinePatches.join(';')}
+    return {classIds, styleMarkers, inline: inlinePatches.join(';')}
 }
 
 /** Emit one NORMAL non-empty text unit (always wrap — allowed by §3.2.1 A2). */
@@ -395,7 +404,7 @@ function serializeAttrs(
     const skip = new Set<string>([
         'children', 'ref', 'key', '_isSVG', '__source', '__self', 'dangerouslySetInnerHTML',
         // style handled below (may be function/nested → stylesheet)
-        'style',
+        'style', SSR_STYLE_CLASSES_ATTRIBUTE,
     ])
 
     // textarea value → child text only (TA); skip value attr
@@ -417,12 +426,14 @@ function serializeAttrs(
 
     // Style first so we can merge stylesheet classes with className
     const styleExtraClasses: string[] = []
+    let styleMarkers: string[] | undefined
     let inlineStyle = ''
     if (hasOwnProp(props, 'style') && props.style != null && props.style !== false) {
         const styleVal = props.style
         if (styleValueNeedsStylesheet(styleVal) || typeof styleVal === 'function' || Array.isArray(styleVal)) {
             const collected = collectElementStyles(styleVal, elementPath)
             styleExtraClasses.push(...collected.classIds)
+            styleMarkers = collected.styleMarkers
             inlineStyle = collected.inline
         } else if (typeof styleVal === 'object') {
             // Simple inline object: snapshot atom/function values into style attr (Task req 1 / no FOUC)
@@ -475,6 +486,20 @@ function serializeAttrs(
 
     const allClasses = [classAttr, ...styleExtraClasses].filter(Boolean).join(' ')
     if (allClasses) s += ` class="${escapeAttr(allClasses)}"`
+    // A token explicitly present in the author class stays owned by it. A leading + keeps
+    // an authored rolling token available for reclaim without asking hydration to remove it.
+    if (styleMarkers) {
+        let markers = styleMarkers
+        if (classAttr) {
+            const authoredClasses = classAttr.split(/[\t\n\f\r ]+/)
+            markers = []
+            for (const marker of styleMarkers) {
+                if (marker[0] === '!' || !authoredClasses.includes(marker)) markers.push(marker)
+                else if (marker.endsWith('I0')) markers.push(`+${marker}`)
+            }
+        }
+        s += ` ${SSR_STYLE_CLASSES_ATTRIBUTE}="${escapeAttr(markers.join(' '))}"`
+    }
     if (inlineStyle) s += ` style="${escapeAttr(inlineStyle)}"`
 
     // §3.6.2 deferred form props (IV / CK / CB)
@@ -1126,12 +1151,20 @@ function serializePortal(
     node: ComponentNode,
     out: string[],
 ): void {
-    if (!ssrPortals) throw new Error('[axii/ssr] portals map not initialized')
+    if (!ssrPortals || !ssrStyle) throw new Error('[axii/ssr] portals map not initialized')
     const props = node.props || {}
     const key = resolvePortalExportKey(props.container, props.portalKey)
     if (Object.prototype.hasOwnProperty.call(ssrPortals, key)) {
         throw new Error(`[axii/ssr] duplicate Portal key: ${JSON.stringify(key)}`)
     }
+    // Reserve the key before descending so a nested Portal cannot replace its parent.
+    const payload = {html: '', styles: ''}
+    Object.defineProperty(ssrPortals, key, {
+        value: payload,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+    })
 
     // Main tree: EmptyHost element only; parent serializeChild adds <!--unhandledChild--> (§3.2.6 / §3.3.d)
     out.push('<!--empty-->')
@@ -1139,7 +1172,9 @@ function serializePortal(
     // Portal content under Portal ComponentHost path (style ids align with CSR createRoot(parentContext)).
     // Root Fragment ≡ CSR StaticHost(DocumentFragment): emit <!--fragment start--> (not element-child flatten).
     const state = ssrStyle
-    const sheetsBefore = state ? new Set(state.sheets.keys()) : new Set<string>()
+    const parentSheets = state.sheets
+    const portalSheets = new Map<string, SsrStyleSheet>()
+    state.sheets = portalSheets
     pushSsrComponent(node.type as Function)
     const portalOut: string[] = []
     try {
@@ -1153,20 +1188,11 @@ function serializePortal(
         portalOut.push('<!--root-->')
     } finally {
         popSsrComponent()
+        state.sheets = parentSheets
     }
 
-    const portalStyleParts: string[] = []
-    if (state) {
-        for (const [id, css] of state.sheets) {
-            if (!sheetsBefore.has(id)) {
-                portalStyleParts.push(css)
-                state.sheets.delete(id)
-            }
-        }
-    }
-    const portalStyles = portalStyleParts.join('\n')
-    if (portalStyles) assertNoRawTextTerminator(portalStyles, 'style')
-    ssrPortals[key] = {html: portalOut.join(''), styles: portalStyles}
+    payload.html = portalOut.join('')
+    payload.styles = serializeStyleSheets(portalSheets)
 }
 
 function serializeComponent(

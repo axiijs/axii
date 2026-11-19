@@ -4,6 +4,7 @@ import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
+import {SSR_STYLE_CLASSES_ATTRIBUTE} from './styleSerialize'
 import {
     advanceCursorUntilComment,
     advanceCursorUntilRxListHostPlaceholder,
@@ -26,6 +27,7 @@ import {
     peekAxii0,
     peekHydrateDeferredPayload,
     reconcileFlattenedFragmentHydrateChildren,
+    rememberHydrateRollingStyleBase,
     takeHydrateDeferredPayload,
     takeHydrateReclaimPayload,
     tryClaimElement,
@@ -1191,6 +1193,30 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     if (hydrating && type !== Fragment) {
         exitElementChildCursor()
+        const el = container as Element
+        const ssrStyleClasses = el.getAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
+        if (ssrStyleClasses !== null) {
+            // Clear generated classes before installing client props, which may include an
+            // authored copy. Remember the server base for the later rolling style binding.
+            if (ssrStyleClasses) {
+                const classes = ssrStyleClasses.split(' ')
+                let ownedClassCount = 0
+                let rollingBase: string | undefined
+                for (const id of classes) {
+                    if (id[0] === '!') continue // Pending CSS tokens are not classes.
+                    const authored = id[0] === '+'
+                    if (!rollingBase && id.endsWith('I0')) {
+                        rollingBase = id.slice(authored ? 1 : 0, id.lastIndexOf('F'))
+                    }
+                    if (!authored) classes[ownedClassCount++] = id
+                }
+                if (rollingBase) rememberHydrateRollingStyleBase(el, rollingBase)
+                classes.length = ownedClassCount
+                if (ownedClassCount) el.classList.remove(...classes)
+                if (el.classList.length === 0) el.removeAttribute('class')
+            }
+            el.removeAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
+        }
     }
 
     // Process props after children for proper Select/Option behavior

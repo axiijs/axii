@@ -128,7 +128,7 @@ function App() {
 
 const { html, styles, portals } = renderToString(<App />)
 // html 以 <!--root--> 结尾；styles 放入 <style data-axii-ssr>
-// portals[key].html 需在 hydrate 前写入对应容器
+// hydrate 前将每个 Portal 的 html 及其独立的 <style data-axii-ssr> 写入对应容器
 ```
 
 ```jsx
@@ -151,6 +151,7 @@ hydrateRoot(root, <App />)
 
 - `renderToString` 与 `hydrateRoot` 时刻的组件树与响应式数据必须一致；框架**不**提供应用状态 dehydrate。
 - **Portal** 在 SSR 中使用 `string | { id }`（或 `portalKey`）作为容器键；内容在 `portals[key]`，经 `hydrateRoot(..., { portals })` 激活。
+- `style` 数组中靠后的条目在样式表顺序中靠后。条目序号相同时，含直接声明的表排在仅含嵌套规则的表之前，各组按序列化后的 CSS 稳定排序。CSS 选择器优先级和 `!important` 仍由浏览器决定。
 - **lazy**：服务端只同步输出 fallback（或 `null`），不 await `load()`；客户端 hydrate 后再加载。
 - 非目标：流式 SSR（`renderToStream`）、应用状态序列化协议。
 - 完整契约见 `docs/ssr-support/`。
