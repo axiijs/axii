@@ -41,8 +41,21 @@ export function resolvePortalExportKey(container: PortalContainerRef, portalKey?
     throw new Error('[axii] Portal has no export key (need portalKey, string container, or non-empty container.id)')
 }
 
+function isElementContainer(container: unknown): container is HTMLElement {
+    if (container == null || typeof container !== 'object') return false
+
+    // The native getter checks the HTMLElement receiver across realms, including after adoption.
+    // Calling it directly bypasses named form controls and properties on ID descriptors.
+    try {
+        Reflect.get(HTMLElement.prototype, 'title', container)
+        return true
+    } catch {
+        return false
+    }
+}
+
 function resolveCsrContainer(container: PortalContainerRef): HTMLElement {
-    if (typeof HTMLElement !== 'undefined' && container instanceof HTMLElement) {
+    if (isElementContainer(container)) {
         return container
     }
     if (typeof container === 'string') {
