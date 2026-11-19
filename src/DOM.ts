@@ -1203,6 +1203,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 let ownedClassCount = 0
                 let rollingBase: string | undefined
                 for (const id of classes) {
+                    if (id[0] === '!') continue // Pending CSS tokens are not classes.
                     const authored = id[0] === '+'
                     if (!rollingBase && id.endsWith('I0')) {
                         rollingBase = id.slice(authored ? 1 : 0, id.lastIndexOf('F'))

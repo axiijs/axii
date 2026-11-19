@@ -16,6 +16,7 @@ import {
     gateStyleRules,
     generateStyleStaticId,
     getComponentTypeId,
+    hashStyleContent,
     isAcceptableSingleCssRule,
     prepareStyleContent,
     renderPreparedStyle,
@@ -208,14 +209,14 @@ function currentStyleStaticId(elementPath: number[]): string {
 function collectElementStyles(
     styleValue: any,
     elementPath: number[],
-): {classIds: string[], generatedClassIds?: string[], inline: string} {
+): {classIds: string[], styleMarkers?: string[], inline: string} {
     const state = ssrStyle
     if (!state) return {classIds: [], inline: ''}
 
     // 与 CSR StyleManager.update 共用求值 + 展开：条目序号（F<n>）两边必须一致
     const entries = evaluateStyleEntries(styleValue)
     const classIds: string[] = []
-    let generatedClassIds: string[] | undefined
+    let styleMarkers: string[] | undefined
     let rollingBaseId: string | undefined
     const inlinePatches: string[] = []
     const staticBase = currentStyleStaticId(elementPath)
@@ -271,16 +272,21 @@ function collectElementStyles(
         } else {
             finalId ??= `${staticBase}F${index}`
         }
+        const cssSignature = signature ?? serializePreparedStyle(prepared)
+        const pendingMarker = isRolling
+            ? `!${hashStyleContent(finalId + ':' + cssSignature)}` as const
+            : undefined
         if (!state.sheets.has(finalId)) {
-            const css = gateStyleRules(renderPreparedStyle(`.${finalId}`, prepared, isRolling ? 'pending' : undefined))
+            const css = gateStyleRules(renderPreparedStyle(`.${finalId}`, prepared, pendingMarker))
             if (!css) return
-            state.sheets.set(finalId, {...getStyleSheetOrder(index, prepared, signature), css})
+            state.sheets.set(finalId, {...getStyleSheetOrder(index, prepared, cssSignature), css})
         }
         classIds.push(finalId)
-        if (contentId !== undefined || isRolling) (generatedClassIds ??= []).push(finalId)
+        if (pendingMarker) (styleMarkers ??= []).push(finalId, pendingMarker)
+        else if (contentId !== undefined) (styleMarkers ??= []).push(finalId)
     })
 
-    return {classIds, generatedClassIds, inline: inlinePatches.join(';')}
+    return {classIds, styleMarkers, inline: inlinePatches.join(';')}
 }
 
 /** Emit one NORMAL non-empty text unit (always wrap — allowed by §3.2.1 A2). */
@@ -420,14 +426,14 @@ function serializeAttrs(
 
     // Style first so we can merge stylesheet classes with className
     const styleExtraClasses: string[] = []
-    let generatedStyleClasses: string[] | undefined
+    let styleMarkers: string[] | undefined
     let inlineStyle = ''
     if (hasOwnProp(props, 'style') && props.style != null && props.style !== false) {
         const styleVal = props.style
         if (styleValueNeedsStylesheet(styleVal) || typeof styleVal === 'function' || Array.isArray(styleVal)) {
             const collected = collectElementStyles(styleVal, elementPath)
             styleExtraClasses.push(...collected.classIds)
-            generatedStyleClasses = collected.generatedClassIds
+            styleMarkers = collected.styleMarkers
             inlineStyle = collected.inline
         } else if (typeof styleVal === 'object') {
             // Simple inline object: snapshot atom/function values into style attr (Task req 1 / no FOUC)
@@ -482,17 +488,17 @@ function serializeAttrs(
     if (allClasses) s += ` class="${escapeAttr(allClasses)}"`
     // A token explicitly present in the author class stays owned by it. A leading + keeps
     // an authored rolling token available for reclaim without asking hydration to remove it.
-    if (generatedStyleClasses) {
-        let styleClasses = generatedStyleClasses
+    if (styleMarkers) {
+        let markers = styleMarkers
         if (classAttr) {
             const authoredClasses = classAttr.split(/[\t\n\f\r ]+/)
-            styleClasses = []
-            for (const id of generatedStyleClasses) {
-                if (!authoredClasses.includes(id)) styleClasses.push(id)
-                else if (id.endsWith('I0')) styleClasses.push(`+${id}`)
+            markers = []
+            for (const marker of styleMarkers) {
+                if (marker[0] === '!' || !authoredClasses.includes(marker)) markers.push(marker)
+                else if (marker.endsWith('I0')) markers.push(`+${marker}`)
             }
         }
-        s += ` ${SSR_STYLE_CLASSES_ATTRIBUTE}="${escapeAttr(styleClasses.join(' '))}"`
+        s += ` ${SSR_STYLE_CLASSES_ATTRIBUTE}="${escapeAttr(markers.join(' '))}"`
     }
     if (inlineStyle) s += ` style="${escapeAttr(inlineStyle)}"`
 

@@ -66,7 +66,6 @@ export function hashStyleContent(str: string): string {
 export const CONTENT_STYLE_ID_PREFIX = 'axs-'
 export const SSR_STYLE_CLASSES_ATTRIBUTE = 'data-axii-ssr-style-classes'
 const ACTIVE_STYLE_ANCHOR = `:where(:not([${SSR_STYLE_CLASSES_ATTRIBUTE}]))`
-const PENDING_STYLE_ANCHOR = `:where([${SSR_STYLE_CLASSES_ATTRIBUTE}])`
 
 export function contentStyleId(signature: string, entryIndex: number): string {
     return `${CONTENT_STYLE_ID_PREFIX}${hashStyleContent(signature)}F${entryIndex}`
@@ -354,11 +353,10 @@ function renderStyleAnimation(
     keyframes: string | undefined,
     animation: string | undefined,
     animationName?: string,
+    identitySelector = selector,
 ): string[] {
     const contents: string[] = []
-    const name = animationName ?? `animation-${hashStyleContent(JSON.stringify([
-        selector.replaceAll(ACTIVE_STYLE_ANCHOR, '').replaceAll(PENDING_STYLE_ANCHOR, ''), keyframes, animation,
-    ]))}`
+    const name = animationName ?? `animation-${hashStyleContent(JSON.stringify([identitySelector, keyframes, animation]))}`
     if (keyframes !== undefined) {
         contents.push(`@keyframes ${name} {
 ${keyframes}
@@ -387,13 +385,14 @@ export function generateInlineAnimationContent(
     )
 }
 
-function renderStyleNode(selector: string, node: PreparedStyleNode): string[] {
+function renderStyleNode(selector: string, node: PreparedStyleNode, activationGuard: string): string[] {
     const contents = [`${selector} {
 ${node.declarations}
 }`]
 
     if (node.keyframes !== undefined || node.animation !== undefined) {
-        contents.push(...renderStyleAnimation(selector, node.keyframes, node.animation))
+        const identitySelector = activationGuard ? selector.replaceAll(activationGuard, '') : selector
+        contents.push(...renderStyleAnimation(selector, node.keyframes, node.animation, undefined, identitySelector))
     }
     if (node.nested) {
         for (const nested of node.nested) {
@@ -402,10 +401,10 @@ ${node.declarations}
                 const scoped = scope.map(segments => segments.length > 1
                     ? segments.join(selector)
                     : `${selector} ${segments[0]}`).join(', ')
-                contents.push(...renderStyleNode(scoped, node))
+                contents.push(...renderStyleNode(scoped, node, activationGuard))
             } else {
                 contents.push(`${scope} {
-    ${renderStyleNode(selector, node).join('\n')}
+    ${renderStyleNode(selector, node, activationGuard).join('\n')}
 }`)
             }
         }
@@ -413,14 +412,15 @@ ${node.declarations}
     return contents
 }
 
-export function renderPreparedStyle(selector: string, prepared: PreparedStyleContent, activation?: 'active' | 'pending'): string[] {
+export function renderPreparedStyle(selector: string, prepared: PreparedStyleContent, activation?: 'active' | `!${string}`): string[] {
     // A mounted root can already own this content sheet when another root's SSR markup arrives.
     // Its adopted rules follow <style> in the cascade. Let pending anchors use their complete SSR
     // rule order until claimed, without changing selector specificity or restarting @self animations.
-    // Pending SSR rolling classes can also have the same base as an independently adopted root.
-    const anchor = activation === 'active' ? ACTIVE_STYLE_ANCHOR + selector :
-        activation === 'pending' ? PENDING_STYLE_ANCHOR + selector : selector
-    return renderStyleNode(anchor, prepared.node)
+    // Pending rolling classes can repeat across SSR payloads, so also match their CSS token.
+    let activationGuard = ''
+    if (activation === 'active') activationGuard = ACTIVE_STYLE_ANCHOR
+    else if (activation) activationGuard = `:where([${SSR_STYLE_CLASSES_ATTRIBUTE}~="${activation}"])`
+    return renderStyleNode(activationGuard + selector, prepared.node, activationGuard)
 }
 
 export function generateStyleContent(selector: string, styleObject: StyleObject): string[] {

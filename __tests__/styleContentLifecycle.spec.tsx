@@ -21,11 +21,11 @@ test('reclaimed rolling classes stay independent across hydrated and client root
     function App({index, order}: {index: bigint, order?: bigint}, {createElement}: RenderContext) {
         return <div id="rolling" style={() => ({...hover, zIndex: index, order})}/>
     }
-    const first = renderToString(<App index={1n}/>)
+    const first = renderToString(<App index={BigInt(1)}/>)
     container.innerHTML = `<style data-axii-ssr>${first.styles}</style>${first.html}`
     const firstNode = container.querySelector('#rolling')!
     const firstId = firstNode.className
-    root = hydrateRoot(container, <App index={1n}/>)
+    root = hydrateRoot(container, <App index={BigInt(1)}/>)
     expect(firstNode.className).toBe(firstId)
 
     const clientContainer = document.body.appendChild(document.createElement('div'))
@@ -33,16 +33,16 @@ test('reclaimed rolling classes stay independent across hydrated and client root
     const clientRoot = createRoot(clientContainer)
     let secondRoot: ReturnType<typeof hydrateRoot> | undefined
     try {
-        clientRoot.render(<App index={2n}/>)
+        clientRoot.render(<App index={BigInt(2)}/>)
         const clientNode = clientContainer.querySelector('#rolling')!
         expect.soft(getComputedStyle(clientNode).zIndex).toBe('2')
 
-        const second = renderToString(<App index={3n} order={5n}/>)
+        const second = renderToString(<App index={BigInt(3)} order={BigInt(5)}/>)
         serverContainer.innerHTML = `<style data-axii-ssr>${second.styles}</style>${second.html}`
         const secondNode = serverContainer.querySelector('#rolling')!
         expect.soft(getComputedStyle(secondNode).zIndex).toBe('3')
         expect(getComputedStyle(firstNode).order).toBe('0')
-        secondRoot = hydrateRoot(serverContainer, <App index={3n} order={5n}/>)
+        secondRoot = hydrateRoot(serverContainer, <App index={BigInt(3)} order={BigInt(5)}/>)
 
         expect(getComputedStyle(firstNode).zIndex).toBe('1')
         expect(getComputedStyle(clientNode).zIndex).toBe('2')
@@ -52,7 +52,7 @@ test('reclaimed rolling classes stay independent across hydrated and client root
         root.destroy()
         root = undefined
         container.innerHTML = `<style data-axii-ssr>${first.styles}</style>${first.html}`
-        root = hydrateRoot(container, <App index={1n}/>)
+        root = hydrateRoot(container, <App index={BigInt(1)}/>)
         expect(container.querySelector('#rolling')!.className).toBe(firstId)
     } finally {
         secondRoot?.destroy()
@@ -66,8 +66,8 @@ test('SSR reclaims one base for all rolling entries despite a static user class'
     let authorClass = 'authored'
     function App({}: any, {createElement}: RenderContext) {
         return <div id="rolling" class={authorClass} style={[
-            () => ({...hover, zIndex: 12n}),
-            () => ({...hover, order: 15n}),
+            () => ({...hover, zIndex: BigInt(12)}),
+            () => ({...hover, order: BigInt(15)}),
         ]}/>
     }
     container.innerHTML = renderToString(<App/>).html
