@@ -40,6 +40,8 @@ let seenHosts = new WeakMap<object, string>()
 let destroyedHosts = new WeakSet<object>()
 let seenBindings = new WeakMap<object, string>()
 let destroyedBindings = new WeakSet<object>()
+// 已计入 activeStyleHostStates 的 host（见 trackStyleHostStateDestroyed）
+let styleStateHosts = new WeakSet<object>()
 
 function increase(map: CountMap, key: string, delta = 1) {
     const next = (map[key] ?? 0) + delta
@@ -62,6 +64,7 @@ function resetCounts() {
     destroyedHosts = new WeakSet()
     seenBindings = new WeakMap()
     destroyedBindings = new WeakSet()
+    styleStateHosts = new WeakSet()
 }
 
 export function isAxiiRetainedObjectDiagnosticsEnabled() {
@@ -148,16 +151,21 @@ export function trackCompactHostDestroyed(host: object) {
 /**
  * @internal
  */
-export function trackStyleHostStateCreated() {
-    if (!enabled) return
+export function trackStyleHostStateCreated(host: object) {
+    if (!enabled || styleStateHosts.has(host)) return
+    styleStateHosts.add(host)
     activeStyleHostStates++
 }
 
 /**
  * @internal
  */
-export function trackStyleHostStateDestroyed() {
+export function trackStyleHostStateDestroyed(host: object) {
     if (!enabled) return
+    // CAUTION 与 host/compact 计数一样只认「create 阶段登记过」的对象：不带身份直接 -- 的话，
+    //  enable 之前（或 reset 之前）创建、之后才销毁的带样式 host 会把计数减成负数，
+    //  「afterClear 所有计数归零」的断言反而因为没泄漏而失败。
+    if (!styleStateHosts.delete(host)) return
     activeStyleHostStates--
 }
 

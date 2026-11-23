@@ -43,6 +43,19 @@ import {getComponentTypeId, componentTypeIds} from "./styleSerialize";
 function ensureArray(o: any) {
     return o ? (Array.isArray(o) ? o : [o]) : []
 }
+
+// CAUTION 默认值的语义是「最终谁都没提供时的兜底」。输入层的 undefined 本来就按「没提供」处理
+//  （<Comp size={undefined}/> 得到默认值），但后面的层同样会产出 undefined：
+//  boundProps/postBoundProps 的条件写法（bindProps(Comp, p => ({size: p.compact ? 'small' : undefined}))
+//  是自然写法）、$self:size={undefined}、透传进来的 config props。按 key 覆盖合并时它们把排在
+//  最前面的默认值冲成 undefined——组件拿不到声明的默认值，且没有任何报错。
+//  合并后仍是 undefined 的 key 回填默认值：用的是同一个默认值实例（bound 函数看到的引用不变），
+//  render 里的第二次 coerce 也会按引用跳过它。
+function restoreDefaultProps(props: Props, defaults: Props) {
+    for (const key in defaults) {
+        if (props[key] === undefined) props[key] = defaults[key]
+    }
+}
 /**
  * @category Common Utility
  */
@@ -664,12 +677,15 @@ export class ComponentHost implements Host{
         const allPropsBeforePostBound = (defaultsOnlyProps ? [defaultsOnlyProps] : [] as Props[])
             .concat(evaluatedBoundProps, realInputProps, ...(this.inputProps[INNER_CONFIG_PROP]||[]))
         const resultBeforePostBound = allPropsBeforePostBound.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), { props: {}, itemConfig: {}, componentProp: {} })
-        
+        // 后面的层把默认值冲成 undefined 时回填；postBound 函数拿到的也应该是带默认值的 props（见 restoreDefaultProps）
+        if (defaultsOnlyProps) restoreDefaultProps(resultBeforePostBound.props, defaultsOnlyProps)
+
         // 在 AOP props 之后，再评估和应用 postBoundProps
         // CAUTION postBoundProps 的函数参数应该能拿到 AOP 之后的 props，所以传入 resultBeforePostBound.props
         const propsAfterAOP = resultBeforePostBound.props
         const evaluatedPostBoundProps = this.evaluatePostBoundProps(propsAfterAOP, this.renderContext!)
         const result = evaluatedPostBoundProps.reduce<PropsWithConfig>((acc, props) => this.parseAndMergeProps(acc, props), resultBeforePostBound)
+        if (defaultsOnlyProps && evaluatedPostBoundProps.length) restoreDefaultProps(result.props, defaultsOnlyProps)
         // 原样保留的输入值（已 coerce）在 render 的第二次 coerce 中按引用跳过
         result.precoerced = inputPropsWithDefaultValue
         return result

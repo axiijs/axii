@@ -213,8 +213,12 @@ export const string = createNormalType<string, typeof stringDef>('string', strin
 
 const numberDef = {
     stringify(v:any) { return v.toString() },
+    // CAUTION 必须整串匹配：不带 ^$ 的话只要文本里出现一个数字就算通过（'abc1'、'"12"'、'1px'），
+    //  parseFloat 给出 NaN 或截断值而不是抛错——oneOfType([number, string]) 的 parse 会先试 number，
+    //  NaN 又能通过 number 的 check，带数字的字符串往返一圈静默变成 NaN。
+    //  接受 Number#toString 能产出的所有有限数形态（含 1e+21 / 1.5e-7）以及手写的 .5 / 5.。
     parse(v:any) {
-        if (/-?\d+(\.\d+)?/.test(v)) return parseFloat(v)
+        if (/^\s*[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?\s*$/i.test(v)) return parseFloat(v)
         throw new Error(`${v} is not a number`)
     },
     zeroValue: 0,
@@ -321,6 +325,8 @@ export const shapeOf = createTypeClass({
 
 export const map = createTypeClass({
     check(this: TypeChecker<any, any>, v: any) {
+        // 与 shapeOf 同一个前置判断：非对象直接不通过，而不是在读 v[key] 时 TypeError
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) return false
         return Object.entries(this.argv[0]).every(([key, propType]: [string, unknown]) => (propType as TypeChecker<any, any>).check(v[key]))
     },
     stringify(this: TypeChecker<any, any>, v: any) {
@@ -348,8 +354,18 @@ export const elementType = any
 
 export const checkPropTypes = internalCheckPropTypes
 
+// CAUTION 响应式类型必须有 check：TypeChecker(v) 与 oneOfType/arrayOf/shapeOf 都会调用成员的
+//  check。缺了它，单独使用时任何值（包括合法的 atom）都被判为不通过，放进组合类型里
+//  （oneOfType([atom(), number]) 是「atom 或固定值」的自然声明）直接 TypeError（I29 同类）。
+//  语义是「coerce 能接住的输入」：元素类型只存在于 TS 泛型里，运行时无从校验。
+function isCollectionSource(v: any) {
+    return v === null || Array.isArray(v) || typeof v === 'function'
+}
+
 function atomType<T>() {
     return createTypeClass( {
+        // 任何值都会被 coerce 包成 atom
+        check: () => true,
         coerce: (v: any) => {
             return isAtom(v) ? v : atom(v)
         },
@@ -358,6 +374,7 @@ function atomType<T>() {
 
 function rxListType<T>() {
     return createTypeClass( {
+        check: (v: any) => v instanceof RxList || isCollectionSource(v),
         coerce: (v: any) => {
             return v instanceof RxList ? v : new RxList(v)
         },
@@ -366,6 +383,7 @@ function rxListType<T>() {
 
 function rxSetType<T>() {
     return createTypeClass( {
+        check: (v: any) => v instanceof RxSet || isCollectionSource(v),
         coerce: (v: any) => {
             return v instanceof RxSet ? v : new RxSet(v)
         },
@@ -374,6 +392,8 @@ function rxSetType<T>() {
 
 function rxMapType<K, V>() {
     return createTypeClass( {
+        // RxMap 的固定值形态：entries 数组或普通对象
+        check: (v: any) => v instanceof RxMap || isCollectionSource(v) || (typeof v === 'object' && v.constructor === Object),
         coerce: (v: any) => {
             return v instanceof RxMap ? v : new RxMap(v)
         },

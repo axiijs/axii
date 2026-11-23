@@ -1,5 +1,6 @@
 import {atom, Atom, autorun, ManualCleanup} from "data0";
 import {assert, shallowEqual} from "./util";
+import {isAxiiDiagnosticsEnabled} from "./diagnostics";
 import {RefObject} from "./DOM";
 
 
@@ -309,23 +310,41 @@ export class RxDOMSize extends RxDOMState<HTMLElement|Window, SizeObject>{
             states.add(this.value)
             // CAUTION ResizeObserver 对 observe 的首次回调是异步的，这里同步给出一份
             //  与 SizeObject 类型形状一致的初始值（含 borderBox/contentBox 字段）。
-            const rect = element.getBoundingClientRect()
             const style = getComputedStyle(element)
-            const horizontalExtra = (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0) +
-                (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
-            const verticalExtra = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0) +
-                (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
-            const contentBoxWidth = Math.max(0, rect.width - horizontalExtra)
-            const contentBoxHeight = Math.max(0, rect.height - verticalExtra)
-            this.value({
-                // 与 ResizeObserver 的 contentRect 语义一致：width/height 是 content box
-                width: contentBoxWidth,
-                height: contentBoxHeight,
-                borderBoxWidth: rect.width,
-                borderBoxHeight: rect.height,
-                contentBoxWidth,
-                contentBoxHeight
-            })
+            // CAUTION 非替换行内元素（span/a/b… 的默认形态）没有可观察的 box：ResizeObserver 对它
+            //  只会给出全 0（规范：non-replaced inline 的 content rect 恒为空），内容再变也不回调。
+            //  同步初始值必须与观察到的值一致——这里曾用 getBoundingClientRect 量出真实尺寸，
+            //  它只能活到首次回调（下一帧）就掉成全 0，之后永远是 0：同一个没有变化的元素先后
+            //  给出两个值，「先读到的那个」还是 observer 永远不会维护的。
+            //  判定：display 解析为 inline 且 width 解析为 auto。替换元素（img/canvas/svg）的 width
+            //  解析为具体像素，flex/grid 子项已被 blockify，都不会命中。
+            if (style.display === 'inline' && style.width === 'auto' && element instanceof HTMLElement) {
+                if (isAxiiDiagnosticsEnabled()) {
+                    /* eslint-disable no-console */
+                    console.error(`[axii] RxDOMSize is attached to a non-replaced inline element (<${element.tagName.toLowerCase()}>). ` +
+                        'ResizeObserver reports 0x0 for inline boxes and never notifies their changes, so the size stays 0. ' +
+                        'Give the element a box of its own (e.g. display: inline-block) to observe its size.')
+                    /* eslint-enable no-console */
+                }
+                this.value({width: 0, height: 0, borderBoxWidth: 0, borderBoxHeight: 0, contentBoxWidth: 0, contentBoxHeight: 0})
+            } else {
+                const rect = element.getBoundingClientRect()
+                const horizontalExtra = (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0) +
+                    (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
+                const verticalExtra = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0) +
+                    (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+                const contentBoxWidth = Math.max(0, rect.width - horizontalExtra)
+                const contentBoxHeight = Math.max(0, rect.height - verticalExtra)
+                this.value({
+                    // 与 ResizeObserver 的 contentRect 语义一致：width/height 是 content box
+                    width: contentBoxWidth,
+                    height: contentBoxHeight,
+                    borderBoxWidth: rect.width,
+                    borderBoxHeight: rect.height,
+                    contentBoxWidth,
+                    contentBoxHeight
+                })
+            }
 
             this.abort =  (originEl) => {
                 const el = originEl as HTMLElement
@@ -354,9 +373,10 @@ export class RxDOMFocused extends RxDOMState<HTMLElement, boolean>{
     listen() {
         const abortController = new AbortController()
 
-        if (document.activeElement === this.element || this.element!.contains(document.activeElement)) {
-            this.value(true)
-        }
+        // CAUTION 挂上元素时必须显式写入当前状态（包括 false）：解绑时 value 会被置成 null，
+        //  只在已聚焦时写 true 的话，元素卸载后重新挂载（条件渲染的输入框）value 会停在 null——
+        //  首次挂载是 false、重新挂载却是 null，同样是「已挂载、未聚焦」却给出两个值。
+        this.value(document.activeElement === this.element || this.element!.contains(document.activeElement))
 
         this.element!.addEventListener('focusin', () => this.value(true), {signal: abortController.signal})
         this.element!.addEventListener('focusout', () => this.value(false), {signal: abortController.signal})
@@ -475,6 +495,12 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
             const targetRect = this.element!.getBoundingClientRect()
 
             const innerAbortController = new AbortController()
+            // CAUTION 本次拖拽挂在 boundary / window 上的监听必须跟随外层一起解绑：
+            //  拖到一半元素被卸载或 state 被销毁（拖拽删除、拖动中列表重渲染都是自然场景）时，
+            //  外层 abort 只摘掉了 mousedown，这些监听会一直留到下一次 mouseup——期间的
+            //  mousemove 把拖拽状态重新写回已经置 null 的 value，mouseup 还会再派发一次 dragend。
+            //  这条 abort 监听自己也挂在 inner signal 上，拖拽正常结束时随之移除，不在外层 signal 上累积。
+            abortController.signal.addEventListener('abort', () => innerAbortController.abort(), {signal: innerAbortController.signal})
 
             let started = false
 
@@ -496,9 +522,13 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
             }, {signal: innerAbortController.signal})
 
             const dragEnd = () => {
-                const lastState = this.value()!
-                this.value(null)
                 innerAbortController!.abort()
+                // CAUTION 没有 mousemove 就松开（普通点击）不是一次拖拽：dragstart 没有派发过，
+                //  也没有任何 state，这时再派发 dragend 得到的是 detail 为 null、没有配对 dragstart
+                //  的事件——监听方读 e.detail.clientX 会在每次点击时 TypeError。
+                if (!started) return
+                const lastState = this.value.raw!
+                this.value(null)
                 this.eventBus.dispatchEvent(new CustomEvent('dragend', {detail: lastState}))
             }
 

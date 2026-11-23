@@ -18,6 +18,8 @@ import {
     getComponentTypeId,
     hashStyleContent,
     isAcceptableSingleCssRule,
+    isPromotedStyleEntry,
+    lastStyleSheetEntryIndex,
     prepareStyleContent,
     renderPreparedStyle,
     serializePreparedStyle,
@@ -222,6 +224,9 @@ function collectElementStyles(
     const staticBase = currentStyleStaticId(elementPath)
     const sharedStaticBaseId = state.functionHostDepth > 0 ? null : staticBase
 
+    // 与 CSR 同一条规则：排在 stylesheet 条目之前的普通条目一起进 stylesheet（见 lastStyleSheetEntryIndex）
+    const lastSheetIndex = entries.length > 1 ? lastStyleSheetEntryIndex(entries) : -1
+
     entries.forEach(({value: item, entryIsDynamic, isBound}, index) => {
         if (item == null || typeof item === 'boolean') return
         if (typeof item === 'string') {
@@ -231,7 +236,9 @@ function collectElementStyles(
         if (typeof item !== 'object') return
 
         const {simpleStyles, nestedStyles} = splitStyleObject(item)
-        const usesSheet = isBound || Object.keys(nestedStyles).length > 0
+        const ownsSheet = isBound || Object.keys(nestedStyles).length > 0
+        const promoted = lastSheetIndex > 0 && isPromotedStyleEntry(item, index, lastSheetIndex, ownsSheet)
+        const usesSheet = ownsSheet || promoted
         if (!usesSheet) {
             // Pure inline (no nested/bound): snapshot atom/function values (no FOUC)
             const parts: string[] = []
@@ -251,7 +258,8 @@ function collectElementStyles(
 
         const prepared = prepareStyleContent(item)
         const signature = prepared.shareable ? serializePreparedStyle(prepared) : undefined
-        let isDynamic = entryIsDynamic || prepared.isReactive || !prepared.shareable
+        // 被提升的条目与 CSR 一样按动态处理（内容 id），两边 class 才能对齐
+        let isDynamic = entryIsDynamic || promoted || prepared.isReactive || !prepared.shareable
         if (signature !== undefined && !isDynamic && sharedStaticBaseId) {
             const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
             const existingSignature = state.idToStaticStyleSignature.get(sharedIdWithIndex)

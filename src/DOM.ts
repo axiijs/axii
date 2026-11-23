@@ -4,7 +4,7 @@ import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
-import {SSR_STYLE_CLASSES_ATTRIBUTE} from './styleSerialize'
+import {SSR_STYLE_CLASSES_ATTRIBUTE, autoUnit, getAutoUnitType, setAutoUnitType} from './styleSerialize'
 import {
     advanceCursorUntilComment,
     advanceCursorUntilRxListHostPlaceholder,
@@ -35,17 +35,9 @@ import {
 } from "./hydration";
 
 export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
-let autoUnitType: 'px' | 'rem' | 'em' = 'px'
-export function setAutoUnitType(type: 'px' | 'rem' | 'em') {
-    autoUnitType = type
-}
-
-export function autoUnit(num: number|string) {
-    if (typeof num === 'string') {
-        return num
-    }
-    return `${num}${autoUnitType}`
-}
+// CAUTION 单位状态与 autoUnit 的实现只在 styleSerialize 里有一份（stylesheet / SSR 与行内样式共用），
+//  这里只是保持原有的对外导出。
+export {setAutoUnitType, autoUnit}
 
 export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 
@@ -65,6 +57,14 @@ export function stringifyStyleValue(k:string, v: any): string {
     //  旧值（'bold'）不会被清除，样式永久残留（F36）。
     if (v === undefined || v === null || typeof v === 'boolean') return ''
     if(Array.isArray(v)) {
+        // CAUTION [数字, 单位] 简写必须先于逗号列表判断：接受时间单位的属性（transitionDuration /
+        //  transitionDelay / animationDuration / animationDelay）全部命中 COMMA_MULTI_VALUE_ATTR，
+        //  先走逗号分支的话 [300, 'ms'] 被拼成 "300,ms"——非法值，浏览器静默拒绝整条声明，
+        //  CSS_UNIT_VALUE 里的 s/ms 永远用不上。「数字 + 单位名」本身不可能是合法的逗号列表。
+        if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
+            // [12, 'px'] => 12px
+            return `${v[0]}${v[1]}`
+        }
         // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
             // attr like box-shadow
@@ -78,9 +78,6 @@ export function stringifyStyleValue(k:string, v: any): string {
                 parts.push(i)
             }
             return parts.join(',')
-        } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
-            // [12, 'px'] => 12px
-            return `${v[0]}${v[1]}`
         } else {
             // padding/margin/transform|translate|scale|rotate|skew
             // 支持 undefined 值自动 fallback 到 0 值
@@ -267,8 +264,12 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     // CAUTION multiple select 的 value 天然就是数组（HTML 多选的用户本意），不能落进
     //  「数组取最后一个」的覆盖语义——mergeProp 从不会把 value 合并成数组，
     //  所以 select 上的数组 value 一定来自用户，必须按多选语义整体应用。
+    // CAUTION data-* 的数组同样来自用户（mergeProp 不会把它合并成数组），整体字符串化写入
+    //  （data-ids={[1, 2]} => "1,2"）。响应式路径一直是这个语义（曾经走 dataset 赋值），
+    //  静态路径不能把它塌成最后一项，否则同一个属性静态/响应式写出的值不同。
     if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name) &&
-        !(name === 'value' && node.tagName === 'SELECT')) {
+        !(name === 'value' && node.tagName === 'SELECT') &&
+        !(name.charCodeAt(0) === 100 && name.startsWith('data-'))) {
         // 全都是覆盖模式，只处理最后一个
         return setAttribute(node, name, value.at(-1), isSvg)
     }
@@ -1509,11 +1510,17 @@ export function dispatchEvent(target: ExtendedElement, event: Event) {
 
 
 type Unit = 'px' | 'rem' | 'em' | '%'
+// CAUTION StyleSize 的 add/sub 传入不带单位的数字时用自己的单位；但自己已经是 calc 表达式
+//  （unit 为 'mixed'）时没有「自己的单位」，直接拼会得到 "2mixed" 这种非法 CSS，整个 calc 被
+//  浏览器丢弃。这时与 new StyleSize(2) 一样取全局的自动单位。
+function numberUnitOf(unit: Unit|'mixed') {
+    return unit === 'mixed' ? getAutoUnitType() : unit
+}
 /**
  * @category Common Utility
  */
 export class StyleSize {
-    constructor(public value: number|string, public unit: Unit|'mixed' = autoUnitType) {
+    constructor(public value: number|string, public unit: Unit|'mixed' = getAutoUnitType()) {
         if (typeof value === 'string') {
             this.unit = 'mixed'
         }
@@ -1557,7 +1564,7 @@ export class StyleSize {
             this.value = this.value + (value.value as number)
         } else {
             const originStr = typeof this.value === 'number' ? `${this.value}${this.unit}` : `(${this.value})`
-            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : (value.unit=== 'mixed' ? `(${value.value})` : value.toString())
+            const valueStr = typeof value === 'number' ? `${value}${unit||numberUnitOf(this.unit)}` : (value.unit=== 'mixed' ? `(${value.value})` : value.toString())
             this.value = `${originStr} + ${valueStr}`
             this.unit = 'mixed'
         }
@@ -1570,7 +1577,7 @@ export class StyleSize {
             this.value = this.value - (value.value as number)
         } else {
             const originStr = typeof this.value === 'number' ? `${this.value}${this.unit}` : `(${this.value})`
-            const valueStr = typeof value === 'number' ? `${value}${unit||this.unit}` : (value.unit=== 'mixed' ? `(${value.value})` : value.toString())
+            const valueStr = typeof value === 'number' ? `${value}${unit||numberUnitOf(this.unit)}` : (value.unit=== 'mixed' ? `(${value.value})` : value.toString())
             this.value = `${originStr} - ${valueStr}`
             this.unit = 'mixed'
         }

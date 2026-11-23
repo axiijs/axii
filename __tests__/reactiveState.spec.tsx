@@ -40,8 +40,11 @@ describe('ref', () => {
         function App({}, {createElement,  createRef}: RenderContext) {
             rxSize = new RxDOMSize()
             spanRef = createRef()
+            // CAUTION 必须是有自己 box 的元素（inline-block）：ResizeObserver 对非替换行内元素
+            //  只给出 0x0 且不再回调。这个用例曾经直接观察 <span>，末尾「宽度变了」的断言
+            //  只是因为同步初始值（真实宽度）在首次回调后掉成 0 才通过，与文本变化无关。
             return (
-                <span ref={[rxSize.ref, spanRef]}>{innerText}</span>
+                <span ref={[rxSize.ref, spanRef]} style={{display: 'inline-block'}}>{innerText}</span>
             )
         }
 
@@ -59,6 +62,8 @@ describe('ref', () => {
         await wait(100)
         expect(spanRef!.current.innerText === 'hello world 2222')
         expect(rxSize.value().width).not.toEqual(last.width)
+        // 文本变长，宽度是变大而不是掉成 0
+        expect(rxSize.value().width).toBeGreaterThan(last.width)
     })
 
     test('create reactive rect state of window', async () => {

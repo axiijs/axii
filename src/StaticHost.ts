@@ -14,7 +14,7 @@ import {isAtom} from "data0";
 import {LightBindingEffect} from "./LightBindingEffect.js";
 import {trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {createHost} from "./createHost";
-import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
+import {assert, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
@@ -38,6 +38,8 @@ import {
     generateStyleContent as generateStyleContentShared,
     getComponentTypeId,
     isNestedStyleObject as isNestedStyleObjectShared,
+    isPromotedStyleEntry,
+    lastStyleSheetEntryIndex,
     splitStyleObject as splitStyleObjectShared,
     prepareStyleContent,
     renderPreparedStyle,
@@ -364,7 +366,7 @@ class StyleManager {
         if (!ids) {
             ids = new Map()
             this.hostToStyleIds.set(host, ids)
-            trackStyleHostStateCreated()
+            trackStyleHostStateCreated(host)
         }
         ids.set(id, (ids.get(id) ?? 0) + 1)
         this.updateRefCount(id, +1)
@@ -403,7 +405,7 @@ class StyleManager {
             this.hostToRollingBaseIds.delete(host)
         }
         if (this.hostToStyleIds.has(host)) {
-            trackStyleHostStateDestroyed()
+            trackStyleHostStateDestroyed(host)
         }
         const ids = this.hostToStyleIds.get(host)
         if (!ids) return
@@ -466,13 +468,21 @@ class StyleManager {
         // 跨元素共享的静态 id 基础（路径含 FunctionHost 时不共享）
         const sharedStaticBaseId = hasFunctionHostInPath ? null : generateComponentElementStaticId(pathToLastComponent, elementPath)
         let rollingBaseId: string | undefined
+        // 排在 stylesheet 条目之前的普通条目要一起提升进 stylesheet，否则行内声明会压过后面的条目
+        //  （见 lastStyleSheetEntryIndex）。只有一个条目时没有「之前」，直接跳过。
+        const lastSheetIndex = evaluatedEntries.length > 1 ? lastStyleSheetEntryIndex(evaluatedEntries) : -1
         const splitStyleObjects = evaluatedEntries.map(({value: evaluatedStyleObject, entryIsDynamic, isBound}, index) => {
             // 分离普通和嵌套样式
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
-            const usesStyleSheet = isBound || Object.keys(nestedStyles).length > 0
+            const ownsStyleSheet = isBound || Object.keys(nestedStyles).length > 0
+            // CAUTION 被提升的条目一律按动态处理（走内容 id）：它是否被提升取决于**后面**的条目，
+            //  响应式数组重算时会来回翻转。共享静态 id 的 class 只在首次应用时挂、之后不再摘，
+            //  翻转回行内时旧 class 会残留；内容 id 由 elToContentStyleIds 记账，翻转时自动摘除/释放。
+            const promoted = lastSheetIndex > 0 && isPromotedStyleEntry(evaluatedStyleObject, index, lastSheetIndex, ownsStyleSheet)
+            const usesStyleSheet = ownsStyleSheet || promoted
             const prepared = usesStyleSheet ? prepareStyleContent(evaluatedStyleObject) : undefined
             const signature = prepared?.shareable ? serializePreparedStyle(prepared) : undefined
-            let isDynamic = entryIsDynamic || !!prepared && (prepared.isReactive || !prepared.shareable)
+            let isDynamic = entryIsDynamic || promoted || !!prepared && (prepared.isReactive || !prepared.shareable)
 
             // A component path can produce different CSS for different instances (F30).
             if (signature !== undefined && !isDynamic && sharedStaticBaseId) {
@@ -1028,17 +1038,14 @@ export class StaticHost implements Host {
                 //  必须把 StyleManager 挂上去的 stylesheet class 补回来，否则嵌套样式/boundProps 样式静默丢失。
                 setAttribute(el, key, final, isSVG)
                 StaticHost.styleManager.reapplyStyleClasses(el)
-            } else if (/^data-/.test(key)) {
-                // 使用 dataset 的时候 key 要进行驼峰化
-                // ref: https://developer.mozilla.org/zh-CN/docs/Web/API/HTMLElement/dataset#%E5%90%8D%E7%A7%B0%E8%BD%AC%E6%8D%A2
-                // CAUTION null/undefined 表示移除属性，dataset 赋值会把它们字符串化成
-                //  字面 "null"/"undefined"，必须用 delete。
-                if (final == null) {
-                    delete el.dataset[camelize(key.slice(5))]
-                } else {
-                    el.dataset[camelize(key.slice(5))] = final
-                }
             } else {
+                // CAUTION data-* 与其他属性走同一条 setAttribute 路径，不再经 dataset 赋值：
+                //  dataset 的名字转换只认「'-' + 小写字母」，而这里曾用通用的 camelize（连 '_'、
+                //  '-数字' 也折叠）来算 dataset key——data-item_id={atom} 实际写出的是 data-item-id、
+                //  data-level-1 写出的是 data-level1，同一个 JSX 属性一旦变成响应式，属性名就变了
+                //  （选择器、test id、埋点钩子静默失效）。静态路径本来就是按字面属性名写的，
+                //  两条路径共用一份实现才不会再分叉：null/undefined 移除、false 写字面 "false"、
+                //  数组整体字符串化，都由 setAttribute 统一处理。
                 setAttribute(el, key, final, isSVG)
             }
         }

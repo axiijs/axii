@@ -115,9 +115,23 @@ const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTo
 const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
 const CSS_UNIT_VALUE = /^(px|em|rem|%|vw|vh|vmin|vmax|pt|pc|in|cm|mm|q|ex|ch|ic|cap|lh|rlh|fr|s|ms|deg|rad|grad|turn|dpi|dpcm|dppx|cqw|cqh|cqi|cqb|cqmin|cqmax|svw|svh|lvw|lvh|dvw|dvh)$/i
 
-function autoUnit(num: number | string): string {
+// CAUTION 数字补全用的单位只有这一份状态，行内样式（DOM.ts）与 stylesheet / SSR（本文件）共用。
+//  这里曾有一份写死 px 的 autoUnit 副本：setAutoUnitType('rem') 之后同一个 {width: 10}
+//  行内是 10rem，一旦对象里多了一个 &:hover（或来自 bindProps / SSR）就变成 10px。
+//  setAutoUnitType / autoUnit 仍然只从 DOM.ts 对外导出（本文件不进 index.ts）。
+let autoUnitType: 'px' | 'rem' | 'em' = 'px'
+
+export function setAutoUnitType(type: 'px' | 'rem' | 'em') {
+    autoUnitType = type
+}
+
+export function getAutoUnitType() {
+    return autoUnitType
+}
+
+export function autoUnit(num: number | string): string {
     if (typeof num === 'string') return num
-    return `${num}px`
+    return `${num}${autoUnitType}`
 }
 
 type StylePreparationState = {isReactive: boolean, shareable: boolean}
@@ -163,6 +177,10 @@ export function stringifyCssValue(k: string, v: any, state?: StylePreparationSta
     v = resolveCssValue(v, state)
     if (v === undefined || v === null || typeof v === 'boolean') return ''
     if (Array.isArray(v)) {
+        // [数字, 单位] 简写先于逗号列表判断，时间单位才用得上（与 DOM.stringifyStyleValue 一致，原因见那里）
+        if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
+            return `${v[0]}${v[1]}`
+        }
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
             const parts: string[] = []
             for (const item of v) {
@@ -171,8 +189,6 @@ export function stringifyCssValue(k: string, v: any, state?: StylePreparationSta
                 parts.push(String(i))
             }
             return parts.join(',')
-        } else if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
-            return `${v[0]}${v[1]}`
         } else {
             return v.map((i: any) => stringifyCssValue(k, i ?? 0, state)).join(' ')
         }
@@ -224,6 +240,38 @@ export function splitStyleObject(styleObject: StyleObject): {simpleStyles: Style
         }
     }
     return {simpleStyles, nestedStyles}
+}
+
+/**
+ * 条目数组里最后一个「必须走 stylesheet」（bound / 含嵌套 selector、at-rule、animation）的
+ * 条目下标，没有则 -1。CSR（StyleManager.update）与 SSR 共用，两边对「谁被提升」的判断必须一致。
+ *
+ * CAUTION 行内声明永远压过 stylesheet 规则，所以排在某个 stylesheet 条目**之前**的普通条目
+ *  不能留在行内：style 数组的契约是「后面的条目覆盖前面的」（mergeProp 把 AOP/外部传入的
+ *  style 放在后面正是为了覆写），留在行内的话 [{color:'blue'}, {color:'red', '&:hover':{…}}]
+ *  得到的是 blue——外部覆盖一旦带上 &:hover，它的基础声明就静默失效。调用方把这些
+ *  「在它之前」的普通条目也提升进 stylesheet（见 isPromotedStyleEntry），顺序统一由条目序号决定。
+ * CAUTION 这是样式更新的热路径：只有一个条目（绝大多数）时调用方直接跳过；多个条目时
+ *  从后往前扫，不分配任何对象。下标 0 之前没有条目，不需要看。
+ */
+export function lastStyleSheetEntryIndex(entries: EvaluatedStyleEntry[]): number {
+    for (let i = entries.length - 1; i > 0; i--) {
+        const {value, isBound} = entries[i]
+        if (!value || typeof value !== 'object') continue
+        if (isBound) return i
+        for (const key in value) {
+            if (key === '@keyframes' || key === 'animation' || isNestedStyleObject(key, value[key])) return i
+        }
+    }
+    return -1
+}
+
+/** 自己不需要 stylesheet、但排在某个 stylesheet 条目之前的普通对象条目（见 lastStyleSheetEntryIndex）。 */
+export function isPromotedStyleEntry(value: any, index: number, lastSheetIndex: number, ownsStyleSheet: boolean): boolean {
+    if (ownsStyleSheet || index >= lastSheetIndex || !value || typeof value !== 'object') return false
+    // 空对象没有可提升的声明，不为它建一张空表
+    for (const _ in value) return true
+    return false
 }
 
 function splitSelectorList(input: string): string[] {
@@ -294,6 +342,8 @@ type PreparedStyleNode = {
     declarations: string
     keyframes?: string
     animation?: string
+    // 写在 animation 之后的 animation-* 分项声明（见 prepareStyleNode）
+    animationTail?: string
     nested?: {
         scope: string | string[][]
         node: PreparedStyleNode
@@ -310,29 +360,58 @@ function prepareKeyframes(value: any, state?: StylePreparationState): string | u
 function prepareAnimation(value: any, state?: StylePreparationState): string | undefined {
     const animation = resolveCssValue(value, state)
     if (!animation) return undefined
-    return Array.isArray(animation)
-        ? animation.map(item => resolveCssValue(item, state)).join(', ')
-        : String(animation)
+    if (!Array.isArray(animation)) return String(animation)
+    // CAUTION 条件项（cond && 'spin 1s' / cond ? '…' : null）的 falsy 结果必须过滤掉，与
+    //  stringifyCssValue 的逗号列表分支一致（F36）：null/undefined 经 join 留下悬空逗号
+    //  （"a 1s, "），整条 animation 声明非法、被浏览器静默丢弃。全部是 falsy 时等同没写。
+    const parts: string[] = []
+    for (const item of animation) {
+        const resolved = resolveCssValue(item, state)
+        if (resolved === undefined || resolved === null || typeof resolved === 'boolean' || resolved === '') continue
+        parts.push(String(resolved))
+    }
+    return parts.length ? parts.join(', ') : undefined
+}
+
+// animation 简写会重置的分项属性（animation-delay / animationPlayState / animation-timeline …）
+function isAnimationLonghand(key: string): boolean {
+    return key.charCodeAt(0) === 97 && /^animation[A-Z-]/.test(key)
+}
+
+function isDeclarationValue(value: any): boolean {
+    return value !== null && value !== undefined && typeof value !== 'boolean'
 }
 
 function prepareStyleNode(styleObject: StyleObject, state: StylePreparationState): PreparedStyleNode {
     const declarations: string[] = []
+    // CAUTION animation 简写不在主规则里，而是由 renderStyleAnimation 输出在主规则**之后**的
+    //  一条同特异性规则里（@self 要替换成 keyframes 名）。简写会重置全部 animation-* 分项，
+    //  所以作者写在 animation 之后的分项（animationDelay / animationPlayState /
+    //  animationIterationCount … 都是自然写法）会被这条靠后的简写整体冲掉。把这些分项在简写
+    //  后面再输出一遍，让对象里的书写顺序就是层叠顺序（与行内路径逐 key 赋值的结果一致）；
+    //  写在 animation 之前的分项按 CSS 语义本来就该被简写重置，不重复。
+    //  每个值只求值一次：复用同一份声明文本，缓存 key 与实际规则才一致。
+    let animationTail: string[] | undefined
     const node: PreparedStyleNode = {declarations: ''}
     for (const [key, value] of Object.entries(styleObject ?? {})) {
         if (key === '@keyframes') {
             node.keyframes = prepareKeyframes(value, state)
         } else if (key === 'animation') {
             node.animation = prepareAnimation(value, state)
+            animationTail = node.animation !== undefined ? [] : undefined
         } else if (isNestedStyleObject(key, value)) {
             const selectors = key.startsWith('@') ? undefined
                 : splitSelectorList(key).map(part => splitNestingReferences(part.trim(), state))
             const nested = node.nested ??= []
             nested.push({scope: selectors ?? key, node: prepareStyleNode(value, state)})
-        } else if (value !== null && value !== undefined && typeof value !== 'boolean') {
-            declarations.push(stringifyDeclaration(key, value, state))
+        } else if (isDeclarationValue(value)) {
+            const declaration = stringifyDeclaration(key, value, state)
+            declarations.push(declaration)
+            if (animationTail && isAnimationLonghand(key)) animationTail.push(declaration)
         }
     }
     node.declarations = declarations.join('\n')
+    if (animationTail?.length) node.animationTail = animationTail.join('\n')
     return node
 }
 
@@ -354,6 +433,7 @@ function renderStyleAnimation(
     animation: string | undefined,
     animationName?: string,
     identitySelector = selector,
+    animationTail?: string,
 ): string[] {
     const contents: string[] = []
     const name = animationName ?? `animation-${hashStyleContent(JSON.stringify([identitySelector, keyframes, animation]))}`
@@ -365,7 +445,7 @@ ${keyframes}
     if (animation !== undefined) {
         contents.push(`
 ${selector} {
-    animation: ${animation.replace(/@self/g, name)};
+    animation: ${animation.replace(/@self/g, name)};${animationTail ? '\n' + animationTail : ''}
 }
 `)
     }
@@ -377,34 +457,59 @@ export function generateInlineAnimationContent(
     styleObject: StyleObject,
     animationName?: string,
 ): string[] {
+    const animation = prepareAnimation(styleObject.animation)
+    // 与 prepareStyleNode 同一条规则：写在 animation 之后的分项跟在简写后面
+    let animationTail: string[] | undefined
+    if (animation !== undefined) {
+        let afterAnimation = false
+        for (const key in styleObject) {
+            if (key === 'animation') {
+                afterAnimation = true
+            } else if (afterAnimation && isAnimationLonghand(key) && isDeclarationValue(styleObject[key]) &&
+                !isNestedStyleObject(key, styleObject[key])) {
+                (animationTail ??= []).push(stringifyDeclaration(key, styleObject[key]))
+            }
+        }
+    }
     return renderStyleAnimation(
         selector,
         prepareKeyframes(styleObject['@keyframes']),
-        prepareAnimation(styleObject.animation),
+        animation,
         animationName,
+        selector,
+        animationTail?.join('\n'),
     )
 }
 
-function renderStyleNode(selector: string, node: PreparedStyleNode, activationGuard: string): string[] {
+// CAUTION 父级 selector 必须以「列表」（string[]）向下传，不能传逗号拼好的文本：
+//  CSS Nesting 里 `&` 代表整个父级列表（'&.a, &.b' 下的 '& span' 等价于
+//  `:is(P.a, P.b) span`）。对拼好的文本做 join/前缀，子 selector 只会接到列表的最后
+//  一项上（`P.a, P.b span`）：前面的父级自己吃到了这些声明，它们的后代却永远匹配不上，
+//  样式静默落到错误的元素上。这里按「父级 × 子级」展开，单个父级时输出与之前逐字相同。
+function renderStyleNode(selectors: string[], node: PreparedStyleNode, activationGuard: string): string[] {
+    const selector = selectors.join(', ')
     const contents = [`${selector} {
 ${node.declarations}
 }`]
 
     if (node.keyframes !== undefined || node.animation !== undefined) {
         const identitySelector = activationGuard ? selector.replaceAll(activationGuard, '') : selector
-        contents.push(...renderStyleAnimation(selector, node.keyframes, node.animation, undefined, identitySelector))
+        contents.push(...renderStyleAnimation(selector, node.keyframes, node.animation, undefined, identitySelector, node.animationTail))
     }
     if (node.nested) {
         for (const nested of node.nested) {
             const {scope, node} = nested
             if (typeof scope !== 'string') {
-                const scoped = scope.map(segments => segments.length > 1
-                    ? segments.join(selector)
-                    : `${selector} ${segments[0]}`).join(', ')
+                const scoped: string[] = []
+                for (const parent of selectors) {
+                    for (const segments of scope) {
+                        scoped.push(segments.length > 1 ? segments.join(parent) : `${parent} ${segments[0]}`)
+                    }
+                }
                 contents.push(...renderStyleNode(scoped, node, activationGuard))
             } else {
                 contents.push(`${scope} {
-    ${renderStyleNode(selector, node, activationGuard).join('\n')}
+    ${renderStyleNode(selectors, node, activationGuard).join('\n')}
 }`)
             }
         }
@@ -420,7 +525,9 @@ export function renderPreparedStyle(selector: string, prepared: PreparedStyleCon
     let activationGuard = ''
     if (activation === 'active') activationGuard = ACTIVE_STYLE_ANCHOR
     else if (activation) activationGuard = `:where([${SSR_STYLE_CLASSES_ATTRIBUTE}~="${activation}"])`
-    return renderStyleNode(activationGuard + selector, prepared.node, activationGuard)
+    // 调用方（generateStyleContent 是公开导出的）传进来的 selector 自己也可以是列表，同样按列表处理
+    const selectors = splitSelectorList(selector).map(part => activationGuard + part.trim())
+    return renderStyleNode(selectors, prepared.node, activationGuard)
 }
 
 export function generateStyleContent(selector: string, styleObject: StyleObject): string[] {
