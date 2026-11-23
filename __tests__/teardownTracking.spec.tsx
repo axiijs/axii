@@ -377,6 +377,36 @@ describe('teardown of replaced function node content is not tracked', () => {
         expect(rootEl.textContent).toBe('c')
     })
 
+    // 归属：销毁里创建的 effect 不是函数节点的子 effect，否则节点下一次重算就把它销毁。
+    // 两个入口分别对应 destroyInnerHost（旧内容的 useEffect 清理）和 runCleanups（节点自己的 onCleanup）。
+    for (const entry of ['useEffect cleanup of the old content', 'onCleanup of the function node'] as const) {
+        test(`an effect created by teardown is not owned by the function node (${entry})`, async () => {
+            const version = atom(0)
+            const tick = atom(0)
+            const seen: number[] = []
+            let stopCreated: (() => void) | undefined
+            const create = () => { if (!stopCreated) stopCreated = autorun(() => { seen.push(tick()) }, true) }
+            function Child(_: any, {useEffect}: RenderContext) {
+                if (entry === 'useEffect cleanup of the old content') useEffect(() => () => { create() })
+                return <b>child</b>
+            }
+            root.render(<div>{(context: any) => {
+                if (entry === 'onCleanup of the function node') context.onCleanup(() => { create() })
+                return <Child version={version()}/>
+            }}</div>)
+            version(1)
+            await settle()
+            expect(seen).toEqual([0])
+
+            // 节点再重算一次：上一次销毁里创建的 effect 还活着
+            version(2)
+            await settle()
+            tick(1)
+            expect(seen).toEqual([0, 1])
+            stopCreated!()
+        })
+    }
+
     // 重入销毁：本节点在「收集已暂停」的区间里被销毁。销毁结束后收集必须还原成暂停，
     // 而不是无条件打开，否则销毁之后创建的 effect 会被这个正在销毁的节点收集、随它一起销毁。
     test('an error listener that destroys the root while new content renders still owns what it creates', async () => {
