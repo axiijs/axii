@@ -418,6 +418,30 @@ describe('root error listeners run outside the frame of the failing binding', ()
             toast.destroy()
         })
     }
+
+    // 监听器销毁出错的 root 再把提示渲染到另一个 root，是常见的错误边界写法。销毁会重入
+    // 出错节点自己的销毁路径（旧内容还在），不能把监听器所在的脱离区间重新打开收集。
+    test('a listener that destroys the failing root still owns what it creates afterwards', async () => {
+        const noticeEl = document.createElement('div')
+        document.body.appendChild(noticeEl)
+        const notice = createRoot(noticeEl)
+        const bad = atom(false)
+        const color = atom('red')
+        root.on('error', () => {
+            root.destroy()
+            notice.render(<p class={() => color()}>failed</p>)
+        })
+        root.render(<div>{() => { if (bad()) throw new Error('failed'); return <i>ok</i> }}</div>)
+        bad(true)
+        await settle()
+        expect(noticeEl.querySelector('p')!.className).toBe('red')
+
+        color('blue')
+        await settle()
+        expect(noticeEl.querySelector('p')!.className).toBe('blue')
+        expectTrackingRestored()
+        notice.destroy()
+    })
 })
 
 describe('attach, detach and custom root events are not tracked by the effect that dispatches them', () => {
