@@ -9,6 +9,8 @@ import {
     endHydration,
     findRootComment,
     isHydrateDeferredElement,
+    isHydrating,
+    runOutsideHydration,
     pushHydrateRoot,
     popHydrateRoot,
     removeHydrateContainerOrphans,
@@ -214,7 +216,11 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                 callbacks!.delete(savedCallback)
             }
         },
-        dispatch(event: string, arg?: any) {
+        dispatch(event: string, arg?: any): boolean {
+            // CAUTION 监听器（layoutEffect / ref 经 attach 触发，error 钩子等）是用户代码：
+            //  hydrateRoot 期间派发时必须先退出激活上下文，见 runOutsideHydration。
+            //  稳态下只多一次布尔读。
+            if (isHydrating()) return runOutsideHydration(() => root.dispatch(event, arg))
             // CAUTION render 到 detached 容器、之后手动 dispatch('attach') 是公开用法。
             //  必须同步更新 attached 标记，否则之后动态创建的组件/元素会重新注册
             //  once 的 attach 监听，永远等不到下一次 attach，layoutEffect/ref 永不执行。

@@ -36,7 +36,7 @@ import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
-import {isHydrating} from "./hydration";
+import {isHydrating, runOutsideHydration} from "./hydration";
 import {getComponentTypeId, componentTypeIds} from "./styleSerialize";
 
 
@@ -101,7 +101,8 @@ interface PropsWithConfig {
   precoerced?: Props,
 }
 
-const INNER_CONFIG_PROP = '__config__'
+/** @internal axii/ssr 的组件渲染与这里共用同一条 props / AOP 流水线 */
+export const INNER_CONFIG_PROP = '__config__'
 
 // 无 AOP 配置的组件共享同一个空 itemConfig，避免每个组件实例保留一个空对象
 const EMPTY_ITEM_CONFIG: Record<string, ConfigItem> = {}
@@ -350,34 +351,8 @@ export class ComponentHost implements Host{
 
         const thisItemConfig = this.itemConfig[name]
         if (name && thisItemConfig) {
-            // 1. 使用 :[prop] 语法  对当前节点的 props 调整
-            if (thisItemConfig.props) {
-                // CAUTION 这里必须基于 separateProps 处理过的 finalProps 合并，
-                //  不能用 rawProps，否则 prop:/$self: 前缀的 key 会以原始形态混回 props。
-                if (isComponent) {
-                    finalProps = {...finalProps, ...thisItemConfig.props}
-                } else {
-                    finalProps = mergeProps(finalProps, thisItemConfig.props)
-                }
-            }
-
-            // 2. 使用 :[prop_] 语法可以针对某个 prop 单独进行重写
-            if(thisItemConfig.propMergeHandles) {
-                Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handles]) => {
-                    // TODO 这里的 componentProps 需不要 N_ATTR?
-                    // CAUTION 就地修改 origin、不 return 也是 merge 函数的自然写法，
-                    //  返回 undefined 时回退到累积值（要显式清掉 prop 用 () => null）。
-                    finalProps[key] = handles.reduce((acc, handle) => handle(acc, componentProps) ?? acc, finalProps[key])
-                })
-            }
-
-            // 3. 使用:_props 可以正对 props 进行整体重写
-            if (thisItemConfig.propsMergeHandle) {
-                // TODO 这里的 componentProps 需不要 N_ATTR?
-                // CAUTION 就地修改 props、不 return 是 merge 函数的自然写法（(props) => { props.x = 1 }），
-                //  返回 undefined 时必须回退到累积值，否则后续对 finalProps 的所有读取直接 TypeError。
-                finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc, componentProps) ?? acc, finalProps)
-            }
+            // 1-3. 外部配置对 props 的调整
+            finalProps = this.applyItemPropsConfig(thisItemConfig, isComponent, finalProps, componentProps)
 
             // 4. 支持对 children 进行重写
             if (thisItemConfig.children) {
@@ -429,6 +404,40 @@ export class ComponentHost implements Host{
         }
 
         return node
+    }
+    // CAUTION 命名元素（as=xxx）上外部配置对 props 的三步调整。纯计算、不碰 DOM：
+    //  axii/ssr 渲染组件时走的是同一个方法（ssr.ts createSsrComponentElement），
+    //  这里的合并规则改了，服务端 HTML 自动跟着变，不会出现两份规则各改各的。
+    applyItemPropsConfig(thisItemConfig: ConfigItem, isComponent: boolean, finalProps: Props, componentProps: Props): Props {
+        // 1. 使用 :[prop] 语法  对当前节点的 props 调整
+        if (thisItemConfig.props) {
+            // CAUTION 这里必须基于 separateProps 处理过的 finalProps 合并，
+            //  不能用 rawProps，否则 prop:/$self: 前缀的 key 会以原始形态混回 props。
+            if (isComponent) {
+                finalProps = {...finalProps, ...thisItemConfig.props}
+            } else {
+                finalProps = mergeProps(finalProps, thisItemConfig.props)
+            }
+        }
+
+        // 2. 使用 :[prop_] 语法可以针对某个 prop 单独进行重写
+        if(thisItemConfig.propMergeHandles) {
+            Object.entries(thisItemConfig.propMergeHandles).forEach(([key, handles]) => {
+                // TODO 这里的 componentProps 需不要 N_ATTR?
+                // CAUTION 就地修改 origin、不 return 也是 merge 函数的自然写法，
+                //  返回 undefined 时回退到累积值（要显式清掉 prop 用 () => null）。
+                finalProps[key] = handles.reduce((acc, handle) => handle(acc, componentProps) ?? acc, finalProps[key])
+            })
+        }
+
+        // 3. 使用:_props 可以正对 props 进行整体重写
+        if (thisItemConfig.propsMergeHandle) {
+            // TODO 这里的 componentProps 需不要 N_ATTR?
+            // CAUTION 就地修改 props、不 return 是 merge 函数的自然写法（(props) => { props.x = 1 }），
+            //  返回 undefined 时必须回退到累积值，否则后续对 finalProps 的所有读取直接 TypeError。
+            finalProps = thisItemConfig.propsMergeHandle.reduce((acc, handle) => handle(acc, componentProps) ?? acc, finalProps)
+        }
+        return finalProps
     }
     // CAUTION 下面这些都是惰性分配的 renderContext 能力闭包：只在组件真正解构/使用时创建
     get createElement(): CreateElementFn {
@@ -690,6 +699,41 @@ export class ComponentHost implements Host{
         result.precoerced = inputPropsWithDefaultValue
         return result
     }
+    // CAUTION 组件函数拿到的最终 props：propTypes 默认值 / coerce、boundProps / postBoundProps、
+    //  AOP 配置（$name:prop，结果写入 this.itemConfig）、children 兜底。纯计算、不碰 DOM——
+    //  axii/ssr 渲染组件时调用的是同一个方法（ssr.ts invokeComponent）。曾经服务端直接把 JSX 上的
+    //  原始 props 传给组件函数：默认值、bindProps、AOP 覆盖在服务端 HTML 里全部缺席。
+    //  调用前 this.renderContext 必须已经就位（boundProps 的求值函数会收到它）。
+    prepareProps(): Props {
+        const { props: componentProps, itemConfig, precoerced } = this.getFinalPropsAndItemConfig()
+        this.itemConfig = itemConfig
+        // 这里要再 coerce props，因为 boundProps/AOP 可能 return fixed value；
+        // 已在 normalizePropsByPropTypes 里 coerce 过的输入值按引用跳过（coerce 不一定幂等）
+        const normalizedProps = (this.type.propTypes && componentProps !== precoerced) ?
+            this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps, precoerced) :
+            componentProps
+
+        // CAUTION JSX 使用点提供的 children 优先级最高；使用点没写 children 时
+        //  （this.children 是空数组），保留 props 合并链里已有的 children——它可能
+        //  来自 boundProps（bindProps(Comp, {children:[...]}) 预设内容是自然的 HOC 写法）。
+        //  过去无条件用 this.children 覆盖，会让 children 成为 boundProps 里唯一静默失效的
+        //  prop。两者都没有时仍用 this.children（[]）兜底，保证组件解构 children 不为 undefined。
+        if ((this.children && this.children.length) || normalizedProps.children === undefined) {
+            normalizedProps.children = this.children
+        }
+        this.props = normalizedProps
+        // CAUTION 组件永不 rerender，inputProps 只在上面的 props 合并里消费。
+        //  及时换成共享空对象，让 JSX 调用点的 props 对象（以及只被它引用的值）
+        //  可以被回收，每个组件实例少保留一个对象
+        this.inputProps = EMPTY_COMPONENT_PROP
+
+        // CAUTION ref 不只来自 inputProps：boundProps（bindProps 包装的 HOC）也可以
+        //  提供 ref，mergeProp 会把两者合并成数组。构造期只捕获了 inputProps.ref，
+        //  这里必须用合并后的最终值回写，否则 boundProps 提供的 ref 被静默丢弃
+        //  （attachRef/detachRef 本来就支持数组形态）。
+        if (normalizedProps.ref && !forwardsProps(this.type)) this.refProp = normalizedProps.ref
+        return normalizedProps
+    }
     render(): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
@@ -712,35 +756,7 @@ export class ComponentHost implements Host{
             const getFrame = ReactiveEffect.collectEffect()
             let node: ReturnType<Component>|null = null
             try {
-                const { props: componentProps, itemConfig, precoerced } = this.getFinalPropsAndItemConfig()
-                this.itemConfig = itemConfig
-                // 这里要再 coerce props，因为 boundProps/AOP 可能 return fixed value；
-                // 已在 normalizePropsByPropTypes 里 coerce 过的输入值按引用跳过（coerce 不一定幂等）
-                const normalizedProps = (this.type.propTypes && componentProps !== precoerced) ?
-                    this.normalizePropsWithCoerceValue(this.type.propTypes, componentProps, precoerced) :
-                    componentProps
-
-                // CAUTION JSX 使用点提供的 children 优先级最高；使用点没写 children 时
-                //  （this.children 是空数组），保留 props 合并链里已有的 children——它可能
-                //  来自 boundProps（bindProps(Comp, {children:[...]}) 预设内容是自然的 HOC 写法）。
-                //  过去无条件用 this.children 覆盖，会让 children 成为 boundProps 里唯一静默失效的
-                //  prop。两者都没有时仍用 this.children（[]）兜底，保证组件解构 children 不为 undefined。
-                if ((this.children && this.children.length) || normalizedProps.children === undefined) {
-                    normalizedProps.children = this.children
-                }
-                this.props = normalizedProps
-                // CAUTION 组件永不 rerender，inputProps 只在上面的 props 合并里消费。
-                //  及时换成共享空对象，让 JSX 调用点的 props 对象（以及只被它引用的值）
-                //  可以被回收，每个组件实例少保留一个对象
-                this.inputProps = EMPTY_COMPONENT_PROP
-
-                // CAUTION ref 不只来自 inputProps：boundProps（bindProps 包装的 HOC）也可以
-                //  提供 ref，mergeProp 会把两者合并成数组。构造期只捕获了 inputProps.ref，
-                //  这里必须用合并后的最终值回写，否则 boundProps 提供的 ref 被静默丢弃
-                //  （attachRef/detachRef 本来就支持数组形态）。
-                if (normalizedProps.ref && !forwardsProps(this.type)) this.refProp = normalizedProps.ref
-
-                node = this.type(normalizedProps, this.renderContext!)
+                node = this.type(this.prepareProps(), this.renderContext!)
             } catch (e) {
                 // 组件 render 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空，
                 // 否则保持向上抛出的行为。
@@ -793,7 +809,11 @@ export class ComponentHost implements Host{
             // CAUTION effect 抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并
             //  继续执行其余 effect（否则一个抛错的 effect 会让 root.render 中断，
             //  已渲染好的树永远挂不上容器）；未注册时保持向上抛出的行为。
-            const handle = this.runWithErrorHook(effect)
+            // CAUTION useEffect 回调是用户代码，不参与激活时的节点认领（见 runOutsideHydration）；
+            //  它在组件 render 里同步执行，hydrateRoot 期间必须先退出激活上下文。稳态只多一次布尔读。
+            const handle = isHydrating() ?
+                runOutsideHydration(() => this.runWithErrorHook(effect)) :
+                this.runWithErrorHook(effect)
             if (typeof handle === 'function') {
                 (this.destroyCallback ??= new Set()).add(handle)
             } else {

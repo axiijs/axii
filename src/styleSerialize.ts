@@ -574,6 +574,44 @@ export function isAcceptableSingleCssRule(rule: string): boolean {
 }
 
 /** Filter generateStyleContent rules through the escape gate; join survivors with newlines. */
+// CAUTION inline style 的声明门闩（与上面的规则门闩同一个思路：和 CSR 的拒绝行为对偶）。
+//  CSR 的 inline style 是经 CSSOM 逐个属性写入的（node.style[k] = v / setProperty）：值里带顶层 `;`、
+//  不配对的括号或引号、`!important` 时，浏览器拒绝整次赋值，什么都不生效；属性名不是合法标识符时
+//  同样无效果。SSR 把同样的 k / v 拼进 style="…"，`;` 就成了声明分隔符——
+//  style={{color: userColor}} 的 userColor 可以追加任意声明（position:fixed、background:url(…)）。
+//  不合格的声明整条不输出，与 CSR「该声明不生效」一致；不做改写。
+export function isAcceptableInlineDeclaration(name: string, value: string): boolean {
+    if (!/^[-_a-zA-Z0-9\u00A0-\uFFFF]+$/.test(name)) return false
+    const closers: string[] = []
+    for (let i = 0; i < value.length; i++) {
+        const ch = value[i]
+        if (ch === '\\') {
+            // 结尾的反斜杠会把后面拼上的 `;` 转义掉，吞并下一条声明
+            if (i === value.length - 1) return false
+            i++
+        } else if (ch === '"' || ch === "'") {
+            let j = i + 1
+            for (; j < value.length && value[j] !== ch; j++) {
+                if (value[j] === '\n') return false
+                if (value[j] === '\\') j++
+            }
+            if (j >= value.length) return false
+            i = j
+        } else if (ch === '/' && value[i + 1] === '*') {
+            const end = value.indexOf('*/', i + 2)
+            if (end === -1) return false
+            i = end + 1
+        } else if (ch === '(' || ch === '[' || ch === '{') {
+            closers.push(ch === '(' ? ')' : ch === '[' ? ']' : '}')
+        } else if (ch === ')' || ch === ']' || ch === '}') {
+            if (closers.pop() !== ch) return false
+        } else if (closers.length === 0 && (ch === ';' || ch === '!')) {
+            return false
+        }
+    }
+    return closers.length === 0
+}
+
 export function gateStyleRules(rules: string[]): string {
     const kept: string[] = []
     for (const r of rules) {

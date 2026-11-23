@@ -5,6 +5,7 @@ import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 import {SSR_STYLE_CLASSES_ATTRIBUTE, autoUnit, getAutoUnitType, setAutoUnitType} from './styleSerialize'
+import {isAriaReflectionProperty, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
 import {
     advanceCursorUntilComment,
     advanceCursorUntilRxListHostPlaceholder,
@@ -27,6 +28,7 @@ import {
     peekAxii0,
     peekHydrateDeferredPayload,
     reconcileFlattenedFragmentHydrateChildren,
+    resolveHydrateChildParent,
     rememberHydrateRollingStyleBase,
     takeHydrateDeferredPayload,
     takeHydrateReclaimPayload,
@@ -127,12 +129,7 @@ const propertyAttributeAliases: {[property: string]: string} = Object.assign(Obj
     defaultValue: 'value',
 })
 
-// ARIA 反射属性（ariaLabel / ariaExpanded ...）：第 5 个字符是大写字母
-function isAriaReflectionProperty(name: string) {
-    if (name.length < 5 || name[0] !== 'a' || name[1] !== 'r' || name[2] !== 'i' || name[3] !== 'a') return false
-    const fifth = name.charCodeAt(4)
-    return fifth >= 65 && fifth <= 90
-}
+// ARIA 反射属性（ariaLabel / ariaExpanded ...）的判定见 markupNames.isAriaReflectionProperty
 
 function attributeNameOfProperty(name: string): string {
     const alias = propertyAttributeAliases[name]
@@ -315,51 +312,11 @@ export function isEventName(name: string) {
 }
 
 
-// CAUTION SVG 的 presentation attribute（可以当 attribute 写的 CSS 属性）在 DOM 里是连字符名
-//  （stroke-width / fill-rule / stop-color），JSX 里按 React 习惯写驼峰（strokeWidth）。
-//  SVG 没有「驼峰 ⇔ 连字符」的通用规则：viewBox、gradientUnits、clipPathUnits、markerWidth
-//  这些原生 attribute 本身就是驼峰且大小写敏感，一律转换会把它们全部写坏——所以只能按清单转换。
-//  清单取 SVG 2 §6.6 "Presentation attributes" 与 SVG 1.1 property index 的并集里所有带连字符
-//  的名字（单词名 fill/stroke/opacity 不需要转换），按完整名字匹配。
-//  之前只列了 9 个（stroke* 的一部分 + fillOpacity/stopOpacity）：SVG 转 JSX 的图标里最常见的
-//  fillRule/clipRule 被原样写成 attribute "fillRule"，浏览器不认，镂空图标静默渲染成实心；
-//  同一个 <stop> 上 stopOpacity 生效而 stopColor 不生效。
-const svgPresentationAttributeNames: {[camelCaseName: string]: string} = /* @__PURE__ */ (() => {
-    const names: {[camelCaseName: string]: string} = Object.create(null)
-    const attributes = 'alignment-baseline baseline-shift clip-path clip-rule color-interpolation ' +
-        'color-interpolation-filters color-profile color-rendering dominant-baseline enable-background ' +
-        'fill-opacity fill-rule flood-color flood-opacity font-family font-size font-size-adjust ' +
-        'font-stretch font-style font-variant font-weight glyph-orientation-horizontal ' +
-        'glyph-orientation-vertical image-rendering letter-spacing lighting-color marker-end marker-mid ' +
-        'marker-start mask-type paint-order pointer-events shape-rendering stop-color stop-opacity ' +
-        'stroke-dasharray stroke-dashoffset stroke-linecap stroke-linejoin stroke-miterlimit ' +
-        'stroke-opacity stroke-width text-anchor text-decoration text-overflow text-rendering ' +
-        'transform-box transform-origin unicode-bidi vector-effect white-space word-spacing writing-mode'
-    for (const attribute of attributes.split(' ')) {
-        names[attribute.replace(/-([a-z])/g, (_, char: string) => char.toUpperCase())] = attribute
-    }
-    return names
-})()
-// JSX evaluates children before their parent, so the runtime cannot infer an SVG namespace
-// from ancestry the way a VDOM renderer can. Create tags that only exist in SVG in the
-// correct namespace immediately. Ambiguous HTML/SVG tags (a/script/style/title) deliberately
-// stay on the HTML path; inside SVG they should use the explicit createSVGElement factory.
-// CAUTION 这个判断必须在 createElement 内部做（而不是只在 jsx/jsxs/jsxDEV runtime 路由）：
+// svgPresentationAttributeNames / svgOnlyElementNames 在 markupNames.ts：CSR 与 axii/ssr 共用同一份名称表。
+// CAUTION svg-only 标签的 namespace 判断必须在 createElement 内部做（而不是只在 jsx/jsxs/jsxDEV runtime 路由）：
 //  classic pragma（/* @jsx createElement */）和组件 renderContext 的 createElement 都不经过
 //  runtime factory，只在 runtime 路由的话这两条链路里 <svg> 会被创建成 HTMLUnknownElement，
 //  整个图形静默不显示——同一个 JSX 在两种编译模式下行为分叉。
-const svgOnlyElementNames = new Set([
-    'animate', 'animateMotion', 'animateTransform', 'circle', 'clipPath', 'defs', 'desc',
-    'ellipse', 'feBlend', 'feColorMatrix', 'feComponentTransfer', 'feComposite',
-    'feConvolveMatrix', 'feDiffuseLighting', 'feDisplacementMap', 'feDistantLight',
-    'feDropShadow', 'feFlood', 'feFuncA', 'feFuncB', 'feFuncG', 'feFuncR',
-    'feGaussianBlur', 'feImage', 'feMerge', 'feMergeNode', 'feMorphology', 'feOffset',
-    'fePointLight', 'feSpecularLighting', 'feSpotLight', 'feTile', 'feTurbulence',
-    'filter', 'foreignObject', 'g', 'image', 'line', 'linearGradient', 'marker', 'mask',
-    'metadata', 'mpath', 'path', 'pattern', 'polygon', 'polyline', 'radialGradient',
-    'rect', 'set', 'stop', 'svg', 'switch', 'symbol', 'text', 'textPath', 'tspan',
-    'use', 'view',
-])
 
 /**
  * @internal
@@ -1039,10 +996,12 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || EMPTY_CHILDREN)
 
     let container: HTMLElement | DocumentFragment | SVGElement
+    // 激活时元素是认领来的（服务端节点）还是失配后就地新建的
+    let hydrateClaimed = false
     if (type === Fragment) {
         container = document.createDocumentFragment()
     } else if (hydrating) {
-        const claimed = tryClaimElement(type as string, rawProps, children)
+        const claimed = tryClaimElement(type as string, rawProps, children, _isSVG)
         if (!claimed) {
             // Element-child cursor: §3.7 claim-miss → local CSR rebuild (wrong tag / no candidate).
             // No parent cursor: Portal content under main root — defer until hydratePortalContent.
@@ -1059,6 +1018,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             if (shouldMarkHydrateReclaim(children)) {
                 markHydrateReclaimPayload(claimed, type as string, rawProps, children)
             }
+            hydrateClaimed = true
             container = claimed as HTMLElement
         }
     } else {
@@ -1085,7 +1045,13 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     }
 
     if (hydrating && type !== Fragment) {
-        enterElementChildCursor(container)
+        // CAUTION textarea 的 value 在 HTML 里只能写成子文本（§3.6.2 TA 通道），CSR 则是纯 IDL 赋值、
+        //  没有子节点。这段子文本是 value 的编码，不是哪个 child 单元的节点：在这里直接拿掉
+        //  （value 由下面延后处理的 value prop 写回），否则它会被当成「尾部孤儿」报一条假的失配。
+        if (type === 'textarea' && rawProps && Object.prototype.hasOwnProperty.call(rawProps, 'value')) {
+            container.textContent = ''
+        }
+        enterElementChildCursor(resolveHydrateChildParent(container as Element, children))
     }
 
     // Process children in a single pass
@@ -1287,8 +1253,12 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                                 path: [index],
                                 source: debugSource,
                             } as UnhandledChildInfo)
-                        } else if (item != null && typeof item === 'object') {
+                        } else if (item == null || typeof item === 'boolean' || typeof item === 'object') {
                             // ComponentNode / nested Array — content already in DOM before <!--array item-->
+                            // CAUTION null/undefined（EmptyHost：<!--empty--><!--array item-->）和 boolean
+                            //  （PrimitiveHost 空文本：只有 <!--array item-->）也是「内容在前、array item 在后」，
+                            //  SSR 与 StaticArrayHost 自己的认领路径都支持。`list.map(i => cond ? <li/> : null)`、
+                            //  `[cond && <b/>, 'x']` 是最常见的数组写法，这里漏掉会让整个 hydrateRoot 抛错。
                             advanceCursorUntilComment('array item')
                             const itemPh = claimCommentAtCursor('array item')
                             ;((child as any).__axiiHydrateItemHosts ||= []).push({
@@ -1337,7 +1307,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     }
 
     if (hydrating && type !== Fragment) {
-        exitElementChildCursor()
+        // CAUTION dangerouslySetInnerHTML 的内容由服务端原样写出，客户端 children 里没有对应单元。
+        //  按「尾部孤儿」清理的话会报一条假的失配并把这段标记删掉；而下面的 props 循环在激活时
+        //  又跳过 innerHTML 赋值（保留服务端节点），结果元素永久为空。
+        exitElementChildCursor(!!rawProps && rawProps.dangerouslySetInnerHTML != null)
         const el = container as Element
         const ssrStyleClasses = el.getAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
         if (ssrStyleClasses !== null) {
@@ -1413,8 +1386,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             }
             if (!createElement.isValidAttribute(key, value)) {
                 (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
-            } else if (hydrating && key === 'dangerouslySetInnerHTML') {
+            } else if (hydrateClaimed && key === 'dangerouslySetInnerHTML') {
                 // SSR HTML already has markup; re-assigning innerHTML would destroy claimed nodes
+                // （失配后新建的元素里没有这段标记，照常赋值）
             } else {
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
             }

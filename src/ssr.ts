@@ -6,7 +6,9 @@
  * M-05: Portal bypass (§3.3.d), lazy sync fallback, lifecycle no-ops / isolation.
  */
 import {isAtom, RxList} from 'data0'
-import type {Component, ComponentNode, Props, RenderContext} from './types'
+import type {Component, ComponentNode, RenderContext} from './types'
+import type {PathContext} from './Host'
+import {ComponentHost, INNER_CONFIG_PROP, N_ATTR} from './ComponentHost.js'
 import {isAxiiPortalComponent, resolvePortalExportKey, Portal} from './Portal.js'
 import {beginSsrPass, endSsrPass} from './ssrContext.js'
 import {
@@ -17,6 +19,7 @@ import {
     generateStyleStaticId,
     getComponentTypeId,
     hashStyleContent,
+    isAcceptableInlineDeclaration,
     isAcceptableSingleCssRule,
     isPromotedStyleEntry,
     lastStyleSheetEntryIndex,
@@ -29,6 +32,7 @@ import {
     toCssSafeComponentName,
 } from './styleSerialize'
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from './styleCascade'
+import {RAWTEXT_TAGS, RCDATA_TAGS, isAriaReflectionProperty, svgAttributeName, svgOnlyElementNames} from './markupNames'
 
 /** Local Fragment sentinel — avoid importing DOM.ts (browser createElement) into the SSR entry. */
 export function Fragment(_props?: any): any {
@@ -49,8 +53,9 @@ const VOID_TAGS = new Set([
     'link', 'meta', 'param', 'source', 'track', 'wbr',
 ])
 
-const RCDATA_TAGS = new Set(['textarea', 'title'])
-const RAWTEXT_TAGS = new Set(['style', 'script', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript'])
+// CAUTION 解析器会吞掉紧跟在这几个开始标签后面的第一个换行（HTML 的书写便利规则）。
+//  内容本身以换行开头时必须多写一个，否则 textarea 的值 / pre 的内容在解析后少一行。
+const LEADING_NEWLINE_TAGS = new Set(['textarea', 'pre', 'listing'])
 
 const SSR_ELEMENT = Symbol.for('axii.ssr.element')
 const SSR_REUSABLE = Symbol.for('axii.ssr.reusable')
@@ -100,6 +105,66 @@ function escapeAttr(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+// CAUTION 名字（属性名 / 标签名）是原样拼进 HTML 的，值和文本的转义管不到它们：
+//  `<div {...untrusted}>` 的 key、动态标签名里一旦有空白、`/`、`>`、`=`，就能在名字的位置上
+//  结束当前属性或标签，凭空造出新的属性（onmouseover=…）甚至新的元素（<script>）。
+//  同样的名字在 CSR 下被 DOM 拒绝（setAttribute / createElement 抛 InvalidCharacterError），
+//  这里对齐为抛错（可观测）。不做静默丢弃——丢弃会把调用方的 bug 藏起来。
+//  判定集合就是 HTML tokenizer 在名字状态下的终止字符（ASCII 空白、`/`、`>`，属性名另加 `=`）
+//  再加 NUL，与 DOM 标准的 valid attribute local name / valid element local name 一致；
+//  标签名还必须以 ASCII 字母开头，否则 `<` 之后根本不会进入标签状态。
+const INVALID_ATTR_NAME_CHARS = /[\t\n\f\r \/=>\u0000]/
+const VALID_TAG_NAME = /^[a-zA-Z][^\t\n\f\r \/>\u0000]*$/
+
+function assertAttrName(name: string): void {
+    if (name === '' || INVALID_ATTR_NAME_CHARS.test(name)) {
+        throw new Error(`[axii/ssr] invalid attribute name: ${JSON.stringify(name)}`)
+    }
+}
+
+function assertTagName(name: string): void {
+    if (!VALID_TAG_NAME.test(name)) {
+        throw new Error(`[axii/ssr] invalid tag name: ${JSON.stringify(name)}`)
+    }
+}
+
+// CAUTION 响应式属性值的快照，与 CSR 的求值逐条对齐（StaticHost.updateAttribute + DOM.setAttribute）：
+//  函数 / atom 调用一次取当前值；数组逐项求值，除 select 的多选 value 外按覆盖语义只取最后一项。
+//  只能用在「值」上：调用方必须已经排除事件、ref 这类本身就是函数的 prop——
+//  它们在服务端不执行（§3.4），在这里调用就是把用户的事件处理函数当成取值函数跑了一遍。
+function snapshotAttrValue(value: any, keepArray = false): any {
+    if (Array.isArray(value)) {
+        const evaluated = value.map(v => typeof v === 'function' ? v() : v)
+        return keepArray ? evaluated : evaluated[evaluated.length - 1]
+    }
+    return typeof value === 'function' ? value() : value
+}
+
+// CAUTION class 的取值与 DOM.setAttribute 的 className 分支同形：字符串、对象、以及两者的数组；
+//  数组里的 null / boolean 条件项跳过；对象的 value 可以是 atom / 函数，要求值后再判断真假。
+//  曾经把数组当对象 for…in（输出下标 "0 1"），对象 value 不求值（atom 恒为真，class 永远挂着）。
+function classNameSnapshot(value: any): string {
+    const names: string[] = []
+    collectClassNames(value, names)
+    return names.join(' ')
+}
+// 逐层展开：整个 className、数组项都可以是函数 / atom（先取值），取到的仍可以是字符串、对象或数组；
+// 数组可以再嵌数组（组件把调用方传进来的数组包进自己的数组），与 DOM.ts 的 flattenNestedArray 一致。
+function collectClassNames(option: any, names: string[]): void {
+    if (typeof option === 'function') option = option()
+    if (option == null || typeof option === 'boolean') return
+    if (Array.isArray(option)) {
+        for (let i = 0; i < option.length; i++) collectClassNames(option[i], names)
+    } else if (typeof option === 'object') {
+        for (const name in option) {
+            const flag = option[name]
+            if (typeof flag === 'function' ? flag() : flag) names.push(name)
+        }
+    } else {
+        names.push(String(option))
+    }
+}
+
 /** §3.6.1 RAWTEXT / SSR `<style>` termination sequence gate */
 export function assertNoRawTextTerminator(payload: string, tagName: string): void {
     const lower = tagName.toLowerCase()
@@ -107,6 +172,48 @@ export function assertNoRawTextTerminator(payload: string, tagName: string): voi
     if (re.test(payload)) {
         throw new Error(`[axii/ssr] RAWTEXT termination sequence in <${lower}> payload`)
     }
+    if (lower === 'script' && scriptDataEndsDoubleEscaped(payload)) {
+        throw new Error('[axii/ssr] <script> payload has "<!--" followed by "<script": the element would not be closed')
+    }
+}
+
+// CAUTION <script> 的内容除了「提前关闭」还有一种相反的破坏方式：`<!--` 之后再出现 `<script`
+//  （后跟空白 / `/` / `>`）会让解析器进入 script data double escaped 状态，在这个状态里
+//  `</script>` 不关闭元素。载荷结束时仍停在该状态的话，序列化器自己写的 `</script>` 也关不上——
+//  后面整页内容都被吞进脚本文本（内联 JSON 数据里带上这串字符就能触发）。
+//  这里按 HTML tokenizer 的三个状态走一遍载荷，只回答「结束时是否停在 double escaped」；
+//  命中同样抛错：RAWTEXT 不解码实体，没有通用的转义可用（§3.6.1）。
+function scriptDataEndsDoubleEscaped(payload: string): boolean {
+    const s = payload.toLowerCase()
+    const endsTagName = (ch: string | undefined) =>
+        ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r' || ch === ' ' || ch === '/' || ch === '>'
+    // 0: script data；1: escaped（`<!--` 之后）；2: double escaped（其后又出现 `<script`）
+    let state = 0
+    let i = 0
+    while (i < s.length) {
+        if (state === 0) {
+            const open = s.indexOf('<!--', i)
+            if (open === -1) break
+            state = 1
+            // `<!--` 的两个 `-` 本身就算进 `-->`：`<!-->` 立即回到 script data
+            i = open + 2
+            continue
+        }
+        const tag = state === 1 ? '<script' : '</script'
+        let at = s.indexOf(tag, i)
+        while (at !== -1 && !endsTagName(s[at + tag.length])) at = s.indexOf(tag, at + 1)
+        const close = s.indexOf('-->', i)
+        if (close !== -1 && (at === -1 || close < at)) {
+            state = 0
+            i = close + 3
+        } else if (at === -1) {
+            break
+        } else {
+            state = state === 1 ? 2 : 1
+            i = at + tag.length + 1
+        }
+    }
+    return state === 2
 }
 
 // ─── M-04 style collection ───
@@ -246,7 +353,7 @@ function collectElementStyles(
                 const sv = (simpleStyles as any)[sk]
                 if (sv == null || sv === false || sv === '') continue
                 const cssVal = stringifyCssValue(sk, sv)
-                if (!cssVal) continue
+                if (!cssVal || !isAcceptableInlineDeclaration(sk, cssVal)) continue
                 const cssKey = (sk[0] === '-' && sk[1] === '-')
                     ? sk
                     : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
@@ -342,11 +449,87 @@ function emitParentText(text: string, out: string[], parentTag?: string): void {
 
 // ─── Form / attr serialization (§3.6.2) ───
 
+// CAUTION prop 名不等于 attribute 名的情况，必须与 DOM.setAttribute 写出的结果一致：
+//  SVG 元素上 strokeWidth 这类 prop 写成 stroke-width、xlinkHref / xlink:href 写成 xlink:href
+//  （CSR 用 setAttributeNS，解析器在外来内容里把 xlink:href 还原成同一个 namespace 属性）。
+//  原样写出 strokeWidth 的话解析后是不认识的 strokewidth——激活前图形的描边、引用全部无效，
+//  激活后还多留一个没人管的属性。
+//  HTML 元素上 CSR 走 property 赋值（`name in node`），绝大多数 IDL 名与 attribute 名只差大小写
+//  （HTML attribute 名大小写不敏感），下面这几个是真正不同名的：原样写出 htmlFor 的话 label 在
+//  激活前不关联控件，激活后 DOM 上还多一个 htmlfor。className 另有专门分支。
+const HTML_PROP_ATTRIBUTE_NAMES: {[k: string]: string} = {
+    htmlFor: 'for',
+    httpEquiv: 'http-equiv',
+    acceptCharset: 'accept-charset',
+}
+
+function attributeNameOf(key: string, isSVG: boolean): string {
+    if (isSVG) {
+        const xlinkName = key.replace(/^xlink\:?/, '')
+        return xlinkName !== key ? `xlink:${xlinkName.toLowerCase()}` : svgAttributeName(key)
+    }
+    if (hasOwnProp(HTML_PROP_ATTRIBUTE_NAMES, key)) return HTML_PROP_ATTRIBUTE_NAMES[key]
+    // ARIA 反射属性：ariaLabel -> aria-label（CSR 对它做 property 赋值，反射出的就是这个名字）
+    return isAriaReflectionProperty(key) ? `aria-${key.slice(4).toLowerCase()}` : key
+}
+
+// CAUTION boolean 值怎么写，CSR 取决于「这个名字是不是元素的 property、property 是什么类型」
+//  （规则表在 DOM.ts setEmptyOrBooleanProperty 上方，attribute 分支在 setAttribute 末尾）：
+//   - string 类型的 property：true 等价于 HTML 里只写属性名（download / popover / alt -> x=""），
+//     false 是「没写这个属性」；
+//   - 取值是关键字的名字原样保留 true / false：contenteditable、spellcheck、draggable、
+//     writingSuggestions、aria-* / data-*（attribute 写法）与 ariaXxx（property 写法）；
+//     translate 的关键字是 yes / no；
+//   - hidden：true -> hidden=""，false 不输出；
+//   - 其余（真正的 boolean attribute、不认识的名字、SVG 与自定义元素上的任何名字）：
+//     true -> x="true"（§3.6.1 的布尔属性约定），false 不输出。
+//  服务端没有 DOM 可以问 property 的类型，string 类型的 property 只能列一张静态表：
+//  这里收的是各元素上类型没有歧义的常用反射属性（width / height / min / max 这类在不同元素上
+//  类型不同的名字不收；type / list / form 在 CSR 走 attribute 分支，也不收）。
+//  表里漏掉的名字退回 x="true"——对 download / popover / alt 这样「true 有专门含义」的属性
+//  才有实际差别，它们都在表里。
+const STRING_TYPED_PROPERTIES = new Set([
+    // 全局
+    'title', 'lang', 'dir', 'id', 'slot', 'accessKey', 'nonce', 'popover', 'role',
+    'autocapitalize', 'inputMode', 'enterKeyHint',
+    // 链接 / 资源 / 媒体
+    'href', 'target', 'download', 'rel', 'hreflang', 'ping', 'referrerPolicy', 'src', 'srcset', 'sizes',
+    'alt', 'useMap', 'crossOrigin', 'loading', 'decoding', 'fetchPriority', 'poster', 'preload', 'kind',
+    'srclang', 'label', 'media', 'integrity', 'charset', 'content', 'cite', 'dateTime',
+    // 表单
+    'name', 'placeholder', 'pattern', 'accept', 'autocomplete', 'dirName', 'action', 'method', 'enctype',
+    'formAction', 'formMethod', 'formEnctype', 'formTarget', 'wrap', 'htmlFor', 'httpEquiv', 'acceptCharset',
+    // 表格
+    'abbr', 'scope', 'headers',
+])
+
+/** boolean 值写出的 attribute 值；null 表示不输出该属性。 */
+function booleanAttributeValue(key: string, value: boolean, isSVG: boolean, isCustomElement: boolean): string | null {
+    // disabled 在 CSR 有专门分支：真 -> "true"
+    if (key === 'disabled') return value ? 'true' : null
+    const lower = key.toLowerCase()
+    // property 写法（contentEditable / spellcheck）和 attribute 写法（contenteditable / spellCheck）
+    //  都保留关键字；aria-* / data-* 的 false 是有语义的值，不是移除
+    if (lower === 'contenteditable' || lower === 'spellcheck' ||
+        ((key[0] === 'a' || key[0] === 'd') && (/^aria-/.test(key) || /^data-/.test(key)))) {
+        return value ? 'true' : 'false'
+    }
+    // SVG 元素不走 property 分支；自定义元素的 property 语义由组件自己定义，服务端按 attribute 写
+    if (isSVG || isCustomElement) return value ? 'true' : null
+    if (key === 'draggable' || key === 'writingSuggestions' || isAriaReflectionProperty(key)) {
+        return value ? 'true' : 'false'
+    }
+    if (key === 'translate') return value ? 'yes' : 'no'
+    if (key === 'hidden' || STRING_TYPED_PROPERTIES.has(key)) return value ? '' : null
+    return value ? 'true' : null
+}
+
 /** §3.6.2 SO: select value snapshot driving option `selected` (not a select content attr). */
 type SelectSoCtx = {value: string | any[]}
 
 function inputTypeOf(props: AttributesLike | null | undefined): string {
-    const t = props?.type
+    // type 也可以是响应式的（type={visible ? 'text' : 'password'} 的函数写法），按快照判断通道
+    const t = snapshotAttrValue(props?.type)
     return t == null || t === false ? 'text' : String(t).toLowerCase()
 }
 
@@ -357,8 +540,8 @@ function hasOwnProp(props: AttributesLike, key: string): boolean {
 /** Snapshot select `value` for SO (≡ CSR `__axiiSelectValue__` / `applySelectValue`). */
 function extractSelectSo(props: AttributesLike | null | undefined): SelectSoCtx | null {
     if (!props || !hasOwnProp(props, 'value')) return null
-    let v = props.value
-    if (isAtom(v)) v = v()
+    // 多选的数组 value 整体保留（≡ applySelectValue），其余与普通属性同样求值
+    const v = snapshotAttrValue(props.value, true)
     return {value: v ?? ''}
 }
 
@@ -373,8 +556,7 @@ function optionMatchesSo(optionValue: string, so: SelectSoCtx): boolean {
 function optionEffectiveValue(el: SsrElement): string {
     const props = el.props
     if (props && hasOwnProp(props, 'value')) {
-        let v = props.value
-        if (isAtom(v)) v = v()
+        const v = snapshotAttrValue(props.value)
         if (v != null) return String(v)
         // null/undefined → CSR removes attr; value falls back to text
     }
@@ -396,12 +578,15 @@ function serializeAttrs(
     /** When set, option `selected` is driven by SO match (ignore prop `selected`). */
     optionSelectedBySo?: boolean | null,
     elementPath: number[] = [],
+    /** 元素落在 SVG namespace（≡ DOM.createElement 的 _isSVG 判定），决定属性名的写法 */
+    isSVG = false,
 ): string {
     if (!props) {
         if (optionSelectedBySo === true) return ' selected="true"'
         return ''
     }
     const tagLower = tag.toLowerCase()
+    const isCustomElement = tag.indexOf('-') !== -1
     const type = inputTypeOf(props)
     const isCheckbox = tagLower === 'input' && type === 'checkbox'
     const isRadio = tagLower === 'input' && type === 'radio'
@@ -411,6 +596,8 @@ function serializeAttrs(
     let s = ''
     const skip = new Set<string>([
         'children', 'ref', 'key', '_isSVG', '__source', '__self', 'dangerouslySetInnerHTML',
+        // detachStyle 是框架 prop（离场样式，见 DOM.createElement），不是 attribute
+        'detachStyle',
         // style handled below (may be function/nested → stylesheet)
         'style', SSR_STYLE_CLASSES_ATTRIBUTE,
     ])
@@ -450,7 +637,7 @@ function serializeAttrs(
                 const sv = (styleVal as any)[sk]
                 if (sv == null || sv === false || sv === '') continue
                 const cssVal = stringifyCssValue(sk, sv)
-                if (!cssVal) continue
+                if (!cssVal || !isAcceptableInlineDeclaration(sk, cssVal)) continue
                 const cssKey = (sk[0] === '-' && sk[1] === '-')
                     ? sk
                     : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
@@ -466,30 +653,43 @@ function serializeAttrs(
     for (const key in props) {
         if (skip.has(key)) continue
         if (key[0] === 'o' && key[1] === 'n') continue // events — client only
-        const value = props[key]
-        if (value == null || value === false) continue
-        if (typeof value === 'function' || isAtom(value)) continue // reactive — LightBinding on hydrate
-        if (value === true) {
-            s += ` ${key}="true"`
+        let value = props[key]
+        if (key === 'className' || key === 'class') {
+            if (value != null && typeof value !== 'boolean') classAttr = classNameSnapshot(value)
             continue
         }
-        if (key === 'className' || key === 'class') {
-            if (typeof value === 'object') {
-                const parts: string[] = []
-                for (const ck in value) {
-                    if ((value as any)[ck]) parts.push(ck)
-                }
-                classAttr = parts.join(' ')
-            } else {
-                classAttr = String(value)
+        // CAUTION 函数 / atom 值是响应式属性（createElement.isValidAttribute 为 false 的那一类），
+        //  CSR 首帧就会把它们的当前值写到元素上。这里曾经整个跳过、留给激活后的绑定去补：
+        //  服务端 HTML 里 href / src / id / disabled / hidden 全部缺席（激活前链接不可点、内容闪现），
+        //  激活又拿响应式 id 的值去匹配一个没有 id 的服务端元素——必然判成失配并重建。
+        //  事件（on*）、ref 等本身就是函数的 prop 在上面已经排除；prop: / $ 前缀是组件配置 key，
+        //  CSR 不为它们建立绑定（StaticHost.collectReactiveAttr），这里同样不求值。
+        if (typeof value === 'function' || (Array.isArray(value) && value.some(v => typeof v === 'function'))) {
+            if (key[0] === '$' || key.startsWith('prop:')) continue
+        }
+        // data-* 的数组是用户给的值，整体字符串化（data-ids={[1, 2]} -> "1,2"）；其余数组取最后一项
+        value = snapshotAttrValue(value, key.charCodeAt(0) === 100 && key.startsWith('data-'))
+        if (value == null || typeof value === 'function') continue
+        if (key === 'uuid') {
+            // ≡ DOM.setAttribute：uuid 写成 data-uuid（nullish 表示没有 uuid，上面已经跳过）
+            s += ` data-uuid="${escapeAttr(String(value))}"`
+            continue
+        }
+        if (value === true || value === false) {
+            const written = booleanAttributeValue(key, value, isSVG, isCustomElement)
+            if (written !== null) {
+                // 只校验真正会写出去的名字：不输出的属性在 CSR 走 removeAttribute，同样不校验、不抛错
+                assertAttrName(key)
+                s += ` ${attributeNameOf(key, isSVG)}="${written}"`
             }
             continue
         }
+        assertAttrName(key)
         if (key === 'selected' && tagLower === 'option') {
             if (value) s += ` selected="true"`
             continue
         }
-        s += ` ${key}="${escapeAttr(String(value))}"`
+        s += ` ${attributeNameOf(key, isSVG)}="${escapeAttr(String(value))}"`
     }
 
     const allClasses = [classAttr, ...styleExtraClasses].filter(Boolean).join(' ')
@@ -512,16 +712,25 @@ function serializeAttrs(
 
     // §3.6.2 deferred form props (IV / CK / CB)
     if (tagLower === 'input' && deferredKeys.length) {
+        // CAUTION value / checked 是最常见的响应式属性（受控输入：value={atom}、checked={atom}、
+        //  value={() => …}）。必须先取快照再套 IV / CK / CB：直接用 prop 本身的话，
+        //  atom / 函数恒为真（checked={atom(false)} 输出 checked="true"），
+        //  String(fn) 还会把函数源码写进 HTML。
+        const valueSnapshot = hasValue ? snapshotAttrValue(props.value) : undefined
+        const checkedSnapshot = hasChecked ? snapshotAttrValue(props.checked) : undefined
         if (isCheckbox && hasValue) {
             // CB channel
+            // CAUTION 只有 boolean / nullish 的 value 才是「勾选状态」（≡ DOM.setAttribute 的 checkbox 分支）。
+            //  string / number 是 checkbox 的表单提交值（<input type="checkbox" value="red" checked={isRed}/>
+            //  是标准的 checkbox 组写法），不参与 checked 的判定。
             let finalChecked = false
-            let appliedValue: any = props.value
+            let appliedValue: any = valueSnapshot
             for (const key of deferredKeys) {
                 if (key === 'value') {
-                    appliedValue = props.value
-                    finalChecked = !!props.value
+                    appliedValue = valueSnapshot
+                    if (valueSnapshot == null || typeof valueSnapshot === 'boolean') finalChecked = !!valueSnapshot
                 } else if (key === 'checked') {
-                    finalChecked = !!props.checked
+                    finalChecked = !!checkedSnapshot
                 }
             }
             const applied = appliedValue == null ? '' : appliedValue
@@ -529,11 +738,11 @@ function serializeAttrs(
             if (finalChecked) s += ` checked="true"`
         } else if ((isCheckbox || isRadio) && hasChecked && !hasValue) {
             // CK-only
-            if (props.checked) s += ` checked="true"`
+            if (checkedSnapshot) s += ` checked="true"`
         } else {
             // IV (+ radio checked as separate)
             for (const key of deferredKeys) {
-                const value = props[key]
+                const value = key === 'value' ? valueSnapshot : checkedSnapshot
                 if (key === 'value') {
                     const applied = value == null ? '' : value
                     s += ` value="${escapeAttr(String(applied))}"`
@@ -549,19 +758,6 @@ function serializeAttrs(
     return s
 }
 
-function textareaChildText(props: AttributesLike | null | undefined, children: any[]): string {
-    if (props && Object.prototype.hasOwnProperty.call(props, 'value')) {
-        const v = props.value
-        if (isAtom(v)) return stringValue(v())
-        return stringValue(v)
-    }
-    if (children.length === 1) {
-        const c = children[0]
-        if (isAtom(c)) return stringValue(c())
-        if (typeof c === 'string' || typeof c === 'number' || typeof c === 'bigint') return String(c)
-    }
-    return ''
-}
 
 // ─── children / host serialization ───
 
@@ -1010,6 +1206,7 @@ function serializeSsrElement(
         return
     }
     const tag = el.type as string
+    assertTagName(tag)
     const tagLower = tag.toLowerCase()
 
     let optionSelectedBySo: boolean | null = null
@@ -1017,8 +1214,15 @@ function serializeSsrElement(
         optionSelectedBySo = optionMatchesSo(optionEffectiveValue(el), selectSo)
     }
 
-    const attrs = serializeAttrs(el.props, tag, optionSelectedBySo, elementPath)
-    const dangerously = el.props?.dangerouslySetInnerHTML
+    // ≡ DOM.createElement：显式 _isSVG（createSVGElement）优先，否则按 svg 专有标签名兜底
+    const isSVG = el.props?._isSVG ?? svgOnlyElementNames.has(tag)
+    const attrs = serializeAttrs(el.props, tag, optionSelectedBySo, elementPath, isSVG)
+    // CAUTION CSR 的契约是 node.innerHTML = value ?? ''（DOM.setAttribute）：value 是字符串，
+    //  或求值得到字符串的函数 / atom；只要这个 key 出现，children 就被 innerHTML 覆盖（含 nullish = 清空）。
+    //  这里曾经只认 React 形状的 {__html}（CSR 下它渲染成字面 "[object Object]"），
+    //  真正的 CSR 写法在服务端输出为空。{__html} 的透传保持不变。
+    const hasDangerously = !!el.props && hasOwnProp(el.props, 'dangerouslySetInnerHTML')
+    const dangerously = hasDangerously ? snapshotAttrValue(el.props!.dangerouslySetInnerHTML) : undefined
 
     if (VOID_TAGS.has(tagLower)) {
         out.push('<', tag, attrs, '/>')
@@ -1026,14 +1230,16 @@ function serializeSsrElement(
     }
 
     out.push('<', tag, attrs, '>')
+    const contentStart = out.length
     if (dangerously && typeof dangerously === 'object' && '__html' in dangerously) {
         out.push(String((dangerously as {__html: string}).__html))
-    } else if (tagLower === 'textarea') {
-        const children = el.children.length
-            ? el.children
-            : (el.props?.children ? (Array.isArray(el.props.children) ? el.props.children : [el.props.children]) : [])
-        const text = textareaChildText(el.props, children)
-        out.push(escapeText(text))
+    } else if (hasDangerously) {
+        out.push(dangerously == null ? '' : String(dangerously))
+    } else if (tagLower === 'textarea' && !!el.props && hasOwnProp(el.props, 'value')) {
+        // TA 通道（§3.6.2）：value 写成子文本。没有 value prop 的 textarea 走下面的通用 children 路径，
+        //  与 title 一样按 RCDATA 首尾相接——曾经只认「恰好一个 child」，
+        //  <textarea>Hello {name}</textarea> 这类两个文本单元的写法静默输出为空。
+        out.push(escapeText(stringValue(snapshotAttrValue(el.props.value))))
     } else {
         const children = el.children.length
             ? el.children
@@ -1050,6 +1256,13 @@ function serializeSsrElement(
             out.push('</tbody>')
         } else {
             serializeChildren(children, out, tag, childSo, elementPath)
+        }
+    }
+    if (LEADING_NEWLINE_TAGS.has(tagLower)) {
+        for (let i = contentStart; i < out.length; i++) {
+            if (out[i] === '') continue
+            if (out[i][0] === '\n') out.splice(i, 0, '\n')
+            break
         }
     }
     out.push('</', tag, '>')
@@ -1097,12 +1310,66 @@ function createSsrElement(type: any, rawProps: AttributesLike | null, ...rawChil
 /** Stack of context maps for SSR ContextProvider / createContext */
 const contextStack: Map<any, any>[] = []
 
-function createSsrRenderContext(): RenderContext {
+// CAUTION 组件里的 createElement 在服务端必须走和 CSR 相同的 as / AOP 流水线
+//  （≡ ComponentHost.createHTMLOrSVGElement，props 调整的三步直接调用它的 applyItemPropsConfig）：
+//  as="name" 不是 attribute（写出的是 data-as），$name:prop / $name:_use / $name:_children 等外部配置
+//  要应用到命名元素上，prop: / $self: 前缀要拆出去。曾经这里就是裸的 createSsrElement——
+//  `as`、`prop:x`、`$self:className` 原样变成 HTML 属性，所有 AOP 覆盖在服务端输出里缺席。
+//  只属于客户端的部分不做：ref 收集、事件参数绑定、_eventTarget 转发（§3.4 事件仅客户端）。
+function createSsrComponentElement(
+    host: ComponentHost,
+    isSVG: boolean,
+    type: any,
+    rawProps: AttributesLike | null,
+    ...children: any[]
+): any {
+    const isComponent = typeof type === 'function'
+    const name = rawProps ? rawProps['as'] : undefined
+
+    if (!name && !isComponent && (!rawProps || !ComponentHost.hasPrefixedProps(rawProps))) {
+        return createSsrElement(type, isSVG ? {...rawProps, _isSVG: true} : rawProps, ...children)
+    }
+
+    if (name !== undefined) delete rawProps!['as']
+    if (name === 'self') throw new Error('"self" is reserved, please use another element name.')
+
+    const thisItemConfig = name ? host.itemConfig[name] : undefined
+    // _use 传入现成节点覆写整个元素：CSR 认 Element，这里对应一个已经建好的元素描述
+    if (thisItemConfig?.use && isSsrElement(thisItemConfig.use)) return thisItemConfig.use
+
+    let {props: finalProps, componentProps} = host.separateProps(rawProps as AttributesLike)
+    let finalChildren = children
+    if (thisItemConfig) {
+        finalProps = host.applyItemPropsConfig(thisItemConfig, isComponent, finalProps, componentProps)
+        if (thisItemConfig.children) {
+            finalChildren = Array.isArray(thisItemConfig.children) ? thisItemConfig.children : [thisItemConfig.children]
+        }
+    }
+
+    const finalType = thisItemConfig?.use || type
+    // 用 Component 覆写了普通元素：组件的 props 是 prop:xxx 标记的那部分
+    if (typeof finalType === 'function' && !isComponent) {
+        componentProps[N_ATTR] = finalProps
+        finalProps = componentProps
+    }
+    if (typeof finalType === 'function' && thisItemConfig?.configProps?.length) {
+        Object.assign(finalProps, {[INNER_CONFIG_PROP]: thisItemConfig.configProps})
+    }
+    if (name) finalProps['data-as'] = name
+
+    return createSsrElement(finalType, isSVG ? {...finalProps, _isSVG: true} : finalProps, ...finalChildren)
+}
+
+// 服务端的 ComponentHost 只借用它的 props / AOP 计算，不参与任何 Host 路径
+const SSR_COMPONENT_PATH_CONTEXT = {hostPath: null, elementPath: []} as unknown as PathContext
+
+function createSsrRenderContext(host: ComponentHost): RenderContext {
     const refs: {[k: string]: any} = {}
     const context: RenderContext = {
-        createElement: createSsrElement as any,
+        createElement: ((type: any, props: any, ...children: any[]) =>
+            createSsrComponentElement(host, false, type, props, ...children)) as any,
         createSVGElement: ((type: string, props: any, ...children: any[]) =>
-            createSsrElement(type, props ? {...props, _isSVG: true} : {_isSVG: true}, ...children)) as any,
+            createSsrComponentElement(host, true, type, props, ...children)) as any,
         Fragment,
         useLayoutEffect() {},
         useEffect() {},
@@ -1144,12 +1411,12 @@ function invokeComponent(node: ComponentNode): any {
     const map = new Map()
     contextStack.push(map)
     try {
-        const ctx = createSsrRenderContext()
-        const props: Props = {...(node.props || {})}
-        if ((node.children && node.children.length) || props.children === undefined) {
-            props.children = node.children
-        }
-        return (node.type as Component)(props, ctx)
+        // CAUTION 最终 props 由 ComponentHost.prepareProps 计算（propTypes 默认值 / coerce、
+        //  boundProps / postBoundProps、AOP 配置），与 CSR 是同一个方法，见那里的说明。
+        const host = new ComponentHost(node, null as any, SSR_COMPONENT_PATH_CONTEXT)
+        const ctx = createSsrRenderContext(host)
+        host.renderContext = ctx
+        return (node.type as Component)(host.prepareProps(), ctx)
     } finally {
         // Keep map on stack until serializeComponent finishes — caller pops
     }
