@@ -1,4 +1,4 @@
-import {ExtendedElement, insertAfter, insertBefore, UnhandledPlaceholder} from './DOM'
+import {ExtendedElement, insertAfter, insertBefore, restoreSelectValueAfterRemoval, UnhandledPlaceholder} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed, TriggerInfo} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
@@ -17,7 +17,7 @@ import {
     summarizeArgv,
     withReactiveTrace
 } from "./diagnostics";
-import {CompactElementHost} from "./StaticHost.js";
+import {CompactElementHost, StaticHost} from "./StaticHost.js";
 import {detachEffectFromCreationContext} from "./LightBindingEffect.js";
 import {ReusableHost} from "./ComponentHost.js";
 import {
@@ -187,6 +187,12 @@ export class RxListHost implements Host{
         const frag = document.createDocumentFragment()
         const outerRowsOnStack = this.rowsOnStack
         this.rowsOnStack = hosts
+        // CAUTION 每行都可能新建自己的 stylesheet（嵌套样式里带每行不同的数据），合并成一次
+        //  document.adoptedStyleSheets 写入，否则挂载 N 行是 O(N²)（见 StyleManager.beginBatch）。
+        //  写入发生在调用方把 frag 插入文档之前。每次 patch 只多一对计数，不是每行。
+        const styleManager = StaticHost.styleManager
+        const root = this.pathContext.root
+        const outerRoot = styleManager.beginBatch(root)
         try {
             for (const host of hosts) {
                 // 列表已被销毁：剩下的行不再渲染
@@ -209,6 +215,7 @@ export class RxListHost implements Host{
             if (this.destroyedWith !== undefined) {
                 for (const host of hosts) host.destroy(true)
             }
+            styleManager.endBatch(root, outerRoot)
         }
         return frag
     }
@@ -425,9 +432,27 @@ export class RxListHost implements Host{
         }
     }
     applyTriggerInfo(info: TriggerInfo) {
+        // CAUTION 一次 patch 里被删除的行各自释放 stylesheet（见 StyleManager.beginBatch）：
+        //  不合并的话清空 N 行带独有嵌套样式的列表是 O(N²)。新行的表在行被插入文档之前写入
+        //  （DOM.ts insertBefore），所以 patch 内部的 flushAttachQueue 看到的样式不变。
+        const styleManager = StaticHost.styleManager
+        const root = this.pathContext.root
+        const outerRoot = styleManager.beginBatch(root)
+        try {
+            this.applyTriggerInfoInBatch(info)
+        } finally {
+            styleManager.endBatch(root, outerRoot)
+        }
+    }
+    applyTriggerInfoInBatch(info: TriggerInfo) {
         const {method, argv, key, methodResult, type} = info
         if (method === 'splice') {
             this.handleSplice(argv!, methodResult as any[]|undefined)
+            // 被删除的行可能是 select 里被选中的 option：整段删除不经过行 host 自己的移除路径，
+            //  在这里按存值重放一次（见 restoreSelectValueAfterRemoval）。
+            if ((methodResult as any[]|undefined)?.length) {
+                restoreSelectValueAfterRemoval(this.placeholder.parentNode)
+            }
         } else if(method === 'reorder') {
             this.handleReorder(argv![0], (info as any).reorderInfo)
         } else if(type === TriggerOpTypes.EXPLICIT_KEY_CHANGE) {
@@ -766,6 +791,18 @@ export class RxListHost implements Host{
         //  否则错误恢复路径（函数节点重算、root.destroy）会二次崩溃。
         if (this.hostRenderComputed) destroyComputed(this.hostRenderComputed)
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
+        // 各行释放的 stylesheet 合并成一次写入（见 StyleManager.beginBatch）
+        const styleManager = StaticHost.styleManager
+        const root = this.pathContext.root
+        const outerRoot = styleManager.beginBatch(root)
+        try {
+            this.destroyRows(fromParentDestroy)
+        } finally {
+            styleManager.endBatch(root, outerRoot)
+        }
+        if (!fromParentDestroy) this.placeholder.remove()
+    }
+    private destroyRows(fromParentDestroy?: boolean) {
         const rowsOnStack = this.rowsOnStack
         if (rowsOnStack) {
             // CAUTION 重入销毁：自己的 patch 还在调用栈上，正在渲染的新行里有人同步销毁了列表
@@ -781,7 +818,6 @@ export class RxListHost implements Host{
         } else {
             this.hosts?.forEach(host => host.destroy(fromParentDestroy))
         }
-        if (!fromParentDestroy) this.placeholder.remove()
     }
 }
 

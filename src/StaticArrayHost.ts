@@ -1,4 +1,4 @@
-import { insertBefore} from "./DOM";
+import { insertBefore, restoreSelectValueAfterRemoval} from "./DOM";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {removeNodesBetween} from "./util";
@@ -288,5 +288,7 @@ export class StaticArrayHost implements Host{
             ownerHost: this,
             operation: 'destroy',
         })
+        // 整段移除的可能是 option 数组，select 要按存值重放（见 restoreSelectValueAfterRemoval）
+        restoreSelectValueAfterRemoval(parent)
     }
 }

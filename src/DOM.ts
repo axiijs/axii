@@ -118,6 +118,90 @@ function setProperty(node: HTMLElement, name: string, value: any) {
     }
 }
 
+// 反射 property 与它的 content attribute 不同名（转小写之后也不同）的少数情况。
+//  只在「移除 attribute」时用到：removeAttribute('htmlFor') 是空操作，for 永远留在元素上。
+const propertyAttributeAliases: {[property: string]: string} = Object.assign(Object.create(null), {
+    htmlFor: 'for',
+    httpEquiv: 'http-equiv',
+    acceptCharset: 'accept-charset',
+    defaultValue: 'value',
+})
+
+// ARIA 反射属性（ariaLabel / ariaExpanded ...）：第 5 个字符是大写字母
+function isAriaReflectionProperty(name: string) {
+    if (name.length < 5 || name[0] !== 'a' || name[1] !== 'r' || name[2] !== 'i' || name[3] !== 'a') return false
+    const fifth = name.charCodeAt(4)
+    return fifth >= 65 && fifth <= 90
+}
+
+function attributeNameOfProperty(name: string): string {
+    const alias = propertyAttributeAliases[name]
+    if (alias !== undefined) return alias
+    // ariaLabel -> aria-label，ariaValueNow -> aria-valuenow
+    return isAriaReflectionProperty(name) ? `aria-${name.slice(4).toLowerCase()}` : name
+}
+
+/**
+ * 通用 property 分支里 null / undefined / boolean 值的写入规则（静态与响应式属性共用，唯一一份）。
+ *
+ * CAUTION property 赋值按 IDL 类型做转换，原样赋值只对「boolean 值 → boolean property」是对的：
+ *  - string property 会把 false/undefined 字符串化：title={cond && 'tip'} 渲染出 title="false"，
+ *    href={false} 链接到 /false，download={false} 反而变成下载链接，popover={false} 把元素变成
+ *    隐藏的 manual popover，htmlFor={undefined} 关联到 id 为 "undefined" 的控件；
+ *  - number property 把 false 变成 0：maxLength={false} 的输入框一个字符都输不进去；
+ *  - 同一个 false 在 attribute 分支（foo={false}）是「移除」，两条路径曾经不一致。
+ *  规则（「property 类型」= typeof node[name]，只在这个慢路径里读一次）：
+ *
+ *  | 值        | property 类型                            | 写入                                    |
+ *  |-----------|------------------------------------------|-----------------------------------------|
+ *  | null      | 任意                                     | property = ''，移除 attribute（原有语义）|
+ *  | undefined | string                                   | 同 null                                 |
+ *  | undefined | 其他                                     | property = undefined，移除 attribute（原有语义）|
+ *  | false     | boolean                                  | property = false（原有语义）            |
+ *  | false     | string / number / object（含 null）      | 同 null：「条件不满足」= 没写这个属性   |
+ *  | true      | boolean                                  | property = true（原有语义）             |
+ *  | true      | string，或当前值是 null 的可空反射属性   | property = ''（等价于 HTML 里只写属性名：download / popover / alt）|
+ *  | true      | 其他                                     | property = true（原有语义）             |
+ *
+ *  boolean 值原样写入的例外（与原来完全一致）：
+ *  - 自定义元素（tagName 带 '-'）：property 的语义由组件自己定义，undefined 也原样传；
+ *  - contentEditable / writingSuggestions / aria*：取值是 "true"/"false" 关键字的 string property，
+ *    false 是有语义的值（与 attribute 分支对 contenteditable、aria-* 的处理一致）；
+ *  - hidden：它的 getter 在 until-found 状态下返回字符串。
+ *  value / checked（表单控件）不走这里，各有专门的分支。
+ */
+function setEmptyOrBooleanProperty(node: HTMLElement, name: string, value: null | undefined | boolean) {
+    let empty = value === null
+    let remove = value === null || value === undefined
+    if (!empty && node.tagName.indexOf('-') === -1 &&
+        name !== 'contentEditable' && name !== 'writingSuggestions' && name !== 'hidden' &&
+        !isAriaReflectionProperty(name)) {
+        const current = (node as any)[name]
+        const type = typeof current
+        if (value === undefined) {
+            empty = type === 'string'
+        } else if (value === false) {
+            empty = remove = type === 'string' || type === 'number' || type === 'object'
+        } else {
+            empty = type === 'string' || current === null
+        }
+    }
+    setProperty(node, name, empty ? '' : value)
+    if (remove) node.removeAttribute(attributeNameOfProperty(name))
+}
+
+// CAUTION 数组形态的 prop（style / className / 事件 handler）可以被转发进另一个数组：
+//  组件写 style={[base, props.style]}，调用方自己又传数组，就得到嵌套数组。children、ref、
+//  响应式 style（evaluateStyleEntries）都支持嵌套，这三处曾只处理一层——内层数组掉进
+//  「对象」分支：style 按下标给 CSSStyleDeclaration 赋值直接 TypeError（渲染崩溃），
+//  className 把下标 "0 2" 当 class 名写出，事件分发时把数组当函数调用（TypeError，
+//  其余 handler 被跳过）。
+//  没有嵌套数组（绝大多数）时只多一次 some 扫描：Array.isArray 是内建函数引用，
+//  不产生闭包，也不分配新数组。
+function flattenNestedArray(value: any[]): any[] {
+    return value.some(Array.isArray) ? value.flat(Infinity) : value
+}
+
 type EventListenerValue = ((e: Event, ...args: any[]) => any) | ((e: Event, ...args: any[]) => any)[]
 
 // CAUTION 以事件名为一级 key、来源 prop（别名前的事件名，如 change/input）为二级 key：
@@ -231,7 +315,31 @@ export function isEventName(name: string) {
 }
 
 
-const svgForceDashStyleAttributes = /^(strokeWidth|strokeLinecap|strokeLinejoin|strokeMiterlimit|strokeDashoffset|strokeDasharray|strokeOpacity|fillOpacity|stopOpacity)/
+// CAUTION SVG 的 presentation attribute（可以当 attribute 写的 CSS 属性）在 DOM 里是连字符名
+//  （stroke-width / fill-rule / stop-color），JSX 里按 React 习惯写驼峰（strokeWidth）。
+//  SVG 没有「驼峰 ⇔ 连字符」的通用规则：viewBox、gradientUnits、clipPathUnits、markerWidth
+//  这些原生 attribute 本身就是驼峰且大小写敏感，一律转换会把它们全部写坏——所以只能按清单转换。
+//  清单取 SVG 2 §6.6 "Presentation attributes" 与 SVG 1.1 property index 的并集里所有带连字符
+//  的名字（单词名 fill/stroke/opacity 不需要转换），按完整名字匹配。
+//  之前只列了 9 个（stroke* 的一部分 + fillOpacity/stopOpacity）：SVG 转 JSX 的图标里最常见的
+//  fillRule/clipRule 被原样写成 attribute "fillRule"，浏览器不认，镂空图标静默渲染成实心；
+//  同一个 <stop> 上 stopOpacity 生效而 stopColor 不生效。
+const svgPresentationAttributeNames: {[camelCaseName: string]: string} = /* @__PURE__ */ (() => {
+    const names: {[camelCaseName: string]: string} = Object.create(null)
+    const attributes = 'alignment-baseline baseline-shift clip-path clip-rule color-interpolation ' +
+        'color-interpolation-filters color-profile color-rendering dominant-baseline enable-background ' +
+        'fill-opacity fill-rule flood-color flood-opacity font-family font-size font-size-adjust ' +
+        'font-stretch font-style font-variant font-weight glyph-orientation-horizontal ' +
+        'glyph-orientation-vertical image-rendering letter-spacing lighting-color marker-end marker-mid ' +
+        'marker-start mask-type paint-order pointer-events shape-rendering stop-color stop-opacity ' +
+        'stroke-dasharray stroke-dashoffset stroke-linecap stroke-linejoin stroke-miterlimit ' +
+        'stroke-opacity stroke-width text-anchor text-decoration text-overflow text-rendering ' +
+        'transform-box transform-origin unicode-bidi vector-effect white-space word-spacing writing-mode'
+    for (const attribute of attributes.split(' ')) {
+        names[attribute.replace(/-([a-z])/g, (_, char: string) => char.toUpperCase())] = attribute
+    }
+    return names
+})()
 // JSX evaluates children before their parent, so the runtime cannot infer an SVG namespace
 // from ancestry the way a VDOM renderer can. Create tags that only exist in SVG in the
 // correct namespace immediately. Ambiguous HTML/SVG tags (a/script/style/title) deliberately
@@ -276,13 +384,26 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
 
     // uuid
     if (name === 'uuid') {
-        node.setAttribute('data-uuid', value)
+        // CAUTION nullish 表示没有 uuid，setAttribute 会写出字面 "undefined"/"null"
+        if (value == null) {
+            node.removeAttribute('data-uuid')
+        } else {
+            node.setAttribute('data-uuid', value)
+        }
         return
     }
 
     // 事件
     if (isEventName(name)) {
-        const useCapture = name !== (name = name.replace(/Capture$/, ''))
+        // CAUTION Capture 后缀表示捕获阶段，但 gotpointercapture / lostpointercapture 是事件名本身：
+        //  无条件剥掉后缀的话 onGotPointerCapture 会在不存在的 gotpointer 事件上挂一个捕获监听，
+        //  永远不触发且没有任何报错。它们的捕获形态是 onGotPointerCaptureCapture（与 React 一致）。
+        //  只在绑定时执行一次，不在分发路径上。
+        let useCapture = false
+        if (name.endsWith('Capture') && name !== 'onGotPointerCapture' && name !== 'onLostPointerCapture') {
+            useCapture = true
+            name = name.slice(0, -7)
+        }
         // sourceKey 是别名前的事件名（如 change），用于区分监听的来源
         const sourceKey = name.toLowerCase().substring(2)
         // CAUTION 体验改成和 react 的一致：onChange -> input。
@@ -297,6 +418,8 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             (node._listeners || (node._listeners = {}))
 
         if (value) {
+            // 转发进来的嵌套 handler 数组在绑定时摊平一次（见 flattenNestedArray），分发路径不变
+            if (Array.isArray(value)) value = flattenNestedArray(value)
             // CAUTION 开发期警告（I65）：atom 本身是 function，被直接绑成事件 handler 时
             //  事件分发会以「写入」形态调用它（atom(event)）——事件对象被静默写进 atom，
             //  handler 不执行且状态损坏，没有任何报错。事件按设计是非响应式的（绑定一次），
@@ -349,7 +472,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             node.style.cssText = ''
             return
         }
-        const styles = Array.isArray(value) ? value : [value]
+        const styles = Array.isArray(value) ? flattenNestedArray(value) : [value]
         styles.forEach(style => {
             // 数组中的条件项 [base, cond && {...}]，falsy 直接跳过
             if (style == null || typeof style === 'boolean') return
@@ -389,7 +512,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             }
             return
         }
-        const classNameOptions = Array.isArray(value) ? value : [value]
+        const classNameOptions = Array.isArray(value) ? flattenNestedArray(value) : [value]
         const classNames:string[] = []
         classNameOptions.forEach((className) => {
             // CAUTION 条件写法 className={cond && 'x'} 的 falsy 结果（false/null/undefined）跳过，
@@ -481,12 +604,19 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             }
         } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
             // checkbox 也支持用 value ，这样容易统一 api
-            if (value) {
-                (node as HTMLInputElement).checked = true
-                node.setAttribute('checked', 'true')
-            } else {
-                (node as HTMLInputElement).checked = false
-                node.removeAttribute('checked')
+            // CAUTION 只有 boolean/nullish 的 value 才是「勾选状态」。string/number 是 checkbox 的
+            //  表单提交值（<input type="checkbox" name="color" value="red" checked={isRed}/> 是标准的
+            //  checkbox 组写法）：按 truthy 当成勾选的话，带提交值的 checkbox 一律渲染成勾选，
+            //  而且 value 与 checked 按书写顺序应用——checked={false} 写在 value 前面时被 value 顶掉，
+            //  响应式的提交值每次变化还会把用户取消的勾选重新勾上。
+            if (value == null || typeof value === 'boolean') {
+                if (value) {
+                    (node as HTMLInputElement).checked = true
+                    node.setAttribute('checked', 'true')
+                } else {
+                    (node as HTMLInputElement).checked = false
+                    node.removeAttribute('checked')
+                }
             }
         }
     } else if (name === 'checked' && node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
@@ -547,8 +677,18 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             replayRangeValue = input.__axiiInputAppliedValue__ !== undefined &&
                 (node as HTMLInputElement).value === input.__axiiInputAppliedValue__
         }
-        setProperty(node, name, value === null ? '' : value)
-        if (value === null || value === undefined) node.removeAttribute(name)
+        // CAUTION 热路径（string/number 值）不读 property、不做类型判断，
+        //  只有 null/undefined/boolean 才进入按 property 类型决定写法的慢路径。
+        if (value === null || value === undefined || value === true || value === false) {
+            setEmptyOrBooleanProperty(node, name, value)
+        } else if (typeof value === 'string' && (name === 'draggable' || name === 'spellcheck' || name === 'translate')) {
+            // CAUTION 这三个是「enumerated attribute + boolean IDL property」：字符串值是 HTML 关键字
+            //  （draggable="false" / translate="no"），赋给 boolean property 会按 truthy 转成 true，
+            //  写出与作者相反的 draggable="true" / translate="yes"。字符串原样写成 attribute。
+            node.setAttribute(name, value)
+        } else {
+            setProperty(node, name, value)
+        }
         // range 会在 min/max/step 约束变化时就地 sanitize 当前 value。这里必须重放
         // 框架保存的声明值，否则约束之后放宽，DOM 仍永久停留在旧的截断值。
         // 属性更新热路径只增加常量字符串/标签判断，不产生额外分配。
@@ -561,11 +701,17 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     } else {
         /* v8 ignore next 4 */
         const ns = isSvg && (name !== (name = name.replace(/^xlink\:?/, '')))
+        // svg 的 presentation attribute 要从驼峰转换成连字符风格（见 svgPresentationAttributeNames）。
+        // CAUTION 写入和移除必须用同一个名字：移除曾用驼峰原名（removeAttribute('strokeWidth')
+        //  是空操作），响应式值变成 null/undefined/false 后 stroke-width 永久残留。
+        const attrName = isSvg ? (svgPresentationAttributeNames[name] ?? name) : name
         if (value == null || value === false) {
             if (ns) {
                 node.removeAttributeNS('http://www.w3.org/1999/xlink', name.toLowerCase())
             } else if (value === false &&
-                (name.toLowerCase() === 'contenteditable' ||
+                // spellCheck 是 React 的写法，不是 DOM property 名（property 是 spellcheck），所以落在
+                //  attribute 分支：false 被移除的话拼写检查仍然开着（缺省值是 true）。
+                (name.toLowerCase() === 'contenteditable' || name.toLowerCase() === 'spellcheck' ||
                     ((name[0] === 'a' || name[0] === 'd') && (/^aria-/.test(name) || /^data-/.test(name))))) {
                 // CAUTION aria-*/data-* 的 false 是有语义的值，不是「移除」：
                 //  aria-expanded/aria-checked 等状态属性缺席与 "false" 对屏幕阅读器完全不同
@@ -574,15 +720,13 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 //  null/undefined 仍然是移除语义（条件属性的自然写法）。
                 node.setAttribute(name, 'false')
             } else {
-                node.removeAttribute(name)
+                node.removeAttribute(attrName)
             }
             /* v8 ignore next 4 */
         } else if (typeof value !== 'function' && ns) {
             // xlink:href 元素，有 namespace 的
             node.setAttributeNS('http://www.w3.org/1999/xlink', name.toLowerCase(), value)
         } else {
-            // svg 的 attrName 要从驼峰转换成连字符风格
-            const attrName = (isSvg && svgForceDashStyleAttributes.test(name)) ? name.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : name
             node.setAttribute(attrName, value)
         }
     }
@@ -1456,11 +1600,43 @@ function resetOptionParentSelectValue(select: HTMLSelectElement) {
     }
 }
 
+// StyleManager（StaticHost.ts）在有「已创建但还没写进 document.adoptedStyleSheets」的 stylesheet 时
+//  登记它的 flush，写入后清空（见 StyleManager.beginBatch）。DOM.ts 不能反向 import StaticHost
+//  （循环依赖），所以用登记的方式；没有待写入的表时插入路径只多一次 undefined 判断。
+let flushPendingStyleSheets: (() => void) | undefined
+/**
+ * @internal
+ */
+export function setPendingStyleSheetFlush(flush: (() => void) | undefined) {
+    flushPendingStyleSheets = flush
+}
+
+/**
+ * @internal
+ * option（或 optgroup）被框架移除之后调用，parent 是移除之前它所在的父节点。
+ * CAUTION select 存值的恢复曾只挂在「出现」路径上（insertBefore/insertAfter、option 的
+ *  value/文本变化）：被选中的 option 被移除时，浏览器按 reset 算法自动选中第一个 option，
+ *  而存值此时没有任何 option 匹配——同样的终态全新渲染出来是「无选中」（selectedIndex -1），
+ *  两者不一致，之后任何一次无关的插入又会把它变回无选中。移除后按存值重放一次，
+ *  与全新渲染、与之后的插入路径保持一致。没有 value prop 的 select（非受控）不受影响，
+ *  见 resetOptionParentSelectValue。
+ *  成本与 insertBefore 的同款判断相同：对 parent 做两次 instanceof，非 select 场景不做任何写入。
+ */
+export function restoreSelectValueAfterRemoval(parent: Node | null) {
+    const ownerSelect = findOwnerSelect(parent as Element | null)
+    if (ownerSelect) {
+        resetOptionParentSelectValue(ownerSelect)
+    }
+}
+
 /**
  * @internal
  * If endEl is provided, insert all elements from newEl to endEl
  */
 export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement, endEl?: HTMLElement | Comment | Text | SVGElement) {
+    // CAUTION 节点即将连入文档：它们依赖的 stylesheet 必须先生效，之后同步执行的 ref/layoutEffect、
+    //  自定义元素的 connectedCallback 才能读到正确的样式（见 StyleManager.beginBatch）。
+    if (flushPendingStyleSheets !== undefined && refEl.isConnected) flushPendingStyleSheets()
     // CAUTION 必须用循环而不是递归实现，递归深度等于节点数，长区间搬移时会栈溢出。
     let result: Node
     let current: Node|null = newEl
@@ -1487,6 +1663,8 @@ export function insertBefore(newEl: Comment | HTMLElement | DocumentFragment | S
  * @internal
  */
 export function insertAfter(newEl: Comment | HTMLElement | DocumentFragment | SVGElement | Text, refEl: HTMLElement | Comment | Text | SVGElement) {
+    // 同 insertBefore：连入文档之前先让待写入的 stylesheet 生效
+    if (flushPendingStyleSheets !== undefined && refEl.isConnected) flushPendingStyleSheets()
     // CAUTION 这里用 parentNode.insertBefore ，因为 parent 可能是 DocumentFragment，只能用 parentNode 读
     const result = refEl.parentNode!.insertBefore!(newEl, refEl.nextSibling)
     const ownerSelect = findOwnerSelect(refEl.parentElement)
