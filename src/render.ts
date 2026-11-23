@@ -1,3 +1,4 @@
+import {Notifier, ReactiveEffect} from "data0";
 import {createHost} from "./createHost";
 import {ComponentNode} from "./types";
 import {PathContext, Host} from "./Host";
@@ -172,25 +173,44 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             }
             const callbacks = eventCallbacks.get(event)
             const consumed = !!callbacks?.size
-            if (consumed) {
-                callbacks!.forEach(callback => {
-                    // CAUTION 一个监听器抛错不能中断兄弟监听器，更不能把新错误传播回框架的
-                    //  错误恢复路径——dispatch('error') 的调用点都在 catch 块里，向上抛会
-                    //  覆盖原始错误、把 fail-stop 变成二次崩溃。监听器自身的错误收敛到
-                    //  reportAxiiError（结构化打印 + onError 回调），保持可观测。
-                    try {
-                        callback(arg)
-                    } catch (handlerError) {
-                        reportAxiiError(handlerError)
+            // CAUTION 监听器是注册者的代码，却跑在派发点的 effect 帧里：绑定更新抛错时，error 就在
+            //  出错绑定自己的 update 里派发。不暂停追踪的话监听器读的 atom 会成为该绑定的依赖，
+            //  监听器读错误列表、再异步追加错误列表就是无限重算。派发方只关心有没有人消费事件，
+            //  监听器的读取不可能是它的依赖，所以对所有事件统一暂停。
+            //  attach 补执行的 layoutEffect/ref 有监听和 deferred 队列两条路径，必须在同一个暂停区间内。
+            Notifier.instance.pauseTracking()
+            try {
+                if (consumed) {
+                    const notify = () => callbacks!.forEach(callback => {
+                        // CAUTION 一个监听器抛错不能中断兄弟监听器，更不能把新错误传播回框架的
+                        //  错误恢复路径——dispatch('error') 的调用点都在 catch 块里，向上抛会
+                        //  覆盖原始错误、把 fail-stop 变成二次崩溃。监听器自身的错误收敛到
+                        //  reportAxiiError（结构化打印 + onError 回调），保持可观测。
+                        try {
+                            callback(arg)
+                        } catch (handlerError) {
+                            reportAxiiError(handlerError)
+                        }
+                    })
+                    // CAUTION error 由出错的绑定/组件触发，监听器创建的 effect（错误提示的绑定等）不属于它：
+                    //  被收集成绑定的子 effect 会在下一次更新时销毁，被收集进组件的 collect frame 会随
+                    //  失败的 render 立即销毁。其余事件是调用方主动派发的，归属不变——Portal 内容的
+                    //  layoutEffect 创建的 effect 仍由 Portal 组件收集并随它销毁。
+                    if (event === 'error') {
+                        ReactiveEffect.createDetached(notify)
+                    } else {
+                        notify()
                     }
-                })
-            }
-            // CAUTION 手动 dispatch('attach')（容器脱离文档后重新连通是公开用法）也必须
-            //  flush deferred-attach 队列：root.attached 为 true 期间动态创建、但插入时
-            //  仍未连通的组件/元素登记在这里，没有任何外层插入动作会再替它们 flush，
-            //  不 flush 的话它们的 layoutEffect/ref 永不执行。
-            if (event === 'attach') {
-                root.flushAttachQueue()
+                }
+                // CAUTION 手动 dispatch('attach')（容器脱离文档后重新连通是公开用法）也必须
+                //  flush deferred-attach 队列：root.attached 为 true 期间动态创建、但插入时
+                //  仍未连通的组件/元素登记在这里，没有任何外层插入动作会再替它们 flush，
+                //  不 flush 的话它们的 layoutEffect/ref 永不执行。
+                if (event === 'attach') {
+                    root.flushAttachQueue()
+                }
+            } finally {
+                Notifier.instance.resetTracking()
             }
             if (consumed) return true
             // CAUTION 只冒泡 error：attach/detach 是每个 root 自己的生命周期事件，不能转发
