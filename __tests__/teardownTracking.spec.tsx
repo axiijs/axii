@@ -20,6 +20,7 @@ import {
     ManualCleanup,
     Notifier,
     Portal,
+    ReactiveEffect,
     RenderContext,
     RxList,
 } from "@framework";
@@ -375,6 +376,66 @@ describe('teardown of replaced function node content is not tracked', () => {
         await settle()
         expect(rootEl.textContent).toBe('c')
     })
+
+    // 重入销毁：本节点在「收集已暂停」的区间里被销毁。销毁结束后收集必须还原成暂停，
+    // 而不是无条件打开，否则销毁之后创建的 effect 会被这个正在销毁的节点收集、随它一起销毁。
+    test('an error listener that destroys the root while new content renders still owns what it creates', async () => {
+        const noticeEl = document.createElement('div')
+        document.body.appendChild(noticeEl)
+        const notice = createRoot(noticeEl)
+        const failing = atom(false)
+        const color = atom('red')
+        root.on('error', () => {
+            root.destroy()
+            notice.render(<p class={() => color()}>failed</p>)
+        })
+        function Failing(_: any, {useEffect}: RenderContext) {
+            useEffect(() => { throw new Error('effect failed') })
+            return <b>failing</b>
+        }
+        // 新内容在暂停收集的区间里渲染，Failing 的 effect 抛错时监听器销毁整个 root
+        root.render(<div>{({onCleanup}: any) => {
+            onCleanup(() => {})
+            return failing() ? <Failing/> : <i>ok</i>
+        }}</div>)
+        failing(true)
+        await settle()
+        expect(noticeEl.querySelector('p')!.className).toBe('red')
+
+        color('blue')
+        await settle()
+        expect(noticeEl.querySelector('p')!.className).toBe('blue')
+        notice.destroy()
+    })
+
+    for (const entry of ['runCleanups', 'destroyInnerHost'] as const) {
+        test(`re-entrant destroy inside createDetached restores paused collection (${entry})`, async () => {
+            const noticeEl = document.createElement('div')
+            document.body.appendChild(noticeEl)
+            const notice = createRoot(noticeEl)
+            const leave = atom(false)
+            const color = atom('red')
+            root.render(<div>{(context: any) => {
+                if (entry === 'runCleanups') context.onCleanup(() => {})
+                if (leave()) {
+                    ReactiveEffect.createDetached(() => {
+                        // 销毁本节点：runCleanups / destroyInnerHost（旧的 <i>）在 createDetached 区间里执行
+                        root.destroy()
+                        notice.render(<p class={() => color()}>left</p>)
+                    })
+                }
+                return <i>content</i>
+            }}</div>)
+            leave(true)
+            await settle()
+            expect(noticeEl.querySelector('p')!.className).toBe('red')
+
+            color('blue')
+            await settle()
+            expect(noticeEl.querySelector('p')!.className).toBe('blue')
+            notice.destroy()
+        })
+    }
 })
 
 /**

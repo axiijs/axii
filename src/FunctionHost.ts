@@ -62,10 +62,15 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     //  函数节点的依赖：之后写那个 atom 就重建整个新内容，新内容挂载时正好写它就是无限重挂。
     //  销毁里创建的 effect 也不属于本节点，被收集为子 effect 会在下一次重算时被误销毁。
     //  与 createHost/render 的隔离对称；放在这两个方法里，重算与 destroy 的所有入口都覆盖到。
+    // CAUTION 子 effect 收集用「保存原值、还原」，不能用 resumeCollectChild()（无条件置 true）：
+    //  本节点可能在收集已暂停的区间里被重入销毁——新内容渲染中途、或 error 监听器的
+    //  createDetached 区间里，监听器调用 root.destroy()。那时置回 true，监听器随后创建的
+    //  effect（渲染到另一个 root 的错误提示等）会被本节点收集，随它的延迟销毁一起销毁。
     runCleanups() {
         const cleanups = this.cleanups
         if (cleanups?.length) {
             this.cleanups = undefined
+            const collectChild = this.shouldCollectChild
             Notifier.instance.pauseTracking()
             this.pauseCollectChild()
             try {
@@ -80,7 +85,7 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
                     }
                 }
             } finally {
-                this.resumeCollectChild()
+                this.shouldCollectChild = collectChild
                 Notifier.instance.resetTracking()
             }
         }
@@ -245,13 +250,14 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         if (host) {
             this.innerHost = null
             // 隔离追踪与子 effect 收集，见 runCleanups
+            const collectChild = this.shouldCollectChild
             Notifier.instance.pauseTracking()
             this.pauseCollectChild()
             try {
                 // CAUTION 内层 host 的 effect 是在 pauseCollectChild 下创建的（没有父 effect），必须显式销毁
                 host.destroy(parentHandle)
             } finally {
-                this.resumeCollectChild()
+                this.shouldCollectChild = collectChild
                 Notifier.instance.resetTracking()
             }
         }
