@@ -89,24 +89,38 @@ export class LightBindingEffect extends ReactiveEffect {
      *   不能挂在父 effect 的 children 里被 destroyChildren 提前 deactivate。
      */
     detachFromCreationContext() {
-        const frames = ManualCleanup.collectFrames as unknown as object[][]
-        if (frames.length) {
-            const frame = frames[frames.length - 1]
-            if (frame[frame.length - 1] === this) frame.pop()
-        }
-        const parent = this.parent
-        if (parent) {
-            const children = (parent as any)._children as ReactiveEffect[] | undefined
-            if (children?.length) {
-                const last = children.pop()!
-                if (last !== this) {
-                    children[this.index] = last
-                    last.index = this.index
-                }
+        detachEffectFromCreationContext(this)
+    }
+}
+
+/**
+ * @internal
+ *
+ * CAUTION 归属不变量：框架替某个 host 创建的绑定（文本/属性绑定、列表的 computed）只属于宿主树，
+ *  由 host 的 destroy 显式销毁；绝不属于创建那一刻恰好打开着的 collect frame（正在执行函数体的
+ *  组件）或恰好在运行的 effect。否则「在组件函数体里同步改列表 / 渲染另一个 root（Portal 就是
+ *  这么做的）」创建出来的绑定会随那个组件一起被销毁：DOM 还在，属性和列表却不再更新。
+ *  用户自己在组件函数体里创建的 computed / list.map() 不走这里，仍然归组件所有。
+ *  必须在 effect 刚创建完（它还是 frame 的最后一项）时调用。
+ */
+export function detachEffectFromCreationContext(effect: ReactiveEffect) {
+    const frames = ManualCleanup.collectFrames as unknown as object[][]
+    if (frames.length) {
+        const frame = frames[frames.length - 1]
+        if (frame[frame.length - 1] === effect) frame.pop()
+    }
+    const parent = effect.parent
+    if (parent) {
+        const children = (parent as any)._children as ReactiveEffect[] | undefined
+        if (children?.length) {
+            const last = children.pop()!
+            if (last !== effect) {
+                children[effect.index] = last
+                last.index = effect.index
             }
-            this.parent = undefined
-            this.index = 0
         }
+        effect.parent = undefined
+        effect.index = 0
     }
 }
 

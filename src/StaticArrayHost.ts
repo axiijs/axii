@@ -267,12 +267,26 @@ export class StaticArrayHost implements Host{
             this.placeholder.remove()
             return
         }
-        if (!parentHandle) {
-            removeNodesBetween(this.element, this.placeholder, true, {
-                ownerHost: this,
-                operation: 'destroy',
-            })
+        if (parentHandle) {
+            this.childHosts!.forEach(host => host.destroy(true))
+            return
         }
+        // CAUTION 先销毁子 host、再摘 DOM（I39）：子组件的清理函数（onCleanup 里测量、读 scrollTop、
+        //  unobserve(ref.current)）必须看到还连在文档里的 DOM。之前是先 removeNodesBetween 再销毁，
+        //  `() => show() ? [<A/>, <B/>] : null` 这类数组内容里的组件清理时节点已经脱离文档。
+        // CAUTION 区间起点要在销毁之前取：子 host 销毁后 element getter 会退回到自己的占位符；
+        //  个别子 host（PrimitiveHost）在 destroy(true) 里还会摘掉自己的文本节点，
+        //  起点恰好是它时改用「起点前一个兄弟」重新定位。
+        const first = this.element
+        const parent = first.parentNode
+        const before = first.previousSibling
         this.childHosts!.forEach(host => host.destroy(true))
+        const start = first.parentNode === parent ?
+            first :
+            ((before ? before.nextSibling : parent?.firstChild) as typeof first | null) ?? this.placeholder
+        removeNodesBetween(start, this.placeholder, true, {
+            ownerHost: this,
+            operation: 'destroy',
+        })
     }
 }

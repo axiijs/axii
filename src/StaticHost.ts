@@ -740,6 +740,9 @@ class ReactiveAttributeEffect extends LightBindingEffect {
         public isSVG: boolean,
     ) {
         super()
+        // CAUTION 属性绑定由元素 host 的 destroyAttrEffects 显式销毁，不能被创建时恰好打开的
+        //  collect frame / 父 effect 接管（归属不变量见 detachEffectFromCreationContext）。
+        this.detachFromCreationContext()
     }
     update() {
         // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，

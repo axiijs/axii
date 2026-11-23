@@ -32,7 +32,7 @@ export function lazy(load: () => Promise<any>, fallback?: (error?: unknown) => J
         )
     }
 
-    return function LazyWrapper(props: {[k:string]: any}, {createElement}: RenderContext) {
+    function LazyWrapper(props: {[k:string]: any}, {createElement}: RenderContext) {
         if (!isSsrPass()) startLoad()
         return () => {
             const LoadedLazyComponent = LazyComponent()
@@ -42,5 +42,10 @@ export function lazy(load: () => Promise<any>, fallback?: (error?: unknown) => J
                 return fallback ? fallback(loadError()) : null
             }
         }
-    } as unknown as Component
+    }
+    // CAUTION 包装必须是透明的：ref、`$name:xxx` 配置、透传的 config 属于加载出来的组件。
+    //  标记让包装自己的 host 不消费它们、原样留在 props 里（见 ComponentHost 的 forwardsProps），
+    //  上面的 createElement(LoadedLazyComponent, props) 才能把它们交到真正的组件手里。
+    ;(LazyWrapper as any).__axiiForwardProps = true
+    return LazyWrapper as unknown as Component
 }

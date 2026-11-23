@@ -18,6 +18,7 @@ import {
     withReactiveTrace
 } from "./diagnostics";
 import {CompactElementHost} from "./StaticHost.js";
+import {detachEffectFromCreationContext} from "./LightBindingEffect.js";
 import {ReusableHost} from "./ComponentHost.js";
 import {
     advanceCursorUntilComment,
@@ -62,6 +63,14 @@ export class RxListHost implements Host{
     hosts?: Host[]
     childContext?: PathContext
     hostRenderComputed?:  ReturnType<typeof computed>
+    // 渲染或销毁还在调用栈上的行（见 renderNewHosts / handleExplicitKeyChange / destroy）：
+    //  这期间列表自己被同步销毁时，destroy 不能碰它们。绝大多数时候是 undefined。
+    rowsOnStack?: Host[]
+    // undefined 表示存活，否则是 destroy 收到的 fromParentDestroy（见 destroy 的重入说明）。
+    //  declare：存活的列表不付槽位
+    declare destroyedWith?: boolean
+    // 已经被删除、但顶层节点还留在列表区间里的行（离场动画播放中），见 removeRows
+    leavingNodes?: Node[]
     constructor(public source: RxList<any>, public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
     }
 
@@ -171,15 +180,35 @@ export class RxListHost implements Host{
         }
     }
 
+    // CAUTION 调用方在拿到 fragment 之后必须先检查 destroyedWith：渲染某一行的过程中列表自己
+    //  可能被同步销毁（行里的 effect / error 监听器调用 root.destroy() 等，见 destroy），
+    //  那时这批行已经在这里回收，fragment 不能再插入。
     renderNewHosts(hosts: Host[]) {
         const frag = document.createDocumentFragment()
-        for (const host of hosts) {
-            if (host instanceof CompactElementHost) {
-                frag.appendChild(host.element)
-            } else {
-                frag.appendChild(host.placeholder)
+        const outerRowsOnStack = this.rowsOnStack
+        this.rowsOnStack = hosts
+        try {
+            for (const host of hosts) {
+                // 列表已被销毁：剩下的行不再渲染
+                if (this.destroyedWith !== undefined) break
+                if (host instanceof CompactElementHost) {
+                    frag.appendChild(host.element)
+                } else {
+                    frag.appendChild(host.placeholder)
+                }
+                host.render()
             }
-            host.render()
+        } catch (error) {
+            // 列表已被销毁：这批行马上整体丢弃，root 的监听器也已清空，它们的错误没有归属
+            //  （与组件销毁后 async effect 的 rejection 不再上报同一语义）。
+            if (this.destroyedWith === undefined) throw error
+        } finally {
+            this.rowsOnStack = outerRowsOnStack
+            // destroy 跳过了这批行（当时渲染到一半），现在渲染栈已退出，统一销毁恰好一次。
+            //  它们都还在脱离文档的 fragment 里，直接丢弃。
+            if (this.destroyedWith !== undefined) {
+                for (const host of hosts) host.destroy(true)
+            }
         }
         return frag
     }
@@ -209,8 +238,16 @@ export class RxListHost implements Host{
             this.hosts = []
         }
 
+        let ownedByHost = false
         this.hostRenderComputed = computed(
             function computation(this:Computed) {
+                // CAUTION 列表的 computed 由 RxListHost.destroy 显式销毁，不能被创建时恰好打开的
+                //  collect frame / 父 effect 接管（归属不变量见 detachEffectFromCreationContext）。
+                //  computed 在构造器里就同步跑第一次 computation，此刻它还是 frame 的最后一项。
+                if (!ownedByHost) {
+                    ownedByHost = true
+                    detachEffectFromCreationContext(this)
+                }
                 this.manualTrack(source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
                 this.manualTrack(source, TrackOpTypes.EXPLICIT_KEY_CHANGE, TriggerOpTypes.EXPLICIT_KEY_CHANGE)
                 // CAUTION 行 host 的 effect 不注册为本 computed 的子 effect：
@@ -238,7 +275,10 @@ export class RxListHost implements Host{
                         for (let i = 0; i < data.length; i++) {
                             hosts.push(host.createChildHost(data[i]))
                         }
-                        insertBefore(host.renderNewHosts(hosts), host.placeholder)
+                        const rows = host.renderNewHosts(hosts)
+                        // 渲染过程中列表被销毁：行已在 renderNewHosts 里回收，没有东西可插入
+                        if (host.destroyedWith !== undefined) return null
+                        insertBefore(rows, host.placeholder)
                     } catch (error) {
                         // CAUTION 初始行渲染发生在 data0 computed 的 computation 里。data0 >= 2.2
                         //  同步 computed 全程同步执行，向上抛会同步抛回变更/创建调用点；但错误
@@ -270,6 +310,8 @@ export class RxListHost implements Host{
                 try {
                     let patchFailed = false
                     for (const info of triggerInfos) {
+                        // 上一个 patch 渲染的行同步销毁了列表自己：剩下的 patch 没有对象了
+                        if (host.destroyedWith !== undefined) break
                         // CAUTION patch 在 data0 的 computed 里执行。data0 >= 2.2 同步 patch 是
                         //  同步执行的：向上抛会同步抛回到变更调用点（list.push 等）。外部通过
                         //  root.on('error') 注册了处理器时交给处理器（应用保持存活，该列表区域
@@ -313,7 +355,7 @@ export class RxListHost implements Host{
                     //  外部代码搬动行节点等）不校验的话不会抛任何错，只会永远渲染错的顺序。
                     // patch 已经失败并交给 error 钩子时不再跑批末不变量，避免同一根因连续
                     // 上报两次错误；失败 patch 自身必须负责产出结构化错误。
-                    if (!patchFailed && isAxiiDiagnosticsEnabled()) {
+                    if (!patchFailed && host.destroyedWith === undefined && isAxiiDiagnosticsEnabled()) {
                         try {
                             host.assertListInvariants()
                         } catch (error) {
@@ -398,6 +440,27 @@ export class RxListHost implements Host{
             throw new Error('unknown trigger info')
         }
     }
+    /**
+     * CAUTION 被删除的行和新行只有这一个顺序（splice / push / pop / shift / unshift / clear /
+     *  整段替换都走这里），与 set（handleExplicitKeyChange）一致：
+     *
+     *  1. hosts 数组先改到位：删除的行摘出来，新行只创建 host 对象、不渲染。
+     *  2. 先拆旧行（removeRows）：
+     *     a. 逐行 destroy —— 清理函数、ref(null)、绑定销毁都在这一步，此刻行的 DOM 还连在文档里
+     *        （I39：onCleanup 里测量 / 读 scrollTop 是自然写法）；
+     *     b. 再摘 DOM。行都不需要自己处理 DOM（没有离场动画 / reusable）、列表区间里也没有
+     *        还在离场的旧行时，用 replaceChildren / Range 一次删完；否则每行自己摘，
+     *        离场动画照常播完。
+     *  3. 再挂新行：在脱离文档的 fragment 里渲染 → 插入 → flush layoutEffect / ref。
+     *
+     *  这个顺序同时保证：
+     *  - ref 契约：旧行的 ref(null) 一定早于新行的 ref(el)。新旧两行共用同一个 ref、或在
+     *    cleanup / 函数体里用同一个名字注销 / 注册（表单项）时，结果停在新行上。
+     *    之前是先挂新行再拆旧行：splice(i, 1, next) 之后 ref 是 null，而 set(i, next) 是对的。
+     *  - 新行渲染抛错时旧行已经拆完，不会变成「既不在 hosts 里、也没被销毁」的孤儿
+     *    （data0 的恢复重跑只认 hosts，孤儿行的 DOM 和 effect 会永久残留）。
+     *  - 还在播放离场动画的旧行不会被后来的整段删除抹掉。
+     */
     handleSplice(argv: any[], deletedItems?: any[]) {
         const hosts = this.hosts!
         // CAUTION data0 透传的是 splice 的原始参数，负数/越界/小数 start 都是 Array#splice 的
@@ -418,8 +481,13 @@ export class RxListHost implements Host{
             newHosts = []
         }
 
-        const deletedHosts = hosts.splice(start, deleteCount, ...newHosts)
+        // 1. hosts 改到位
+        const deletedHosts = spliceHosts(hosts, start, deleteCount, newHosts)
 
+        // 2. 先拆旧行。kept：这次 splice 之外仍然在列表里的行数
+        if (deletedHosts.length) this.removeRows(deletedHosts, hosts.length - newHosts.length)
+
+        // 3. 再挂新行（旧行的清理函数同步销毁了列表自己时，renderNewHosts 一行都不会渲染）
         if (newHosts.length) {
             // CAUTION 一次 batch 中可能有连续 patch（例如 groupBy 一个一个插入），
             //  后面的 host 可能还没渲染，所以要往后找到第一个已经渲染过的元素作为插入锚点。
@@ -430,62 +498,119 @@ export class RxListHost implements Host{
                     break
                 }
             }
-            insertBefore(this.renderNewHosts(newHosts), insertBeforeHost?.element || this.placeholder)
+            const rows = this.renderNewHosts(newHosts)
+            if (this.destroyedWith !== undefined) return
+            insertBefore(rows, insertBeforeHost?.element || this.placeholder)
             // 新行是在脱离文档的 fragment 里渲染的，插入完成后才执行行内登记的 layoutEffect/ref。
             // 列表自身仍未连通时跳过，留给外层 flush。
             if (this.placeholder.isConnected) {
                 this.pathContext.root.flushAttachQueue()
             }
         }
-
-        if (deletedHosts.length) {
-            let canBulkRemove = true
+    }
+    // 拆掉已经从 hosts 里摘出来的行，顺序见 handleSplice 的说明（先 destroy、后摘 DOM）。
+    removeRows(deletedHosts: Host[], keptCount: number) {
+        // 列表区间里有还在离场的旧行时不能整段删：replaceChildren / Range 会把它一起抹掉
+        let canBulkRemove = !this.hasLeavingRows()
+        if (canBulkRemove) {
             for (const deleted of deletedHosts) {
                 if (deleted.forceHandleElement) {
                     canBulkRemove = false
                     break
                 }
             }
-            const firstNode = canBulkRemove ? hostFirstNode(deletedHosts[0]) : null
-            const lastNode = canBulkRemove ? hostLastNode(deletedHosts[deletedHosts.length - 1]) : null
+        }
+        const firstNode = canBulkRemove ? hostFirstNode(deletedHosts[0]) : null
+        const lastNode = canBulkRemove ? hostLastNode(deletedHosts[deletedHosts.length - 1]) : null
 
-            if (canBulkRemove && firstNode!.parentNode && firstNode!.parentNode === lastNode!.parentNode) {
-                // CAUTION 开发期先做区间可达性校验：Range 对「终点在起点之前」这类被破坏的区间会
-                //  静默塌缩、误删或漏删节点，诊断开启时把它变成可解释的 AxiiError。
-                if (isAxiiDiagnosticsEnabled()) {
-                    assertRangeReachable({
-                        ownerHost: deletedHosts[0],
-                        start: firstNode!,
-                        end: lastNode!,
-                        operation: 'splice',
-                    })
+        if (!(canBulkRemove && firstNode!.parentNode && firstNode!.parentNode === lastNode!.parentNode)) {
+            const parent = this.placeholder.parentNode
+            let destroyed = 0
+            try {
+                for (; destroyed < deletedHosts.length; destroyed++) {
+                    const deleted = deletedHosts[destroyed]
+                    if (parent && deleted.forceHandleElement) {
+                        // 这一行自己处理 DOM，可能等离场动画播完才摘：destroy 之后仍留在父节点里的
+                        //  顶层节点记下来，它们消失之前后续删除都不能走整段路径。
+                        const nodes = rowNodes(deleted)
+                        deleted.destroy()
+                        for (const node of nodes) {
+                            if (node.parentNode === parent) (this.leavingNodes ??= []).push(node)
+                        }
+                    } else {
+                        deleted.destroy()
+                    }
                 }
-                // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一内容，直接 replaceChildren 清空 parent 最快；
-                //  否则用 Range 一次性删除整个连续区间，避免逐节点 remove。
-                const removeAllElementByParent = hosts.length === 0 &&
-                    !this.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
-                    !firstNode!.previousSibling // 删除的Host 是父 Host 的第一个，说明从头删到了尾
+            } finally {
+                // 某一行的清理函数抛错（没有 error 钩子）：剩下的行已经不在 hosts 里，
+                //  这里不拆就再也没有人拆了。
+                if (destroyed < deletedHosts.length) destroyRowsBestEffort(deletedHosts, destroyed + 1, false)
+            }
+            return
+        }
 
-                if (removeAllElementByParent) {
-                    const parent = this.placeholder.parentNode!
-                    parent.replaceChildren(this.placeholder)
-                } else {
-                    const range = document.createRange()
-                    range.setStartBefore(firstNode!)
-                    range.setEndAfter(lastNode!)
-                    range.deleteContents()
-                }
-                for (const deleted of deletedHosts) deleted.destroy(true)
+        // CAUTION 开发期先做区间可达性校验：Range 对「终点在起点之前」这类被破坏的区间会
+        //  静默塌缩、误删或漏删节点，诊断开启时把它变成可解释的 AxiiError。
+        if (isAxiiDiagnosticsEnabled()) {
+            assertRangeReachable({
+                ownerHost: deletedHosts[0],
+                start: firstNode!,
+                end: lastNode!,
+                operation: 'splice',
+            })
+        }
+        // CAUTION 如果是删除所有节点，并且自己就是 parent 的唯一内容，直接 replaceChildren 清空 parent 最快；
+        //  否则用 Range 一次性删除整个连续区间，避免逐节点 remove。
+        const removeAllElementByParent = keptCount === 0 &&
+            !this.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
+            !firstNode!.previousSibling // 删除的Host 是父 Host 的第一个，说明从头删到了尾
+        // CAUTION Range 要在 destroy 之前建好：个别 host（PrimitiveHost）在 destroy(true) 里也会
+        //  摘掉自己的文本节点，live Range 会跟着收缩，事后再用被摘掉的节点定边界会抛错。
+        const parent = firstNode!.parentNode!
+        let range: Range|undefined
+        if (!removeAllElementByParent) {
+            range = document.createRange()
+            range.setStartBefore(firstNode!)
+            range.setEndAfter(lastNode!)
+        }
+        let destroyed = 0
+        try {
+            // 先销毁：清理函数看到的 DOM 还连在文档里（I39）
+            for (; destroyed < deletedHosts.length; destroyed++) deletedHosts[destroyed].destroy(true)
+        } finally {
+            if (destroyed < deletedHosts.length) destroyRowsBestEffort(deletedHosts, destroyed + 1, true)
+            // 再摘 DOM。即使某一行的清理函数抛错也必须摘：这些行已经不在 hosts 里了
+            if (removeAllElementByParent) {
+                // 清理函数里列表自己可能已被同步销毁并摘掉了 placeholder（destroyedWith === false）：
+                //  行的 DOM 照样要清，但不能再把 placeholder 放回去
+                if (this.destroyedWith === false) parent.replaceChildren()
+                else parent.replaceChildren(this.placeholder)
             } else {
-                for (const deleted of deletedHosts) deleted.destroy()
+                range!.deleteContents()
             }
         }
+    }
+    hasLeavingRows() {
+        const nodes = this.leavingNodes
+        if (!nodes) return false
+        const parent = this.placeholder.parentNode
+        let kept = 0
+        for (const node of nodes) {
+            if (node.parentNode === parent) nodes[kept++] = node
+        }
+        if (!kept) {
+            this.leavingNodes = undefined
+            return false
+        }
+        nodes.length = kept
+        return true
     }
     handleReorder(pairs: [number, number][], reorderInfo?: ReorderInfo) {
         const hosts = this.hosts!
         // 1. 先把 hosts 数组调整到新顺序（语义同 data0 RxList.reorder：data[to] = old[from]）
         let minChanged = Infinity
         let maxChanged = -Infinity
+        let movedCount = 0
         const movedHosts: Host[] = new Array(pairs.length)
         for (let i = 0; i < pairs.length; i++) {
             movedHosts[i] = hosts[pairs[i][0]]
@@ -494,6 +619,7 @@ export class RxListHost implements Host{
             const [from, to] = pairs[i]
             hosts[to] = movedHosts[i]
             if (from !== to) {
+                movedCount++
                 if (from < minChanged) minChanged = from
                 if (to < minChanged) minChanged = to
                 if (from > maxChanged) maxChanged = from
@@ -506,8 +632,18 @@ export class RxListHost implements Host{
         }
         if (maxChanged < minChanged) return // 没有实际移动
 
-        // 2. 计算受影响区间内每个新位置对应的旧位置
         const rangeLength = maxChanged - minChanged + 1
+        // CAUTION 稀疏 reorder（swap 两个相距很远的行是最常见的形态）：下面的 LIS 要为整个受影响
+        //  区间分配数组并做 O(区间 · log) 的计算，而真正换了位置的只有 movedCount 行——
+        //  swap(0, n-1) 在 20 万行的列表上每次 6ms，全花在没有动的行上。
+        //  换位的行数相对区间足够少时直接安放这几行，成本只取决于换位的行数。
+        //  阈值保证最坏情况下多做的 DOM 搬移（LIS 本可以省掉的那部分）不超过 LIS 自己的计算量级。
+        if (movedCount * SPARSE_REORDER_RATIO <= rangeLength) {
+            this.placeMovedRows(pairs, movedCount)
+            return
+        }
+
+        // 2. 计算受影响区间内每个新位置对应的旧位置
         const oldPositions = new Array(rangeLength)
         for (let i = 0; i < rangeLength; i++) oldPositions[i] = minChanged + i
         for (const [from, to] of pairs) {
@@ -532,6 +668,29 @@ export class RxListHost implements Host{
             anchor = childHost.element
         }
     }
+    /**
+     * 稀疏 reorder：hosts 已是新顺序，只安放换了位置的行。
+     * 没换位置的行下标不变，彼此的 DOM 相对顺序本来就对；换了位置的行按新下标从大到小，
+     * 逐个贴到「新顺序里后一行」的前面——处理到某一行时它后面的行都已就位，之后的操作
+     * 只搬下标更小的行，不会再拆开这对相邻关系，所以结束时每一行都紧贴在后一行之前。
+     */
+    placeMovedRows(pairs: [number, number][], movedCount: number) {
+        const hosts = this.hosts!
+        const targets: number[] = new Array(movedCount)
+        let count = 0
+        for (let i = 0; i < pairs.length; i++) {
+            if (pairs[i][0] !== pairs[i][1]) targets[count++] = pairs[i][1]
+        }
+        targets.sort(descending)
+        for (let i = 0; i < targets.length; i++) {
+            const to = targets[i]
+            const row = hosts[to]
+            const anchor = to + 1 < hosts.length ? hosts[to + 1].element : this.placeholder
+            const last = hostLastNode(row)
+            // 已经贴在后一行前面（例如相邻两行里只需要搬一行）就不动
+            if (last.nextSibling !== anchor) insertBefore(row.element as any, anchor as any, last as any)
+        }
+    }
     handleExplicitKeyChange(index: number, newValue: any) {
         const hosts = this.hosts!
         // data0 的 set(index, value) 可以像数组赋值一样扩大 length，但 RxListHost 的
@@ -546,7 +705,17 @@ export class RxListHost implements Host{
             }, `RxList.set received out-of-range index ${index}; rendered host count is ${hosts.length}. set() can only replace an existing dense row.`)
         }
         const oldHost = hosts[index]
-        oldHost.destroy()
+        // CAUTION 旧行的清理函数是用户代码，可能同步销毁列表自己（行消失时关掉所在的弹层）。
+        //  旧行此刻还在 hosts[index] 上：不登记的话 destroy 会把它再销毁一次（清理函数跑两遍）。
+        const outerRowsOnStack = this.rowsOnStack
+        this.rowsOnStack = [oldHost]
+        try {
+            oldHost.destroy()
+        } finally {
+            this.rowsOnStack = outerRowsOnStack
+        }
+        // 列表已被销毁：没有地方可以挂新行了
+        if (this.destroyedWith !== undefined) return
 
         const newHost = this.createChildHost(newValue)
         hosts[index] = newHost
@@ -570,7 +739,19 @@ export class RxListHost implements Host{
         } else {
             insertAfter(newHostAnchorNode, hostLastNode(hosts[index-1]))
         }
-        newHost.render()
+        // CAUTION 与 renderNewHosts 同一套重入处理：新行渲染到一半时列表被同步销毁，destroy 会
+        //  跳过这一行，渲染栈退出后在这里销毁恰好一次（新行已经插在真实 DOM 里，按列表被销毁时的
+        //  方式处理它的 DOM）。
+        this.rowsOnStack = [newHost]
+        try {
+            newHost.render()
+        } catch (error) {
+            if (this.destroyedWith === undefined) throw error
+        } finally {
+            this.rowsOnStack = outerRowsOnStack
+            if (this.destroyedWith !== undefined) newHost.destroy(this.destroyedWith)
+        }
+        if (this.destroyedWith !== undefined) return
         // compact host 的元素/ref 登记发生在 render 里（此时可能仍未连通），插入后统一 flush。
         // 列表自身仍未连通时跳过，留给外层 flush。
         if (this.placeholder.isConnected) {
@@ -579,13 +760,69 @@ export class RxListHost implements Host{
     }
     destroy(fromParentDestroy?: boolean) {
         trackHostDestroyed(this)
+        this.destroyedWith = !!fromParentDestroy
         // CAUTION render 可能中途抛错（行渲染错误已交给 error 钩子/向上抛出），
         //  此时 hostRenderComputed/hosts 可能尚未初始化，destroy 必须容忍，
         //  否则错误恢复路径（函数节点重算、root.destroy）会二次崩溃。
         if (this.hostRenderComputed) destroyComputed(this.hostRenderComputed)
         // 理论上我们只需要处理自己的 placeholder 就行了，下面的 host 会处理各自的元素
-        this.hosts?.forEach(host => host.destroy(fromParentDestroy))
+        const rowsOnStack = this.rowsOnStack
+        if (rowsOnStack) {
+            // CAUTION 重入销毁：自己的 patch 还在调用栈上，正在渲染的新行里有人同步销毁了列表
+            //  （行的 effect / error 监听器调用 root.destroy()，或销毁了包着列表的东西）。
+            //  这批新行此刻渲染到一半或还没开始：现在销毁它们，渲染栈退出时它们会继续渲染、
+            //  继续跑 effect，却再也没有人销毁（清理函数永不执行、绑定一直订阅）。
+            //  所以跳过它们，由 renderNewHosts / handleExplicitKeyChange 在渲染栈退出后销毁恰好一次。
+            //  正在销毁的旧行（set 的旧行）同理跳过：它的销毁已经在栈上，不能再来一次。
+            const onStack = new Set(rowsOnStack)
+            this.hosts?.forEach(host => {
+                if (!onStack.has(host)) host.destroy(fromParentDestroy)
+            })
+        } else {
+            this.hosts?.forEach(host => host.destroy(fromParentDestroy))
+        }
         if (!fromParentDestroy) this.placeholder.remove()
+    }
+}
+
+// 稀疏 reorder 的判定：换了位置的行数 × 这个比例 <= 受影响区间长度（见 handleReorder）
+const SPARSE_REORDER_RATIO = 64
+function descending(a: number, b: number) {
+    return b - a
+}
+
+// CAUTION 不能写 hosts.splice(start, deleteCount, ...newHosts)：展开成实参的数量有上限，
+//  一次 splice 带十几万行（getter 型 RxList 整体重算、派生列表转发、spliceArray）就是
+//  RangeError: Maximum call stack size exceeded。data0 自己在 8192 项以上也不用展开。
+const SPREAD_ARGUMENT_LIMIT = 8192
+function spliceHosts(hosts: Host[], start: number, deleteCount: number, newHosts: Host[]): Host[] {
+    if (newHosts.length <= SPREAD_ARGUMENT_LIMIT) return hosts.splice(start, deleteCount, ...newHosts)
+    const tail = hosts.splice(start)
+    const deleted = tail.splice(0, deleteCount)
+    for (let i = 0; i < newHosts.length; i++) hosts.push(newHosts[i])
+    for (let i = 0; i < tail.length; i++) hosts.push(tail[i])
+    return deleted
+}
+
+// 一行当前占据的顶层节点（first ... last）
+function rowNodes(host: Host): Node[] {
+    const nodes: Node[] = []
+    const last = hostLastNode(host)
+    for (let node: Node|null = hostFirstNode(host); node; node = node.nextSibling) {
+        nodes.push(node)
+        if (node === last) break
+    }
+    return nodes
+}
+
+// 前面已经有一行的销毁抛了错（它会继续向上抛）：剩下的行尽力销毁，再出错只上报，不能盖掉第一个错误
+function destroyRowsBestEffort(hosts: Host[], from: number, parentHandle: boolean) {
+    for (let i = from; i < hosts.length; i++) {
+        try {
+            hosts[i].destroy(parentHandle)
+        } catch (error) {
+            reportAxiiError(error)
+        }
     }
 }
 

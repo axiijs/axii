@@ -94,6 +94,19 @@ const INNER_CONFIG_PROP = '__config__'
 const EMPTY_ITEM_CONFIG: Record<string, ConfigItem> = {}
 const EMPTY_COMPONENT_PROP: Props = {}
 
+// CAUTION 透明包装组件（目前只有 lazy() 的包装）：包装自己不渲染任何元素，props 的真正
+//  消费者是被包装的组件。包装的 host 如果照常处理，会替被包装的组件「吃掉」两样东西：
+//  - ref：加载完成之前先被附加成包装自己的空句柄 {refs: {}}（`ref={h => h?.focus()}` 直接
+//    TypeError），加载之后又被真正的组件附加一次；
+//  - `$name:xxx` / 透传的 config：解析进包装自己的 itemConfig（永远用不上），被包装的组件
+//    一个也收不到，AOP 配置静默失效。
+//  所以这类组件的 host 不捕获 ref、不解析 `$` 配置，合并后原样留在 props 里转发。
+//  用组件函数上的内部标记识别（同 Portal 的 __axiiPortal），不进公开类型。
+const FORWARD_PROPS_MARK = '__axiiForwardProps'
+function forwardsProps(type: Component): boolean {
+    return (type as any)[FORWARD_PROPS_MARK] === true
+}
+
 // createPortal 不依赖组件实例，所有组件共享同一个函数
 function createPortalShared(content: JSX.Element|ComponentNode|Function, container: PortalContainerRef) {
     return createElement(Portal, {container, content})
@@ -148,7 +161,8 @@ export class ComponentHost implements Host{
         getComponentTypeId(type)
 
         this.type = type
-        if (inputProps.ref) this.refProp = inputProps.ref
+        // 透明包装组件的 ref 属于被包装的组件（见 forwardsProps）
+        if (inputProps.ref && !forwardsProps(type)) this.refProp = inputProps.ref
         if (inputProps.__this) this.thisProp = inputProps.__this
         this.inputProps = inputProps
         this.children = children
@@ -597,6 +611,20 @@ export class ComponentHost implements Host{
         // 快速路径：没有 boundProps/postBoundProps/透传 config/$ 前缀 key 的普通组件（绝大多数），
         //  不需要 evaluate/concat/reduce 的整套合并流程，itemConfig 直接共享空对象。
         const type = this.type
+        if (forwardsProps(type)) {
+            // 透明包装组件（见 forwardsProps）：bound → input → postBound 的优先级与逐 key 合并语义
+            //  （事件 / style / ref 的拼接）不变，但 `$` 配置、透传的 config、ref 都不在这里消费，
+            //  原样留在 props 里交给被包装的组件。
+            let props: Props = {}
+            if (type.boundProps) {
+                for (const bound of this.evaluateBoundProps(this.inputProps, this.renderContext!)) props = mergeProps(props, bound)
+            }
+            props = mergeProps(props, this.inputProps)
+            if (type.postBoundProps) {
+                for (const bound of this.evaluatePostBoundProps(props, this.renderContext!)) props = mergeProps(props, bound)
+            }
+            return { props, itemConfig: EMPTY_ITEM_CONFIG, componentProp: EMPTY_COMPONENT_PROP, precoerced: props }
+        }
         if (!type.boundProps && !type.postBoundProps &&
             !this.inputProps[INNER_CONFIG_PROP] &&
             !ComponentHost.hasConfigProps(this.inputProps)) {
@@ -694,7 +722,7 @@ export class ComponentHost implements Host{
                 //  提供 ref，mergeProp 会把两者合并成数组。构造期只捕获了 inputProps.ref，
                 //  这里必须用合并后的最终值回写，否则 boundProps 提供的 ref 被静默丢弃
                 //  （attachRef/detachRef 本来就支持数组形态）。
-                if (normalizedProps.ref) this.refProp = normalizedProps.ref
+                if (normalizedProps.ref && !forwardsProps(this.type)) this.refProp = normalizedProps.ref
 
                 node = this.type(normalizedProps, this.renderContext!)
             } catch (e) {
@@ -979,6 +1007,8 @@ export function bindProps(Component: Component, props: Props,) {
     ComponentWithProps.propTypes = Component.propTypes
     ComponentWithProps.boundProps = ensureArray(Component.boundProps).concat(props)
     if (Component.postBoundProps) ComponentWithProps.postBoundProps = Component.postBoundProps
+    // bind 出来的新函数同样不继承「透明包装」标记（见 forwardsProps）
+    if (forwardsProps(Component)) (ComponentWithProps as any)[FORWARD_PROPS_MARK] = true
     return ComponentWithProps
 }
 

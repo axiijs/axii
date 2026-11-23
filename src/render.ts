@@ -81,6 +81,8 @@ function runOutsideRunningEffect<T>(run: () => T): T {
 function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     let attachQueue: AttachQueueEntry[] = []
+    // 第一次 render 还在调用栈上的那棵树（见 render / destroy 的重入说明）
+    let renderingHost: Host|undefined
     // Portal 场景：内层 root 由框架私有创建，用户无法在它上面注册监听，
     //  未被消费的 error 事件必须冒泡到父 root，否则 portal 内容的错误
     //  永远到不了用户的 root.on('error') 钩子（异步路径下直接变成 unhandled rejection）。
@@ -104,17 +106,34 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             return runOutsideRunningEffect(() => {
                 const placeholder = hydratePlaceholder ?? document.createComment('root')
                 let host: Host
-                if (!hydratePlaceholder) {
-                    const frag = document.createDocumentFragment()
-                    frag.appendChild(placeholder)
-                    root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                // Hydrate：认领已有 <!--root-->，不新建、不整树重建（没有 fragment）
+                const frag = hydratePlaceholder ? undefined : document.createDocumentFragment()
+                frag?.appendChild(placeholder)
+                root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                // CAUTION 重入销毁：树渲染到一半时 root.destroy() 被同步调用——最常见的是 error
+                //  监听器把出错的 root 销毁掉、再渲染一个错误提示（同一个 root 或另一个 root）。
+                //  那一刻树只建了一半：立刻销毁的话，渲染栈退出时剩下的组件照常渲染、跑 effect，
+                //  fragment 照常挂进容器、照常派发 attach——容器里留下一棵已经「销毁」的树
+                //  （监听器渲染的错误提示旁边多出半棵旧树），那些 effect 的清理函数永不执行。
+                //  所以 destroy() 遇到还在渲染的树只做登记（root.host 换掉 / 置空），
+                //  由这里在渲染栈退出、树已完整之后销毁恰好一次，并且绝不挂进容器。
+                const outerRenderingHost = renderingHost
+                renderingHost = host
+                try {
                     host.render()
-                    element.appendChild(frag)
-                } else {
-                    // Hydrate：认领已有 <!--root-->，不新建、不整树重建
-                    root.host = host = createHost(componentOrEl, placeholder, pathContext)
-                    host.render()
+                } catch (error) {
+                    // 树已经被销毁：它马上整体丢弃，监听器也已清空，后续错误没有归属
+                    //  （与组件销毁后 async effect 的 rejection 不再上报同一语义）。
+                    //  没有被销毁时保持向上抛出（root.host 仍被占用，由调用方 destroy）。
+                    if (root.host === host) throw error
+                } finally {
+                    renderingHost = outerRenderingHost
                 }
+                if (root.host !== host) {
+                    host.destroy()
+                    return host
+                }
+                if (frag) element.appendChild(frag)
                 // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
                 if(element.isConnected) {
                     root.dispatch('attach')
@@ -127,7 +146,8 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             runOutsideRunningEffect(() => {
                 // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
                 root.dispatch('detach')
-                root.host?.destroy()
+                // CAUTION 还在渲染的树不在这里销毁，见 render 的重入说明
+                if (root.host !== renderingHost) root.host?.destroy()
             })
             eventCallbacks.clear()
             attachQueue = []
