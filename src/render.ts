@@ -51,6 +51,33 @@ export type Root = {
 
 type AttachQueueEntry = {node: Node, run: () => void, cancelled: boolean}
 
+/**
+ * root 是归属边界：root.render() / root.destroy() 里执行的代码（组件函数体、useEffect 回调与清理、
+ * ref、各层 host 的创建与销毁）不属于恰好正在运行的 effect。
+ *
+ * CAUTION 在用户 effect 里调用这两个方法是常见写法（按一个 atom 打开 / 关闭弹层）。不隔离的话：
+ *  - 里面读到的 atom 成为那个 effect 的依赖，之后写它就把整个 root 重新渲染或再销毁一次；
+ *  - 里面创建的绑定 effect 被收集成那个 effect 的子 effect，它下一次重跑就把它们销毁——
+ *    DOM 还在，绑定却不再更新，而 root 并没有被销毁。
+ *  内容的生命周期只由 root.destroy() 决定。只暂停「正在运行的 effect」的追踪和子 effect 收集，
+ *  不动 ManualCleanup 的收集帧：Portal 在组件函数体里渲染内层 root，内容仍随 Portal 组件销毁。
+ *  没有正在运行的 effect（绝大多数调用）时直接执行。
+ */
+function runOutsideRunningEffect<T>(run: () => T): T {
+    const scopes = ReactiveEffect.activeScopes
+    if (!scopes.length) return run()
+    const running = scopes[scopes.length - 1]
+    const collectChild = running.shouldCollectChild
+    running.shouldCollectChild = false
+    Notifier.instance.pauseTracking()
+    try {
+        return run()
+    } finally {
+        Notifier.instance.resetTracking()
+        running.shouldCollectChild = collectChild
+    }
+}
+
 function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     let attachQueue: AttachQueueEntry[] = []
@@ -74,29 +101,34 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
             // CAUTION render 不可重入，否则会往容器里追加多棵树
             assert(!root.host, 'root can only render once, destroy the root before rendering again')
-            const placeholder = hydratePlaceholder ?? document.createComment('root')
-            if (!hydratePlaceholder) {
-                const frag = document.createDocumentFragment()
-                frag.appendChild(placeholder)
-                root.host = createHost(componentOrEl, placeholder, pathContext)
-                root.host.render()
-                element.appendChild(frag)
-            } else {
-                // Hydrate：认领已有 <!--root-->，不新建、不整树重建
-                root.host = createHost(componentOrEl, placeholder, pathContext)
-                root.host.render()
-            }
-            // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
-            if(element.isConnected) {
-                root.dispatch('attach')
-                root.attached = true
-            }
-            return root.host
+            return runOutsideRunningEffect(() => {
+                const placeholder = hydratePlaceholder ?? document.createComment('root')
+                let host: Host
+                if (!hydratePlaceholder) {
+                    const frag = document.createDocumentFragment()
+                    frag.appendChild(placeholder)
+                    root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                    host.render()
+                    element.appendChild(frag)
+                } else {
+                    // Hydrate：认领已有 <!--root-->，不新建、不整树重建
+                    root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                    host.render()
+                }
+                // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
+                if(element.isConnected) {
+                    root.dispatch('attach')
+                    root.attached = true
+                }
+                return host
+            })
         },
         destroy() {
-            // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
-            root.dispatch('detach')
-            root.host?.destroy()
+            runOutsideRunningEffect(() => {
+                // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
+                root.dispatch('detach')
+                root.host?.destroy()
+            })
             eventCallbacks.clear()
             attachQueue = []
             root.host = undefined
