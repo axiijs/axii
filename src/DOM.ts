@@ -507,6 +507,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             //  应用/恢复统一走 applySelectValue。
             const storedValue = value ?? ''
             ;(node as SelectWithAxiiValue).__axiiSelectValue__ = storedValue
+            controlledSelectSeen = true
             applySelectValue(node as unknown as HTMLSelectElement, storedValue)
             return
         }
@@ -1514,7 +1515,12 @@ export function Fragment(props: any = {}): DocumentFragment {
  *  只认「直接父级是 select」会让 optgroup 里动态渲染的 option 不触发 select 的 value 恢复，
  *  选中值静默丢失。热路径上先做最常见的 select 判断，再做一层 optgroup 判断。
  */
+// CAUTION 只有存过值的 select（写过 value prop）才需要在 option 增删后重放。这个模块级标志在
+//  第一次存值时置位、之后不再清除：在那之前，页面上不可能有需要重放的 select，每次节点插入 /
+//  移除都不必对父节点做两次 instanceof（这是每个元素的插入、每个顶层元素的移除都会走的路径）。
+let controlledSelectSeen = false
 function findOwnerSelect(parent: Element | null): HTMLSelectElement | null {
+    if (!controlledSelectSeen) return null
     if (parent instanceof HTMLSelectElement) return parent
     if (parent instanceof HTMLOptGroupElement && parent.parentElement instanceof HTMLSelectElement) {
         return parent.parentElement
