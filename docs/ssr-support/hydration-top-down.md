@@ -3,7 +3,7 @@
 - 状态：设计稿，按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
 - 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）、#68（服务端 Compact 判定，排在实现 PR 之前修）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
-- 基线：origin/main `9d2a93c`（含 #62 / #63 / #64，以及 #65 / #66 合入的 #50、#52）。现状复现与原型在 `4712285` 上完成；#50 / #52 只改了原始标记的取值和复选框的勾选通道，不影响 §1 的失败机制，二者对本设计的接口见 §2.6.1、§2.6.2。
+- 基线：origin/main `36e540c`（含 #62 / #63 / #64，#65 / #66 合入的 #50、#52，以及 #70 合入的 #51）。现状复现与原型在 `4712285` 上完成；#50 / #52 只改了原始标记的取值和复选框的勾选通道，#51 把 SSR / CSR 的属性规则收成一份，都不影响 §1 的失败机制，三者对本设计的接口见 §2.6.1、§2.6.2。§7.1 引用的行号按 `36e540c`。
 
 ---
 
@@ -216,7 +216,7 @@ interface Host {
 现在分散在 `createElement` 激活分支里的元素级处理，原样移到「认领元素」这一步：
 1. 比较标签（SVG 按原始大小写，HTML 按大写，同 `tryClaimElement` 的 CAUTION），并按 R1 处理 id；
 2. 处理 `data-axii-ssr` 样式类，记下滚动样式基名（现 `createElement` 激活分支里读 `SSR_STYLE_CLASSES_ATTRIBUTE` 的那一段）；
-3. 有 `value` prop 的 `<textarea>`：清空子文本（现 `createElement` 激活分支里 `type === 'textarea'` 的那一段）；
+3. 有 `value` 或 `defaultValue` prop 的 `<textarea>`：清空子文本（现 `createElement` 激活分支里 `type === 'textarea'` 的那一段，判定用 #51 引入的 `textareaContentProp`，不另写）；
 4. table 的隐含 tbody：游标下沉到 tbody；
 5. 递归消费子节点；
 6. **子节点之后**再应用 props。这与 `createElement` 的「props 在 children 之后」一致，select / option 的语义需要这个顺序：
@@ -228,9 +228,10 @@ interface Host {
 
 元数据的路径（`path`）与 CSR `createElement` 提升时的规则相同，样式 id 依赖这些路径，必须逐位一致。PR-A 把路径的拼接规则收成一个函数，CSR 与激活共用。
 
-「应用 props」同样只有一份：PR-A 把 `createElement` 里「props 在 children 之后、`value` / `checked` 延后」的那段抽成函数，CSR 与认领步骤共用。这样下面两处已合入的规则在激活路径上自动一致，不另写一遍：
+「应用 props」同样只有一份：PR-A 把 `createElement` 里「props 在 children 之后、`value` / `checked` 延后」的那段抽成函数，CSR 与认领步骤共用。这样下面三处已合入的规则在激活路径上自动一致，不另写一遍：
 - #52：元素同时带 `value` 与 `checked` 时记下 `__axiiInputHasCheckedProp__`；
 - #50：`dangerouslySetInnerHTML` 经 `innerHTMLOf` 解包，`{__html}` 形式走静态路径。
+- #51：客户端的属性写入仍在 `DOM.setAttribute`，写入规则与别名表在 `markupNames`，由客户端与服务端共用（服务端另有只供它用的 `htmlPropertyTypes`）。认领步骤照旧经 `setAttribute` 写静态 props，自动一致；`<textarea>` 的 `defaultValue` 见上面第 3 步。
 
 #### 2.6.2 原始标记（`dangerouslySetInnerHTML`）
 
@@ -727,9 +728,9 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 
 | 类别 | 调用点 | 过渡期 | S 之后 |
 |---|---|---|---|
-| 旧模型专用（13 处） | `DOM.ts`：`ensureHydrateDeferredPortalContent`（:805）、组件分支的 Portal 预处理（:1039）；`createHost.ts`：`EmptyHost.render`（:26）、`PrimitiveHost.render`（:58）、元素分支两处（:154、:156）；`AtomHost.render`（:97）；`StaticArrayHost`（:71）；`RxListHost` 三处（:107、:118、:242）；`StaticHost.render`（:1011）；`ReusableHost.render`（`ComponentHost.ts:1079`） | 不动。新模型激活时 `isHydrating()` 为假，这些分支都不会被走到 | 随旧模型删除 |
+| 旧模型专用（13 处） | `DOM.ts`：`ensureHydrateDeferredPortalContent`（:754）、组件分支的 Portal 预处理（:988）；`createHost.ts`：`EmptyHost.render`（:26）、`PrimitiveHost.render`（:58）、元素分支两处（:154、:156）；`AtomHost.render`（:97）；`StaticArrayHost`（:71）；`RxListHost` 三处（:107、:118、:242）；`StaticHost.render`（:1011）；`ReusableHost.render`（`ComponentHost.ts:1079`） | 不动。新模型激活时 `isHydrating()` 为假，这些分支都不会被走到 | 随旧模型删除 |
 | 两个模型共用的语义（3 处） | `ComponentHost.ts:817`（`useEffect` 退出激活上下文）、`render.ts:311`（`root.dispatch` 退出激活上下文）、`StaticHost.ts:361`（滚动样式 id 从服务端类回收） | 改为 `isAnyHydrating()`。仍是一次全局读加一次比较，成本不变 | 保留，名字改回 `isHydrating()` |
-| 需要按模式分流（4 处） | `DOM.ts:1057` `createElement` 开头；`FunctionHost.ts` effect 回调里文本快速返回之后的两处：Comment-ph 文本（:201）与结构路径（:232）；`Portal.tsx:90` | `createElement`：读一次模式，为「新」时返回描述（7.3）。`FunctionHost`：effect 回调在 `if (this.textNode)` 快速返回之后读一次模式，按「旧 / 新 / 无」三路分流，新模型的首次运行在这里认领；文本更新的快速路径不受影响。`Portal`：B4 加新模型分支，之前在新模型下显式抛错 | 只剩新模型的分支 |
+| 需要按模式分流（4 处） | `DOM.ts:1006` `createElement` 开头；`FunctionHost.ts` effect 回调里文本快速返回之后的两处：Comment-ph 文本（:201）与结构路径（:232）；`Portal.tsx:90` | `createElement`：读一次模式，为「新」时返回描述（7.3）。`FunctionHost`：effect 回调在 `if (this.textNode)` 快速返回之后读一次模式，按「旧 / 新 / 无」三路分流，新模型的首次运行在这里认领；文本更新的快速路径不受影响。`Portal`：B4 加新模型分支，之前在新模型下显式抛错 | 只剩新模型的分支 |
 
 只有 `createElement` 那一处在热路径上，代价见 7.3。
 
