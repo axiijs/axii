@@ -1,0 +1,155 @@
+{
+  "stamp": "adjudication-d2-2026-08-06",
+  "note": "Experiment used close marker data '/' as in d1 draft. Design d2 renames close marker to 'axii:/t'; lifecycle conclusions (remove-after-claim; orphans if kept; reorder break if kept) are marker-string-independent.",
+  "wrapParse": {
+    "childCount": 6,
+    "nodes": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "static-"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "atomVal"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      }
+    ]
+  },
+  "afterRemoveBoundaries": {
+    "childCount": 2,
+    "texts": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "t1StillSeparate": true,
+    "t1Value": "hello",
+    "t2Value": "world"
+  },
+  "afterTextOnlyDestroy": {
+    "remaining": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      }
+    ],
+    "orphanCommentCount": 4
+  },
+  "afterReorderWithKeptBoundaries": {
+    "nodes": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "b"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      },
+      {
+        "type": 3,
+        "data": "a"
+      },
+      {
+        "type": 8,
+        "data": "rx list"
+      }
+    ],
+    "firstIsOrphanOpen": true,
+    "textsOrder": [
+      "b",
+      "a"
+    ]
+  },
+  "afterReorderClean": {
+    "nodes": [
+      {
+        "type": 8,
+        "data": "rx list item"
+      },
+      {
+        "type": 3,
+        "data": "b"
+      },
+      {
+        "type": 3,
+        "data": "a"
+      },
+      {
+        "type": 8,
+        "data": "rx list"
+      }
+    ],
+    "textsOrder": [
+      "b",
+      "a"
+    ],
+    "expectedBThenA": false
+  },
+  "listShape": {
+    "innerHTML": "a<!--rx-->b",
+    "parseChildCount": 3,
+    "textsRemainSeparate": true
+  },
+  "adjacentTextMerge": {
+    "createChildCount": 2,
+    "innerHTML": "helloworld",
+    "parseChildCount": 1
+  },
+  "postHydrateShape": {
+    "childCount": 2,
+    "claimedEqual": true,
+    "stillSeparate": true,
+    "values": [
+      "HELLO",
+      "WORLD"
+    ]
+  }
+}

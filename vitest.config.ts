@@ -4,7 +4,11 @@ import tsconfigPaths from 'vite-tsconfig-paths'
 
 // Use the sibling data0 checkout when available (original dev setup),
 // otherwise fall back to the npm-installed data0 so the repo is self-contained.
+// AXII_DATA0_FORCE_NPM=1 forces npm (same as site/vite.config.ts) for gate runs
+// when an outdated sibling checkout would otherwise fail contract tests.
 const siblingData0 = fileURLToPath(new URL('../data0/src/index.ts', import.meta.url))
+const forceNpmData0 = process.env.AXII_DATA0_FORCE_NPM === '1'
+const useSiblingData0 = !forceNpmData0 && existsSync(siblingData0)
 
 export default {
   esbuild: {
@@ -17,7 +21,7 @@ export default {
   resolve: {
     alias: {
       '@framework': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
-      ...(existsSync(siblingData0) ? {'data0': siblingData0} : {})
+      ...(useSiblingData0 ? {'data0': siblingData0} : {})
     }
   },
   server: {

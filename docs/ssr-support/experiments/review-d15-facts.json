@@ -1,0 +1,80 @@
+{
+  "stamp": "review-d15-2026-08-06",
+  "role": "independent design review (additional task 1)",
+  "designRoundReviewed": "14/15",
+  "environment": "Vitest browser mode + Playwright chromium; Node vitest.node.config.ts",
+  "sourceChecks": {
+    "FunctionHostTextPredicate": "src/FunctionHost.ts ~144–145 ≡ §3.2.0 isFunctionHostTextSnapshot",
+    "createHostBranches": "src/createHost.ts function→Element|Fragment→primitive→Array→null→RxList→ReusableHost→ComponentNode→assert",
+    "createChildHostCompact": "src/RxListHost.ts ~77–87 Element && !detachStyledChildren → CompactElementHost",
+    "nodeBaseline": "vitest.node.config.ts: 2 files / 6 tests passed"
+  },
+  "adjudicationReverify": {
+    "d14": "ssrAdjudicationD14FnTextStructure.spec.tsx passed",
+    "d13": "ssrAdjudicationD13CreateHost.spec.tsx passed"
+  },
+  "probes": {
+    "booleanSiblingAmongText": {
+      "shape": ["#text:\"a\"", "#text:\"\"", "<!--unhandledChild-->", "#text:\"b\""],
+      "html": "a<!--unhandledChild-->b",
+      "note": "createElement boolean → PrimitiveHost Comment-ph; not ElementChildText; not skipped like null"
+    },
+    "singleFalseChild": {
+      "html": "<!--unhandledChild-->",
+      "note": "A1c / Comment-ph empty"
+    },
+    "fnReturnsReusable_textPh": {
+      "shape": ["SPAN", "<!--reusable-->", "<!--computed node-->", "#text:\"\""],
+      "html": "<span>R</span><!--reusable--><!--computed node-->",
+      "note": "FTS H2: reusable Comment inside content before computed; trailing empty Text; SSR needs axii:0"
+    },
+    "fnReturnsComponent_textPh": {
+      "shape": ["SPAN", "<!--computed node-->", "#text:\"\""],
+      "note": "FTS H2 ComponentNode"
+    },
+    "checkboxValueTrue": {
+      "outer": "<input type=\"checkbox\" value=\"true\" checked=\"true\">",
+      "value": "true",
+      "checked": true,
+      "alignsWith": "§3.6.2 CB"
+    },
+    "arrayBooleanAndString": {
+      "html": "<!--array item-->x<!--unhandledChild-->",
+      "note": "boolean array item → array item Comment-ph; string → DirectNodes"
+    },
+    "nestedFnToAtom_textPh": {
+      "shape": ["#text:\"z\"", "<!--computed node-->", "<!--computed node-->", "#text:\"\""],
+      "note": "nested Function structure → nested computed; outer FTS axii:0"
+    },
+    "rxListBooleanPrimitive": {
+      "html": "<!--rx list item--><!--rx list item--><!--unhandledChild-->",
+      "hasEmpty": false,
+      "note": "G4′ PrimitiveHost; not G3-E EmptyHost"
+    },
+    "fnFragmentAdjacentText": {
+      "shape": ["<!--fragment start-->", "#text:\"hello\"", "#text:\"world\"", "<!--computed node-->", "#text:\"\""],
+      "html": "<!--fragment start-->helloworld<!--computed node-->",
+      "note": "A2 must wrap ElementChildText inside Fragment; kinds unchanged"
+    },
+    "flatFragmentAdjacentText": {
+      "shape": ["#text:\"hello\"", "#text:\"world\""],
+      "html": "helloworld",
+      "hasFragStart": false,
+      "note": "flattened Fragment → parent ElementChildText; A2 applies; no fragment start"
+    },
+    "atomEmptyTextPhVsCommentPh": {
+      "textPhHtml": "",
+      "commentPhHtml": "<!--rx list item--><!--unhandledChild-->",
+      "alignsWith": "A1 vs A1c"
+    }
+  },
+  "sixCriteria": {
+    "1_criticalFactError": "none found after d14 §3.2.0 + createHost-aligned §3.2.3",
+    "2_internalLogicContradiction": "none: H1–H4 / G3-F/G4-F reference §3.2.0; A2 covers Fragment-adjacent ElementChildText",
+    "3_projectPrinciples": "none: SSR isolated package; hydrate-only branch; no DOM shim; req 8 stated",
+    "4_taskGoals": "none: open points a–d settled; M-01..M-06 cover reqs; M-02 includes FTS Function→atom",
+    "5_milestonesExecutable": "none: acceptance commands named; reopen counters present; N=30 formula stated",
+    "6_mustValidateEarlyRisk": "none remaining at design stage; HTML/Host facts pinned by d1–d14 experiments"
+  },
+  "conclusion": "通过"
+}

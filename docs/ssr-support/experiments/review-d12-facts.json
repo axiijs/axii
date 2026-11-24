@@ -1,0 +1,66 @@
+{
+  "stamp": "review-d12-2026-08-06",
+  "environment": "Vitest browser mode + Playwright chromium",
+  "fragmentAdjacentStatic": {
+    "csrShape": [
+      "<!--fragment start-->",
+      "#text:\"hello\"",
+      "#text:\"world\"",
+      "<!--root-->"
+    ],
+    "html": "<!--fragment start-->helloworld<!--root-->",
+    "parseShape": [
+      "<!--fragment start-->",
+      "#text:\"helloworld\"",
+      "<!--root-->"
+    ],
+    "textsMerged": true
+  },
+  "fragmentA2Strip": {
+    "twoTexts": true
+  },
+  "optionAxiiT": {
+    "commentsPreserved": true,
+    "value": "hi"
+  },
+  "optionAxii0": {
+    "commentCount": 1,
+    "value": ""
+  },
+  "optionAxii0Hydrated": {
+    "value": ""
+  },
+  "falseSibling": {
+    "csrShape": [
+      "#text:\"a\"",
+      "#text:\"\"",
+      "<!--unhandledChild-->",
+      "#text:\"b\""
+    ],
+    "html": "a<!--unhandledChild-->b",
+    "hasUnhandledChild": true
+  },
+  "nullSibling": {
+    "csrShape": [
+      "#text:\"a\"",
+      "#text:\"b\""
+    ],
+    "html": "ab",
+    "textsMergedOnParse": true
+  },
+  "fnNullListRow": {
+    "shape": [
+      "#text:\"\"",
+      "<!--rx list item-->",
+      "<!--unhandledChild-->"
+    ],
+    "html": "<!--rx list item--><!--unhandledChild-->",
+    "hasEmpty": false,
+    "hasComputed": false,
+    "note": "Function\u2192null is Comment-ph A1c, NOT EmptyHost, NOT FCS"
+  },
+  "titleAxii0": {
+    "commentCount": 0,
+    "textContent": "<!--axii:0-->"
+  }
+}

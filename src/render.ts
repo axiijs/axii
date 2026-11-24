@@ -3,6 +3,18 @@ import {ComponentNode} from "./types";
 import {PathContext, Host} from "./Host";
 import {assert} from "./util";
 import {reportAxiiError} from "./diagnostics";
+import {
+    beginHydration,
+    endHydration,
+    findRootComment,
+    isHydrateDeferredElement,
+    pushHydrateRoot,
+    popHydrateRoot,
+    removeHydrateContainerOrphans,
+    takeHydrateDeferredPayload,
+} from "./hydration";
+import {migrateSsrStyleTags} from "./StaticHost";
+import {createElement, rematerializeDeferredFragmentChildren} from "./DOM";
 
 
 type EventCallback = (e: any) => void
@@ -38,10 +50,7 @@ export type Root = {
 
 type AttachQueueEntry = {node: Node, run: () => void, cancelled: boolean}
 
-/**
- * @category Basic
- */
-export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
+function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     let attachQueue: AttachQueueEntry[] = []
     // Portal 场景：内层 root 由框架私有创建，用户无法在它上面注册监听，
@@ -64,12 +73,18 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
             // CAUTION render 不可重入，否则会往容器里追加多棵树
             assert(!root.host, 'root can only render once, destroy the root before rendering again')
-            const placeholder = document.createComment('root')
-            const frag = document.createDocumentFragment()
-            frag.appendChild(placeholder)
-            root.host = createHost(componentOrEl, placeholder, pathContext)
-            root.host.render()
-            element.appendChild(frag)
+            const placeholder = hydratePlaceholder ?? document.createComment('root')
+            if (!hydratePlaceholder) {
+                const frag = document.createDocumentFragment()
+                frag.appendChild(placeholder)
+                root.host = createHost(componentOrEl, placeholder, pathContext)
+                root.host.render()
+                element.appendChild(frag)
+            } else {
+                // Hydrate：认领已有 <!--root-->，不新建、不整树重建
+                root.host = createHost(componentOrEl, placeholder, pathContext)
+                root.host.render()
+            }
             // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
             if(element.isConnected) {
                 root.dispatch('attach')
@@ -191,9 +206,68 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
     return root as Root
 }
 
+/**
+ * @category Basic
+ */
+export function createRoot(element: HTMLElement, parentContext?:PathContext): Root {
+    return createRootInternal(element, parentContext)
+}
 
+/**
+ * Activate a server-rendered DOM tree in-place (claim existing nodes; do not rebuild).
+ * Container children must include `renderToString` output ending with `<!--root-->`.
+ * @category Basic
+ */
+export function hydrateRoot(
+    container: HTMLElement,
+    source: JSX.Element|ComponentNode|Function|null|undefined,
+    options?: { portals?: Record<string, HTMLElement> },
+): Root {
+    const placeholder = findRootComment(container)
+    beginHydration(container, options?.portals)
+    try {
+        const root = createRootInternal(container, undefined, placeholder)
+        root.render(source as any)
+        // Adopted stylesheets are live; drop SSR <style data-axii-ssr> without FOUC.
+        migrateSsrStyleTags(container)
+        // §3.7 / D11: container-level orphans (before/after <!--root-->) are outside
+        // element-child cursor cleanup — clear so DOM ≡ CSR createRoot shape.
+        if (root.host) removeHydrateContainerOrphans(container, root.host)
+        return root
+    } finally {
+        endHydration()
+    }
+}
 
-
-
-
-
+/**
+ * Hydrate a Portal content tree into an already-filled portal container (§3.3.d).
+ * Switches the claim root for the duration of render; caller must already be inside hydrateRoot.
+ * @internal
+ */
+export function hydratePortalContent(
+    container: HTMLElement,
+    content: JSX.Element|ComponentNode|Function,
+    parentContext: PathContext,
+): Root {
+    const placeholder = findRootComment(container)
+    pushHydrateRoot(container)
+    try {
+        // Eager HTML Portal content was deferred under the main tree (§3.3.d); claim here.
+        let resolved: any = content
+        if (isHydrateDeferredElement(content)) {
+            const {type, rawProps, rawChildren} = takeHydrateDeferredPayload(content as Element)
+            // Portal root is pushed — claiming is against portals[k], not main tree.
+            resolved = createElement(type, rawProps, ...rawChildren)
+        } else if (content instanceof DocumentFragment) {
+            rematerializeDeferredFragmentChildren(content)
+        }
+        const root = createRootInternal(container, parentContext, placeholder)
+        root.render(resolved)
+        migrateSsrStyleTags(container)
+        // Same container-orphan contract as hydrateRoot (§3.3.d / D11).
+        if (root.host) removeHydrateContainerOrphans(container, root.host)
+        return root
+    } finally {
+        popHydrateRoot()
+    }
+}

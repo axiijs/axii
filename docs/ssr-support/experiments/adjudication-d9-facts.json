@@ -1,0 +1,184 @@
+{
+  "stamp": "adjudication-d9-2026-08-06",
+  "environment": "Playwright Chromium (Node script)",
+  "source": "mirrors FunctionHost.renderSourceWithoutTrace structure path + DOM.ts Text placeholder",
+  "textPhStructureElement": {
+    "csr": {
+      "shapes": [
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        },
+        {
+          "type": "Text",
+          "data": ""
+        }
+      ],
+      "innerHTML": "<span>x</span><!--computed node-->",
+      "childCount": 3
+    },
+    "afterParse": {
+      "shapes": [
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        }
+      ],
+      "childCount": 2,
+      "lostTrailingEmptyText": true
+    },
+    "hydrateWithAxii0": {
+      "shapes": [
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        },
+        {
+          "type": "Text",
+          "data": ""
+        }
+      ],
+      "matchesCsr": true,
+      "fhPlaceholderIsEmptyText": true
+    },
+    "omitSentinel": {
+      "childCount": 2,
+      "lostPlaceholder": true
+    }
+  },
+  "textPhStructureFragment": {
+    "csr": {
+      "shapes": [
+        {
+          "type": "Comment",
+          "data": "fragment start"
+        },
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        },
+        {
+          "type": "Text",
+          "data": ""
+        }
+      ],
+      "innerHTML": "<!--fragment start--><span>a</span><span>b</span><!--computed node-->",
+      "childCount": 5
+    },
+    "afterParse": {
+      "shapes": [
+        {
+          "type": "Comment",
+          "data": "fragment start"
+        },
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        }
+      ],
+      "lostTrailingEmptyText": true
+    },
+    "hydrateWithAxii0": {
+      "shapes": [
+        {
+          "type": "Comment",
+          "data": "fragment start"
+        },
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        },
+        {
+          "type": "Text",
+          "data": ""
+        }
+      ],
+      "matchesCsr": true
+    }
+  },
+  "commentPhStructureRoundTrip": {
+    "shapes": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "computed node"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      }
+    ],
+    "html": "<span>y</span><!--computed node--><!--rx list item-->",
+    "parsed": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "computed node"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      }
+    ],
+    "roundTripOk": true
+  },
+  "wrongTreatAsA1Alone": {
+    "html": "<!--axii:0-->",
+    "childCount": 1,
+    "losesStructure": true
+  },
+  "destroyLeavesNoOrphans": true,
+  "structureToTextReusePlaceholder": true,
+  "designDecision": {
+    "emitOrder": "[structure…, <!--computed node-->, <!--axii:0-->]",
+    "hydrate": "claim structure + computed; insert Text before axii:0; remove sentinel; Text === FunctionHost.placeholder",
+    "forbid": [
+      "omit axii:0",
+      "A1 alone",
+      "G3 Comment-ph pretence",
+      "claim axii:0 as AtomHost element"
+    ]
+  }
+}

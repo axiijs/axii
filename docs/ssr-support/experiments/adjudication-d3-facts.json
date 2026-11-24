@@ -1,0 +1,168 @@
+{
+  "stamp": "adjudication-d3-2026-08-06",
+  "emptyOpenCloseParse": {
+    "count": 2,
+    "nodes": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 8,
+        "data": "axii:/t"
+      }
+    ],
+    "hasText": false
+  },
+  "sentinelRoundTrip": {
+    "innerHTML": "<!--axii:0-->",
+    "parseCount": 1,
+    "isComment": true,
+    "data": "axii:0"
+  },
+  "hydrateEmptyInsert": {
+    "afterInsertCount": 1,
+    "isText": true,
+    "updated": true,
+    "noSentinelLeft": true
+  },
+  "twoEmptyHydrate": {
+    "parseCountBefore": 2,
+    "afterCount": 2,
+    "separate": true,
+    "values": [
+      "A",
+      "B"
+    ]
+  },
+  "emptyBeforeListComment": {
+    "parse": [
+      {
+        "type": 8,
+        "data": "axii:0"
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ],
+    "afterHydrate": [
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 8,
+        "data": "rx list item"
+      }
+    ],
+    "textThenComment": true
+  },
+  "mixedParse": {
+    "count": 7,
+    "nodes": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "hi"
+      },
+      {
+        "type": 8,
+        "data": "axii:/t"
+      },
+      {
+        "type": 8,
+        "data": "axii:0"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "bye"
+      },
+      {
+        "type": 8,
+        "data": "axii:/t"
+      }
+    ]
+  },
+  "mixedHydrate": {
+    "count": 3,
+    "nodes": [
+      {
+        "type": 3,
+        "data": "hi"
+      },
+      {
+        "type": 3,
+        "data": ""
+      },
+      {
+        "type": 3,
+        "data": "bye"
+      }
+    ],
+    "identities": true,
+    "noMarkers": true
+  },
+  "destroyAfterEmptyHydrate": {
+    "remaining": [],
+    "orphanFree": true
+  },
+  "reorderAfterEmptyHydrate": {
+    "nodes": [
+      {
+        "type": 8,
+        "data": "rx"
+      },
+      {
+        "type": 3,
+        "data": "b"
+      },
+      {
+        "type": 3,
+        "data": "a"
+      }
+    ],
+    "order": [
+      "b",
+      "a"
+    ],
+    "ok": true,
+    "expectedBRxA": false
+  },
+  "textareaMarkersAsText": {
+    "childCount": 1,
+    "value": "<!--axii:t-->hi<!--axii:/t-->",
+    "firstType": 3
+  },
+  "textareaSentinelAsText": {
+    "value": "<!--axii:0-->",
+    "childCount": 1
+  },
+  "textareaChildText": {
+    "value": "hello&<"
+  },
+  "textareaEmpty": {
+    "childCount": 0,
+    "value": ""
+  },
+  "styleMarkersAsText": {
+    "childCount": 1,
+    "text": "<!--axii:t-->.a{}<!--axii:/t-->"
+  },
+  "omitEmptyInvisible": {
+    "betweenSpansChildCount": 2,
+    "note": "empty text with no marker leaves zero nodes — hydrate cannot find slot"
+  },
+  "nonEmptyStillWorks": {
+    "count": 1,
+    "same": true,
+    "value": "x"
+  }
+}

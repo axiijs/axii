@@ -6,6 +6,8 @@ import tsconfigPaths from 'vite-tsconfig-paths'
 // default config cannot expose (e.g. module-load-time usage of browser-only APIs).
 // Run with: npx vitest run --config vitest.node.config.ts
 const siblingData0 = fileURLToPath(new URL('../data0/src/index.ts', import.meta.url))
+const forceNpmData0 = process.env.AXII_DATA0_FORCE_NPM === '1'
+const useSiblingData0 = !forceNpmData0 && existsSync(siblingData0)
 
 export default {
   esbuild: {
@@ -18,7 +20,7 @@ export default {
   resolve: {
     alias: {
       '@framework': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
-      ...(existsSync(siblingData0) ? {'data0': siblingData0} : {})
+      ...(useSiblingData0 ? {'data0': siblingData0} : {})
     }
   },
   plugins: [tsconfigPaths()],

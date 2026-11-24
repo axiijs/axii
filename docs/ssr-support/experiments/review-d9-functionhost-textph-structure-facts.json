@@ -1,0 +1,97 @@
+{
+  "stamp": "review-d9-functionhost-textph-structure-2026-08-06",
+  "environment": "Playwright Chromium",
+  "source": "mirrors FunctionHost.renderSourceWithoutTrace structure path + DOM.ts Text placeholder for function child",
+  "textPhStructure": {
+    "csr": {
+      "shapes": [
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        },
+        {
+          "type": "Text",
+          "data": ""
+        }
+      ],
+      "innerHTML": "<span>x</span><!--computed node-->",
+      "childCount": 3
+    },
+    "afterParse": {
+      "shapes": [
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        }
+      ],
+      "childCount": 2,
+      "lostTrailingEmptyText": true
+    },
+    "hydrateSim": {
+      "shapes": [
+        {
+          "type": "Element",
+          "tag": "span"
+        },
+        {
+          "type": "Comment",
+          "data": "computed node"
+        },
+        {
+          "type": "Text",
+          "data": ""
+        }
+      ],
+      "matchesCsr": true,
+      "fhPlaceholderIsEmptyText": true
+    },
+    "wrongOmitStructure": {
+      "html": "<!--axii:0-->",
+      "note": "loses span+computed; breaks structure FunctionHost"
+    }
+  },
+  "commentPhStructureRoundTrip": {
+    "shapes": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "computed node"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      }
+    ],
+    "html": "<span>y</span><!--computed node--><!--rx list item-->",
+    "parsed": [
+      {
+        "type": "Element",
+        "tag": "span"
+      },
+      {
+        "type": "Comment",
+        "data": "computed node"
+      },
+      {
+        "type": "Comment",
+        "data": "rx list item"
+      }
+    ],
+    "roundTripOk": true
+  },
+  "designGap": {
+    "covered": "FunctionHost 文本态 Text-ph (A1/A2); FunctionHost Comment-ph structure (G3 / computed node + rx list item)",
+    "missing": "FunctionHost Text-ph + 结构态: CSR trailing Text(\"\") lost in HTML; no emit/lifecycle/identity row"
+  }
+}

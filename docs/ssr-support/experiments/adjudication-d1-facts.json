@@ -1,0 +1,60 @@
+{
+  "stamp": "adjudication-d1-2026-08-06",
+  "duckIdIsHTMLElement": false,
+  "adjacentTextMerge": {
+    "createChildCount": 2,
+    "innerHTML": "helloworld",
+    "parseChildCount": 1
+  },
+  "commentSeparated": {
+    "innerHTML": "hello<!--axii:t-->world<!--/-->",
+    "parseChildCount": 4,
+    "nodes": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      }
+    ]
+  },
+  "inputValueProperty": {
+    "outerHTML": "<input>",
+    "hasValueAttr": false
+  },
+  "textareaValueProperty": {
+    "outerHTML": "<textarea></textarea>",
+    "childText": ""
+  },
+  "textareaValueAttrOnly": {
+    "value": ""
+  },
+  "textareaChildrenOnly": {
+    "value": "hello&<>"
+  },
+  "selectValueIDL": {
+    "outerHTML": "<select><option value=\"a\">A</option><option value=\"b\">B</option></select>",
+    "o2HasSelectedAttr": false
+  },
+  "selectParseSelected": {
+    "value": "b"
+  },
+  "radioCheckedProperty": {
+    "outerHTML": "<input type=\"radio\">",
+    "hasCheckedAttr": false
+  },
+  "checkboxCheckedProperty": {
+    "outerHTML": "<input type=\"checkbox\">",
+    "hasCheckedAttr": false
+  }
+}

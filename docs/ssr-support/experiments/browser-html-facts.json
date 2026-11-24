@@ -1,0 +1,712 @@
+{
+  "comments": [
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "axii:0",
+      "depth": 0
+    },
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "hi",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "axii:1",
+      "depth": 0
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "a",
+      "depth": 0
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "/",
+      "depth": 0
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "b",
+      "depth": 0
+    }
+  ],
+  "whitespaceText": [
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": " a ",
+      "depth": 1
+    },
+    {
+      "type": 1,
+      "name": "SPAN",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": " b ",
+      "depth": 1
+    }
+  ],
+  "adjacentText": [
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "hello",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "x",
+      "depth": 1
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "world",
+      "depth": 1
+    }
+  ],
+  "textSplit": [
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "$",
+      "depth": 1
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "hello",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "/",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "$",
+      "depth": 1
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "world",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "/",
+      "depth": 1
+    }
+  ],
+  "tableDiv": [
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "x",
+      "depth": 1
+    },
+    {
+      "type": 1,
+      "name": "TABLE",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TBODY",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TR",
+      "depth": 2,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TD",
+      "depth": 3,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "y",
+      "depth": 4
+    }
+  ],
+  "tableTrOnly": [
+    {
+      "type": 1,
+      "name": "TABLE",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TBODY",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TR",
+      "depth": 2,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TD",
+      "depth": 3,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "y",
+      "depth": 4
+    }
+  ],
+  "selectOption": [
+    {
+      "type": 1,
+      "name": "SELECT",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "bad",
+      "depth": 2
+    },
+    {
+      "type": 1,
+      "name": "OPTION",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "ok",
+      "depth": 2
+    }
+  ],
+  "pDiv": [
+    {
+      "type": 1,
+      "name": "P",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "x",
+      "depth": 1
+    },
+    {
+      "type": 1,
+      "name": "P",
+      "depth": 0,
+      "attrs": []
+    }
+  ],
+  "ulText": [
+    {
+      "type": 1,
+      "name": "UL",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "text",
+      "depth": 1
+    },
+    {
+      "type": 1,
+      "name": "LI",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "a",
+      "depth": 2
+    }
+  ],
+  "boolAttrs": {
+    "inputDisabled": "",
+    "inputDisabledProp": true,
+    "inputChecked": "",
+    "buttonDisabled": "",
+    "buttonDisabledProp": true,
+    "hidden": ""
+  },
+  "ceVsHtml": {
+    "ce": [
+      {
+        "k": "c",
+        "d": "empty"
+      },
+      {
+        "k": "t",
+        "d": "hello"
+      },
+      {
+        "k": "e",
+        "tag": "SPAN",
+        "attrs": [
+          [
+            "class",
+            "x"
+          ],
+          [
+            "data-uuid",
+            "1"
+          ]
+        ],
+        "kids": [
+          {
+            "k": "t",
+            "d": "t"
+          }
+        ]
+      }
+    ],
+    "html": [
+      {
+        "k": "c",
+        "d": "empty"
+      },
+      {
+        "k": "t",
+        "d": "hello"
+      },
+      {
+        "k": "e",
+        "tag": "SPAN",
+        "attrs": [
+          [
+            "class",
+            "x"
+          ],
+          [
+            "data-uuid",
+            "1"
+          ]
+        ],
+        "kids": [
+          {
+            "k": "t",
+            "d": "t"
+          }
+        ]
+      }
+    ],
+    "equal": true
+  },
+  "disabledVariants": [
+    {
+      "attr": "true",
+      "prop": true
+    },
+    {
+      "attr": "",
+      "prop": true
+    },
+    {
+      "attr": "",
+      "prop": true
+    }
+  ],
+  "disabledTrueVsEmpty": {
+    "trueAttr": "true",
+    "emptyAttr": "",
+    "bothDisabled": true
+  },
+  "styleEquiv": {
+    "adopted": {
+      "color": "rgb(255, 0, 0)",
+      "fw": "700"
+    },
+    "viaStyleTag": {
+      "color": "rgb(255, 0, 0)",
+      "fw": "700"
+    },
+    "afterMigrate": {
+      "color": "rgb(255, 0, 0)",
+      "fw": "700"
+    },
+    "equal": true
+  },
+  "noFlashMigrate": {
+    "both": {
+      "color": "rgb(255, 0, 0)"
+    },
+    "afterTagRemoveWithAdopted": {
+      "color": "rgb(255, 0, 0)"
+    },
+    "stable": true
+  },
+  "fragmentMarkers": [
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "fragment start",
+      "depth": 0
+    },
+    {
+      "type": 1,
+      "name": "SPAN",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "a",
+      "depth": 1
+    },
+    {
+      "type": 1,
+      "name": "SPAN",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "b",
+      "depth": 1
+    }
+  ],
+  "listLike": [
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "rx list item",
+      "depth": 0
+    },
+    {
+      "type": 1,
+      "name": "LI",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "1",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "rx list item",
+      "depth": 0
+    },
+    {
+      "type": 1,
+      "name": "LI",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "2",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "list end",
+      "depth": 0
+    }
+  ],
+  "attrRoundtrip": {
+    "outer": "<div title=\"&quot;'<>&amp;\" data-x=\"a&amp;b\"></div>",
+    "title": "\"'<>&",
+    "datax": "a&b"
+  },
+  "textarea": [
+    {
+      "type": 1,
+      "name": "TEXTAREA",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "a<b",
+      "depth": 1
+    }
+  ],
+  "svgNs": {
+    "aNS": "http://www.w3.org/2000/svg",
+    "divNS": "http://www.w3.org/1999/xhtml",
+    "foreignNS": "http://www.w3.org/2000/svg"
+  },
+  "voidKids": [
+    {
+      "type": 1,
+      "name": "IMG",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "BR",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "text after",
+      "depth": 0
+    }
+  ],
+  "isAttr": [
+    {
+      "type": 1,
+      "name": "BUTTON",
+      "depth": 0,
+      "attrs": [
+        [
+          "is",
+          "fancy-button"
+        ]
+      ]
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "x",
+      "depth": 1
+    }
+  ],
+  "emptyHosts": [
+    {
+      "type": 1,
+      "name": "DIV",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "empty",
+      "depth": 1
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "computed node",
+      "depth": 1
+    }
+  ],
+  "optgroup": [
+    {
+      "type": 1,
+      "name": "SELECT",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "OPTGROUP",
+      "depth": 1,
+      "attrs": [
+        [
+          "label",
+          "g"
+        ]
+      ]
+    },
+    {
+      "type": 1,
+      "name": "OPTION",
+      "depth": 2,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "1",
+      "depth": 3
+    }
+  ],
+  "tableComments": [
+    {
+      "type": 1,
+      "name": "TABLE",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TBODY",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "rx list item",
+      "depth": 2
+    },
+    {
+      "type": 1,
+      "name": "TR",
+      "depth": 2,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TD",
+      "depth": 3,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "1",
+      "depth": 4
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "rx list item",
+      "depth": 2
+    },
+    {
+      "type": 1,
+      "name": "TR",
+      "depth": 2,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TD",
+      "depth": 3,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "2",
+      "depth": 4
+    }
+  ],
+  "tableCommentsDirect": [
+    {
+      "type": 1,
+      "name": "TABLE",
+      "depth": 0,
+      "attrs": []
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "c1",
+      "depth": 1
+    },
+    {
+      "type": 1,
+      "name": "TBODY",
+      "depth": 1,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TR",
+      "depth": 2,
+      "attrs": []
+    },
+    {
+      "type": 1,
+      "name": "TD",
+      "depth": 3,
+      "attrs": []
+    },
+    {
+      "type": 3,
+      "name": "#text",
+      "data": "1",
+      "depth": 4
+    },
+    {
+      "type": 8,
+      "name": "#comment",
+      "data": "c2",
+      "depth": 2
+    }
+  ]
+}

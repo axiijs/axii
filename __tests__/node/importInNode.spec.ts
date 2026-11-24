@@ -18,6 +18,7 @@ describe('BUG 7: importing axii outside a browser', () => {
         const exported = await import('../../src/index.js')
         expect(exported.createElement).toBeTypeOf('function')
         expect(exported.createRoot).toBeTypeOf('function')
+        expect(exported.hydrateRoot).toBeTypeOf('function')
         expect(exported.RxDOMSize).toBeTypeOf('function')
     })
 
@@ -28,5 +29,15 @@ describe('BUG 7: importing axii outside a browser', () => {
         expect((RxDOMSize as any)._globalResizeObserver).toBeUndefined()
         // node 环境没有 ResizeObserver，首次访问时才应该报错
         expect(() => (RxDOMSize as any).globalResizeObserver).toThrow(/ResizeObserver is not defined/)
+    })
+
+    test('SSR entry (axii/ssr) imports and renderToString runs without DOM globals', async () => {
+        expect((globalThis as any).document).toBeUndefined()
+        expect((globalThis as any).HTMLElement).toBeUndefined()
+        const {renderToString} = await import('../../src/ssr.js')
+        expect(renderToString).toBeTypeOf('function')
+        const {html} = renderToString(() => 'node-ok' as any)
+        expect(html).toContain('node-ok')
+        expect(html).toContain('<!--root-->')
     })
 })

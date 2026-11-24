@@ -1,0 +1,24 @@
+{
+  "name": "axii-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "axii official website — docs + runnable examples, rendered with axii itself.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "check": "node scripts/check-all.mjs"
+  },
+  "dependencies": {
+    "data0": "^2.14.0",
+    "shiki": "^1.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.3",
+    "playwright": "^1.49.1",
+    "typescript": "5.9.2",
+    "vite": "^7.1.1",
+    "vite-tsconfig-paths": "^4.3.1"
+  }
+}

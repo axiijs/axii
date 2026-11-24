@@ -18,6 +18,14 @@ import {
     withReactiveTrace
 } from "./diagnostics";
 import {CompactElementHost} from "./StaticHost.js";
+import {ReusableHost} from "./ComponentHost.js";
+import {
+    advanceCursorUntilComment,
+    advancePastNode,
+    claimCommentAtCursor,
+    isHydrating,
+    setChildCursor,
+} from "./hydration";
 
 function isHostRendered(host: Host): boolean {
     return host instanceof CompactElementHost ? !!host.element.parentNode : !!host.placeholder.parentNode
@@ -77,6 +85,9 @@ export class RxListHost implements Host{
     createChildHost(item: any) {
         // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符
         if ((item instanceof HTMLElement || item instanceof SVGElement) && !(item as ExtendedElement).detachStyledChildren) {
+            if (isHydrating()) {
+                advancePastNode(item)
+            }
             const host = new CompactElementHost(item, this.childContext!)
             if (isAxiiRetainedObjectDiagnosticsEnabled()) {
                 trackHostCreated(host, 'CompactElementHost')
@@ -84,7 +95,80 @@ export class RxListHost implements Host{
             }
             return host
         }
+
+        if (isHydrating()) {
+            // G3-RL: hydrate inner rows first, then claim outer <!--rx list item-->
+            if (item instanceof RxList) {
+                const nested = new RxListHost(item, this.placeholder, this.childContext!)
+                nested.childContext = {
+                    ...this.childContext!,
+                    hostPath: createLinkedNode<Host>(nested, this.childContext!.hostPath),
+                }
+                nested.hydrateRowsFromCursor()
+                advanceCursorUntilComment('rx list item')
+                nested.placeholder = claimCommentAtCursor('rx list item')
+                ;(nested as any).__axiiHydrated = true
+                if (isAxiiRetainedObjectDiagnosticsEnabled()) {
+                    trackHostCreated(nested, 'RxListHost')
+                }
+                return nested
+            }
+
+    // G3-RU: content already claimed; claim <!--reusable--> + row placeholder
+            if (item instanceof ReusableHost) {
+                // StaticHost keeps the claimed element on `.source` until render() assigns `.element`
+                const src = (item.innerHost as any)?.source
+                if (src instanceof Node && src.parentNode) {
+                    advancePastNode(src)
+                }
+                advanceCursorUntilComment('reusable')
+                const reusablePh = claimCommentAtCursor('reusable')
+                ;(item as any).innerPlaceholder = reusablePh
+                if (item.innerHost) {
+                    ;(item.innerHost as any).placeholder = reusablePh
+                    // Field initializer set element=old Comment; reset so render()'s assert passes
+                    ;(item.innerHost as any).element = reusablePh
+                }
+                advanceCursorUntilComment('rx list item')
+                const rowPh = claimCommentAtCursor('rx list item')
+                item.moveTo(rowPh)
+                ;(item as any).__axiiHydrating = true
+                if (isAxiiRetainedObjectDiagnosticsEnabled()) {
+                    trackHostCreated(item, 'ReusableHost')
+                }
+                return item
+            }
+
+            advanceCursorUntilComment('rx list item')
+            const ph = claimCommentAtCursor('rx list item')
+            return createHost(item, ph, this.childContext!)
+        }
+
         return createHost(item, document.createComment('rx list item'), this.childContext!)
+    }
+
+    /** Claim existing SSR row DOM from the active child cursor (no insert). */
+    hydrateRowsFromCursor() {
+        this.hosts = []
+        const data = this.source.data
+        for (let i = 0; i < data.length; i++) {
+            this.hosts.push(this.createChildHost(data[i]))
+        }
+        for (const row of this.hosts) {
+            row.render()
+            // host.render() may strip axii:* or insert empty Text — resync cursor after row end
+            const parent = this.placeholder.parentNode
+            if (parent) {
+                const last = hostLastNode(row)
+                const kids = parent.childNodes
+                for (let i = 0; i < kids.length; i++) {
+                    if (kids[i] === last) {
+                        setChildCursor(parent, i + 1)
+                        break
+                    }
+                }
+            }
+        }
     }
 
     renderNewHosts(hosts: Host[]) {
@@ -105,7 +189,25 @@ export class RxListHost implements Host{
         const source = this.source
         // 所有行共享同一个 childContext/hostPath 节点（内容完全相同），避免每行两次对象分配
         this.childContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
-        this.hosts = []
+
+        // Hydrate: claim SSR rows once; first computation only establishes tracking.
+        let hydrateSkipInitial = false
+        if (isHydrating()) {
+            if (!(this as any).__axiiHydrated) {
+                this.hosts = []
+                const savedParent = (source as any).__axiiHydrateListParent as ParentNode | undefined
+                const savedStart = (source as any).__axiiHydrateListStart as number | undefined
+                if (savedParent != null && savedStart != null) {
+                    setChildCursor(savedParent, savedStart)
+                }
+                this.hydrateRowsFromCursor()
+                ;(this as any).__axiiHydrated = true
+            }
+            // Nested row may already have hosts from createChildHost; do not clear them.
+            hydrateSkipInitial = true
+        } else {
+            this.hosts = []
+        }
 
         this.hostRenderComputed = computed(
             function computation(this:Computed) {
@@ -117,6 +219,10 @@ export class RxListHost implements Host{
                 this.pauseCollectChild()
                 try {
                     const hosts = host.hosts!
+                    if (hydrateSkipInitial) {
+                        hydrateSkipInitial = false
+                        return null
+                    }
                     // CAUTION data0 >= 2.9 的错误恢复契约(data0Contract.spec 条款 8):
                     //  patch 抛错(rethrow 出口)后 data0 把该 computed 回退到全量重算阶段,
                     //  下一次源变更会**重跑本 computation**(而不是继续 patch)。重跑语义

@@ -6,7 +6,6 @@ import {
     isEventName,
     RefHandleInfo,
     setAttribute,
-    stringifyStyleValue,
     UnhandledChildInfo,
     UnhandledPlaceholder
 } from "./DOM";
@@ -27,6 +26,27 @@ import {
 } from "./retainedObjectDiagnostics.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
+import {claimFragmentStartBefore, getHydrateRollingStyleBase, isHydrating, reconcileFragmentHydrateChildren, stripAxiiTextBoundariesBetween} from "./hydration";
+import {rematerializeDeferredFragmentChildren} from "./DOM";
+import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from "./styleCascade";
+import {
+    contentStyleId,
+    evaluateStyleEntries,
+    isBoundProp,
+    isDynamicProp,
+    generateInlineAnimationContent as generateInlineAnimationContentShared,
+    generateStyleContent as generateStyleContentShared,
+    getComponentTypeId,
+    isNestedStyleObject as isNestedStyleObjectShared,
+    splitStyleObject as splitStyleObjectShared,
+    prepareStyleContent,
+    renderPreparedStyle,
+    serializePreparedStyle,
+    stringifyKeyFrameObject as stringifyKeyFrameObjectShared,
+    stringifyStyleObject as stringifyStyleObjectShared,
+    SSR_STYLE_CLASSES_ATTRIBUTE,
+    toCssSafeComponentName,
+} from "./styleSerialize";
 
 // CAUTION 覆盖原来的判断，增加关于 isReactiveValue 的判断。这样就不会触发响应式值的读行为，不会泄漏到上层的 computed。
 // data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
@@ -98,14 +118,7 @@ function GetPathToLastComponent(hostPath: LinkedNode<Host>) {
 //    永远匹配不上元素——嵌套样式/boundProps 样式静默丢失且没有任何报错（insertRule 成功）；
 //  - 空名让 id 以 typeId 数字开头，`.3P...` 是非法 selector，整张 stylesheet 被 insertRule
 //    整条拒绝——样式全部静默丢失。
-//  这里把 CSS ident 之外的字符归一成 '_'（unicode 名字是合法 ident，保留；旧的 \s/$ 替换
-//  被该规则覆盖），首字符不是合法 ident 起始（空/数字/'-'）时补前缀。唯一性由 typeId 保证，
-//  归一化不会让两个组件冲突。
-const CSS_UNSAFE_IDENT_CHARS = /[^a-zA-Z0-9_\u00A0-\uFFFF-]/g
-function toCssSafeComponentName(name: string) {
-    const safe = name.replace(CSS_UNSAFE_IDENT_CHARS, '_')
-    return /^[a-zA-Z_\u00A0-\uFFFF]/.test(safe) ? safe : `C${safe}`
-}
+//  归一化逻辑见 styleSerialize.toCssSafeComponentName。
 
 function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     // CAUTION path[0] 只有在 GetPathToLastComponent 真的找到组件时才是 ComponentHost：
@@ -115,7 +128,8 @@ function generateComponentElementStaticId(path: Host[], elementPath: number[]) {
     const lastComponentHost = path[0] instanceof ComponentHost ? path[0] as ComponentHost : undefined
     const pathToGenerateId = lastComponentHost ? path.slice(1) : path
     const componentName = lastComponentHost ? toCssSafeComponentName(lastComponentHost.type.name.toString()) : 'GLOBAL'
-    return `${componentName}${lastComponentHost?.typeId ??''}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
+    const typeId = lastComponentHost ? getComponentTypeId(lastComponentHost.type) : ''
+    return `${componentName}${typeId}P${pathToGenerateId.map(host => host.pathContext.elementPath.join('_')).concat(elementPath.join('_')).join('-')}`
 }
 
 // CAUTION 只有 object/function 才能 defineProperty。style 的合法取值还包括字符串
@@ -160,51 +174,39 @@ export function markDynamicProp(obj: any) {
 
 // CAUTION 这些判断必须对 null/undefined 安全，
 //  条件样式 style={cond ? {...} : null} 是很自然的写法，value 可能是 null。
-export function isBoundProp(obj: any) {
-    return !!(obj && obj['__bound'])
-}
+// isBoundProp / isDynamicProp 定义在 styleSerialize（CSR 与 SSR 共用的唯一一份），这里再导出保持公开 API 不变
+export {isBoundProp, isDynamicProp}
 
 export function isAopProp(obj: any) {
     return !!(obj && obj['__aop'])
 }
 
-export function isDynamicProp(obj: any) {
-    return !!(obj && obj['__dynamic'])
+
+/** Reclaim SSR rolling base id (`${staticId}R…`) from element classList during hydrate. */
+function reclaimRollingStyleId(el: HTMLElement, staticId: string): string | null {
+    const prefix = staticId + 'R'
+    for (const cls of Array.from(el.classList)) {
+        if (!cls.startsWith(prefix)) continue
+        // Class forms: `${base}F${i}` or `${base}F${i}I${n}` — base is `${staticId}R${seq}`
+        const fIndex = cls.indexOf('F', prefix.length)
+        if (fIndex < 0) continue
+        const base = cls.slice(0, fIndex)
+        if (/^R\d+$/.test(base.slice(staticId.length))) return base
+    }
+    return null
 }
 
-// F30：静态样式对象 -> 内容签名 的缓存。boundProps 等跨实例共享的对象引用直接命中；
-//  JSX 字面量对象随元素同生共死，WeakMap 不延长其生命周期。
-//  key 顺序不同的等价对象会得到不同签名——代价只是退化为元素独享 stylesheet，语义仍然正确。
-const styleSignatureCache = new WeakMap<object, string>()
-function computeStyleSignature(styleObject: any): string | undefined {
-    if (typeof styleObject !== 'object' || styleObject === null) return undefined
-    const cached = styleSignatureCache.get(styleObject)
-    if (cached !== undefined) return cached
-    let signature: string | undefined
-    try {
-        signature = JSON.stringify(styleObject)
-        /* v8 ignore next 3 */
-    } catch {
-        signature = undefined
+/**
+ * After hydrate adoptedStyleSheets are live, remove SSR `<style data-axii-ssr>` tags.
+ */
+export function migrateSsrStyleTags(container?: ParentNode | null) {
+    const selector = 'style[data-axii-ssr]'
+    container?.querySelectorAll(selector).forEach(tag => tag.remove())
+    // Applications may also place SSR styles in the document head. Those tags can serve
+    // several separately hydrated roots, so wait for their stylesheet classes to be claimed.
+    if (typeof document !== 'undefined' && !document.querySelector(`[${SSR_STYLE_CLASSES_ATTRIBUTE}]`)) {
+        document.querySelectorAll(selector).forEach(tag => tag.remove())
     }
-    if (signature !== undefined) styleSignatureCache.set(styleObject, signature)
-    return signature
-}
-
-// 深度扫描 style 对象中是否有 atom/函数值（style={{color: colorAtom}} / 嵌套样式中的 atom）
-function containsReactiveStyleValue(styleObject: any): boolean {
-    for (const key in styleObject) {
-        const value = styleObject[key]
-        if (typeof value === 'function') return true
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                if (typeof item === 'function') return true
-            }
-        } else if (isPlainObject(value) && containsReactiveStyleValue(value)) {
-            return true
-        }
-    }
-    return false
 }
 
 // class name 中的字母含义
@@ -222,49 +224,78 @@ class StyleManager {
     // 当前挂在元素 class 上的 stylesheet class id：响应式 className 整体覆写 class attribute 后，
     //  必须能把这些框架管理的 class 补回去，否则 stylesheet 样式静默丢失。
     public elToStyleClassIds = new WeakMap<HTMLElement, Set<string>>()
+    // Rolling entries retain the previous frame's sheets for cloneNode. Track actual ids so
+    // switching an entry to content or inline styles cannot strand a sheet in an older frame.
+    private elToRollingStyleFrames = new WeakMap<HTMLElement, {
+        active: Set<string> | undefined
+        previous: Set<string> | undefined
+    }>()
     // CAUTION 记账 key 是「拥有这些样式的元素 host」（StaticHost/CompactElementHost 自身），
     //  而不是 hostPath 上的父级 host：列表行共享同一个 hostPath 节点（RxListHost），
     //  按父级记账时稳态 churn（列表始终非空）的行永远等不到计数归零，
     //  被销毁行的 stylesheet 引用计数不释放，adoptedStyleSheets 无上限增长。
-    public hostToStyleIds = new WeakMap<Host, Set<string>>()
+    //  值是「id → 本 host 内的使用次数」：内容 id 跨元素共用，同一个 host 里的多个元素
+    //  （或同一元素先后换回同一份内容）会多次引用同一个 id，按 Set 记账会让引用计数只减一次、表永远不删。
+    public hostToStyleIds = new WeakMap<Host, Map<string, number>>()
+    // 元素 → 各条目当前挂着的内容 id（下标 = 条目序号）。内容 id 不进 elToStyleClassIds，
+    //  只用这一份数组记账：重算时同一下标换了 id 就释放旧的，条目消失/改走行内就释放。
+    public elToContentStyleIds = new WeakMap<HTMLElement, (string | undefined)[]>()
+    private sheetToOrder = new WeakMap<CSSStyleSheet, StyleSheetOrder>()
     public hostMountCount = new WeakMap<Host, number>()
     public idToRefCount = new Map<string, number>()
     // 共享静态 stylesheet id -> 内容签名。「相同 path ⇒ 相同样式内容」只是猜测：
     //  静态样式对象可以携带每实例不同的数据（style={{'& b': {color: item.color}}}），
     //  签名不一致时该实例必须退化为元素独享的 rolling id，否则所有实例都套用第一个实例的样式。
     public idToStaticStyleSignature = new Map<string, string>()
-    getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null) {
-        const pathToLastComponent = GetPathToLastComponent(hostPath)
-        // 有 el 说明是动态的，每个 el 独享 id。否则的话用 path 去生成，每个相同 path 的 el 都会共享一个 styleId
-        const staticId = generateComponentElementStaticId(pathToLastComponent, elementPath)
-        const hasFunctionHostInPathToLastComponent = pathToLastComponent.some(host => host instanceof FunctionHost)
+    /** Deterministic rolling-id sequence (replaces Math.random); hydrate reclaims SSR classes. */
+    private nextRollingSeq = 0
+    private rollingBaseOwners = new Map<string, HTMLElement>()
+    private hostToRollingBaseIds = new WeakMap<Host, Set<string>>()
 
-        if (el || hasFunctionHostInPathToLastComponent) {
-            const styleId = el  ? this.elToStyleId.get(el) : null
-            if (!styleId) {
-                const newStyleId = `${staticId}R${Math.random().toString(36).slice(2)}`
-                if (el) this.elToStyleId.set(el, newStyleId)
-                return newStyleId
-            } else {
-                return styleId
-            }
-        } else {
-            return staticId
+    getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null, hydrateReclaimEl?: ExtendedElement | null) {
+        const pathToLastComponent = GetPathToLastComponent(hostPath)
+        const staticId = generateComponentElementStaticId(pathToLastComponent, elementPath)
+        if (!el && !pathToLastComponent.some(host => host instanceof FunctionHost)) return staticId
+        if (!el) return this.allocateRollingStyleId(staticId, hydrateReclaimEl)
+
+        const assignedId = this.elToStyleId.get(el)
+        const assignedOwner = assignedId && this.rollingBaseOwners.get(assignedId)
+        if (assignedId && (!assignedOwner || assignedOwner === el)) return assignedId
+        const id = this.allocateRollingStyleId(staticId, el)
+        this.elToStyleId.set(el, id)
+        return id
+    }
+
+    private allocateRollingStyleId(staticId: string, reclaimEl?: ExtendedElement | null): string {
+        // Separate SSR payloads can start their sequences at R0. A mounted owner reserves
+        // its base through inline/content transitions, even after its last frame expires.
+        let id = reclaimEl && isHydrating()
+            ? getHydrateRollingStyleBase(reclaimEl) ?? reclaimRollingStyleId(reclaimEl, staticId)
+            : null
+        while (!id || this.rollingBaseOwners.has(id)) {
+            id = `${staticId}R${this.nextRollingSeq++}`
         }
+        return id
     }
-    stringifyStyleObject(styleObject: { [k: string]: any }): string {
-        return Object.entries(styleObject).map(([key, value]) => {
-            // CAUTION CSS 自定义属性（--main-color / --mainColor）大小写敏感，
-            //  绝不能做驼峰转连字符/小写化，否则 var(--mainColor) 永远读不到值。
-            //  inline 路径（setAttribute 的 setProperty 分支）本来就保留原样，这里必须对齐。
-            const property = (key[0] === '-' && key[1] === '-') ?
-                key :
-                key.replace(/([A-Z])/g, '-$1').toLowerCase()
-            // value 是数字类型的 attr，自动加上 单位
-            return `${property}:${stringifyStyleValue(key, value)};`
-        }).join('\n')
+
+    private getRollingStyleId(owner: Host, staticId: string, el: ExtendedElement): string {
+        const assignedId = this.elToStyleId.get(el)
+        const assignedOwner = assignedId && this.rollingBaseOwners.get(assignedId)
+        if (assignedId && assignedOwner === el) return assignedId
+
+        const id = assignedId && !assignedOwner ? assignedId : this.allocateRollingStyleId(staticId, el)
+        this.rollingBaseOwners.set(id, el)
+        let ownedIds = this.hostToRollingBaseIds.get(owner)
+        if (!ownedIds) this.hostToRollingBaseIds.set(owner, ownedIds = new Set())
+        ownedIds.add(id)
+        this.elToStyleId.set(el, id)
+        return id
     }
-    public createStyleSheet(id:string, styleObject:StyleObject) {
+    public createStyleSheet(id: string, styleObject: StyleObject, group: number = 0) {
+        const prepared = prepareStyleContent(styleObject)
+        return this.installStyleSheet(renderPreparedStyle(`.${id}`, prepared), getStyleSheetOrder(group, prepared))
+    }
+    private installStyleSheet(rules: string[], order: StyleSheetOrder) {
         const styleSheet = new CSSStyleSheet()
         // CAUTION 逐条 insertRule，而不是把所有规则拼成一个字符串 replaceSync：
         //  stylesheet 路径（嵌套样式/boundProps/keyframes）的值经 stringifyStyleObject
@@ -274,7 +305,6 @@ class StyleManager {
         //  整条拒绝，注入无法越界成全局样式。generateStyleContent 已把内容拆成「每个元素
         //  恰好一条规则 / 一个 @-rule 块」，逐条插入与之前 join 的语义一致；合法的带引号
         //  值（content: "a}b"）浏览器解析时 '}' 在引号内不闭合规则，照常保留。
-        const rules = this.generateStyleContent(`.${id}`, styleObject)
         for (const rule of rules) {
             try {
                 styleSheet.insertRule(rule, styleSheet.cssRules.length)
@@ -289,30 +319,67 @@ class StyleManager {
                 }
             }
         }
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, styleSheet];
+        this.insertStyleSheet(styleSheet, order)
         return styleSheet
+    }
+    // CAUTION 仍用 setter 整体赋值（不用 push/splice）：宿主会挂 adoptedStyleSheets 的 setter
+    //  钩子做跨文档镜像，绕过 setter 的写法它看不到。内容共用之后表数是「不同内容的种数」，
+    //  整体赋值的开销不再随元素数增长。
+    private insertStyleSheet(styleSheet: CSSStyleSheet, order: StyleSheetOrder) {
+        this.sheetToOrder.set(styleSheet, order)
+        const current = document.adoptedStyleSheets
+        const lastOrder = this.sheetToOrder.get(current[current.length - 1])
+        let first = 0
+        let last = current.length
+        if (lastOrder && compareStyleSheetOrder(lastOrder, order) <= 0) first = last
+        // Find the first Axii sheet with greater precedence. Leave foreign sheets in
+        // place and check only as far left as necessary to find an ordered midpoint.
+        while (first < last) {
+            const middle = Math.floor((first + last) / 2)
+            let index = middle
+            let existingOrder = this.sheetToOrder.get(current[index])
+            while (!existingOrder && index > first) {
+                existingOrder = this.sheetToOrder.get(current[--index])
+            }
+            if (existingOrder && compareStyleSheetOrder(existingOrder, order) > 0) {
+                last = index
+            } else {
+                first = middle + 1
+            }
+        }
+        document.adoptedStyleSheets = first === current.length ?
+            [...current, styleSheet] :
+            [...current.slice(0, first), styleSheet, ...current.slice(first)]
     }
     deleteStyleSheet(id: string): CSSStyleSheet | null {
         const styleSheet = this.styleScripts.get(id)
-        if (styleSheet) {
-            const index = document.adoptedStyleSheets.indexOf(styleSheet)
-            if (index > -1) {
-                document.adoptedStyleSheets.splice(index, 1)
-            }
-            this.styleScripts.delete(id)
-            return styleSheet
-        }
-        return null
+        if (!styleSheet) return null
+
+        this.styleScripts.delete(id)
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== styleSheet)
+        return styleSheet
     }
     collect(host: Host, id: string) {
         let ids = this.hostToStyleIds.get(host)
         if (!ids) {
-            ids = new Set()
+            ids = new Map()
             this.hostToStyleIds.set(host, ids)
             trackStyleHostStateCreated()
         }
-        ids.add(id)
+        ids.set(id, (ids.get(id) ?? 0) + 1)
         this.updateRefCount(id, +1)
+    }
+    // Release one host reference when a content class goes away or a rolling frame expires.
+    release(host: Host, id: string) {
+        const ids = this.hostToStyleIds.get(host)
+        if (!ids) return
+        const uses = ids.get(id)
+        if (uses === undefined) return
+        if (uses > 1) ids.set(id, uses - 1)
+        else ids.delete(id)
+        if (this.updateRefCount(id, -1) <= 0) {
+            this.deleteStyleSheet(id)
+        }
     }
     mount(host: Host) {
         const count = ((this.hostMountCount.get(host) ?? 0) + 1)
@@ -330,27 +397,36 @@ class StyleManager {
         this.hostMountCount.delete(host)
     }
     cleanup(host: Host) {
+        const rollingBases = this.hostToRollingBaseIds.get(host)
+        if (rollingBases) {
+            for (const base of rollingBases) this.rollingBaseOwners.delete(base)
+            this.hostToRollingBaseIds.delete(host)
+        }
         if (this.hostToStyleIds.has(host)) {
             trackStyleHostStateDestroyed()
         }
-        const ids = Array.from(this.hostToStyleIds.get(host) ?? new Set<string>())
-        const styleSheetsToDelete = new Set<CSSStyleSheet>()
-        ids.forEach(id => {
-            const count = this.updateRefCount(id, -1)
+        const ids = this.hostToStyleIds.get(host)
+        if (!ids) return
+        let styleSheetsToDelete: Set<CSSStyleSheet> | undefined
+        for (const [id, uses] of ids) {
+            const count = this.updateRefCount(id, -uses)
             if (count <= 0) {
                 const styleSheet = this.styleScripts.get(id)
                 if (styleSheet) {
-                    styleSheetsToDelete.add(styleSheet)
+                    (styleSheetsToDelete ??= new Set()).add(styleSheet)
                 }
                 this.styleScripts.delete(id);
                 // 共享静态 id 的内容签名随 stylesheet 一起退役（rolling id 不在签名表里，delete 无害）
                 this.idToStaticStyleSignature.delete(id)
             }
-        })
+        }
         this.hostToStyleIds.delete(host)
-        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => {
-            return !styleSheetsToDelete.has(sheet);
-        });
+        // CAUTION 没有要删的表就不赋值：共用之后列表行卸载时绝大多数只是减引用，
+        //  每行都整体赋值一次会让卸载 N 行变成 O(N × 表数)，并让宿主的 setter 钩子白跑 N 次。
+        if (styleSheetsToDelete) {
+            const toDelete = styleSheetsToDelete
+            document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => !toDelete.has(sheet))
+        }
     }
     updateRefCount(id: string, delta: number): number {
         const count = (this.idToRefCount.get(id) ?? 0) + delta
@@ -366,9 +442,6 @@ class StyleManager {
         if (!ids) this.elToStyleClassIds.set(el, ids = new Set())
         ids.add(id)
     }
-    trackStyleClassRemoved(el: ExtendedElement, id: string) {
-        this.elToStyleClassIds.get(el)?.delete(id)
-    }
     // 响应式 className/class 更新整体覆写了 class attribute 之后，
     //  把 StyleManager 管理的 stylesheet class 补回去。
     reapplyStyleClasses(el: ExtendedElement) {
@@ -376,93 +449,100 @@ class StyleManager {
         if (ids) {
             for (const id of ids) el.classList.add(id)
         }
+        const contentIds = this.elToContentStyleIds.get(el)
+        if (contentIds) {
+            for (const id of contentIds) if (id !== undefined) el.classList.add(id)
+        }
     }
     update(owner: Host, hostPath: LinkedNode<Host>, elementPath: number[], styleObject: StyleObject | StyleObject[], el: ExtendedElement) {
         // style 中有嵌套写法/animation/at-rules 等原生不能识别的，都会当做 unhandledAttr 走到这里。当然也包括 atom 和 function
-        const rawStyleObjects = Array.isArray(styleObject) ? styleObject : [styleObject]
-        // CAUTION 先求值再展开：响应式 style 函数可以返回数组（() => [base, extra] 是自然写法）。
-        //  不展开的话数组会被 splitStyleObject 当成 {0: {...}, 1: {...}} 的嵌套样式，
-        //  生成 `.cls 0 {...}` 这类非法 selector，整个样式静默失效。
-        const evaluatedEntries: {value: any, entryIsDynamic: boolean, isBound: boolean}[] = []
-        for (const raw of rawStyleObjects) {
-            const isBound = isBoundProp(raw)
-            const entryIsDynamic = typeof raw === 'function' || isDynamicProp(raw)
-            const evaluated = typeof raw === 'function' ? raw() : raw
-            if (Array.isArray(evaluated)) {
-                for (const item of evaluated) {
-                    // 函数返回的数组项自身也可能是函数/atom
-                    const evaluatedItem = typeof item === 'function' ? item() : item
-                    evaluatedEntries.push({value: evaluatedItem, entryIsDynamic: true, isBound: isBound || isBoundProp(item)})
-                }
-            } else {
-                evaluatedEntries.push({value: evaluated, entryIsDynamic, isBound})
-            }
-        }
+        // 求值 + 展开与 SSR 共用一份（条目序号两边必须一致，内容 id 里带序号）。
+        const evaluatedEntries = evaluateStyleEntries(styleObject)
 
         const styleItorNum = this.elToStyleIdItorNum.get(el) ?? 0
         // 路径信息对所有条目相同，只算一次（之前每个条目都重新走一遍 hostPath）
         const pathToLastComponent = GetPathToLastComponent(hostPath)
         const hasFunctionHostInPath = pathToLastComponent.some(host => host instanceof FunctionHost)
-        // 跨元素共享的静态 id 基础（路径含 FunctionHost 时不共享，见 getStyleSheetId）
+        // 跨元素共享的静态 id 基础（路径含 FunctionHost 时不共享）
         const sharedStaticBaseId = hasFunctionHostInPath ? null : generateComponentElementStaticId(pathToLastComponent, elementPath)
+        let rollingBaseId: string | undefined
         const splitStyleObjects = evaluatedEntries.map(({value: evaluatedStyleObject, entryIsDynamic, isBound}, index) => {
             // 分离普通和嵌套样式
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
             const usesStyleSheet = isBound || Object.keys(nestedStyles).length > 0
-            // CAUTION stylesheet 路径（嵌套样式/boundProps）里出现 atom/函数值时必须按动态样式处理
-            //  （滚动重建 stylesheet）：stylesheet 只有第一次/滚动时才重建。必须扫描整个对象而不是
-            //  只扫 nestedStyles——atom 出现在 simple 部分（{color: colorAtom, '&:hover': {...}}）时
-            //  同样会进 stylesheet，按静态处理的话第一次生效后就永远不再更新（F31）。
-            //  普通（inline）样式不需要扫：它每次 update 都整体重新赋值。
-            let isDynamic = entryIsDynamic || (usesStyleSheet && containsReactiveStyleValue(evaluatedStyleObject))
-            // CAUTION 共享静态 stylesheet id 的内容一致性校验（F30）：「相同 path ⇒ 相同样式内容」
-            //  对携带实例数据的静态样式（style={{'& b': {color: item.color}}} 的列表行/同类型兄弟组件）
-            //  不成立。第一个实例登记内容签名，后续实例签名不一致时退化为元素独享的 rolling id，
-            //  否则它们会静默套用第一个实例的 stylesheet。签名算不出来（循环引用等）时同样退化，保证正确性。
-            if (usesStyleSheet && !isDynamic && sharedStaticBaseId) {
+            const prepared = usesStyleSheet ? prepareStyleContent(evaluatedStyleObject) : undefined
+            const signature = prepared?.shareable ? serializePreparedStyle(prepared) : undefined
+            let isDynamic = entryIsDynamic || !!prepared && (prepared.isReactive || !prepared.shareable)
+
+            // A component path can produce different CSS for different instances (F30).
+            if (signature !== undefined && !isDynamic && sharedStaticBaseId) {
                 const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
-                const signature = computeStyleSignature(evaluatedStyleObject)
                 const existingSignature = this.idToStaticStyleSignature.get(sharedIdWithIndex)
-                if (signature === undefined || (existingSignature !== undefined && existingSignature !== signature)) {
-                    isDynamic = true
-                } else if (existingSignature === undefined) {
+                if (existingSignature === undefined) {
                     this.idToStaticStyleSignature.set(sharedIdWithIndex, signature)
+                } else if (existingSignature !== signature) {
+                    isDynamic = true
                 }
             }
-            const styleSheetId = isDynamic ?
-                this.getStyleSheetId(hostPath, elementPath, el) :
-                (sharedStaticBaseId ?? this.getStyleSheetId(hostPath, elementPath, null))
-            const styleSheetIdWithIndex = `${styleSheetId}F${index}`
-            const styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
+            // Multi-subject selectors and unsupported values retain a per-element rolling id.
+            const contentId = signature !== undefined && (isDynamic || !sharedStaticBaseId) ?
+                contentStyleId(signature, index) : undefined
+            let styleSheetIdWithIndex: string | undefined
+            let styleSheetIdWithItorNum: string | undefined
+            if (usesStyleSheet && contentId === undefined) {
+                const styleSheetId = isDynamic ? (rollingBaseId ??= this.getRollingStyleId(
+                    owner, sharedStaticBaseId ?? generateComponentElementStaticId(pathToLastComponent, elementPath), el,
+                )) : sharedStaticBaseId!
+                styleSheetIdWithIndex = `${styleSheetId}F${index}`
+                styleSheetIdWithItorNum = `${styleSheetIdWithIndex}I${styleItorNum}`
+            }
             return {
               index,
               isDynamic,
-              isBound,
-              styleSheetId,
+              usesStyleSheet,
+              contentId,
               styleSheetIdWithIndex,
               styleSheetIdWithItorNum,
-              evaluatedStyleObject,
+              prepared,
+              signature,
               simpleStyles,
-              nestedStyles
             }
         })
         // 是否应该更新 itor？
         // 如果使用了 itor-based style id，就要更新
         let shouldUpdateItor = false
         const stylePatches: StyleObject[] = []
-        // 本轮仍然有效的 rolling stylesheet class（形态翻转清理时用来判断哪些是残留）
+        // Record the classes actually applied this frame, including when entries switch modes.
         let activeRollingClassIds: Set<string>|undefined
+        let contentIds = this.elToContentStyleIds.get(el)
         splitStyleObjects.forEach(so => {
             // 如果是 boundProps，优先使用 stylesheet，因为 boundProps 通常是组件级别的基础样式
             // 如果包含 nested style，只能使用 stylesheet，因为依赖于 CSS selector
-            const shouldUseStyleSheet = so.isBound || Object.keys(so.nestedStyles).length > 0;
-            if (shouldUseStyleSheet) {
+            if (so.contentId !== undefined) {
+                const previousId = contentIds?.[so.index]
+                // 内容没变：class、引用、表都不动
+                if (previousId === so.contentId) return
+                if (!this.styleScripts.has(so.contentId)) {
+                    const rules = renderPreparedStyle(`.${so.contentId}`, so.prepared!, 'active')
+                    const order = getStyleSheetOrder(so.index, so.prepared!, so.signature)
+                    this.styleScripts.set(so.contentId, this.installStyleSheet(rules, order))
+                }
+                el.classList.add(so.contentId)
+                this.collect(owner, so.contentId)
+                if (!contentIds) this.elToContentStyleIds.set(el, contentIds = [])
+                contentIds[so.index] = so.contentId
+                if (previousId !== undefined) {
+                    el.classList.remove(previousId)
+                    this.release(owner, previousId)
+                }
+            } else if (so.usesStyleSheet) {
                 // 如果样式是动态的，则使用 itor 滚动 classname
                 // 这里「动态」意味着它可能是
                 // - Atom 或者 function
                 // - 来自 boundProps 并且是通过 function evaluate 获得
+                // （内容 id 能算出来时不会走到这里，只剩序列化失败的条目）
                 const shouldUseRollingStyleId = so.isDynamic
-                const finalStyleSheetId = shouldUseRollingStyleId ? so.styleSheetIdWithItorNum : so.styleSheetIdWithIndex
+                const finalStyleSheetId = shouldUseRollingStyleId ? so.styleSheetIdWithItorNum! : so.styleSheetIdWithIndex!
                 if (shouldUseRollingStyleId) {
                     (activeRollingClassIds ??= new Set()).add(finalStyleSheetId)
                 }
@@ -470,31 +550,15 @@ class StyleManager {
                     shouldUpdateItor = true
 
                     // 如果是第一次应用样式，或者需要滚动生成样式，则生成 stylesheet
-                    const styleSheet = this.styleScripts.get(finalStyleSheetId) ?? this.createStyleSheet(finalStyleSheetId, so.evaluatedStyleObject)
+                    const styleSheet = this.styleScripts.get(finalStyleSheetId) ?? this.installStyleSheet(
+                        renderPreparedStyle(`.${finalStyleSheetId}`, so.prepared!, shouldUseRollingStyleId ? 'active' : undefined),
+                        getStyleSheetOrder(so.index, so.prepared!, so.signature),
+                    )
                     el.classList.add(finalStyleSheetId)
                     this.trackStyleClassAdded(el, finalStyleSheetId)
                     // 保存 stylesheet，更新引用计数
                     this.styleScripts.set(finalStyleSheetId, styleSheet)
                     this.collect(owner, finalStyleSheetId)
-                    if (shouldUseRollingStyleId) {
-                        const lastStyleSheetId = `${so.styleSheetIdWithIndex}I${styleItorNum - 1}`
-                        // 如果是滚动生成样式，则移除上一个 classname
-                        el.classList.remove(lastStyleSheetId)
-                        this.trackStyleClassRemoved(el, lastStyleSheetId)
-                        // 更新引用计数，但归零时并不会立即清除 stylesheet，因为它可能还被 cloneNode 用到
-                        // 如果现在清除，cloneNode 的样式会瞬间失效
-                        this.updateRefCount(lastStyleSheetId, -1)
-                        // CAUTION 长度为 2 的滚动 buffer：上一个 stylesheet 留给 cloneNode 用，
-                        //  更早的（已无引用的）立即清除，否则长期存活、样式高频变化的组件
-                        //  会让 document.adoptedStyleSheets 无上限累积。
-                        if (styleItorNum >= 2) {
-                            const expiredStyleSheetId = `${so.styleSheetIdWithIndex}I${styleItorNum - 2}`
-                            if ((this.idToRefCount.get(expiredStyleSheetId) ?? 0) <= 0) {
-                                this.deleteStyleSheet(expiredStyleSheetId)
-                                this.hostToStyleIds.get(owner)?.delete(expiredStyleSheetId)
-                            }
-                        }
-                    }
                 }
             } else {
                 // 收集普通样式，最后统一赋值
@@ -502,26 +566,36 @@ class StyleManager {
                 // nestedStyles 肯定是空的，这里就不用管了
             }
         })
-        // CAUTION 响应式 style 的「形态翻转」清理：上一轮走了 stylesheet 路径（rolling class
-        //  挂在元素上），这一轮同一个条目变成了纯 inline / null / 条目消失时，必须把残留的
-        //  rolling class 摘掉，否则旧 stylesheet 里的嵌套规则（:hover、子元素选择器等）永远生效。
-        //  rolling class 一定以本元素独享的 elToStyleId（含随机段）为前缀，
-        //  静态/跨元素共享的 stylesheet class 不受影响。
-        const rollingBase = this.elToStyleId.get(el)
-        if (rollingBase) {
-            const trackedIds = this.elToStyleClassIds.get(el)
-            if (trackedIds) {
-                for (const id of trackedIds) {
-                    if (id.startsWith(rollingBase) && !activeRollingClassIds?.has(id)) {
-                        el.classList.remove(id)
-                        trackedIds.delete(id)
-                        this.updateRefCount(id, -1)
-                        // 推进 itor：翻回 stylesheet 路径时用新的 id，
-                        //  且下一次滚动的 expired 清理（itor-2）能删掉这里退役的 stylesheet
-                        shouldUpdateItor = true
-                    }
+        // 内容 id 的「形态翻转」清理：上一轮某个条目挂着内容 id，这一轮它消失了、改走行内、
+        //  或退回了 rolling 路径——摘掉 class、释放引用，否则旧表里的嵌套规则永远生效。
+        if (contentIds) {
+            for (let i = 0; i < contentIds.length; i++) {
+                const id = contentIds[i]
+                if (id !== undefined && splitStyleObjects[i]?.contentId === undefined) {
+                    el.classList.remove(id)
+                    contentIds[i] = undefined
+                    this.release(owner, id)
                 }
             }
+        }
+        const rollingFrames = this.elToRollingStyleFrames.get(el)
+        if (rollingFrames) {
+            if (rollingFrames.active) {
+                const trackedIds = this.elToStyleClassIds.get(el)!
+                for (const id of rollingFrames.active) {
+                    el.classList.remove(id)
+                    trackedIds.delete(id)
+                }
+                shouldUpdateItor = true
+            }
+            if (rollingFrames.previous) {
+                for (const id of rollingFrames.previous) this.release(owner, id)
+            }
+            rollingFrames.previous = rollingFrames.active
+            rollingFrames.active = activeRollingClassIds
+            if (!rollingFrames.active && !rollingFrames.previous) this.elToRollingStyleFrames.delete(el)
+        } else if (activeRollingClassIds) {
+            this.elToRollingStyleFrames.set(el, {active: activeRollingClassIds, previous: undefined})
         }
         if (shouldUpdateItor) {
             this.elToStyleIdItorNum.set(el, styleItorNum + 1)
@@ -566,147 +640,23 @@ class StyleManager {
         setAttribute(el, 'style', stylePatches, el instanceof SVGElement)
     }
     isNestedStyleObject(key: string, styleObject: any): boolean {
-        // TODO 使用这种方式来判断是不是嵌套的，未来可能有问题
-        return key !== '@keyframes' && isPlainObject(styleObject)
+        return isNestedStyleObjectShared(key, styleObject)
     }
     splitStyleObject(styleObject: StyleObject): { simpleStyles: StyleObject, nestedStyles: StyleObject } {
-        if (typeof styleObject === 'string') {
-          return { simpleStyles: styleObject, nestedStyles: {} }
-        }
-        // CAUTION null/undefined 返回空对象而不是空字符串：'' 作为 patch 会在 setAttribute
-        //  里整体覆写 cssText，把数组里其他 style 对象刚写入的值一起清掉
-        //  （style={[base, () => cond() ? {...} : null]} 是自然写法）。
-        //  上一轮残留 key 的清除由 elToInlineStyleKeys 的 diff 逻辑负责，不需要 '' 兜底。
-        if (styleObject === null || styleObject === undefined) {
-          return { simpleStyles: {}, nestedStyles: {} }
-        }
-
-        const simpleStyles: StyleObject = {}
-        const nestedStyles: StyleObject = {}
-        for (const key in styleObject) {
-            // 除了值是 PlainObject 的情况，@keyframes 和 animation 也是依赖 CSS selector 的
-            // 因此也被按照 nested style 处理
-            if (key === '@keyframes' || key === 'animation' || this.isNestedStyleObject(key, styleObject[key])) {
-                nestedStyles[key] = styleObject[key]
-            } else {
-                simpleStyles[key] = styleObject[key]
-            }
-        }
-        
-        return { simpleStyles, nestedStyles }
+        return splitStyleObjectShared(styleObject) as { simpleStyles: StyleObject, nestedStyles: StyleObject }
+    }
+    stringifyStyleObject(styleObject: StyleObject): string {
+        return stringifyStyleObjectShared(styleObject)
     }
     stringifyKeyFrameObject(keyframeObject: StyleObject): string {
-        return Object.entries(keyframeObject).map(([key, value]) => {
-            return `${key} {
-                ${this.stringifyStyleObject(value)}
-            }`
-        }).join('\n')
+        return stringifyKeyFrameObjectShared(keyframeObject)
     }
-    generateInlineAnimationContent(selector: string, styleObject: StyleObject) {
-        const animationContent: string[] = []
-        let animationName = ''
-        animationName = `animation-${Math.random().toString(36).slice(2)}`
-        if (styleObject['@keyframes']) {
-            const keyframeContent = `@keyframes ${animationName} {
-${this.stringifyKeyFrameObject(styleObject['@keyframes'])}
-}`
-            animationContent.push(keyframeContent)
-        }
-
-        if (styleObject.animation) {
-            // CAUTION 多个动画的分隔符是逗号（与 CSS animation 简写语法一致），空格连接会让
-            //  整条声明非法、被浏览器静默丢弃；@self 用 /g 全部替换，数组里每一项都可能引用它。
-            const animationValue = (Array.isArray(styleObject.animation) ? styleObject.animation.join(', ') : styleObject.animation)!.replace(/@self/g, animationName)
-            animationContent.push(`
-${selector} {
-    animation: ${animationValue};
-}
-`)
-        }
-
-        return animationContent
+    generateInlineAnimationContent(selector: string, styleObject: StyleObject): string[] {
+        return generateInlineAnimationContentShared(selector, styleObject)
     }
     generateStyleContent(selector: string, styleObject: StyleObject): string[] {
-
-        const valueStyleObject = { ...styleObject }
-        const nestedStyleEntries: [string, any][] = []
-        const keyframeObj: StyleObject = {}
-
-        for (const key in valueStyleObject) {
-            if (key === '@keyframes' || key === 'animation') {
-                keyframeObj[key] = valueStyleObject[key]
-                delete valueStyleObject[key]
-            } else if (this.isNestedStyleObject(key, valueStyleObject[key])) {
-                nestedStyleEntries.push([key, valueStyleObject[key]])
-                delete valueStyleObject[key]
-            } else if(valueStyleObject[key] === null|| valueStyleObject[key] === undefined || typeof valueStyleObject[key] === 'boolean') {
-                // boolean 来自 {fontWeight: cond && 'bold'} 的条件写法，语义同 null（F36 同类）
-                delete valueStyleObject[key]
-            }
-        }
-
-        const contents: string[] = [`${selector} {
-${this.stringifyStyleObject(valueStyleObject)}
-}`]
-
-        const animateContent = this.generateInlineAnimationContent(selector, keyframeObj)
-        contents.push(...animateContent)
-
-        return nestedStyleEntries.reduce((acc, [key, nestedObject]: [string, any]) => {
-            // 支持 at-rules for media/container query
-            if (key.startsWith('@')) {
-                // CAUTION 递归结果是 string[]，必须显式 join('\n')：
-                //  直接内插进模板字符串会按 ',' 连接，at-rule 里第一条之后的所有规则
-                //  （嵌套 selector、@keyframes/animation）都会变成非法 CSS 被浏览器静默丢弃。
-                return acc.concat(`${key} {
-    ${this.generateStyleContent(selector, nestedObject).join('\n')}
-}`)
-            }
-
-            return acc.concat(this.generateStyleContent(scopeNestedSelector(selector, key), nestedObject))
-        }, contents)
-
+        return generateStyleContentShared(selector, styleObject)
     }
-}
-
-/**
- * 把嵌套样式 key 作用域化到 selector 下。
- * CAUTION 必须逐个处理逗号分隔的 selector，且 '&' 要全部替换：
- *  - 'X, Y' 的每个部分都要被作用域化，否则第一个之后的 selector 要么带着残留的
- *    顶层 '&' 永不匹配，要么（不含 & 时）变成未作用域的全局 selector 污染组件外元素；
- *  - 残留在顶层 stylesheet 里的 '&' 还会让整条规则的匹配在 Chromium 下不稳定。
- *  逗号切分要跳过括号/方括号/引号内部（:is(.a, .b)、[data-x="1,2"] 里的逗号不是分隔符）。
- */
-function scopeNestedSelector(selector: string, key: string): string {
-    return splitSelectorList(key).map(part => {
-        const trimmed = part.trim()
-        return trimmed.includes('&') ? trimmed.replaceAll('&', selector) : `${selector} ${trimmed}`
-    }).join(', ')
-}
-
-// 按顶层逗号切分 selector 列表（忽略 () / [] / 引号内部的逗号）
-function splitSelectorList(input: string): string[] {
-    const parts: string[] = []
-    let depth = 0
-    let quote: string | null = null
-    let start = 0
-    for (let i = 0; i < input.length; i++) {
-        const ch = input[i]
-        if (quote) {
-            if (ch === quote && input[i - 1] !== '\\') quote = null
-        } else if (ch === '"' || ch === "'") {
-            quote = ch
-        } else if (ch === '(' || ch === '[') {
-            depth++
-        } else if (ch === ')' || ch === ']') {
-            depth--
-        } else if (ch === ',' && depth === 0) {
-            parts.push(input.slice(start, i))
-            start = i + 1
-        }
-    }
-    parts.push(input.slice(start))
-    return parts
 }
 
 type StyleObject = { [k: string]: any }
@@ -870,28 +820,42 @@ export class StaticHost implements Host {
         assert(this.element === this.placeholder, 'should never rerender')
         if (isAxiiDiagnosticsEnabled()) warnIfRenderingConsumedElement(this.source)
 
+        const hydrating = isHydrating()
         // CAUTION 如果是 fragment，我们用一个 comment 节点来作为第一个元素，这样后面  destroy 的时候就能一次性 remove 掉。
-        this.element = this.source instanceof DocumentFragment ? document.createComment('fragment start') : this.source
-
-        // FIXME 应该要先 render 完所有的里面的 host。再插入自己才对。不然里面的 host render 会触发 layout.
-        // insertBefore(this.element, this.placeholder)
-        //
-        // // 如果是 fragment，那么还要插入真实内容
-        // if (this.source instanceof DocumentFragment) {
-        //     insertBefore(this.source, this.placeholder)
-        // }
+        // Hydrate：认领已有 <!--fragment start-->（§3.2.4 FTS / G3-Fr），禁止新建。
+        if (this.source instanceof DocumentFragment) {
+            this.element = hydrating
+                ? claimFragmentStartBefore(this.placeholder)
+                : document.createComment('fragment start')
+            if (hydrating) {
+                // Rematerialize main-root deferred element children, then claim placeholders
+                // in the fragment region (createElement left stubs under §3.3.d force-defer).
+                rematerializeDeferredFragmentChildren(this.source)
+                reconcileFragmentHydrateChildren(this.source, this.element, this.placeholder)
+                // Leftover static axii:t / axii:0 (no unhandledChildren path)
+                stripAxiiTextBoundariesBetween(this.element, this.placeholder)
+            }
+        } else {
+            this.element = this.source
+        }
 
         this.collectInnerHost()
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.collectDetachStyledChildren()
         this.renderReactiveHosts()
-        //
-        insertBefore(this.element, this.placeholder)
-        // 如果是 fragment，那么还要插入真实内容
-        if (this.source instanceof DocumentFragment) {
-            insertBefore(this.source, this.placeholder)
+
+        if (!hydrating) {
+            insertBefore(this.element, this.placeholder)
+            // 如果是 fragment，那么还要插入真实内容
+            if (this.source instanceof DocumentFragment) {
+                insertBefore(this.source, this.placeholder)
+            }
+        } else if (!(this.source instanceof DocumentFragment)) {
+            // 元素已在 placeholder 前；校正顺序（已正确时 insertBefore 为无操作）
+            insertBefore(this.element, this.placeholder)
         }
+        // hydrating Fragment：内容已在 fragment start 与 placeholder 之间，DocumentFragment 为空
 
         this.setupRefHandles()
         // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，

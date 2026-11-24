@@ -1,0 +1,82 @@
+/* axii site design tokens — Vercel-style visual system (single source of truth).
+   Light theme is the default (white background, near-black foreground) per C-11;
+   a dark theme pair is tracked as a Backlog item, not in scope for this round. */
+
+:root {
+  /* C-11: color tokens */
+  --axii-bg: #ffffff;
+  --axii-fg: #171717;
+  --axii-fg-muted: #666666;
+  --axii-border: #eaeaea;
+  --axii-accent: #0070f3;
+  --axii-code-bg: #0a0a0a;
+
+  /* C-13: radii — two steps */
+  --axii-radius: 6px;
+  --axii-radius-lg: 12px;
+
+  /* C-13: spacing scale */
+  --axii-space-1: 4px;
+  --axii-space-2: 8px;
+  --axii-space-3: 12px;
+  --axii-space-4: 16px;
+  --axii-space-6: 24px;
+  --axii-space-10: 40px;
+  --axii-space-12: 48px;
+
+  /* C-13: shadow — one elevation step */
+  --axii-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.04), 0 4px 8px -2px rgba(0, 0, 0, 0.06);
+  --axii-shadow-lg: 0 8px 24px -4px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+
+  /* C-13: content max-width */
+  --axii-content-width: 1080px;
+  /* C-13a: docs three-column width */
+  --axii-doc-width: 1400px;
+
+  /* Typography */
+  --axii-font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+  --axii-font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+
+  /* Code-block token colors (Geist-compatible palette, see DR-04) */
+  --axii-code-fg: #ededed;
+  --axii-code-token-keyword: #50e3c2;
+  --axii-code-token-string: #eb367f;
+  --axii-code-token-comment: #6b7280;
+  --axii-code-token-number: #7928ca;
+  --axii-code-token-function: #0070f3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--axii-bg);
+  color: var(--axii-fg);
+  font-family: var(--axii-font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--axii-accent);
+}
+
+button {
+  font-family: inherit;
+}

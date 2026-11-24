@@ -1,0 +1,78 @@
+{
+  "wrapParse": {
+    "childCount": 6,
+    "nodes": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "static-"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 3,
+        "data": "atomVal"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      }
+    ]
+  },
+  "afterRemoveBoundaries": {
+    "childCount": 2,
+    "texts": [
+      {
+        "type": 3,
+        "data": "hello"
+      },
+      {
+        "type": 3,
+        "data": "world"
+      }
+    ],
+    "t1StillSeparate": true,
+    "identityPreserved": false
+  },
+  "afterTextOnlyDestroy": {
+    "remaining": [
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      },
+      {
+        "type": 8,
+        "data": "axii:t"
+      },
+      {
+        "type": 8,
+        "data": "/"
+      }
+    ],
+    "orphanCommentCount": 4
+  },
+  "radioPropOuter": {
+    "outer": "<input type=\"radio\">",
+    "hasAttr": false
+  },
+  "radioParseChecked": true,
+  "postHydrateShape": {
+    "childCount": 2,
+    "claimedEqual": true,
+    "stillSeparate": true
+  },
+  "primitiveHostWouldDouble": "if hydrate uses CSR PrimitiveHost.render() without claim, creates extra Text"
+}

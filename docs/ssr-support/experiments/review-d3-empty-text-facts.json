@@ -1,0 +1,40 @@
+{
+  "stamp": "review-d3-empty-text-2026-08-06",
+  "environment": "Playwright Chromium via node --input-type=module",
+  "proposition": "Empty Text nodes cannot round-trip through HTML serialization; axii:t wrappers do not restore them",
+  "emptyAlone": {
+    "liveCount": 1,
+    "html": "",
+    "parseCount": 0
+  },
+  "emptyBeforeComment": {
+    "liveCount": 2,
+    "html": "<!--rx list item-->",
+    "parse": [{ "type": 8, "data": "rx list item" }]
+  },
+  "emptyWrapped": {
+    "liveCount": 3,
+    "html": "<!--axii:t--><!--axii:/t-->",
+    "parseCount": 2,
+    "parse": [
+      { "type": 8, "data": "axii:t" },
+      { "type": 8, "data": "axii:/t" }
+    ],
+    "note": "No Text node between markers after parse — contradicts design §3.2.1 B1"
+  },
+  "twoEmptyWrapped": {
+    "parseCount": 4,
+    "parse": [
+      { "type": 8, "data": "axii:t" },
+      { "type": 8, "data": "axii:/t" },
+      { "type": 8, "data": "axii:t" },
+      { "type": 8, "data": "axii:/t" }
+    ]
+  },
+  "clearedTextRoundtrip": {
+    "liveCount": 1,
+    "html": "",
+    "parseCount": 0
+  },
+  "csrImplication": "AtomHost/FunctionHost/PrimitiveHost empty string (null/undefined/boolean→'') keeps a live Text in CSR; SSR HTML cannot encode that Text for hydrate claim"
+}

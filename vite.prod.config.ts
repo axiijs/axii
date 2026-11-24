@@ -16,6 +16,7 @@ export default {
       entry: {
         axii: resolve(__dirname, 'src/index.ts'),
         'vite-plugin': resolve(__dirname, 'src/vitePlugin.ts'),
+        ssr: resolve(__dirname, 'src/ssr.ts'),
       },
       name: 'axii',
       formats: ['es', 'cjs'],
