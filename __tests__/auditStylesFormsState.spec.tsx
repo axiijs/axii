@@ -506,7 +506,8 @@ describe('audit attrs: regressions for the fixes', () => {
             ['an empty value in a later plain entry', ['color: rgb(0, 0, 255); margin-top: 3px', {color: null}]],
         ]
         test.each(stringEntryCases)('SSR before hydration matches CSR for string entries: %s', (_label, style) => {
-            const saved = document.adoptedStyleSheets
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
             document.adoptedStyleSheets = []
             try {
                 function App({}: any, {createElement}: RenderContext) {
@@ -626,7 +627,8 @@ describe('audit attrs: regressions for the fixes', () => {
         })
 
         test('SSR emits the same classes and inline style as CSR when a stylesheet entry yields; hydration claims them', () => {
-            const saved = document.adoptedStyleSheets
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
             try {
@@ -671,7 +673,8 @@ describe('audit attrs: regressions for the fixes', () => {
 
         // 服务端不解析简写：删分项时保留简写（激活前这一个分项不对），激活后 CSR 重写行内样式，与纯 CSR 一致
         test('shorthand/longhand corners the server cannot resolve are corrected by hydration', () => {
-            const saved = document.adoptedStyleSheets
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
             try {
@@ -690,7 +693,8 @@ describe('audit attrs: regressions for the fixes', () => {
         })
 
         test('a hydrated element flips between yielding and plain inline and back', async () => {
-            const saved = document.adoptedStyleSheets
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
             try {
