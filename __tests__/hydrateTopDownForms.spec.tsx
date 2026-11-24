@@ -430,7 +430,23 @@ describe('Portal (§2.6.5)', () => {
         expect([kids(outer), kids(inner)]).toEqual(['', ''])
     })
 
-    test('the development invariants check every portal container: a portal host left unclaimed would be reported (it is not)', () => {
+    test('the development invariants (§4.4) run for every portal container, not only the main one', () => {
+        // 探针：原始标记里的 axii:* 注释在激活之后仍在容器里，不变量按「残留标记」报告（主容器一直如此）。放在 Portal 的内容里，
+        //  只有 Portal 的容器也被检查时才报告
+        function App({}: any, {createElement, createPortal}: RenderContext) {
+            return <div>{createPortal(<p dangerouslySetInnerHTML={{__html: '<!--axii:0-->x'}}/>, 'fp-one')}</div>
+        }
+        const ssr = renderToString(createElement(App, null))
+        const hyd = mount()
+        const one = mount('fp-one')
+        hyd.innerHTML = ssr.html
+        one.innerHTML = ssr.portals['fp-one'].html
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({mismatches: mismatches(), invariants: (invariants() as Error[]).map(e => e.message)})
+            .toEqual({mismatches: [], invariants: ['[axii] hydration invariant broken: a leftover <!--axii:0--> marker (AXII_HYDRATION_INVARIANT)']})
+    })
+
+    test('a junk node after <!--root--> in a portal container is removed and reported once (R5)', () => {
         function App({}: any, {createElement, createPortal}: RenderContext) {
             return <div>{createPortal(<p>x</p>, 'fp-one')}</div>
         }
@@ -440,8 +456,61 @@ describe('Portal (§2.6.5)', () => {
         hyd.innerHTML = ssr.html
         one.innerHTML = ssr.portals['fp-one'].html + '<!--axii:0-->'
         hydrateRootTopDown(hyd, createElement(App, null))
-        // 容器这一层 <!--root--> 之后的杂节点按 R5 删除（一条失配），之后不变量不报告
         expect({one: kids(one), mismatches: mismatches().length, invariants: invariants()}).toEqual({one: '<p>"x"</p><!--root-->', mismatches: 1, invariants: []})
+    })
+})
+
+describe('AXII_HYDRATION_ATTRIBUTE_RESIDUE (§4.1)', () => {
+    // 判定是 markupNames.isAttributeWrittenByProps：服务端为客户端 props 写下的属性名都不算残留
+    const make = () => {
+        const on = atom(true)
+        const hover = () => ({color: 'rgb(1, 2, 3)', '&:hover': {color: 'red'}})
+        return function App({}: any, {createElement, createSVGElement}: RenderContext) {
+            return <form>
+                <div style={hover} title="t"/>
+                <div className="c" style={{color: 'blue'}} data-x="1" uuid="u1" aria-label="l" hidden={() => !on()}/>
+                <label htmlFor="i">l</label>
+                <input id="i" value="v" readOnly tabIndex={1}/>
+                <input type="checkbox" value={true}/>
+                <input type="checkbox" checked={on}/>
+                <input defaultValue="d"/>
+                <select value="b"><option value="a">a</option><option value="b">b</option></select>
+                <textarea value="tv"/>
+                {createSVGElement('svg', {viewBox: '0 0 1 1'}, createSVGElement('path', {strokeWidth: 2, d: 'M0 0'}), createSVGElement('use', {xlinkHref: '#p'}))}
+                <button disabled={true}>b</button>
+            </form>
+        }
+    }
+
+    test('unmodified server output (style classes and markers, className, uuid, aria / data-*, htmlFor, controlled inputs, select, svg names, reactive props) reports no residue', () => {
+        const hyd = mount()
+        hyd.innerHTML = renderToString(createElement(make(), null)).html
+        hydrateRootTopDown(hyd, createElement(make(), null))
+        expect(reports).toEqual([])
+    })
+
+    test('a server-only attribute on a clean claim is reported once per element with its names; an approximate claim (§4.1) clears it instead; diagnostics off: no report', () => {
+        function App({}: any, {createElement}: RenderContext) {
+            return <div><b>x</b><i id="keep">y</i></div>
+        }
+        const html = renderToString(createElement(App, null)).html
+        const hyd = mount()
+        hyd.innerHTML = html.replace('<b>', '<b title="server" data-s="1">').replace('<i id="keep">', '<i id="drift" title="server">')
+        hydrateRootTopDown(hyd, createElement(App, null))
+        const residue = devReports('AXII_HYDRATION_ATTRIBUTE_RESIDUE') as Error[]
+        expect({
+            residue: residue.map(e => e.message.match(/<(\w+)> claimed from the server keeps attribute\(s\) ([\w-, ]+) that/)!.slice(1).join(': ')),
+            b: hyd.querySelector('b')!.getAttributeNames(),
+            i: hyd.querySelector('i')!.getAttributeNames(),
+            mismatches: mismatches().length,
+        }).toEqual({residue: ['b: title, data-s'], b: ['title', 'data-s'], i: ['id'], mismatches: 1})
+
+        configureDiagnostics({enabled: false, onError: (e: unknown) => { reports.push(e) }})
+        reports = []
+        const off = mount()
+        off.innerHTML = html.replace('<b>', '<b title="server">')
+        hydrateRootTopDown(off, createElement(App, null))
+        expect({reports, b: off.querySelector('b')!.getAttributeNames()}).toEqual({reports: [], b: ['title']})
     })
 })
 
