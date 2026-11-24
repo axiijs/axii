@@ -18,6 +18,9 @@ import {reportAxiiError} from "./diagnostics"
  *   integration point）的静态子元素时，认领时改为 true（≡ CSR 的 DOM.adoptSvgChild，#56）。
  * - node：认领或新建后的真实节点；认领后 rawProps / rawChildren 置为 undefined（瘦身，§2.2），描述本身永远不变成节点（§3.1.1）。
  * - listenerBoundArgs：ComponentHost.createHTMLOrSVGElement 写入，认领时转交给 node。
+ * - walkMark：认领之前是收集它的认领遍历的编号（StaticHost.hydrateSource，hydrationCursor.enterTopDownWalk；≡ CSR 外层
+ *   createElement 的提升：它的动态 child 与元数据归那个 StaticHost），0 是没有被收集过；认领之后是最近一次放置的时刻。只存整数
+ *   （Smi），不引用 Host，瘦身后的壳不多保留对象。用法见 hydrationCursor.ts「同一个描述（或现成节点）的多次放置」。
  *
  * CAUTION 字段全部在构造器里按同一顺序赋值，然后 preventExtensions：形状单态；严格模式下往描述上写未知属性抛 TypeError
  *  （框架代码都是 ES module，写错名字在开发期与生产都会抛错）。字段名不得出现在任何元素接口上（用户读 el.<名字> 会拿到
@@ -30,6 +33,7 @@ export class HydrationElement {
     isSVG: boolean
     node: Element | DocumentFragment | null
     listenerBoundArgs: any[] | undefined
+    walkMark: number
     constructor(tag: string | typeof Fragment, rawProps: AttributesArg | null | undefined, rawChildren: any[], isSVG: boolean) {
         this.tag = tag
         this.rawProps = rawProps
@@ -37,18 +41,13 @@ export class HydrationElement {
         this.isSVG = isSVG
         this.node = null
         this.listenerBoundArgs = undefined
+        this.walkMark = 0
         Object.preventExtensions(this)
     }
 }
 
-/**
- * 由 Host 认领的描述瘦身时 rawChildren 写成它（hydrationCursor.markTopDownHostPlaced）：与「作为静态 child 认领」区分开，
- * 不多占字段、不分配。是空数组：读已认领描述的 children 的地方（Compact 判定的访问器、隐含 tbody 的判定）当作没有 children。
- */
-export const HOST_PLACED_CHILDREN: any[] = Object.freeze([]) as unknown as any[]
-
 /** 描述的预置字段名（§2.2）。开发期 Proxy 跳过它们；用例断言它们不在任何元素接口上。 */
-export const HYDRATION_ELEMENT_FIELDS = ['tag', 'rawProps', 'rawChildren', 'isSVG', 'node', 'listenerBoundArgs'] as const
+export const HYDRATION_ELEMENT_FIELDS = ['tag', 'rawProps', 'rawChildren', 'isSVG', 'node', 'listenerBoundArgs', 'walkMark'] as const
 
 // ───────────────────────── 开发期 Proxy（§3.4） ─────────────────────────
 

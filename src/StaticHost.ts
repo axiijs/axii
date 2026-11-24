@@ -30,17 +30,22 @@ import {
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 import {claimFragmentStartBefore, getHydrateRollingStyleBase, isAnyHydrating, isHydrating, reconcileFragmentHydrateChildren, runOutsideHydration, stripAxiiTextBoundariesBetween} from "./hydration";
-import {hydrateElementDescription, rematerializeDeferredFragmentChildren, type TopDownInnerHosts} from "./DOM";
+import {claimTopDownDeferredShell, hydrateElementDescription, rematerializeDeferredFragmentChildren, type TopDownInnerHosts} from "./DOM";
 import {createHydrateHost} from "./createHost";
 import {HydrationElement, HydrationSlot, isHydrationElement, isHydrationSlot, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
     claimTopDownComment,
+    enterTopDownWalk,
+    getTopDownLift,
+    getTopDownWalk,
     insertTopDownFreshElements,
+    leaveTopDownWalk,
+    liftTopDownLiveNode,
     markTopDownFreshElements,
-    markTopDownHostPlaced,
     placeTopDownExistingNode,
     removeTopDownCounterpart,
     reportTopDownLiveNode,
+    stampTopDownHost,
 } from "./hydrationCursor";
 import {innerHTMLOf} from "./markupNames";
 import {isDomNode} from "./nodeType";
@@ -925,13 +930,11 @@ const EMPTY_PATH: number[] = []
  * 唯一的文本 child（非 Fragment）是 CSR 的 textContent 快速路径，没有动态 child；内容是原始标记的元素不消费 children。
  * source：最近的带 JSX source 的祖先或自身（≡ liftElementMetadata 的继承规则）。
  */
-// 一次收集里已经走过的描述与现成节点。同一个描述（或现成节点）在同一棵静态子树里出现两次时，CSR 的 child 循环只在第一次提升
-//  它的动态 child（之后它的元数据已被消费），这里也只收集一次；遍历时第二次出现按现成节点处理、不取子 Host
-//  （DOM.hydrateExistingChild）。否则后面兄弟的子 Host 会错位（#55 B4 独立审查）。收集不重入（嵌套的 StaticHost 在遍历中才收集），
-//  所以用一个模块级的 Set，每次收集前清空。
-const collectedOnce = new Set<object>()
-
-function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], inheritedSource: AxiiSource | undefined, out: UnhandledChildInfo[]) {
+// 收集就是 CSR createElement 的提升（hydrationCursor.ts「同一个描述的多次放置」第 1 条）：子描述的 liftedBy 记下这次遍历，现成节点
+//  记在 liveLifts。这次激活里已经被收集过的不再收集：同一棵静态子树里第二次出现（CSR 的 child 循环只在第一次提升它的元数据，
+//  #55 B4 独立审查），或者已被外层正在进行的遍历收集过（CSR 里外层的 createElement 先提升走了，#55 B4b）。
+//  已认领的描述（这次激活里已经放置过）也不收集，元数据在第一次已被提升走。遍历时按 DOM.hydrateDescriptionChildren 的规则处理它们。
+function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], inheritedSource: AxiiSource | undefined, out: UnhandledChildInfo[], walk: number) {
     const rawProps = desc.rawProps
     const isFragment = desc.tag === Fragment
     if (!isFragment && rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null) return
@@ -948,23 +951,21 @@ function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], i
         const childType = typeof child
         if (childType === 'string' || childType === 'number' || childType === 'bigint') continue
         if (isHydrationElement(child)) {
-            // 已认领的描述（同一个描述出现第二次，C6）按它的 node 处理，元数据在第一次已被提升走（DOM.hydrateExistingChild）
-            if (child.node === null && !collectedOnce.has(child)) {
-                collectedOnce.add(child)
-                collectTopDownDynamicChildren(child, path.concat(index), source, out)
+            if (child.node === null && getTopDownLift(child) === 0) {
+                child.walkMark = walk
+                collectTopDownDynamicChildren(child, path.concat(index), source, out, walk)
             }
         } else if (isDomNode(child)) {
-            if (collectedOnce.has(child)) continue
-            collectedOnce.add(child)
-            // 现成的节点（§2.6.8）：CSR 的 child 循环把它的 unhandledChildren（带真实 placeholder 的动态 child）提升到父级，
-            //  ≡ liftElementMetadata 的 path 与 source 规则。它们由 createTopDownInnerHost 按 CSR 构造、遍历到它时按 CSR 渲染
+            // 现成的节点（§2.6.8）：CSR 的 child 循环把它的 unhandledChildren（带真实 placeholder 的动态 child）提升到父级并从节点上
+            //  取走，≡ liftElementMetadata 的 path 与 source 规则。它们由 createTopDownInnerHost 按 CSR 构造、遍历到它的静态位置时按 CSR
+            //  渲染（DOM.hydrateLiveChild，个数记在 lift 里）；之前先渲染它的 Host 因此不再为它们建内层 Host（≡ CSR）
             const dynamic = (child as ExtendedElement).unhandledChildren
-            if (dynamic?.length) {
-                const childSource = (child as ExtendedElement).__axiiSource ?? source
-                for (const info of dynamic) {
-                    out.push({placeholder: info.placeholder, child: info.child, path: path.concat(index, info.path), source: info.source ?? childSource})
-                }
+            if (liftTopDownLiveNode(child, dynamic?.length ?? 0) === undefined || !dynamic?.length) continue
+            const childSource = (child as ExtendedElement).__axiiSource ?? source
+            for (const info of dynamic) {
+                out.push({placeholder: info.placeholder, child: info.child, path: path.concat(index, info.path), source: info.source ?? childSource})
             }
+            ;(child as ExtendedElement).unhandledChildren = undefined
         } else {
             out.push({
                 placeholder: (childType === 'function' ? TEXT_SLOT : UNHANDLED_CHILD_SLOT) as unknown as UnhandledPlaceholder,
@@ -1212,11 +1213,11 @@ export class StaticHost implements Host {
         let node: HTMLElement | SVGElement | DocumentFragment
         if (isHydrationElement(source)) {
             node = source.node as HTMLElement | SVGElement | DocumentFragment
-            markTopDownHostPlaced(source)
+            stampTopDownHost(source)
         } else {
             node = source as HTMLElement | SVGElement | DocumentFragment
             reportTopDownLiveNode(node)
-            markTopDownHostPlaced(node)
+            stampTopDownHost(node)
         }
         removeTopDownCounterpart(node)
         this.source = node
@@ -1225,18 +1226,26 @@ export class StaticHost implements Host {
     }
     /**
      * hydrate 的第 1、2 步（StaticHost.hydrate 与 CompactElementHost.hydrate 共用）：按文档顺序构造静态子树里的子 Host，
-     * 再认领 source 描述（Fragment 先认领 `fragment start`），认领后 source 换成节点、element 换成元素。
+     * 再认领 source 描述（Fragment 先认领 `fragment start`），认领后 source 换成节点、element 换成元素。收集与认领是一次认领遍历
+     * （hydrationCursor.enterTopDownWalk），子描述记下它的编号。source 已被外层另一次遍历收集过时只认领元素（见方法里的说明）。
      * 调用方保证 source 是还没有认领的描述（已认领的、现成的节点见 hydrateExistingSource）。
      */
     hydrateSource(): void {
         const desc = this.source as unknown as HydrationElement
         const isFragment = desc.tag === Fragment
+        // 它被外层正在进行的遍历收集过（那里还有它的一个静态位置，CSR 里那次 createElement 已经把它的元数据提升走）：只认领元素，
+        //  内容留给那个遍历（hydrationCursor.ts「同一个描述的多次放置」第 2 条）。这个 Host 没有内层 Host，≡ CSR
+        if (getTopDownLift(desc) !== 0) {
+            if (isFragment) this.element = claimTopDownComment('fragment start')
+            const node = claimTopDownDeferredShell(desc, false, true)
+            if (!isFragment) this.element = node as HTMLElement | SVGElement
+            this.source = node
+            return
+        }
+        const outerWalk = enterTopDownWalk()
         // 1. 构造子 Host（≡ collectInnerHost）
         const infos: UnhandledChildInfo[] = []
-        collectedOnce.clear()
-        collectedOnce.add(desc)
-        collectTopDownDynamicChildren(desc, EMPTY_PATH, desc.rawProps?.__source, infos)
-        collectedOnce.clear()
+        collectTopDownDynamicChildren(desc, EMPTY_PATH, desc.rawProps?.__source, infos, getTopDownWalk())
         let innerHosts: TopDownInnerHosts | undefined
         if (infos.length === 1) {
             const host = this.createTopDownInnerHost(infos[0])
@@ -1254,9 +1263,10 @@ export class StaticHost implements Host {
         // 2. 认领
         if (isFragment) this.element = claimTopDownComment('fragment start')
         const node = hydrateElementDescription(desc, innerHosts)
+        leaveTopDownWalk(outerWalk)
         if (!isFragment) this.element = node as HTMLElement | SVGElement
         this.source = node
-        markTopDownHostPlaced(desc)
+        stampTopDownHost(desc)
     }
     // ≡ createInnerHost，分派换成 createHydrateHost，placeholder 是 slot。CAUTION 两处的 context / position 规则一起改。
     createTopDownInnerHost(info: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
@@ -1701,11 +1711,11 @@ export class CompactElementHost extends StaticHost {
             let node: HTMLElement | SVGElement
             if (isHydrationElement(source)) {
                 node = source.node as HTMLElement | SVGElement
-                markTopDownHostPlaced(source)
+                stampTopDownHost(source)
             } else {
                 node = source as HTMLElement | SVGElement
                 reportTopDownLiveNode(node)
-                markTopDownHostPlaced(node)
+                stampTopDownHost(node)
             }
             placeTopDownExistingNode(node)
             this.source = this.element = node

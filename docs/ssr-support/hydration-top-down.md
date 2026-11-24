@@ -1,6 +1,6 @@
 # hydration 自顶向下认领 — 设计（#55）
 
-- 实现进度：PR-A（#75）、B1（#80）、B2（#84）、B3（#89）、B4 已合入；B1–B4 与上文的差别分别记在 §7.6、§7.7、§7.8、§7.9。
+- 实现进度：PR-A（#75）、B1（#80）、B2（#84）、B3（#89）、B4（#93）、B4b（#95）已合入；B1–B4b 与上文的差别分别记在 §7.6、§7.7、§7.8、§7.9、§7.10。
 - 状态：设计稿，按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
 - 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）、#68（服务端 Compact 判定，排在实现 PR 之前修）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
@@ -120,6 +120,7 @@ export class HydrationElement {
                                       //  认领时再按 #56 的父元素规则补一条（见下面「isSVG」）
     node: Element | DocumentFragment | null       // 认领或新建后的真实节点
     listenerBoundArgs: any[] | undefined          // ComponentHost 写入，认领时转交给 node
+    walkMark: number                              // B4b：认领之前是收集它的认领遍历的编号（0：没有），认领之后是最近一次放置的时刻，见 §7.10
 }
 export function isHydrationElement(v: unknown): v is HydrationElement   // 判定只在这里定义
 ```
@@ -128,7 +129,7 @@ export function isHydrationElement(v: unknown): v is HydrationElement   // 判�
 - **不碰 DOM：** 不创建元素，不认领，不应用 props，不提升元数据。`unhandledChildren`、`unhandledAttr`、`refHandles`、`detachStyledChildren` 都由消费它的 Host 在认领时按 CSR 的同一规则建立（§2.4）。
 - **字段预置：** 全部字段在构造器里预置，然后 `Object.preventExtensions`。这样形状单态，用户写入未知属性在严格模式下抛错（§3.4）。只在激活路径上分配。
 - **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChild`（SVG 父元素在 `createElement` 的子节点循环里改建）。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 CSR 改建的数组分支（`adoptSvgArrayItems`）：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 报告并新建为 HTML 元素（B3；之前报告并抛出）。
-- **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
+- **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中（B4b 加的 `walkMark` 由同一条用例覆盖）。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
 - **两种对象：** 开发期返回包着描述的 Proxy，生产返回描述本身（§3.4）。用哪一种在 `beginHydration` 时按 `isAxiiDiagnosticsEnabled()` 定一次，同一次激活内不变。
 - **消费后瘦身：** 被认领或新建后，`rawProps` 和 `rawChildren` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。瘦身不会把描述变成节点：被闭包捕获的描述永远是描述（§3.1.1）。
 - **事后渲染：** 激活结束后，CSR 路径还可能遇到描述（例如在激活期间存下的 JSX，之后由函数子节点再次渲染）。`createHost` 在分派链**末尾**（所有常见类型之后、`assert(false)` 之前）判定描述：
@@ -675,7 +676,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **C10 的量化（D2，B4 验收）：** 激活中没有渲染过的列表（标签页、折叠区），之后第一次渲染时每行都是非 Compact 行，外加一个描述壳。B4 用 `retainedObjectDiagnostics` 对同一个 N 行列表比较两种情形：CSR 首次渲染，与「激活中建好、激活后才渲染」。给出每行多保留的对象数，按类型列出：Host（`StaticHost` 取代 `CompactElementHost`）、placeholder Comment、描述壳。数字写回本文。数字不可接受时，再考虑在 `createChildHost` 的非 Compact 分支上加一次描述判定，那是 CSR 列表新行路径上的一次常驻检查。
 - **B4 的结果（`hydrateTopDownForms.spec`「C10 quantification」，N = 200）：** 每行 Host +0、placeholder Comment +0、描述壳 +1。
   - 那次描述判定 B4 已经加上，理由不是 C10 的数字，而是 §3.3 的派生列表：`map(f).filter(p)` 激活之后重新放行的行是已认领的描述壳，要与 CSR 一样是 Compact 行（同一批元素、没有 `<!--rx list item-->`），只能在 `createChildHost` 里按描述的 node 重新判定。C10 的行走同一个判定，所以 Host 与 Comment 都与 CSR 相同：两边都是 200 个 `CompactElementHost`、列表里 1 个 Comment（列表自己的 placeholder）。
-  - 剩下的是 `list.data` 里的描述壳：每行一个 `HydrationElement`（6 个字段，`rawProps` / `rawChildren` 已瘦身为 `undefined`，只剩 `node`）。CSR 新行路径不知道行的下标，不写回。激活开始时诊断开启的话，data 里是包着壳的开发期 Proxy，每行再多一个 Proxy 对象（生产没有）。
+  - 剩下的是 `list.data` 里的描述壳：每行一个 `HydrationElement`（6 个字段，`rawProps` / `rawChildren` 已瘦身为 `undefined`，只剩 `node`；B4b 加了一个整数字段 `walkMark`，对象数不变，每个壳多一个字段槽位，§7.10）。CSR 新行路径不知道行的下标，不写回。激活开始时诊断开启的话，data 里是包着壳的开发期 Proxy，每行再多一个 Proxy 对象（生产没有）。
   - 代价：`createChildHost` 的非 Compact 分支多一次 `instanceof`，元素行（Compact 快速路径）不经过它。测量见 §7.9。
 
 ### 5.3 测量方法与原型数据
@@ -831,6 +832,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 | **B2：列表与数组** | 前提：#68 已合入（§2.6.4）。`RxListHost.hydrate`：Compact 用 #68 的判定，含嵌套 RxList 与写回；`StaticArrayHost.hydrate`：DirectNodes 与写回；扩展后的 F1i 生成器与 §2.4.1 的种类计数比较（已落地的种类） | 无新的 `test.fails`；现有 F1i、`ssrHydrate.lists` 在内部入口那一遍通过 | 三道门禁全绿；`rxListFuzz`；扩展后的 F1i（300 棵：DOM ≡ CSR、无报告、服务端节点全部保留、监听器在自己的位置）；种类计数逐树相等；F1d 增长倍数接近 4 倍（线性，内部入口）；激活后 `list.data` 里没有描述（§5.2）；产物检查 |
 | **B3：失配规则** | R1–R5（§4.2）；属性的边界（§4.1）；失配新建的元数据并入所属 StaticHost；R1–R5 的白盒用例；漂移 fuzz：在扩展后的 F1i 树上随机注入行增减、元素 ↔ 文本、标签替换、插入杂节点、删除标记、文本篡改，断言节点结构、文本、客户端 props 写下的属性与 CSR 相同，至少一条报告，从不静默，服务端独有属性只出现在已有报告的树里 | F4a、F4b、F4c、F4d；`ssrHydrate.mismatch` 在内部入口那一遍通过，§4.5 的断言保持 | 三道门禁全绿；漂移 fuzz 300 棵 × 多种注入；产物检查 |
 | **B4：其余形态与开发期检测** | Portal / `createPortal`（新游标栈）；`reusable()` 与 `createHost` 链尾的描述分支（C6、C10）；`lazy`；现成节点与 NodeHost（§2.6.8）；§3.2 里标为 B4 的调用点（含 `Form.tsx`）；开发期 Proxy 与各条开发期报告（§3.4）；诊断开、关两遍（§3.4）；C10 的量化（§5.2） | 剩下的待实现标记全部去掉 | 三道门禁全绿；内部入口那一遍 15 个文件、待实现 0、诊断开关两遍都全绿；种类计数要求覆盖全部种类（§2.4.1）；C10 每行多保留的对象数写回 §5.2；内部入口激活加销毁后 `retainedObjectDiagnostics` 计数归零；产物检查 |
+| **B4b：同一个描述先由 Host 放置、后作为静态 child（修复）** | 收集即 CSR 的提升：描述的 `walkMark` 记下收集它的遍历；被收集过、还没认领的描述先由别的一方放置时只认领元素，收集它的遍历在它的静态位置上认领内容；每次放置记下时刻，已放置的描述 / 现成节点再次出现时按 CSR 的时间顺序决定挪不挪（§7.10） | 无新的 `test.fails` | 三道门禁全绿；`rxListFuzz`；回归用例在修复前先红、变异证明 |
 | **S：切换** | `hydrateRoot` 改用新模型（内部入口的实现就是它）；删除旧模型：§2.8 的代码、7.1 表里旧模型专用的 13 处、按模式分流处的旧分支与 `createElement` 循环里的旧分支、旧的 `hydratePortalContent`；`hydrationMode` 退回布尔量；删除旧入口那一遍与辅助函数里的入口切换（保留诊断开关两遍）；11 条 `test.fails` 改为 `test`；删除旧的 `claimCorners` 白盒用例并逐条给出对应（§8）；更新 `auditSsrHydrate` 的文件头注释、F1 的 describe 标题与 #54 留下的「已知局限」注释；`ssr-support.md` §3.1 / §3.7 的正文 | 11 条在公开的 `hydrateRoot` 上通过 | 三道门禁全绿（含诊断开关两遍）；`rxListFuzz`；A/B/A′（基线为 PR-A 之前的 main）；开发期不变量在全量用例下不报告；除接线外没有新逻辑，diff 以删除为主 |
 | **D：文档** | README（中英）、站点 `ssr` 一节：新增「hydration 的契约变化」，内容是 C1–C10、§3.1.1 与 ref 改写的前后对照（范围见 §3.1.2）；去掉「实验性」标注与 #54 的已知局限；CHANGELOG 条目交给 #61 汇总 | — | 站点检查脚本（`check-doc-coverage`、`check-exports`）；门禁全绿 |
 
@@ -916,7 +918,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **产物：** 内部入口独有的字符串（`hydrateTopDown.ts` 里开发期不变量的报错文本）不在 `dist`。`end of hydrate root children` 随容器层的 R5 挪进 `render.hydrateContainerTopDown`（Portal 可达），留在产物里，产物检查改看不变量的文本。
 - **独立审查后的修正：**
   - 同一个描述（或现成节点）在一棵静态子树里出现两次时，`StaticHost` 预先构造子 Host 只收集一次它的动态 child（≡ CSR：child 循环只在第一次提升元数据）；之前后面兄弟的子 Host 会错位、绑定落到别人的位置。收集用一个模块级的 `Set`，每次收集前清空（激活路径，每个描述一次 `has` / `add`）。
-  - CSR 里静态 child 在 `createElement` 时插入、Host 在之后渲染：同一个元素既是某个 Host 的 source、又是静态 child 时，最后落在 Host 那里。静态位置晚于 Host 出现时只删除服务端的对应物，不再挪走它。Host 认领的描述瘦身时 `rawChildren` 写成共享的 `HOST_PLACED_CHILDREN`（不分配），现成节点记在这次激活的 `WeakSet` 里。
+  - CSR 里静态 child 在 `createElement` 时插入、Host 在之后渲染：同一个元素既是某个 Host 的 source、又是静态 child 时，最后落在 Host 那里。静态位置晚于 Host 出现时只删除服务端的对应物，不再挪走它。Host 认领的描述瘦身时 `rawChildren` 写成共享的 `HOST_PLACED_CHILDREN`（不分配），现成节点记在这次激活的 `WeakSet` 里。（B4b 改为按放置的时刻判断、去掉了 `HOST_PLACED_CHILDREN` 与这个 `WeakSet`，并修了这时后面兄弟的子 Host 错位，见 §7.10。）
   - 失配新建、还在等所属 `StaticHost` 插入的元素（#73）被第二次放置时，作废那次插入。
   - 激活中建好、之后才放进树的 reusable，按构造时所属组件的 context 重建 innerHost（放进树时 `createHost` 改写的是 `ReusableHost.pathContext`）。
   - 物化描述时数组 child 里的描述项也先物化，SVG 同名标签的改建 ≡ CSR。
@@ -924,6 +926,24 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
   - 没有修、列在 §11 的：同一个 Fragment 描述出现两次时服务端多写的那份内容按 R3 / R5 报告并删除（元素是静默删除对应物，两者不一致）；字符数据父节点里的现成节点没有对应物可删；失配新建的子树里的 Portal 找不到容器时与旧模型一样抛错；列表行的 Compact 判定不看行里现成元素的 `detachStyledChildren`；跨两次激活渲染同一个描述时「由 Host 放置过」的标记沿用上一次。
 - **性能：** CSR 路径上的变化只有 `createChildHost` 非 Compact 分支的一次 `instanceof`（元素行不经过）与 `reusable()` 构造时的一次模式读取。同页 A/B/A′（§5.3 的方法，生产构建，30 轮预热 + 60 轮，A 为 `a14285d`）：最初把描述判定写在 `createChildHost` 里（并让它调用自己），Compact 行负载 B/A 四次 1.007–1.020、A′/A ≤ 0.7%，方向一致地慢；去掉判定的构建回到噪声以内，判定拆成单独的方法 `createCommentRowHost` 之后同样回到噪声以内（两次 0.995 / 0.998）。终版两次运行：`createElement` 3000×4 为 1.0009、0.9996；`render` 1000 静态行 1.0053、0.9904；RxList Compact 行 0.9884（A′/A 0.9842）、1.0268（A′/A 1.0311）；RxList 非 Compact 行（字符串行，经过这次判定）1.0000、0.9799（A′/A 0.9844，B 更快）。相对 PR-A 之前的 `3a43c2b`（给 S）：1.012、1.0012、1.0076、0.9898。
 
+
+### 7.10 B4b 落地记录（与上文不同或上文没有写到的）
+
+- **缺陷（B4 合入后确认）：** 一个带动态 child 的描述先作为 Host 的 source 出现、后又作为外层静态子树里的静态 child 出现，例如 `const s = <b>{() => x()}</b>; <div>{() => s}{s}{() => y()}</div>`（`{[s]}`、列表行、组件的结果、`<p>{s}</p>` 里的静态位置、`<p>{() => s}</p>` 里的 Host 都一样）。外层 StaticHost 收集时 `s` 还没认领，为它的 `() => x()` 预建了 Host；之后 Host 先认领 `s`，又为同一个动态 child 建了一份；外层走到 `s` 的静态位置时直接返回，预建的那一份没人消费，后面兄弟的子 Host 依次错位：`y` 的 Host 去认领 `x` 的文本，报告一条失配，`y` 自己的 Host 没有认领（开发期不变量），更新后 `y` 的位置显示 `x`。`s` 是 Host 自己新建的 JSX 里的静态 child（`{() => <p>{s}</p>}{s}`）时同样错位，而且元素落在了外层的静态位置，CSR 里它在 `<p>` 里。现成节点（§2.6.8）同类：外层把它的 `unhandledChildren` 提升成预建 Host，先渲染它的 Host 按 CSR 又建了一份。
+- **CSR 的语义：** 外层的 `createElement` 在 JSX 求值时插入静态 child，并把它的元数据（动态 child、响应式属性、ref、detachStyle）提升到外层，从节点上取走；Host 之后才渲染，渲染同一个元素时只把它挪过去，不再建内层 Host。动态 child 的 Host 归外层的 StaticHost，按外层的顺序渲染。Fragment 的子节点在第一次插入时就被搬走，之后插入它什么也不放。
+- **做法（`hydrationCursor.ts`「同一个描述的多次放置」）：**
+  1. 收集就是提升：外层收集静态子树时，子描述的 `walkMark` 记下这次认领遍历的编号（`enterTopDownWalk`，全局递增，`StaticHost.hydrateSource` 一次收集加认领一个）；这次激活里已经被收集过的不再收集（取代 B4 的模块级 `Set`：同一棵子树里第二次出现，或者已被外层正在进行的遍历收集过——CSR 里外层的 `createElement` 先提升走了）。现成节点记在这次激活的 `liveLifts` 里，它的 `unhandledChildren` 提升之后从节点上取走（≡ CSR），预建 Host 的个数记在那里。
+  2. 被收集过、还没认领的描述先由别的一方放置（Host 的 source，别的遍历里的静态 child，或者激活中按 CSR 渲染的代码——例如现成节点里的函数 child，这时元素按 R1 新建）：那一方只认领元素（`DOM.claimTopDownDeferredShell`，认领元素本身的一步从 `hydrateElementDescriptionAt` 拆出来，两步之间可以隔着别的认领），不进入它、不应用 props；Host 没有内层 Host，≡ CSR。收集它的遍历走到它的静态位置时删除服务端为这里写下的那一份，进入已放置的元素认领子节点、应用 props，动态 child 用自己预建的 Host，元数据提升到自己（`hydrateDeferredContent`）。动态 child 的 Host 因此按 CSR 的顺序激活（在先放置它的 Host 之后、外层后面的兄弟之前）。收集它的遍历与失配状态（新建 / 近似认领）记在这次激活的表里（只在误用的路径上分配），内容按同样的状态认领。
+  3. 放置的先后：每次放置记下时刻（认领之后描述的 `walkMark`，现成节点记在这次激活的表里）。遍历 W 的静态位置记 2W；Host（以及激活中按 CSR 渲染的代码）记 2×（已开始的最大遍历编号）+ 1。已放置的描述 / 现成节点又出现在遍历 W 的静态位置上时，上一次放置的时刻不晚于 2W 就挪到这里，否则不挪、只删除服务端为这里写的那一份。CSR 里静态位置的时刻是外层 `createElement` 的时刻：W 开始收集之前放置的（包括之前的激活）、W 前面的静态位置都更早，挪过来；W 开始之后由 Host、嵌套的遍历放置的更晚，不挪。Host 的放置总是挪过去。
+     - B4 的规则是「Host 放置过就不挪」，不区分外层建在 Host 之前还是之后：`{() => s}{() => <p>{s}</p>}` 里 CSR 会把元素挪进 `<p>`，B4 没有挪；B4 的标记也跨激活保留（§11 原来列的边角）。B4b 第一版改成「只有收集它的遍历不挪」，独立审查指出两处反例：后建的 JSX 里 Host 在静态位置之前（`{() => s}{() => <p>{() => s}{s}</p>}`，CSR 里 Host 更晚，元素留在 Host 那里）；现成节点先由 Host 放置、之后才被一次遍历收集（CSR 会挪过去）。按时刻判断把这些情形统一了，`HOST_PLACED_CHILDREN` 与现成节点的 `WeakSet` 随之去掉。
+     - 正常认领（收集它的遍历在第一个静态位置上认领）也记时刻 2W。这一处不影响结果：在正在进行的遍历的静态子树里的描述一定被那次遍历收集过，所以别的遍历认领它时只会是延后内容的那一种；记下它是为了让认领之后的字段始终表示时刻。
+- **Fragment：** Host 先放置被收集过的 Fragment 描述时只认领 `fragment start` 与自己的 slot，服务端在两者之间为它写的子节点 CSR 里没有，按 R3 删除并报告一条失配（与 §11 已列的「同一个 Fragment 描述出现两次」一致）；子节点在外层的静态位置上由外层认领，DOM、绑定 ≡ CSR。
+- **对 CSR 与激活路径的代价：**
+  - CSR 路径没有改动（`createElement`、`createHost`、`StaticHost.render`、列表 patch 都不经过这些代码）。
+  - 激活路径：每个子描述的收集由一次 `Set` 的 `has` / `add`（每次收集还有一次 `clear`）换成一次整数比较和一次字段写入；每次认领遍历多两次模块变量读写；每个描述的认领多一次整数比较。每个子描述认领之后多一次字段写入（时刻）。正常形态不新增分配；新的分配只在误用的路径上（现成节点每个一条 `liveLifts` 记录与一条时刻，内容延后的描述一条状态）。
+  - 激活路径实测（同页 A/B/A′：同一页面同时加载 `9cc988f` 与 B4b 的源码，诊断关，8000 行列表 + 1500 个嵌套静态块，8 轮预热 + 40 轮交替，取中位数，开发态源码）：第一版三次 B/A 为 0.997 / 0.987 / 0.990（A′/A 0.980 / 1.010 / 0.980）；按时刻判断的终版三次 B/A 为 1.020 / 0.980 / 0.990（A′/A 1.020 / 0.990 / 1.007），都在 A/A 噪声以内。
+  - 内存：`HydrationElement` 多一个整数字段（只存编号 / 时刻，不引用 Host，壳不多保留对象），每个描述对象多一个字段槽位；对象数不变（C10 的量化仍是每行 +1 个壳）。
+- **用例：** `hydrateTopDownForms.spec`「a description placed before its static occurrence in an outer static tree (#55 B4b)」共 7 条：10 种位置 × 2 种描述 × 诊断开关两遍，DOM、Host / 绑定按种类的创建计数（§2.4.1）、更新后的 DOM 都 ≡ CSR，没有失配、没有开发期不变量，激活的根销毁后计数归零；现成节点（含放置顺序）、激活中按 CSR 渲染的代码先放置、Fragment、放置顺序（7 种）、失配（Host 处新建 / 近似认领、静态位置是别的标签）、跨两次激活各一条。在 `9cc988f` 上 7 条全红，在 B4b 第一版上覆盖审查反例的 4 条红；变异 14 处里 13 处各自让至少一条变红，剩下的一处（正常认领不记时刻）按上面第 3 条的说明不影响结果。
 
 ---
 
@@ -1056,8 +1076,14 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
   - `<title>` / `<textarea>` 等字符数据父节点里的现成 Text：没有可删的对应物，服务端的文本按失配处理。
   - 失配新建的子树里的 Portal，容器没有 id / `portalKey` 或不在文档里时，与旧模型一样抛错、中止激活（CSR 直接用这个元素）。
   - 列表行的 Compact 判定（#68 的访问器）不看行里现成元素自带的 `detachStyledChildren`：这种行在 CSR 里是非 Compact 行。
-  - 同一个描述跨两次激活渲染时，「由 Host 放置过」的标记沿用上一次（描述上的标记不随激活清空）。
+  - 同一个描述跨两次激活渲染时，「由 Host 放置过」的标记沿用上一次（B4b 已修正：放置规则只看这次激活里收集它的遍历，§7.10）。
   - 激活中 Portal 的 root 被销毁时容器仍留在待检查的表里：函数子节点的更新是延迟的，现在构造不出这种情形，没有改。
+- **B4b 之后仍然不同于 CSR、没有修的边角（同一个元素渲染两次的误用里）：**
+  - CSR 的「更早 / 更晚」以外层描述的创建为准，激活以外层的收集为准。外层先建好、被捕获、之后才由 Host 渲染时两者不同：`const q = <p>{s}</p>; <div>{() => q}{s}</div>` 在 CSR 里 `q` 先建，`s` 的元数据提升到 `q`，之后 `div` 把 `s` 挪到自己的静态位置；激活里外层 `div` 先收集，`s` 留在 `<p>` 里。绑定不错位，只是元素的位置与动态 child 的归属不同。
+  - 现成节点先由 Host 渲染时，它自带的响应式属性、ref 归那个 Host（CSR 里归外层）；动态 child 的归属与 CSR 相同。
+  - 失配新建、内容延后的元素在所属 Host 插入之后才应用自己的 props（#73 要求先绑定再插入；这里是失配加误用）。
+  - 一个 Host 的元素被之后的放置挪走时（`{() => s}{() => s}`、`{() => s}{() => <p>{s}</p>}`、`[s]` 再 `[s]`），CSR 里那个 Host 的区间同样断开，开发期不变量照报（同 B4 的 `[s, s]`）。
+  - `<svg>` 里的 HTML / SVG 同名标签先由 Host 放置、后作为 `<svg>` 的静态 child（`<svg>{() => a}{a}</svg>`，`a = <a>…</a>`）：CSR 里 `<svg>` 的 `createElement` 在静态位置改建出一个 SVG 的 `<a>`、把子节点搬过去，Host 之后渲染的是原来那个已经空了的 HTML `<a>`；激活里内容留在 Host 处的元素里，没有改建。
 - **#54 报告的疑点不再存在。** 疑点是 `createElementForHydrateMismatch` 新建的元素没有登记为已认领，之后的无游标认领可能拿到它。新模型没有无游标认领，S 之后不再成立，无需单独处理。
 
 ---
