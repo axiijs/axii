@@ -22,6 +22,7 @@ const TOP_DOWN_HYDRATE_SPECS = [
   '__tests__/ssrCompactRow.spec.tsx',
   '__tests__/ssrHydrate.attrs-components.spec.tsx',
   '__tests__/ssrHydrate.claimCorners.spec.tsx',
+  '__tests__/ssrHydrate.functionValues.spec.tsx',
   '__tests__/ssrHydrate.lifecycle.spec.tsx',
   '__tests__/ssrHydrate.lists.spec.tsx',
   '__tests__/ssrHydrate.mismatch.spec.tsx',
