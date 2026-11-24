@@ -1042,10 +1042,10 @@ function applyDeferredFormProps(
  * 没有 rawProps 时也要调用：元数据与 __axiiSource 照样要挂。
  *
  * CAUTION 两份（#55 S）：PR-A 把这段从 createElement 里搬出来、CSR 与激活共用一份，CSR 的 createElement 因此每个元素调用一次
- *  这个函数。即使 TurboFan 把它内联进 createElement（字节码约 370，低于单个函数的上限 460），它连同它再内联的
- *  isValidAttribute 等也计入 createElement 的累计内联预算，createElement 里别的小函数因此不再内联；大 GC 去优化后重新优化时
- *  还可能整个不内联（已有优化代码时按它内联过的字节码 × 1.2 计预算）。同页 A/B/A′（§5.3）纯 createElement 慢 1.1–1.8%，
- *  配对比值的 95% 区间不含 1；把同一段循环写回 createElement 的函数体之后回到 A/A 噪声以内（#55 S，设计 §7.11）。
+ *  这个函数。同页 A/B/A′（§5.3，生产构建）实测纯 createElement 慢 1.1–1.8%，配对比值的 95% 区间不含 1；把同一段循环写回
+ *  createElement 的函数体之后回到 A/A 噪声以内（#55 S，设计 §7.11）。机制没有确认：单一负载的 --trace-turbo-inlining 里
+ *  两种写法内联进 createElement 的小函数相同（调用的写法另外内联了这个函数，字节码约 370）；PR-A 观察到大 GC 去优化后
+ *  重新优化时它可能不再内联（已有优化代码时按它内联过的字节码 × 1.2 计预算），基准页里多种负载交替时是否如此没有验证。
  *  所以 CSR 走 createElement 里的那一份，这里是激活那一份。两份逐行相同，只差 claimed（CSR 恒为 false）；
  *  冷路径（I66 警告、自己的 ref / detachStyle / unhandledAttr 项、value / checked 的延后应用）与属性写入规则
  *  （createElement.isValidAttribute、setAttribute）只有一份，两边都调用它们。
@@ -1316,8 +1316,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
 
     // Process props after children for proper Select/Option behavior
     // CAUTION 「应用 props」的 CSR 那一份：与 applyElementProps 逐行相同（规则与说明见它；claimed 在 CSR 恒为 false）。
-    //  写在 createElement 的函数体里而不调用 applyElementProps，是为了不占 createElement 的累计内联预算（见 applyElementProps
-    //  的 CAUTION「两份」，#55 S 同页 A/B/A′ 实测）。改这里的规则时 applyElementProps 一起改。
+    //  写在 createElement 的函数体里而不调用 applyElementProps：调用的写法纯 createElement 实测慢 1.1–1.8%（见 applyElementProps
+    //  的 CAUTION「两份」，#55 S 同页 A/B/A′）。改这里的规则时 applyElementProps 一起改。
     if (rawProps) {
         // 开发期警告（I66）：dangerouslySetInnerHTML 与 children 并存时 innerHTML 覆盖 children，见 applyElementProps
         if (childrenLength && isAxiiDiagnosticsEnabled() && rawProps.dangerouslySetInnerHTML !== undefined) {

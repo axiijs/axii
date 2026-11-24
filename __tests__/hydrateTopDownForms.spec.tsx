@@ -899,7 +899,7 @@ describe('retained objects (§5.2)', () => {
         }
     })
 
-    test('hydrate + destroy through the internal entry returns host / binding / style counters to zero for the B4 shapes (Portal, reusable, lazy, live nodes, late rendering)', async () => {
+    test('hydrate + destroy returns host / binding / style counters to zero for the B4 shapes (Portal, reusable, lazy, live nodes, late rendering)', async () => {
         enableAxiiRetainedObjectDiagnostics({reset: true})
         try {
             const label = atom('x')

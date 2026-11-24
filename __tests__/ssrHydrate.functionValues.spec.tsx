@@ -199,7 +199,7 @@ describe('#82 hydration ≡ CSR: function child whose value is a function', () =
     })
 })
 
-describe('#82 hydration ≡ CSR: list rows / array items / RxList and array values (#55 B2 on the internal entry)', () => {
+describe('#82 hydration ≡ CSR: list rows / array items / RxList and array values', () => {
     test.each(KINDS)('list row and array items are a function returning a function (%s)', async (k) => {
         await check(() => {
             const {fn, updates} = nested(k)

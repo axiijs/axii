@@ -793,7 +793,7 @@ describe('the shapes that were explicit throws until #55 B4 now hydrate ≡ CSR 
 })
 
 describe('retained objects (§5.2)', () => {
-    test('hydrate + destroy through the internal entry returns host / binding / style counters to zero (B1 kinds)', async () => {
+    test('hydrate + destroy returns host / binding / style counters to zero (B1 kinds)', async () => {
         enableAxiiRetainedObjectDiagnostics({reset: true})
         try {
             const label = atom('x')
