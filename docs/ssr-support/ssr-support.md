@@ -374,8 +374,8 @@ function isFunctionHostTextSnapshot(node: unknown): boolean {
 | # | 情况 | 行为 |
 |---|---|---|
 | R1 | 0 个文本单元 | 无子文本 |
-| R2 | 恰好 1 个文本单元 | 按 A3 发出；与 §3.6.2 textarea `value`→子文本路径一致（属性绑定序列化优先走 §3.6.2；若同时存在 value 绑定与子文本单元且内容冲突 → **抛错**） |
-| R3 | ≥2 个文本单元 | **SSR 抛错**（可观测）：HTML 字符数据无法往返为多个独立 Text / Host，禁止静默合并 |
+| R2 | 恰好 1 个文本单元 | 按 A3 发出；与 §3.6.2 textarea `value`→子文本路径一致（有 `value` prop 时只写 `value`、忽略子文本单元——解析后 `.value` 与 CSR 的 IDL 赋值结果相同；hydrate 时丢弃这段子文本，由 deferred `value` 写回） |
+| R3 | ≥2 个文本单元 | 各单元按 A3 首尾相接成一段字符数据（空单元不留节点）；hydrate 按客户端各单元的值依次 `splitText` 切回（第一段保持原 Text identity，空单元插入 `Text('')`）——首尾相接的逆操作（`hydration.ts` `isCharacterDataParent`）。函数 / 元素等非文本 child **SSR 抛错**（无法写成字符数据） |
 
 `textarea` 的作者主路径是元素 `value` / IDL（§3.6.2），不是多个子 Host。
 
@@ -1085,7 +1085,7 @@ type PortalContainerRef = HTMLElement | string | { id: string }
 |---|---|
 | NORMAL 文本节点 | 转义 `& < >` |
 | 属性值 | 转义 `& < > "`；按双引号属性输出 |
-| 布尔属性 | 真：`name="true"`；假：不输出 |
+| 布尔值（`true` / `false`；`null` / `undefined` 一律不输出） | 与 CSR `setAttribute` / `setEmptyOrBooleanProperty` 同一套规则（服务端没有 DOM 可问 property 类型，string 型 property 用 `ssr.ts` `STRING_TYPED_PROPERTIES` 静态表）：① string 型 property（`title`/`href`/`download`/`popover`/`alt`…）与 `hidden`：真 → `name=""`，假 → 不输出；② 关键字型：`contenteditable`/`spellcheck`（任一大小写写法）、`aria-*`/`data-*`、`draggable`、`writingSuggestions`、`ariaXxx` → `"true"`/`"false"`，`translate` → `"yes"`/`"no"`；③ `disabled` 与其余名字（真正的 boolean attribute、表里没有的名字、SVG 与自定义元素上的任何名字）：真 → `name="true"`，假 → 不输出。表单的 `checked`/`selected` 见 §3.6.2 |
 | RCDATA 子文本（`textarea`/`title`） | 转义 `& < >`（实体会被解码；可安全承载字面 `</textarea>` 等，d4）；**禁止**暗示与 RAWTEXT 相同 |
 | RAWTEXT 子文本（`style`/`script`/…） | **不做** `& < >` 实体转义（F15：不解码）。序列化前做**终止序列门闩**（见下）；命中则 **SSR 抛错**，禁止静默截断 DOM |
 | 外来内容里的 RAWTEXT 标签（`<svg>` / `<math>` 之下、不在 integration point 里的 `style`/`script`/…） | 解析器在外来内容里创建 SVG / MathML 元素，**不切换** tokenizer 状态：文本是普通数据（实体解码、`<` 开始标签，`<img>`/`<p>` 等还会跳出外来内容成为 HTML 元素）。按 **RCDATA 行**转义，不写 `axii:*`（hydration 仍按 localName 视为字符数据父节点）；**禁止**按标签名原样写出（`<svg><style>{userCss}</style></svg>` 会注入元素）。上下文按解析器规则推导：HTML 内容里只有标签名 `svg`/`math` 开启外来内容（`_isSVG` 不算）；SVG `foreignObject`/`desc`/`title` 与 MathML `mi`/`mo`/`mn`/`ms`/`mtext`（`mglyph`/`malignmark` 除外）、`annotation-xml`（encoding 为 HTML）回到 HTML；Portal 内容从 HTML 开始。不建模「跳出外来内容」（无效嵌套，按外来转义只多出字面实体，方向安全） |
@@ -1126,7 +1126,7 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 | # | 事实 | 证据 |
 |---|---|---|
 | F-F1 | 一般 `input`/`textarea`/`option` 的 `value`：`setProperty('value', v == null ? '' : v)`；text 等类型的 `.value` **常不**进入 content attribute | 源码；d1 |
-| F-F2 | `INPUT type=checkbox` 且 prop `value`：先 F-F1 的 value 写入，再按**原始** `v` 的 truthiness 写/清 `checked` 属性与 property（`DOM.ts` ~452–460）——**双通道**，不是「仅 checked」 | 源码；d8 / review-d8 |
+| F-F2 | `INPUT type=checkbox` 且 prop `value`：先 F-F1 的 value 写入；**仅当** `v` 为 boolean / nullish 时再按其真假写/清 `checked` 属性与 property——**双通道**，不是「仅 checked」。string / number 的 `v` 是表单提交值（`<input type="checkbox" value="red" checked={isRed}/>`），不影响勾选（`DOM.ts` `setAttribute` 的 checkbox 分支，#48） | 源码；d8 / review-d8；#48 |
 | F-F3 | 仅 `checked="true"`、无 `value` 属性的 checkbox：解析后 `.value === 'on'`（缺省），与 `value={true}` 的 CSR `.value === 'true'` **不等** | d8 `idlMismatchIfFollowDesign` |
 | F-F4 | `value={true}` 正确 SSR：`value="true" checked="true"` → 解析 IDL 与 CSR 对齐 | d8 `idlMatchIfBoth` |
 | F-F5 | `checked` 专用分支**仅** checkbox（~462–471）；radio 的 `checked` 走通用 property 路径；radio 的 `value` **不**触发 checked 语义 | 源码；d8 `radioValueTrue.checked===false` |
@@ -1159,16 +1159,16 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 | `null` / `undefined` | `value=""`（无 checked） | `''` | `false` |
 | `''` | `value=""`（无 checked） | `''` | `false` |
 | `0` | `value="0"`（无 checked） | `'0'` | `false` |
-| `1` | `value="1" checked="true"` | `'1'` | `true` |
-| 非空字符串 `s`（如 `'hello'`） | `value="{escape(s)}" checked="true"` | `s` | `true` |
+| `1` | `value="1"`（无 checked） | `'1'` | `false` |
+| 非空字符串 `s`（如 `'hello'`） | `value="{escape(s)}"`（无 checked） | `s` | `false` |
 
-通则：`checked` 属性 **当且仅当** 原始 `v` 为 truthy；`value` 属性 **始终**发出（含空串）。
+通则：`checked` 属性 **当且仅当** `v === true`（boolean / nullish 的 `v` 是勾选状态，string / number 是提交值，不参与勾选）；`value` 属性 **始终**发出（含空串）。
 
 **`value` 与 `checked` 同元素（组合；有限）**
 
 1. 若存在 `value` prop：按 CB **始终**发出 `value="{escape(String(applied))}"`（与是否另有 `checked` 无关）。
 2. 最终是否发出 `checked="true"`：按 CSR deferred 序模拟——对 `rawProps` 中键序遍历，仅处理 `value` 与 `checked`：
-   - 遇 `value`：令 `finalChecked = !!v`（原始 value 的 truthiness）；
+   - 遇 `value`：**仅当** `v` 为 boolean / nullish 时令 `finalChecked = !!v`；string / number 的 `v` 不改变 `finalChecked`（`value="red"` 后的 `checked={false}`、`checked={false}` 后的 `value="red"` 都是未选中）；
    - 遇 `checked`：令 `finalChecked = !!checkedProp`；
    - **后者覆盖前者**（d8：`value` 后 `checked={false}` → 未选中但仍有 `value="true"`；`checked={false}` 后 `value={true}` → 选中）。
 3. 若 `finalChecked`：发 `checked="true"`；否则不输出 `checked`。

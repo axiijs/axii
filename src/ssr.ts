@@ -34,7 +34,14 @@ import {
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from './styleCascade'
 import {RAWTEXT_TAGS, RCDATA_TAGS, isAriaReflectionProperty, svgAttributeName, svgOnlyElementNames} from './markupNames'
 
-/** Local Fragment sentinel — avoid importing DOM.ts (browser createElement) into the SSR entry. */
+/**
+ * SSR 自己的 Fragment 标记：服务端的 JSX 走 createSsrElement / 组件 renderContext，从不调用 DOM.ts 的
+ * createElement / Fragment，Fragment 描述按与这个标记的引用相等来识别。
+ * CAUTION 这不等于「SSR 入口不加载 DOM.ts」：组件的 props / AOP 计算借用 ComponentHost（见
+ *  invokeComponent），它把 DOM.ts、StaticHost、hydration 等客户端模块一起带进来（构建产物里它们本来就
+ *  和 Portal 共用一个 chunk）。所以这条 import 链上的模块在加载时都不能访问 document / window；
+ *  node/importInNode.spec.ts 在没有 DOM 全局的 Node 里加载 axii/ssr 守住这一点。
+ */
 export function Fragment(_props?: any): any {
     return null
 }

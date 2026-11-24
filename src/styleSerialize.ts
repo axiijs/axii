@@ -573,7 +573,6 @@ export function isAcceptableSingleCssRule(rule: string): boolean {
     return false
 }
 
-/** Filter generateStyleContent rules through the escape gate; join survivors with newlines. */
 // CAUTION inline style 的声明门闩（与上面的规则门闩同一个思路：和 CSR 的拒绝行为对偶）。
 //  CSR 的 inline style 是经 CSSOM 逐个属性写入的（node.style[k] = v / setProperty）：值里带顶层 `;`、
 //  不配对的括号或引号、`!important` 时，浏览器拒绝整次赋值，什么都不生效；属性名不是合法标识符时
@@ -612,6 +611,7 @@ export function isAcceptableInlineDeclaration(name: string, value: string): bool
     return closers.length === 0
 }
 
+/** Filter generateStyleContent rules through the escape gate; join survivors with newlines. */
 export function gateStyleRules(rules: string[]): string {
     const kept: string[] = []
     for (const r of rules) {
