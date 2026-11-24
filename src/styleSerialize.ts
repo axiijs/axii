@@ -111,8 +111,73 @@ export function evaluateStyleEntries(styleValue: any): EvaluatedStyleEntry[] {
     return entries
 }
 
-const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
-const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
+// ─── 样式值 → CSS 文本：唯一一份实现（#60） ───
+//  客户端行内样式（DOM.setAttribute 的 style 分支，el.style[k] = …）、stylesheet 规则（declarationOf）、
+//  axii/ssr 的行内样式都经 stringifyCssValue，补单位的名单、逗号列表的判定、[数字, 单位] 简写的单位表都只在这里。
+//  DOM.ts 曾有一份自己的 stringifyStyleValue 与三张同样的表：#48 修 [300, 'ms'] 时要改两处，
+//  名单内的非数字值两端写法也不同（见 stringifyCssValue）。DOM.ts 原样导出这里的名字，公开 API 不变。
+
+// CAUTION 数字自动补单位的名单（style 对象的驼峰 key）。口径：取值只由长度 / 百分比（以及关键字、函数）组成、
+//  无单位的非零数字不合法的标准 CSS 属性，含只由这类分项组成的简写（margin / inset / gap / borderRadius …）。
+//  在这些属性上补单位只会把浏览器丢弃的声明（width: 10）变成合法的长度，不会改变任何合法值的含义；
+//  0 写成 0px，与原来的名单一致。__tests__/styleAutoUnit.spec.tsx 在真实浏览器里枚举 el.style 核对这张表。
+//  不收的三类：
+//  - 无单位数字本身合法的属性：lineHeight / flex / tabSize / columns / borderImageWidth / strokeWidth / zIndex …
+//    补单位会改变含义（lineHeight: 1.5 是倍数，flex: 1 是 flex-grow）；
+//  - 长度与其他类型混合的简写：border* / outline / columnRule / background / mask / offset / textDecoration，
+//    它们不是长度属性（border: 1 本身没有意义），按长度属性的口径排除；
+//  - 厂商前缀名（webkitXxx / WebkitXxx）：同一个属性有两种 JSX 写法，多数是名单里标准属性的旧别名。
+//  曾经只有 36 个名字：borderTopLeftRadius: 4、outlineOffset: 2 这类长度属性写出 "4"，浏览器静默丢弃。
+const AUTO_UNIT_STYLE_NAMES =
+    // 盒尺寸
+    'width height minWidth minHeight maxWidth maxHeight blockSize inlineSize minBlockSize minInlineSize ' +
+    'maxBlockSize maxInlineSize flexBasis containIntrinsicSize containIntrinsicWidth containIntrinsicHeight ' +
+    'containIntrinsicBlockSize containIntrinsicInlineSize ' +
+    // 定位
+    'top right bottom left inset insetBlock insetBlockStart insetBlockEnd insetInline insetInlineStart insetInlineEnd ' +
+    // 外边距、内边距
+    'margin marginTop marginRight marginBottom marginLeft marginBlock marginBlockStart marginBlockEnd ' +
+    'marginInline marginInlineStart marginInlineEnd ' +
+    'padding paddingTop paddingRight paddingBottom paddingLeft paddingBlock paddingBlockStart paddingBlockEnd ' +
+    'paddingInline paddingInlineStart paddingInlineEnd ' +
+    // 边框宽度、圆角、轮廓
+    'borderWidth borderTopWidth borderRightWidth borderBottomWidth borderLeftWidth borderBlockWidth ' +
+    'borderBlockStartWidth borderBlockEndWidth borderInlineWidth borderInlineStartWidth borderInlineEndWidth ' +
+    'borderRadius borderTopLeftRadius borderTopRightRadius borderBottomRightRadius borderBottomLeftRadius ' +
+    'borderStartStartRadius borderStartEndRadius borderEndStartRadius borderEndEndRadius ' +
+    'outlineWidth outlineOffset borderSpacing ' +
+    // 分栏、间隙、网格轨道
+    'columnWidth columnRuleWidth gap rowGap columnGap gridGap gridRowGap gridColumnGap ' +
+    'gridTemplateColumns gridTemplateRows gridAutoColumns gridAutoRows ' +
+    // 文字
+    'fontSize letterSpacing wordSpacing textIndent verticalAlign textDecorationThickness textUnderlineOffset ' +
+    // 位置与尺寸：背景、遮罩、替换元素、变换、运动路径
+    'backgroundPosition backgroundPositionX backgroundPositionY backgroundSize maskPosition maskSize objectPosition ' +
+    'transformOrigin perspective perspectiveOrigin translate offsetDistance offsetPosition offsetAnchor ' +
+    // 滚动吸附
+    'scrollMargin scrollMarginTop scrollMarginRight scrollMarginBottom scrollMarginLeft scrollMarginBlock ' +
+    'scrollMarginBlockStart scrollMarginBlockEnd scrollMarginInline scrollMarginInlineStart scrollMarginInlineEnd ' +
+    'scrollPadding scrollPaddingTop scrollPaddingRight scrollPaddingBottom scrollPaddingLeft scrollPaddingBlock ' +
+    'scrollPaddingBlockStart scrollPaddingBlockEnd scrollPaddingInline scrollPaddingInlineStart scrollPaddingInlineEnd ' +
+    // 其他
+    'shapeMargin overflowClipMargin size animationRange animationRangeStart animationRangeEnd viewTimelineInset'
+
+/**
+ * @internal
+ * 数字自动补单位的属性名（见上面的 CAUTION）。热路径（行内样式的每次数字写入）按 Set 查表：
+ *  名单从 36 个扩到 136 个之后，锚定的多选正则在未命中时要逐个尝试分支，Set 的查找与名单长度无关。
+ */
+export const autoUnitStyleNames: ReadonlySet<string> = /* @__PURE__ */ new Set(AUTO_UNIT_STYLE_NAMES.split(' '))
+
+/** 补单位名单的正则形式（公开导出，由 DOM.ts 再导出；与 autoUnitStyleNames 是同一份名单）。 */
+export const AUTO_ADD_UNIT_ATTR = /* @__PURE__ */ new RegExp(`^(${AUTO_UNIT_STYLE_NAMES.split(' ').join('|')})$`)
+
+/** 数组值按逗号连接的属性（前缀匹配：transitionDuration / animationName … 都算）。 */
+export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
+
+// [number, string] 简写（[12, 'px'] => '12px'）只对真正的 CSS 单位生效：
+// margin: [0, 'auto'] 这类「数字 + 关键字」的空格简写是自然写法，误判成单位会拼出
+// "0auto" 这种非法值，浏览器静默拒绝整条声明（样式无效且没有任何报错）。
 const CSS_UNIT_VALUE = /^(px|em|rem|%|vw|vh|vmin|vmax|pt|pc|in|cm|mm|q|ex|ch|ic|cap|lh|rlh|fr|s|ms|deg|rad|grad|turn|dpi|dpcm|dppx|cqw|cqh|cqi|cqb|cqmin|cqmax|svw|svh|lvw|lvh|dvw|dvh)$/i
 
 // CAUTION 数字补全用的单位只有这一份状态，行内样式（DOM.ts）与 stylesheet / SSR（本文件）共用。
@@ -172,16 +237,37 @@ function resolveCssValue(value: any, state?: StylePreparationState): any {
     return value
 }
 
-/** CSS value stringification shared by stylesheet rules and SSR inline styles. */
+/**
+ * 样式值 → CSS 文本（唯一一份，见上面的「样式值 → CSS 文本」）。返回 '' 表示「没有这个声明」：
+ *  行内样式按 el.style[k] = '' 删除，stylesheet / SSR 不写出。
+ *  - 函数 / atom 求值（style={{color: colorAtom}} 是自然写法）；调用点都在响应式绑定内，读取会建立依赖。
+ *  - CAUTION boolean 与 null / undefined 一样是「没有」：{fontWeight: cond && 'bold'} 翻转为 false 时，
+ *    'false' 是非法值，行内赋值被拒绝、旧值永久残留（F36）。
+ *  - CAUTION 空字符串的语义同样是「没有」（与 React 一致），不能被塞成 "0px"。
+ *  - 数字（number / bigint）在名单内的属性上补单位，其余原样字符串化。CAUTION 只看值的类型，不认对象：
+ *    客户端曾对名单内的一切非字符串、非 StyleSize 的值接上单位，另一份 axii 副本里的 StyleSize（instanceof 认不出）
+ *    写成 "2rempx" 被浏览器拒绝，而 stylesheet / SSR 写出 "2rem"——同一个值两端不同。StyleSize 自己的
+ *    toString 已经带单位，原样字符串化即可。
+ */
 export function stringifyCssValue(k: string, v: any, state?: StylePreparationState): string {
     v = resolveCssValue(v, state)
+    // CAUTION 热路径：行内样式的每次写入都经过这里。字符串（最常见）原样返回、不查名单；
+    //  数字只查一次 Set。不要在这两个分支前面加判断。
+    if (typeof v === 'string') return v
+    if (typeof v === 'number') return autoUnitStyleNames.has(k) ? `${v}${autoUnitType}` : String(v)
     if (v === undefined || v === null || typeof v === 'boolean') return ''
     if (Array.isArray(v)) {
-        // [数字, 单位] 简写先于逗号列表判断，时间单位才用得上（与 DOM.stringifyStyleValue 一致，原因见那里）
+        // CAUTION [数字, 单位] 简写必须先于逗号列表判断：接受时间单位的属性（transitionDuration /
+        //  transitionDelay / animationDuration / animationDelay）全部命中 COMMA_MULTI_VALUE_ATTR，
+        //  先走逗号分支的话 [300, 'ms'] 被拼成 "300,ms"——非法值，浏览器静默拒绝整条声明，
+        //  CSS_UNIT_VALUE 里的 s/ms 永远用不上。「数字 + 单位名」本身不可能是合法的逗号列表。
         if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
             return `${v[0]}${v[1]}`
         }
         if (COMMA_MULTI_VALUE_ATTR.test(k)) {
+            // boxShadow / transition 这类逗号列表；数组项同样支持 atom / 函数值。
+            // CAUTION 条件项（cond && '0 0 2px blue'）的 falsy 结果必须过滤掉：
+            //  'false' 混进逗号列表会让整条声明非法，浏览器静默丢弃 => 旧值永远残留（F36）。
             const parts: string[] = []
             for (const item of v) {
                 const i = resolveCssValue(item, state)
@@ -189,16 +275,13 @@ export function stringifyCssValue(k: string, v: any, state?: StylePreparationSta
                 parts.push(String(i))
             }
             return parts.join(',')
-        } else {
-            return v.map((i: any) => stringifyCssValue(k, i ?? 0, state)).join(' ')
         }
+        // padding / margin / translate 这类空格分隔的多值，每一项按同一属性补单位；undefined 项按 0 处理
+        return v.map((i: any) => stringifyCssValue(k, i ?? 0, state)).join(' ')
     }
-    if (v === '') return ''
-    if (v && typeof v === 'object' && typeof v.toString === 'function' && !(typeof v === 'number')) {
-        // StyleSize etc.
-        if (!AUTO_ADD_UNIT_ATTR.test(k)) return v.toString()
-    }
-    return (typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v) : String(v)
+    if (typeof v === 'bigint') return autoUnitStyleNames.has(k) ? `${v}${autoUnitType}` : String(v)
+    // StyleSize 与其他对象：它们的 toString 就是 CSS 文本
+    return String(v)
 }
 
 /**

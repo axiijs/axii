@@ -132,6 +132,32 @@ export function hasOnPrefix(name: string): boolean {
 
 /**
  * @internal
+ * data-* 属性名（区分大小写）。唯一一份判定（#60）：DOM.setAttribute 的「数组整体字符串化」（data-ids={[1, 2]} => "1,2"）、
+ *  axii/ssr 的取快照、下面的 isFalseKeywordAttributeName 都用它。曾经三处各写一份（startsWith、/^data-/ 两种写法）。
+ * CAUTION 热路径：DOM.setAttribute 对每个数组值调用它，名字首字符不是 d 时只读一次 charCode。
+ */
+export function isDataAttributeName(name: string): boolean {
+    return name.charCodeAt(0) === 100 && name.startsWith('data-')
+}
+
+/**
+ * @internal
+ * attribute 分支里 false 写成字面 "false"、而不是移除属性的名字。唯一一份判定（#60）：DOM.setAttribute 的 attribute 分支
+ *  与 axii/ssr 的 attributeValueOf 都用它（服务端以客户端的结果为准）。null / undefined 不经过这里，仍是移除语义。
+ *  - aria-* / data-*（区分大小写）：false 是有语义的值。aria-expanded / aria-checked 缺席与 "false" 对屏幕阅读器完全不同
+ *    （缺席 = 不可展开 / 不是开关，"false" = 收起 / 未选中），React 同样字面化渲染；data-* 的响应式路径一直产出 "false"。
+ *  - contenteditable / spellcheck（任一大小写写法）：枚举属性的 "false" 关键字。spellCheck 是 React 的写法，不是 DOM property
+ *    名（property 是 spellcheck），落在 attribute 分支：false 被移除的话拼写检查仍然开着（缺省值是 true）。
+ *  只在 value === false 时调用，不在属性写入的常规路径上。
+ */
+export function isFalseKeywordAttributeName(name: string): boolean {
+    if (isDataAttributeName(name) || (name.charCodeAt(0) === 97 && name.startsWith('aria-'))) return true
+    return (name.length === 15 && name.toLowerCase() === 'contenteditable') ||
+        (name.length === 10 && name.toLowerCase() === 'spellcheck')
+}
+
+/**
+ * @internal
  * dangerouslySetInnerHTML 的 React 形状 {__html}：带 __html 键的对象（#50）。两端共用这一份判定：
  *  DOM.setAttribute 解包、createElement.isValidAttribute 把它当静态值（激活时走「已认领元素不重写
  *  innerHTML」的路径，服务端节点原样保留）、激活时「内容是原始标记」的判定、axii/ssr 的输出。
