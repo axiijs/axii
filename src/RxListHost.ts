@@ -185,10 +185,18 @@ export class RxListHost implements Host{
             return createHost(item, ph, this.childContext!)
         }
 
-        // #55：激活中建好的描述作为新行进来——派生列表（map(f).filter(p)）重新放行的行、上游重排（§3.3，已认领的壳带着 node），
-        //  激活中没有渲染过的行（C10，按 CSR 物化）。它代表的就是那个元素，按节点重新走上面的 Compact 判定，行的形状、Host 与 CSR
-        //  相同（D2 原定接受「多一个 <!--rx list item-->」，B4 改为在这里判定，见设计 §5.2）。
-        //  CAUTION 放在 Compact 快速路径与旧模型分支之后：元素行（最常见）到不了这里，非 Compact 新行多一次 instanceof。
+        return this.createCommentRowHost(item)
+    }
+    /**
+     * 非 Compact 行：行级 `<!--rx list item-->` 加 createHost。
+     * #55：激活中建好的描述作为新行进来——派生列表（map(f).filter(p)）重新放行的行、上游重排（§3.3，已认领的壳带着 node），
+     * 激活中没有渲染过的行（C10，按 CSR 物化）。它代表的就是那个元素，按节点重新走 createChildHost 的 Compact 判定，行的形状、
+     * Host 与 CSR 相同（D2 原定接受「多一个 <!--rx list item-->」，B4 改为在这里判定，见设计 §5.2）。
+     * CAUTION 单独成方法、不写进 createChildHost：元素行（最常见）只走 createChildHost 的 Compact 快速路径。这个判定写在
+     *  createChildHost 里（并让它调用自己）时，同页 A/B/A′ 的 Compact 行负载方向一致地慢 1.5–2.7%（A′/A ≤ 1.7%），
+     *  拆出来之后回到 A/A 噪声以内（#55 B4 PR 里的数字）。非 Compact 新行多一次方法调用和一次 instanceof。
+     */
+    createCommentRowHost(item: any): Host {
         if (isHydrationElement(item)) return this.createChildHost(resolveHydrationElement(item))
         return createHost(item, document.createComment('rx list item'), this.childContext!)
     }
