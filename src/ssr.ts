@@ -38,8 +38,11 @@ import {
     attributeNameOfProperty,
     hasOnPrefix,
     innerHTMLOf,
+    isSvgHtmlIntegrationPoint,
     svgAttributeName,
+    svgHtmlSharedElementNames,
     svgOnlyElementNames,
+    tableSectionElementNames,
     textareaContentProp,
 } from './markupNames'
 import {htmlPropertyType, reflectedPropertyAttributeValue} from './htmlPropertyTypes'
@@ -535,6 +538,18 @@ let insertionContext: MarkupContext = 'html'
 /** 正在序列化子内容的那个元素本身是不是外来元素（决定 style / script 等的文本按哪种规则写） */
 let parentIsForeignElement = false
 
+// CAUTION table 的子内容要不要写一层 <tbody>，按实际写出的 table 直接子元素决定（#56）。
+//  HTML 解析器只给 table 下的裸 <tr> 补 tbody；子元素本身就是 <tbody> / <thead> / <tfoot> / <caption> /
+//  <colgroup> 时再包一层，解析器会在里层分区的开始标签处关掉外层 tbody，留下一个空 <tbody>——CSR 没有它，
+//  激活后也永远删不掉。曾经按描述猜：列表、函数、数组子节点一律包，于是
+//  <table>{list.map(g => <tbody/>)}</table>、<table>{() => <tbody/>}</table> 都多出一个空 tbody。
+//  列表行、函数结果、组件、Fragment、数组在 CSR 里都摊平成 table 的直接子节点，只有写出来才知道是什么，
+//  所以边写边记：atTableLevel 表示下一个写出的元素是 table 的直接子元素（进入任何元素的子内容时置 false，
+//  Portal 内容进入别的容器时同样置 false）。写完再决定是否在内容前后补 <tbody>：见过 <tr> 且没有见过分区元素。
+let atTableLevel = false
+let tableSawRow = false
+let tableSawSection = false
+
 function isForeignInsertion(context: MarkupContext, tagLower: string): boolean {
     if (context === 'svg' || context === 'math') return true
     return context === 'mathText' && (tagLower === 'mglyph' || tagLower === 'malignmark')
@@ -547,7 +562,7 @@ function childContextOf(context: MarkupContext, tagLower: string, props: Attribu
         return 'html'
     }
     if (context === 'svg') {
-        return (tagLower === 'foreignobject' || tagLower === 'desc' || tagLower === 'title') ? 'html' : 'svg'
+        return isSvgHtmlIntegrationPoint(tagLower) ? 'html' : 'svg'
     }
     // MathML（含 text integration point 里的 mglyph / malignmark）
     if (tagLower === 'mi' || tagLower === 'mo' || tagLower === 'mn' || tagLower === 'ms' || tagLower === 'mtext') {
@@ -909,6 +924,7 @@ function serializeChildren(
             if (isAtom(child)) text += stringValue(child())
             else if (typeof child === 'string' || typeof child === 'number' || typeof child === 'bigint') text += String(child)
             else if (typeof child === 'boolean') continue
+            else if (typeof child === 'function') text += characterDataFunctionText(child, parentTag!)
             else throw new Error(`[axii/ssr] unsupported child in <${parentTag}>`)
         }
         emitParentText(text, out, parentTag)
@@ -956,6 +972,23 @@ function serializeStructureResult(
     serializeChild(result, out, undefined, true, selectSo)
 }
 
+/** FunctionHost 求值的唯一写法（≡ FunctionHost.renderSourceWithoutTrace：零参函数不传 context）。 */
+function evaluateFunctionChild(fn: Function): any {
+    return fn.length === 0 ? (fn as () => any)() : (fn as (ctx: any) => any)({})
+}
+
+// CAUTION 字符数据父节点（textarea / title / style / script…）的函数子节点（#56）：取当前值，按文本单元写进
+//  首尾相接的字符数据（与 atom 子节点相同）。CSR 里它是 FunctionHost 的文本态（Text 占位符），激活时按这个值的长度
+//  从服务端的 Text 上切出自己的一段（hydration.claimFunctionTextPlaceholder）、再由 FunctionHost 绑定为响应式。
+//  曾经一律抛错（#48 之前静默写成空）。结构态（返回元素等）没有任何写法能放进字符数据，照旧抛错。
+function characterDataFunctionText(fn: Function, parentTag: string): string {
+    const result = evaluateFunctionChild(fn)
+    if (!isFunctionHostTextSnapshot(result)) {
+        throw new Error(`[axii/ssr] a function child of <${parentTag}> must return text: its content is character data`)
+    }
+    return stringValue(result)
+}
+
 /** FunctionHost: Text-ph (FTS/H1) or Comment-ph (FCS/H3) */
 function serializeFunctionHost(
     fn: Function,
@@ -983,7 +1016,7 @@ function serializeFunctionHost(
     const savedStaticHostEp = state?.staticHostEp
     if (state && positionEp) state.staticHostEp = positionEp
     try {
-        const result = fn.length === 0 ? (fn as () => any)() : (fn as (ctx: any) => any)({})
+        const result = evaluateFunctionChild(fn)
         if (isFunctionHostTextSnapshot(result)) {
             if (placeholderKind === 'text') {
                 emitTextPh(stringValue(result), out)
@@ -1347,8 +1380,15 @@ function serializeSsrElement(
         optionSelectedBySo = optionMatchesSo(optionEffectiveValue(el), selectSo)
     }
 
-    // ≡ DOM.createElement：显式 _isSVG（createSVGElement）优先，否则按 svg 专有标签名兜底
-    const isSVG = el.props?._isSVG ?? svgOnlyElementNames.has(tag)
+    if (atTableLevel) {
+        if (tagLower === 'tr') tableSawRow = true
+        else if (tableSectionElementNames.has(tagLower)) tableSawSection = true
+    }
+
+    // ≡ DOM.createElement：显式 _isSVG（createSVGElement）优先，否则按 svg 专有标签名兜底；
+    //  HTML / SVG 同名的标签（a / title / style / script）在 SVG 父元素下是 SVG 元素（#56，见 svgHtmlSharedElementNames）：
+    //  解析器把它们放进 SVG 命名空间，客户端由 SVG 父元素改建，属性一律按 SVG 的规则写，与 createSVGElement 相同。
+    const isSVG = el.props?._isSVG ?? (svgOnlyElementNames.has(tag) || (outerContext === 'svg' && svgHtmlSharedElementNames.has(tag)))
     const attrs = serializeAttrs(el.props, tag, optionSelectedBySo, elementPath, isSVG)
     // CAUTION CSR 的契约是 node.innerHTML = innerHTMLOf(value) ?? ''（DOM.setAttribute）：value 是字符串、
     //  React 形状的 {__html}（#50 起两端都解包，判定共用 markupNames.isInnerHTMLObject），
@@ -1365,13 +1405,16 @@ function serializeSsrElement(
     out.push('<', tag, attrs, '>')
     const contentStart = out.length
     const outerParentIsForeign = parentIsForeignElement
+    const outerAtTableLevel = atTableLevel
     insertionContext = childContextOf(outerContext, tagLower, el.props)
     parentIsForeignElement = elementIsForeign
+    atTableLevel = false
     try {
         serializeElementContent(el, tag, tagLower, out, selectSo, elementPath, hasDangerously, dangerously)
     } finally {
         insertionContext = outerContext
         parentIsForeignElement = outerParentIsForeign
+        atTableLevel = outerAtTableLevel
     }
     // 外来内容里的 textarea 是普通的外来元素，解析器不吞开始标签后的换行
     if (LEADING_NEWLINE_TAGS.has(tagLower) && !(elementIsForeign && tagLower === 'textarea')) {
@@ -1414,34 +1457,44 @@ function serializeElementContent(
             ? extractSelectSo(el.props)
             : (tagLower === 'optgroup' || tagLower === 'option' ? selectSo : null)
 
-        // §3.2: table must emit parsed-stable structure (explicit tbody for bare tr / list rows)
-        if (tagLower === 'table' && tableNeedsTbodyWrap(children)) {
-            out.push('<tbody>')
-            serializeChildren(children, out, 'tbody', childSo, elementPath)
-            out.push('</tbody>')
+        if (tagLower === 'table') {
+            serializeTableContent(children, out, tag, childSo, elementPath)
         } else {
             serializeChildren(children, out, tag, childSo, elementPath)
         }
     }
 }
 
-/** True when table children would rely on browser-implied tbody (bare tr / dynamic rows). */
-function tableNeedsTbodyWrap(children: any[]): boolean {
-    for (const c of children) {
-        if (isSsrElement(c) && typeof c.type === 'string') {
-            const t = c.type.toLowerCase()
-            if (t === 'tbody' || t === 'thead' || t === 'tfoot' || t === 'caption' || t === 'colgroup') {
-                return false
-            }
+/**
+ * §3.2: table 的子内容写成解析后结构不变的形态：直接子元素里有裸 <tr>、没有分区元素时，整段内容外面补一层
+ * <tbody>（解析器本来就会补，显式写出来让列表 / 函数的 placeholder 也落在同一个 tbody 里，激活时按隐含 tbody 认领，
+ * 见 hydration.impliedTableBody）。判定按写出的直接子元素，见 atTableLevel。
+ */
+function serializeTableContent(
+    children: any[],
+    out: string[],
+    tag: string,
+    childSo: SelectSoCtx | null,
+    elementPath: number[],
+): void {
+    const outerSawRow = tableSawRow
+    const outerSawSection = tableSawSection
+    atTableLevel = true
+    tableSawRow = false
+    tableSawSection = false
+    const contentStart = out.length
+    try {
+        serializeChildren(children, out, tag, childSo, elementPath)
+        if (tableSawRow && !tableSawSection) {
+            out.splice(contentStart, 0, '<tbody>')
+            out.push('</tbody>')
         }
+    } finally {
+        // serializeSsrElement 恢复外层的 atTableLevel
+        atTableLevel = false
+        tableSawRow = outerSawRow
+        tableSawSection = outerSawSection
     }
-    for (const c of children) {
-        if (isSsrElement(c) && typeof c.type === 'string' && c.type.toLowerCase() === 'tr') return true
-        if (c instanceof RxList) return true
-        if (typeof c === 'function' && !isAtom(c)) return true
-        if (Array.isArray(c)) return true
-    }
-    return false
 }
 
 function createSsrElement(type: any, rawProps: AttributesLike | null, ...rawChildren: any[]): any {
@@ -1612,8 +1665,10 @@ function serializePortal(
     // Portal 内容进入独立的容器（HTML 元素），与主树里 Portal 所在位置的 svg / math 祖先无关
     const outerContext = insertionContext
     const outerParentIsForeign = parentIsForeignElement
+    const outerAtTableLevel = atTableLevel
     insertionContext = 'html'
     parentIsForeignElement = false
+    atTableLevel = false
     try {
         const content = props.content
         if (isSsrElement(content) && content.type === Fragment) {
@@ -1626,6 +1681,7 @@ function serializePortal(
     } finally {
         insertionContext = outerContext
         parentIsForeignElement = outerParentIsForeign
+        atTableLevel = outerAtTableLevel
         popSsrComponent()
         state.sheets = parentSheets
     }
@@ -1729,6 +1785,7 @@ export function renderToString(
     ssrPortals = portals
     insertionContext = 'html'
     parentIsForeignElement = false
+    atTableLevel = false
     beginSsrStyles()
     beginSsrPass()
     try {

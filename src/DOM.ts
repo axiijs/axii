@@ -17,6 +17,8 @@ import {
     isEventName,
     isInnerHTMLObject,
     isRawWriteProperty,
+    isSvgHtmlIntegrationPoint,
+    svgHtmlSharedElementNames,
     svgOnlyElementNames,
     svgPresentationAttributeNames,
     textareaContentProp,
@@ -740,10 +742,143 @@ export type DetachStyledInfo = {
 
 const EMPTY_CHILDREN: any[] = []
 
-/** Rematerialize a main-root deferred stub with claiming enabled. */
-export function materializeHydrateDeferred(el: Element): Node {
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml'
+const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink'
+
+/**
+ * Rematerialize a main-root deferred stub with claiming enabled.
+ * svgParent：stub 是一个 SVG 元素（不是 HTML integration point）的静态子元素。HTML / SVG 同名的标签按 SVG 认领与创建，
+ *  ≡ CSR 里 SVG 父元素对同一个子元素做的改建（adoptSvgChildren，#56）。
+ */
+export function materializeHydrateDeferred(el: Element, svgParent = false): Node {
     const payload = takeHydrateDeferredPayload(el)
-    return createElement(payload.type, payload.rawProps, ...payload.rawChildren) as Node
+    let rawProps = payload.rawProps
+    if (svgParent && svgHtmlSharedElementNames.has(payload.type) && rawProps?._isSVG !== true) {
+        rawProps = {...rawProps, _isSVG: true}
+    }
+    return createElement(payload.type, rawProps, ...payload.rawChildren) as Node
+}
+
+function isSharedNameHtmlElement(value: unknown): value is ExtendedElement {
+    return isElementNode(value) && value.namespaceURI === XHTML_NAMESPACE && svgHtmlSharedElementNames.has(value.localName)
+}
+
+// HTML 元素上的 attribute 名都被转成了小写：SVG 里大小写敏感、或要转成连字符的名字按 setAttribute 的 SVG 规则还原。
+//  只在改建时（极少）惰性建表。
+let svgAttributeNamesByLowercase: {[lowercase: string]: string} | undefined
+function svgAttributeNameOfLowercase(name: string): string {
+    if (svgAttributeNamesByLowercase === undefined) {
+        const names: {[lowercase: string]: string} = Object.create(null)
+        for (const camelCase in svgPresentationAttributeNames) {
+            names[camelCase.toLowerCase()] = svgPresentationAttributeNames[camelCase]
+        }
+        // <a> 上的条件处理属性
+        names.requiredextensions = 'requiredExtensions'
+        names.systemlanguage = 'systemLanguage'
+        svgAttributeNamesByLowercase = names
+    }
+    return svgAttributeNamesByLowercase[name] ?? name
+}
+
+/**
+ * CAUTION HTML / SVG 同名的标签（a / title / style / script，见 svgHtmlSharedElementNames）在 SVG 父元素下必须是 SVG 元素（#56）：
+ *  HTML 解析器这样处理服务端写出的标记；客户端建成 HTML 元素的话，<a> 里的图形整个不渲染、<title> 不是图形的提示，
+ *  激活时每个都报告失配并重建。JSX 先求值子节点，子元素创建时不知道父元素，所以由 SVG 父元素在这里把它的静态子元素
+ *  （元素 child、数组项、Fragment 的子元素）改建到 SVG 命名空间：attribute 按 SVG 的写法搬过去（见 svgAttributeNameOfLowercase），子节点整体移过去，
+ *  axii 写在元素上的字段（事件表、未处理的子节点 / 响应式属性 / ref / detachStyle 元数据、JSX source）原样转交，
+ *  事件代理重新挂上；元数据里指向旧元素的 el 改指新元素（remapRecreatedElements）。响应式属性稍后由 StaticHost
+ *  按新元素（SVG）的规则写入。激活时由 materializeHydrateDeferred 在同一个位置按 SVG 认领，服务端按 SVG 的规则写属性。
+ *  只在 SVG 元素的创建路径上执行：HTML 元素的创建不多任何检查。
+ *  已知限制：
+ *   - 改建换掉了元素：在父元素创建之前拿到的子元素引用（const t = <title/>; <svg>{t}</svg>）指向被丢弃的 HTML 元素，
+ *     之前直接 addEventListener 的监听器也不会带过去（ref 在之后执行，拿到的是新元素）；
+ *   - 静态 attribute 是 HTML 元素按 HTML 规则写出后再搬过来的：HTML 上按 property 写的名字与值（tabIndex 写成 tabindex、
+ *     download={true} 写成 ""）与 createSVGElement 的写法（tabIndex、"true"）不同；
+ *   - 函数、组件、列表渲染出来的同名标签由 Host 稍后插入，不经过这里，仍是 HTML 元素；它们的激活结果与 CSR 不一致是
+ *     子先于父认领模型的既有缺陷（#55，见 ssrHydrate.shapes.spec 的 test.fails）。要在这些位置得到 SVG 元素，用 createSVGElement。
+ */
+function adoptSvgChildren(children: any[]): void {
+    let recreated: Map<Element, Element> | undefined
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i]
+        if (isSharedNameHtmlElement(child)) {
+            const svg = recreateInSvgNamespace(child, recreated ??= new Map())
+            remapRecreatedElements(svg, recreated)
+            children[i] = svg
+        } else if (Array.isArray(child)) {
+            for (let j = 0; j < child.length; j++) {
+                if (isSharedNameHtmlElement(child[j])) {
+                    const svg = recreateInSvgNamespace(child[j], recreated ??= new Map())
+                    remapRecreatedElements(svg, recreated)
+                    child[j] = svg
+                }
+            }
+        } else if (isFragmentNode(child)) {
+            // Fragment 子元素的元数据已经提升到 DocumentFragment 上
+            let node = child.firstChild
+            let fragmentRecreated = false
+            while (node) {
+                const next = node.nextSibling
+                if (isSharedNameHtmlElement(node)) {
+                    child.replaceChild(recreateInSvgNamespace(node, recreated ??= new Map()), node)
+                    fragmentRecreated = true
+                }
+                node = next
+            }
+            if (fragmentRecreated) remapRecreatedElements(child as unknown as ExtendedElement, recreated!)
+        }
+    }
+}
+
+function recreateInSvgNamespace(el: ExtendedElement, recreated: Map<Element, Element>): ExtendedElement {
+    const svg = document.createElementNS(SVG_NAMESPACE, el.localName) as unknown as ExtendedElement
+    const attributes = el.attributes
+    for (let i = 0; i < attributes.length; i++) {
+        const {namespaceURI, name, value} = attributes[i]
+        if (namespaceURI !== null) {
+            svg.setAttributeNS(namespaceURI, name, value)
+            continue
+        }
+        // xlinkHref / xlink:href 在 HTML 元素上是普通 attribute，按 SVG 的写法放进 xlink namespace（≡ setAttribute 的 SVG 分支，
+        //  其中 on 开头的名字丢弃，#49）
+        if (name.charCodeAt(0) === 120 && name.startsWith('xlink')) {
+            const localName = name.replace(/^xlink:?/, '')
+            if (hasOnPrefix(localName)) continue
+            if (localName) {
+                svg.setAttributeNS(XLINK_NAMESPACE, localName, value)
+                continue
+            }
+        }
+        svg.setAttribute(svgAttributeNameOfLowercase(name), value)
+    }
+    // title 是 HTML integration point，子内容按 HTML 解析
+    const keepHtmlChildren = isSvgHtmlIntegrationPoint(el.localName)
+    let child = el.firstChild
+    while (child) {
+        const next = child.nextSibling
+        svg.appendChild(!keepHtmlChildren && isSharedNameHtmlElement(child) ? recreateInSvgNamespace(child, recreated) : child)
+        child = next
+    }
+    const keys = Object.keys(el)
+    for (let i = 0; i < keys.length; i++) {
+        (svg as any)[keys[i]] = (el as any)[keys[i]]
+    }
+    if (el._listeners) for (const eventName in el._listeners) svg.addEventListener(eventName, eventProxy)
+    if (el._captureListeners) for (const eventName in el._captureListeners) svg.addEventListener(eventName, captureEventProxy, true)
+    recreated.set(el, svg)
+    return svg
+}
+
+function remapRecreatedElements(holder: ExtendedElement, recreated: Map<Element, Element>): void {
+    const lists: ({el: any}[] | undefined)[] = [holder.unhandledAttr, holder.refHandles, holder.detachStyledChildren]
+    for (const list of lists) {
+        if (!list) continue
+        for (const info of list) {
+            const replacement = recreated.get(info.el)
+            if (replacement) info.el = replacement
+        }
+    }
 }
 
 /**
@@ -831,7 +966,7 @@ export function ensureHydrateDeferredPortalContent(content: any): any {
  * Structural slots use hasUnhandledFor(child); nested DF must NOT push-then-lift onto
  * the nested first (cleared after lift → 2nd pass duplicates detached placeholders).
  */
-export function rematerializeDeferredFragmentChildren(frag: DocumentFragment): void {
+export function rematerializeDeferredFragmentChildren(frag: DocumentFragment, svgParent = false): void {
     const children = (frag as any).__axiiFragmentHydrateChildren as any[] | undefined
     if (!children?.length) return
 
@@ -903,7 +1038,7 @@ export function rematerializeDeferredFragmentChildren(frag: DocumentFragment): v
             const c = kids[i]
             const path = pathPrefix.length ? pathPrefix.concat(i) : [i]
             if (isHydrateDeferredElement(c)) {
-                const el = materializeHydrateDeferred(c as Element) as ExtendedElement
+                const el = materializeHydrateDeferred(c as Element, svgParent) as ExtendedElement
                 kids[i] = el
                 liftChildMeta(el, path)
             } else if (isFragmentNode(c)) {
@@ -1035,12 +1170,14 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             hydrateClaimed = true
             container = claimed as HTMLElement
         }
+    } else if (_isSVG) {
+        container = document.createElementNS(SVG_NAMESPACE, type as string) as SVGElement
+        // HTML / SVG 同名的子元素改建到 SVG 命名空间（#56，见 adoptSvgChildren）
+        if (children.length && !isSvgHtmlIntegrationPoint(type as string)) adoptSvgChildren(children)
     } else {
-        container = (_isSVG
-            ? document.createElementNS('http://www.w3.org/2000/svg', type as string) as SVGElement
-            : (rawProps && typeof rawProps.is === 'string'
-                ? document.createElement(type as string, {is: rawProps.is})
-                : document.createElement(type as string))) as HTMLElement
+        container = (rawProps && typeof rawProps.is === 'string'
+            ? document.createElement(type as string, {is: rawProps.is})
+            : document.createElement(type as string)) as HTMLElement
     }
 
     // CAUTION 元数据数组按需分配，绝大多数元素一个都不需要
@@ -1123,7 +1260,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 // Fragment: leave deferred stubs for rematerialize under fragment/portal root.
                 // Non-Fragment: rematerialize now (parent cursor / claim-allowed is active).
                 if (hydrating && isHydrateDeferredElement(nodeChild) && type !== Fragment) {
-                    nodeChild = materializeHydrateDeferred(nodeChild as Element)
+                    nodeChild = materializeHydrateDeferred(nodeChild as Element, _isSVG && !isSvgHtmlIntegrationPoint(type as string))
                     children[index] = nodeChild
                 }
                 if (hydrating) {
@@ -1132,7 +1269,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     if (type !== Fragment) {
                         if (isFragmentNode(nodeChild)) {
                             // Element-child Fragment: SSR flatten (no fragment start).
-                            rematerializeDeferredFragmentChildren(nodeChild)
+                            rematerializeDeferredFragmentChildren(nodeChild, _isSVG && !isSvgHtmlIntegrationPoint(type as string))
                             reconcileFlattenedFragmentHydrateChildren(nodeChild)
                         } else {
                             advancePastNode(nodeChild)
@@ -1217,7 +1354,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                             : String((snapshot as any)?.toString ? (snapshot as any).toString() : snapshot)
                         placeholder = claimAtomTextPlaceholder(text)
                     } else {
-                        placeholder = claimFunctionTextPlaceholder()
+                        placeholder = claimFunctionTextPlaceholder(child)
                     }
                 } else if (hydrating && Array.isArray(child)) {
                     // StaticArrayHost DirectNodes / items — claim texts then <!--unhandledChild-->
@@ -1242,7 +1379,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                             // DocumentFragment: content is under parent (fragment start…), not on the DF
                             let nodeItem: Node = item
                             if (isHydrateDeferredElement(nodeItem)) {
-                                nodeItem = materializeHydrateDeferred(nodeItem as Element)
+                                nodeItem = materializeHydrateDeferred(nodeItem as Element, _isSVG && !isSvgHtmlIntegrationPoint(type as string))
                                 child[itemIndex] = nodeItem
                             }
                             if (isFragmentNode(nodeItem)) {
