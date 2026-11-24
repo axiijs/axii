@@ -215,10 +215,11 @@ export class RxListHost implements Host{
                 host.render()
             }
         } catch (error) {
-            // 列表已被销毁：这批行马上整体丢弃，它们的错误没有归属，不交给 root 的监听器
-            //  （监听器在 destroy 之后保留，属于 root 之后的内容；与组件销毁后 async effect
-            //  的 rejection 不再上报同一语义）。
             if (this.destroyedWith === undefined) throw error
+            // 列表已被销毁：这批行马上整体丢弃，它们的错误没有归属，不交给 root 的监听器
+            //  （监听器在 destroy 之后保留，属于 root 之后的内容），经 reportAxiiError 报告，
+            //  不抛出、也不静默丢弃（#58）。
+            reportAxiiError(error)
         } finally {
             this.rowsOnStack = outerRowsOnStack
             // destroy 跳过了这批行（当时渲染到一半），现在渲染栈已退出，统一销毁恰好一次。
@@ -833,6 +834,8 @@ export class RxListHost implements Host{
             newHost.render()
         } catch (error) {
             if (this.destroyedWith === undefined) throw error
+            // 列表已被销毁：与 renderNewHosts 相同，经 reportAxiiError 报告（#58）
+            reportAxiiError(error)
         } finally {
             this.rowsOnStack = outerRowsOnStack
             if (this.destroyedWith !== undefined) newHost.destroy(this.destroyedWith)

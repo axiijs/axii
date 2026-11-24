@@ -192,16 +192,23 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                     try {
                         host.render()
                     } catch (error) {
-                        // 树已经被销毁：它马上整体丢弃，它之后抛出的错误没有归属——dispatch 不再交给
-                        //  root 的监听器（见 dispatch 的说明），未消费的错误沿渲染栈抛到这里丢弃
-                        //  （与组件销毁后 async effect 的 rejection 不再上报同一语义）。
-                        //  没有被销毁时保持向上抛出（root.host 仍被占用，由调用方 destroy）。
+                        // 没有被销毁时保持向上抛出（root.host 仍被占用，由调用方 destroy）。
                         if (root.host === host) throw error
+                        // 树已经被销毁：它马上整体丢弃，它之后抛出的错误没有归属，不交给 root 的监听器。
+                        //  经过 dispatch 的错误已经在那里报告（见 dispatch 的说明），到这里的是没有经过
+                        //  dispatch 的（元素里非法 child 的断言等）：同样经 reportAxiiError 报告，
+                        //  不抛出、也不静默丢弃（#58）。
+                        reportAxiiError(error)
                     }
                     // CAUTION 被丢弃的树在 renderingHost 仍指向它的时候销毁：它的清理函数抛出的错误
-                    //  同样不属于 root 现在的内容，不交给 root 的监听器（见 dispatch 的说明）。
+                    //  同样不属于 root 现在的内容，由 dispatch 报告并按已消费处理，销毁不会停在第一个
+                    //  抛错的清理函数上；没有经过 dispatch 的错误（DOM 区间诊断等）在这里报告。
                     if (root.host !== host) {
-                        host.destroy()
+                        try {
+                            host.destroy()
+                        } catch (error) {
+                            reportAxiiError(error)
+                        }
                         return host
                     }
                 } finally {
@@ -318,14 +325,19 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                 root.attached = false
             }
             // CAUTION 渲染到一半被销毁的树（已经不是 root.host，见 render 的重入说明）还在渲染栈上，
-            //  它之后抛出的错误不属于 root 现在的内容，不交给 root 的监听器：监听器多半已经因为这棵树
-            //  的第一个错误销毁了它、渲染了错误提示，再交给它就会为一棵已丢弃的树把错误提示销毁重建。
-            //  按未消费处理（Portal 内层 root 照常冒泡），错误沿渲染栈抛到 render 里丢弃——
-            //  与 destroy 清空全部监听器时的结果一致。只有 error 走这个判断，稳态多一次比较。
-            //  监听器自己销毁了 root、还没返回时同理，见 errorListenersSilenced 的说明。
-            const callbacks = event === 'error' && (
-                errorListenersSilenced || (renderingHost !== undefined && renderingHost !== root.host)
-            ) ?
+            //  它之后抛出的错误（渲染阶段的错误、它在渲染栈退出时销毁的清理错误）不属于 root 现在的内容，
+            //  不交给 root 的监听器（也不冒泡给父 root）：监听器多半已经因为这棵树的第一个错误销毁了它、
+            //  渲染了错误提示，再交给它就会为一棵已丢弃的树把错误提示销毁重建。
+            //  这些错误经 reportAxiiError 报告，并按已消费处理（#58）：出错的组件 / 绑定照常按「错误已被
+            //  边界接住」恢复，被丢弃的树照常渲染完、销毁完（清理函数一个抛错不会让兄弟清理函数不执行），
+            //  错误既不从 root.render 抛出，也不静默丢弃。只有 error 走这个判断，稳态多一次比较。
+            if (event === 'error' && renderingHost !== undefined && renderingHost !== root.host) {
+                reportAxiiError(arg)
+                return true
+            }
+            // 监听器自己销毁了 root、还没返回：按未消费处理，见 errorListenersSilenced 的说明
+            //  （错误抛回监听器，由派发方的逐监听器 catch 交给 reportAxiiError）。
+            const callbacks = event === 'error' && errorListenersSilenced ?
                 undefined :
                 eventCallbacks.get(event)
             const consumed = !!callbacks?.size
