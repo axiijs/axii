@@ -38,7 +38,7 @@ import {
     TriggerInfo,
     TriggerOpTypes
 } from "data0";
-import {detachEffectFromCreationContext} from "../src/LightBindingEffect";
+import {detachEffectFromCreationContext, LightBindingEffect} from "../src/LightBindingEffect";
 
 // 与 RxListHost.render 完全相同的订阅方式，捕获 axii 实际会收到的 triggerInfos
 function captureTriggerInfos(source: RxList<any>) {
@@ -316,6 +316,13 @@ describe('data0 -> axii trigger info contract', () => {
  *    收集帧和父 effect children 的最后一项、getter 期间 data0 不另开收集帧。
  *    → `detachEffectFromCreationContext` 只看「末尾那一项」，ReactiveAttributeEffect（构造器里）
  *      和列表的 computed（第一次 getter 里）都依赖这一点（见 LightBindingEffect.ts）。
+ *    例外（data0 >= 2.17）：栈顶 effect 重跑、销毁上一轮 children 的那段时间里（子 effect 的
+ *    清理代码、destroy 监听者在这里执行），它的 `_children` 是一个冻结的空数组（销毁中哨兵），
+ *    这期间新建的 effect 不被收集（`parent` 保持 undefined）。`detachEffectFromCreationContext`
+ *    会对 `_children` 做 swap-pop 写入，在这个窗口里它什么都不写：不会写进冻结的哨兵，也碰不到
+ *    新一代 children。data0 2.16 及以前，这类 effect 被收进即将丢弃的旧数组，留着 parent 与旧
+ *    index；没有被摘出的话，之后单独销毁它会按旧 index 在新一代 children 上 swap-pop，把活着的
+ *    兄弟挤出去（9d 钉住新行为）。
  * 10. 只有作用域栈顶的 effect 收集子 effect；把栈顶的 shouldCollectChild 置为 false 就不收集，
  *     不会落到更外层的 effect 上。→ root.render / destroy / dispatch 的隔离（render.ts）。
  * 11. ReactiveEffect.createDetached(fn) 里创建的 effect 既不进栈顶 effect 的 children，
@@ -398,6 +405,51 @@ describe('data0 -> axii ownership contract', () => {
         const children = childrenOf(running!)!
         expect(children.includes(created!)).toBe(false)
         expect(children[sibling!.index]).toBe(sibling)
+        stop()
+    })
+
+    test('9d. effects created while the running effect tears down its previous children are not collected (data0 >= 2.17)', () => {
+        const generation = atom(0)
+        let running: ReactiveEffect | undefined
+        let liveChildren: ReactiveEffect[] = []
+        let created: LightBindingEffect | undefined
+        let parentAtCreation: ReactiveEffect | undefined | 'not created' = 'not created'
+        let childrenLengthInTeardown: number | undefined
+        const stop = autorun(() => {
+            const current = generation()
+            running = top()
+            // 与 LightBindingEffect 相同：不传 getter 构造，再置为 active（inactive 的 effect 销毁时直接返回、不派发 destroy）
+            const child = new ReactiveEffect()
+            child.active = true
+            const sibling = new ReactiveEffect()
+            sibling.active = true
+            if (current === 0) {
+                // 这一轮的子 effect 在下一次重跑时被销毁；它的 destroy 监听者（清理代码）里新建一个绑定 effect，
+                // 照 AtomHost / FunctionHost 的构造方式立刻摘出创建上下文
+                child.on('destroy', () => {
+                    childrenLengthInTeardown = childrenOf(running!)?.length ?? 0
+                    created = new LightBindingEffect()
+                    parentAtCreation = created.parent
+                    created.detachFromCreationContext()
+                })
+            } else {
+                liveChildren = [child, sibling]
+            }
+        }, true)
+        const liveOrder = () => (childrenOf(running!) ?? []).map(effect => liveChildren.indexOf(effect))
+
+        expect(() => generation(1)).not.toThrow()
+        expect(created).not.toBe(undefined)
+        // 销毁窗口里 `_children` 是空的哨兵，新建的 effect 不被收集
+        expect(childrenLengthInTeardown).toBe(0)
+        expect(parentAtCreation).toBe(undefined)
+        expect(created!.parent).toBe(undefined)
+        // 新一代 children 完整，按 index 排列
+        expect(liveOrder()).toEqual([0, 1])
+        expect(liveChildren.map(effect => effect.index)).toEqual([0, 1])
+        // 之后单独销毁它，不会碰到父 effect 的 children
+        created!.destroy()
+        expect(liveOrder()).toEqual([0, 1])
         stop()
     })
 

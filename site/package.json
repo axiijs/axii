@@ -11,7 +11,7 @@
     "check": "node scripts/check-all.mjs"
   },
   "dependencies": {
-    "data0": "^2.14.0",
+    "data0": "^2.17.0",
     "shiki": "^1.24.4"
   },
   "devDependencies": {
