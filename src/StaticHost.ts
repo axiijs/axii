@@ -48,6 +48,7 @@ import {
     getComponentTypeId,
     isNestedStyleObject as isNestedStyleObjectShared,
     sheetDeclaredKeys,
+    splitInlineDeclarations,
     splitStyleObject as splitStyleObjectShared,
     prepareStyleContent,
     renderPreparedStyle,
@@ -758,25 +759,31 @@ class StyleManager {
         // CAUTION 响应式 style 重算后，新值可能不再包含上一次写过的某些 key
         //  （条件样式 () => cond() && {...} 翻转为 falsy、或对象换了一批 key）。
         //  inline style 是按 key 赋值的，必须显式清掉本次不再出现的 key，否则旧样式残留。
+        //  字符串条目同样只写它声明的属性（#79，见 DOM.applyStyleText），按共用的拆分器记下属性名（CSS 写法），
+        //  与对象条目的 key 一起比较：不再声明的属性删掉，前面条目写下的其余属性不动。删除先于下面的重新写入，
+        //  同一个属性换了写法（字符串的 margin-top ↔ 对象的 marginTop）也只是先删后写。
+        //  拆不准的字符串（见 splitInlineDeclarations）不知道写过哪些属性：记哨兵，下一次更新时整体清空行内样式，
+        //  再由 setAttribute 按条目顺序全部重写。
         const previousInlineKeys = this.elToInlineStyleKeys.get(el)
         const nextInlineKeys = new Set<string>()
         for (const patch of stylePatches) {
             if (typeof patch === 'string') {
-                // 字符串 patch 会整体覆写 cssText，之前收集的 key 全部失效；
-                // 用哨兵记录「当前样式来自字符串」，翻转回对象/null 时要整体清掉 cssText
-                nextInlineKeys.clear()
-                nextInlineKeys.add(CSS_TEXT_SENTINEL)
+                const declarations = splitInlineDeclarations(patch)
+                if (declarations === null) nextInlineKeys.add(CSS_TEXT_SENTINEL)
+                else for (const declaration of declarations) nextInlineKeys.add(declaration[0])
             } else if (patch && typeof patch === 'object') {
                 for (const k in patch) nextInlineKeys.add(k)
             }
         }
         if (previousInlineKeys) {
-            for (const k of previousInlineKeys) {
-                if (!nextInlineKeys.has(k)) {
-                    if (k === CSS_TEXT_SENTINEL) {
-                        // 上一轮写的是字符串 cssText，这一轮不是：整体清除后再按 patch 赋值
-                        el.style.cssText = ''
-                    } else if (k[0] === '-' && k[1] === '-') {
+            if (previousInlineKeys.has(CSS_TEXT_SENTINEL)) {
+                el.style.cssText = ''
+            } else {
+                for (const k of previousInlineKeys) {
+                    if (nextInlineKeys.has(k)) continue
+                    // 带 "-" 的是 CSS 写法的名字：自定义属性、字符串条目里的属性、对象里写成 'margin-top' 的 key。
+                    //  removeProperty 认得它们；驼峰 key 只能按 el.style[k] = '' 删除
+                    if (k.indexOf('-') >= 0) {
                         el.style.removeProperty(k)
                     } else {
                         // @ts-ignore
@@ -815,8 +822,8 @@ class StyleManager {
 
 type StyleObject = { [k: string]: any }
 
-// elToInlineStyleKeys 里的哨兵 key：标记「上一轮 inline 样式是字符串 cssText 整体覆写」，
-//  翻转回对象/null 形态时必须整体清除 cssText（字符串里写过哪些 key 无从得知）。
+// elToInlineStyleKeys 里的哨兵 key：上一轮有拆不准的字符串条目（见 splitInlineDeclarations），它写过哪些属性
+//  无从得知，下一次更新时必须整体清除 cssText 再重写。
 const CSS_TEXT_SENTINEL = '__cssText__'
 
 function hasInlineDeclarations(simpleStyles: StyleObject | string): boolean {

@@ -12,7 +12,9 @@ import {
     autoUnit,
     getAutoUnitType,
     setAutoUnitType,
+    splitInlineDeclarations,
     stringifyCssValue,
+    type InlineDeclaration,
 } from './styleSerialize'
 import {
     REMOVE_ATTRIBUTE,
@@ -88,8 +90,7 @@ import type {Host} from "./Host";
 
 // CAUTION 样式值 → CSS 文本（补单位名单、逗号列表、[数字, 单位] 简写、单位状态）只在 styleSerialize 有一份，
 //  行内样式与 stylesheet / SSR 共用（#60：这里曾有一份自己的 stringifyStyleValue 与同样的三张表）。
-//  这里只是保持原有的对外导出。例外：style 分支里的 CSS 自定义属性（--x）仍把原值交给 setProperty，
-//  数组的写法与 stylesheet / SSR 不同（见 styleSerialize 的「样式值 → CSS 文本」）。
+//  这里只是保持原有的对外导出。CSS 自定义属性（--x）同样经过它（#79，见 styleSerialize 的「样式值 → CSS 文本」）。
 export {AUTO_ADD_UNIT_ATTR, COMMA_MULTI_VALUE_ATTR, setAutoUnitType, autoUnit}
 
 export function stringifyStyleValue(k:string, v: any): string {
@@ -289,6 +290,54 @@ export {isEventName}
 //  整个图形静默不显示——同一个 JSX 在两种编译模式下行为分叉。
 
 /**
+ * style 的字符串条目（#79）：只覆盖它自己声明的属性，不清掉前面条目写下的其余属性——与对象条目「后写的赢」一致，
+ *  也与服务端按原样拼接的文本（浏览器逐属性解析，后面的声明覆盖前面的）一致。曾经整体赋值 cssText，
+ *  [{color: 'blue'}, 'margin-top: 3px'] 在客户端只剩 margin-top，服务端是三条声明，激活后页面变了。
+ *
+ * - 元素还没有行内声明：整体赋值就是浏览器对这段文本的解析，与服务端输出的文本完全一致。最常见的 style="…"
+ *   只多读一次 style.length，不拆分。
+ * - 已有行内声明：按共用的拆分器（splitInlineDeclarations，服务端用的同一份）逐条 setProperty。
+ *   CAUTION 不能把新文本拼在 cssText 后面整体重写：已有声明序列化之后再解析会丢东西——
+ *   {padding: 'var(--p)', paddingTop: 0} 之后，padding 的另外三个分项是待代入的值，序列化为空，重写后直接消失。
+ *   一段文本内部按浏览器解析一段声明的规则：后面的普通声明不覆盖前面同名的 !important 声明。
+ *   跨条目是「后写的赢」：setProperty 会替换前面条目（或上一次渲染）留下的 !important 声明。
+ *   已知差异：同一段文本里先写 !important 分项、后写普通简写（margin-top: 1px !important; margin: 0）时，
+ *   浏览器保留 margin-top，这里的 setProperty('margin', …) 会替换它——判断要用到简写与分项的对应表，不值得。
+ * - 拆不准的文本（见 splitInlineDeclarations）：交给浏览器解析「已有声明 + 这段文本」，
+ *   即服务端原样拼接的结果。上面 var() 的丢失只在这个罕见组合里发生。
+ */
+function applyStyleText(style: CSSStyleDeclaration, text: string) {
+    if (style.length === 0) {
+        style.cssText = text
+        return
+    }
+    const declarations = splitInlineDeclarations(text)
+    if (declarations === null) {
+        style.cssText = `${style.cssText};${text}`
+        return
+    }
+    for (let i = 0; i < declarations.length; i++) {
+        const declaration = declarations[i]
+        const important = declaration[3]
+        if (!important && isShadowedByImportant(declarations, i)) continue
+        const value = declaration[2]
+        // CAUTION 空值（color: / --x:）不能原样传：setProperty(k, '') 是删除，会删掉前面条目的值。传一个空白：
+        //  普通属性的空值不合法，setProperty 忽略它（前面的值保留，与浏览器丢弃这条声明一致，见 isVoidInlineDeclaration）；
+        //  自定义属性的空白是「设为空值」，与浏览器解析 --x: 一致。
+        style.setProperty(declaration[0], value === '' ? ' ' : value, important ? 'important' : '')
+    }
+}
+
+// 同一段文本里，这条普通声明前面有没有同名的 !important 声明
+function isShadowedByImportant(declarations: readonly InlineDeclaration[], index: number): boolean {
+    const name = declarations[index][0]
+    for (let i = 0; i < index; i++) {
+        if (declarations[i][3] && declarations[i][0] === name) return true
+    }
+    return false
+}
+
+/**
  * @internal
  */
 export function setAttribute(node: ExtendedElement, name: string, value: any, isSvg?: boolean): void {
@@ -421,19 +470,15 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             // 数组中的条件项 [base, cond && {...}]，falsy 直接跳过
             if (style == null || typeof style === 'boolean') return
             if (typeof style === 'string') {
-                node.style.cssText = style
+                applyStyleText(node.style, style)
             } else  if (typeof style === 'object') {
                 each(style, (v, k) => {
                     if (k[0] === '-' && k[1] === '-') {
-                        // CSS 自定义属性同样支持 atom/函数值
-                        // CAUTION 条件值（cond && val）的 falsy 结果按移除处理，
-                        //  否则 setProperty 会把 false 字符串化成 "false" 写进变量（F36 同类）。
-                        const evaluated = typeof v === 'function' ? v() : v
-                        if (evaluated === undefined || evaluated === null || typeof evaluated === 'boolean') {
-                            node.style.removeProperty(k)
-                        } else {
-                            node.style.setProperty(k, evaluated)
-                        }
+                        // CSS 自定义属性同样支持 atom/函数值，值经共用的 stringifyCssValue（#79）：数组空格连接、
+                        //  [数字, 单位] 拼成一个值，与 stylesheet / SSR 一致（曾把原值交给 setProperty，[4, 8] 写成 "4,8"）。
+                        //  CAUTION 条件值（cond && val）的 falsy 结果是 ''，setProperty(k, '') 即删除，
+                        //  不会把 false 字符串化成 "false" 写进变量（F36 同类）。
+                        node.style.setProperty(k, stringifyCssValue(k, v))
                     }else {
                         // @ts-ignore
                         node.style[k] = stringifyCssValue(k, v)
