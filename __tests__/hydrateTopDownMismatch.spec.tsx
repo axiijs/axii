@@ -456,6 +456,27 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
         }
     })
 
+    test('a root component that throws at the container level: the discarded tree\'s repairs stop at the server <!--root--> and leave the fallback rendered into the same container alone', () => {
+        // 监听器销毁 root、往同一个容器渲染一个空的兜底（容器层的 <!--empty--><!--root-->，追加在服务端内容之后）。
+        //  被丢弃的树按 R3 找自己的 <!--empty--> 时不能越过服务端的 <!--root--> 认领兜底的注释，否则随丢弃的树一起被销毁
+        function Fallback() { return null }
+        const make = (clientThrows: boolean) => function App({}: any, {createElement, pathContext}: RenderContext) {
+            if (pathContext) {
+                pathContext.root.on('error', () => {
+                    pathContext.root.destroy()
+                    pathContext.root.render(createElement(Fallback, null))
+                })
+            }
+            if (clientThrows) throw new Error('client only')
+            return <div>ok</div>
+        }
+        const hyd = parse(htmlOf(make(false)))
+        const root = hydrateRootTopDown(hyd, createElement(make(true), null))
+        expect({dom: kids(hyd), others: others()}).toEqual({dom: '<!--empty--><!--root-->', others: []})
+        root.destroy()
+        expect(kids(hyd)).toBe('')
+    })
+
     test('a row component that changes the list on the next tick during the activation is tracked, like CSR', async () => {
         // 同步改动（在 useEffect 里直接 push）CSR 本身就被 data0 拒绝（「detect recompute triggerred in sync recompute」），不在比较范围内
         const make = () => {

@@ -38,6 +38,7 @@ import {
     summarizeChild,
 } from "./hydration"
 import {COMMENT_NODE, ELEMENT_NODE, TEXT_NODE} from "./nodeType"
+import {ROOT_SLOT} from "./hydrationElement"
 
 // 当前层
 let cursorParent: ParentNode | null = null
@@ -171,10 +172,20 @@ function removeUnitAtCursor(): void {
     cursorNext = next
 }
 
+/**
+ * 容器这一层的向前查找不越过 `<!--root-->`：根 Host 的区域到它为止，后面只可能是杂节点——或者激活中 error 监听器销毁了 root、
+ * 又往同一个容器渲染的新内容（root.render 追加在容器末尾）。被丢弃的树仍按 R1–R5 修复完自己（Host 都要拿到真实的
+ * placeholder 才能销毁），越过去就会认领、删除新内容。找的就是 `root` 时不受限。
+ */
+function stopsLookAhead(node: ChildNode): boolean {
+    return cursorIsContainer && node.nodeType === COMMENT_NODE && (node as Comment).data === ROOT_SLOT
+}
+
 /** 游标之后、同一父节点里第一个 data 相同的 Comment（R3 的向前查找）。 */
 function findCommentAhead(from: ChildNode | null, data: string): Comment | null {
     for (let node = from; node !== null; node = node.nextSibling) {
         if (node.nodeType === COMMENT_NODE && (node as Comment).data === data) return node as Comment
+        if (stopsLookAhead(node)) return null
     }
     return null
 }
@@ -183,6 +194,7 @@ function findCommentAhead(from: ChildNode | null, data: string): Comment | null 
 function findElementAhead(from: ChildNode | null, tagName: string, id: string): Element | null {
     for (let node = from; node !== null; node = node.nextSibling) {
         if (node.nodeType === ELEMENT_NODE && (node as Element).tagName === tagName && (node as Element).id === id) return node as Element
+        if (stopsLookAhead(node)) return null
     }
     return null
 }
