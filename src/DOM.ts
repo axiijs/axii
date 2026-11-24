@@ -76,7 +76,7 @@ import {
     tryClaimElement,
     unclaimHydrateElement,
 } from "./hydration";
-import {createHydrationElementDevProxy, HOST_PLACED_CHILDREN, HydrationElement, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
+import {createHydrationElementDevProxy, HydrationElement, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
     claimTopDownElement,
     claimTopDownEmptyTextPlaceholder,
@@ -85,13 +85,13 @@ import {
     enterTopDownFreshElement,
     exitTopDownElement,
     insertTopDownEmptyText,
+    forgetTopDownDeferredShell,
+    getTopDownDeferredShell,
     getTopDownLift,
     getTopDownLiveLift,
     getTopDownWalk,
     isTopDownClaimApproximate,
-    isTopDownContentDeferred,
-    isTopDownHostPlaced,
-    markTopDownHostPlaced,
+    isTopDownPlacedBeforeWalk,
     placeTopDownExistingNode,
     placeTopDownFreshElement,
     rememberTopDownDeferredShell,
@@ -99,7 +99,9 @@ import {
     reportTopDownDevHint,
     removeTopDownCounterpart,
     reportTopDownLiveNode,
-    takeTopDownDeferredShell,
+    stampTopDownHost,
+    stampTopDownStatic,
+    type TopDownDeferredShell,
     type TopDownLiveLift,
 } from "./hydrationCursor";
 import type {Host} from "./Host";
@@ -1967,20 +1969,29 @@ function hydrateElementContent(desc: HydrationElement, el: HTMLElement | SVGElem
  * 这时它的元数据已被外层的 createElement 提升走：这里只认领元素（游标移到元素之后，不进入它），写 desc.node；子节点与 props
  * 留给收集它的遍历在它的静态位置上认领（hydrateDeferredContent）。Fragment 没有元素：node 是一个空的承载片段，服务端在这里写的
  * 子节点 CSR 里没有（Fragment 的子节点在第一次插入时就被搬走），按 R3 / R5 删除并报告（§11）。
- * 新建的元素（R1）照常放到游标处，由这里所属的 StaticHost 插入（#73）；失配状态记下来，内容按同样的状态认领。
+ * 新建的元素（R1）照常放到游标处，由这里所属的 StaticHost 插入（#73）；收集它的遍历与失配状态记下来，内容按同样的状态认领。
+ * byHost：Host 的 source（放置时刻按 Host 记），否则是当前遍历的静态位置（第 3 条）。
  */
-export function claimTopDownDeferredShell(desc: HydrationElement, parentAdoptsSvg: boolean): HTMLElement | SVGElement | DocumentFragment {
-    if (desc.tag === Fragment) return desc.node = document.createDocumentFragment()
-    const el = claimTopDownElementShell(desc, parentAdoptsSvg)
-    rememberTopDownDeferredShell(desc, (shellFresh ? 1 : 0) | (shellApproximate ? 2 : 0))
-    desc.node = el
-    if (shellFresh) placeTopDownFreshElement(el)
-    return el
+export function claimTopDownDeferredShell(desc: HydrationElement, parentAdoptsSvg: boolean, byHost: boolean): HTMLElement | SVGElement | DocumentFragment {
+    const walk = desc.walkMark
+    let node: HTMLElement | SVGElement | DocumentFragment
+    if (desc.tag === Fragment) {
+        node = document.createDocumentFragment()
+        rememberTopDownDeferredShell(desc, {walk, fresh: false, approximate: false})
+    } else {
+        node = claimTopDownElementShell(desc, parentAdoptsSvg)
+        rememberTopDownDeferredShell(desc, {walk, fresh: shellFresh, approximate: shellApproximate})
+        if (shellFresh) placeTopDownFreshElement(node as Element)
+    }
+    desc.node = node
+    if (byHost) stampTopDownHost(desc); else stampTopDownStatic(desc)
+    return node
 }
 
 // 收集它的遍历走到内容延后的描述的静态位置（第 2 条）：在已放置的元素里认领子节点、应用 props（元素在别处，游标进入它再回来；
-//  Fragment 的子节点就在这里，在同一层消费），动态 child 用这次遍历预先构造的 Host。之后它算作由别的一方放置过（第 3 条）。
-function hydrateDeferredContent(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined, parentAdoptsSvg: boolean): void {
+//  Fragment 的子节点就在这里，在同一层消费），动态 child 用这次遍历预先构造的 Host。元素仍留在先放置它的一方那里（第 3 条）。
+function hydrateDeferredContent(desc: HydrationElement, shell: TopDownDeferredShell, innerHosts: TopDownInnerHosts | undefined, parentAdoptsSvg: boolean): void {
+    forgetTopDownDeferredShell(desc)
     const node = desc.node as HTMLElement | SVGElement | DocumentFragment
     if (desc.tag === Fragment) {
         const rawProps = desc.rawProps
@@ -1990,11 +2001,10 @@ function hydrateDeferredContent(desc: HydrationElement, innerHosts: TopDownInner
         applyElementProps(node as DocumentFragment, rawProps, desc.isSVG, false, children.length, debugSource,
             undefined, lifted?.unhandledAttr, lifted?.refHandles, lifted?.detachStyledChildren)
         desc.rawProps = undefined
+        desc.rawChildren = undefined
     } else {
-        const flags = takeTopDownDeferredShell(desc)
-        hydrateElementContent(desc, node as HTMLElement | SVGElement, (flags & 1) !== 0, (flags & 2) !== 0, innerHosts)
+        hydrateElementContent(desc, node as HTMLElement | SVGElement, shell.fresh, shell.approximate, innerHosts)
     }
-    desc.rawChildren = HOST_PLACED_CHILDREN
 }
 
 // 开发期（诊断开启）：干净认领的元素上客户端 props 不写的服务端属性（markupNames.isAttributeWrittenByProps）
@@ -2111,12 +2121,13 @@ function hydrateDescriptionChildren(
             if (lift !== 0 && lift !== getTopDownWalk()) {
                 // 被外层正在进行的另一次遍历收集过（这次遍历的收集因此跳过了它）：CSR 里那次 createElement 更早，已经把它的
                 //  元数据提升走。这里只认领元素，内容与元数据留给那次遍历（第 2 条）
-                claimTopDownDeferredShell(child, childAdoptsSvg)
+                claimTopDownDeferredShell(child, childAdoptsSvg, false)
                 continue
             }
             const node = child.tag === Fragment ?
                 hydrateFragmentDescriptionChildren(child, innerHosts, childAdoptsSvg) :
                 hydrateElementDescriptionAt(child, innerHosts, childAdoptsSvg)
+            stampTopDownStatic(child)
             lifted = liftTopDownChildMetadata(node as ExtendedElement, index, lifted, debugSource)
         } else if (isDomNode(child)) {
             // 激活之外创建的现成节点（§2.6.8）：服务端不可能产出它，按 CSR 插在这里
@@ -2155,11 +2166,12 @@ function liftTopDownChildMetadata(childElement: ExtendedElement, index: number, 
 }
 
 /**
- * 这次激活里已经放置过的描述又作为静态 child 出现（C6；hydrationCursor.ts「同一个描述的多次放置」第 2、3 条）：
- *  - 这次遍历收集过它、之后由别的一方放置过：不挪（CSR 里那次放置更晚），只删除服务端为这个静态位置写下的那一份。
- *    元素还没认领内容的（Host 只认领了元素），在这里认领：动态 child 用这次遍历预先构造的 Host，元数据提升到这里（≡ CSR）；
- *  - 其余挪到这里（≡ CSR 的 child 循环再次 appendChild 同一个元素：同一个 createElement 里后面的 child，或者之后才建的外层），
- *    元数据已在第一次被提升走。不是收集它的遍历挪走的，记为别的一方放置过。
+ * 这次激活里已经放置过的描述又作为静态 child 出现（C6；hydrationCursor.ts「同一个描述（或现成节点）的多次放置」第 2、3 条）：
+ *  - 这次遍历收集过它、先由别的一方放置了元素（内容延后）：不挪，删除服务端为这个静态位置写下的那一份，在元素里认领内容：
+ *    动态 child 用这次遍历预先构造的 Host，元数据提升到这里（≡ CSR）；
+ *  - 上一次放置在这次遍历开始之前，或者就是这次遍历前面的静态位置：挪到这里（≡ CSR 的 child 循环再次 appendChild 同一个元素：
+ *    之后才建的外层，或者同一个 createElement 里后面的 child），元数据已在第一次被提升走；
+ *  - 其余（这次遍历开始之后由 Host、嵌套的遍历放置的，CSR 里更晚）：不挪，只删除服务端为这里写下的那一份。
  */
 function hydrateClaimedDescriptionChild(
     desc: HydrationElement,
@@ -2170,19 +2182,17 @@ function hydrateClaimedDescriptionChild(
     debugSource: AxiiSource | undefined,
 ): TopDownLiftedMetadata | undefined {
     const node = desc.node as ExtendedElement
-    if (getTopDownLift(desc) === getTopDownWalk()) {
-        if (isTopDownContentDeferred(desc)) {
-            removeTopDownCounterpart(node)
-            hydrateDeferredContent(desc, innerHosts, childAdoptsSvg)
-            return liftTopDownChildMetadata(node, index, lifted, debugSource)
-        }
-        if (desc.rawChildren === HOST_PLACED_CHILDREN) {
-            removeTopDownCounterpart(node)
-            return lifted
-        }
-    } else {
-        markTopDownHostPlaced(desc)
+    const shell = getTopDownDeferredShell(desc)
+    if (shell !== undefined && shell.walk === getTopDownWalk()) {
+        removeTopDownCounterpart(node)
+        hydrateDeferredContent(desc, shell, innerHosts, childAdoptsSvg)
+        return liftTopDownChildMetadata(node, index, lifted, debugSource)
     }
+    if (!isTopDownPlacedBeforeWalk(desc)) {
+        removeTopDownCounterpart(node)
+        return lifted
+    }
+    stampTopDownStatic(desc)
     return placeExistingChild(node, index, childAdoptsSvg, lifted, debugSource)
 }
 
@@ -2190,8 +2200,8 @@ function hydrateClaimedDescriptionChild(
  * 现成的节点作为 JSX child（§2.6.8：激活之外创建的节点）。≡ CSR createElement 的 child 循环：插入（removeTopDownCounterpart 先删除
  * 服务端在这里为它的 JSX 版本写下的对应物），提升元数据。它的 unhandledChildren（CSR 建好、带真实 placeholder 的动态 child）已由收集
  * 它的遍历提升走、按同一顺序预先构造（StaticHost.collectTopDownDynamicChildren，个数记在 lift 里），内容是仅客户端的：在它的这个
- * 静态位置上、激活上下文之外按 CSR 渲染。放置规则与描述相同（hydrateClaimedDescriptionChild）：收集它的遍历之后由别的一方放置过的
- * （例如先作为某个 Host 的 source，那个 Host 已经取走了它的其余元数据）不挪，只删除对应物。
+ * 静态位置上、激活上下文之外按 CSR 渲染。放置的先后与描述相同（hydrateClaimedDescriptionChild）：这次遍历开始之后由 Host 或嵌套的
+ * 遍历放置过的不挪，只删除对应物（那一方已经取走了它的其余元数据）。
  */
 function hydrateLiveChild(
     child: Node,
@@ -2201,17 +2211,13 @@ function hydrateLiveChild(
     lifted: TopDownLiftedMetadata | undefined,
     debugSource: AxiiSource | undefined,
 ): TopDownLiftedMetadata | undefined {
-    const lift = getTopDownLiveLift(child)
-    if (lift !== undefined && lift.walk === getTopDownWalk()) {
-        if (isTopDownHostPlaced(child)) {
-            removeTopDownCounterpart(child)
-            renderLiftedLiveHosts(lift, innerHosts)
-            return lifted
-        }
+    if (isTopDownPlacedBeforeWalk(child)) {
+        stampTopDownStatic(child)
+        lifted = placeExistingChild(child, index, childAdoptsSvg, lifted, debugSource)
     } else {
-        markTopDownHostPlaced(child)
+        removeTopDownCounterpart(child)
     }
-    lifted = placeExistingChild(child, index, childAdoptsSvg, lifted, debugSource)
+    const lift = getTopDownLiveLift(child)
     if (lift !== undefined && lift.walk === getTopDownWalk()) renderLiftedLiveHosts(lift, innerHosts)
     return lifted
 }
@@ -2262,8 +2268,26 @@ export function resolveHydrationElement(desc: HydrationElement): HTMLElement | S
             'during hydration and is rendered for the first time now: it is built on the client like createRoot().render() would. ' +
             'Create the JSX inside the function child that renders it, e.g. () => open() ? <div/> : null')
     }
+    // 激活中按 CSR 渲染的代码（例如现成节点里的函数 child）先放置了一个被正在进行的遍历收集过的描述：与 Host 的 source 一样只放一个
+    //  元素，内容留给收集它的遍历（hydrationCursor.ts「同一个描述（或现成节点）的多次放置」第 2 条）。这里没有游标，元素按 R1 新建
+    if (getTopDownLift(desc) !== 0) return createTopDownLateShell(desc)
     // 激活上下文之外重放：新模型激活中也可能走到这里（激活中建好的 reusable 在之后由 CSR 渲染），createElement 必须返回节点
     return runOutsideHydration(() => materializeHydrationElement(desc))
+}
+
+function createTopDownLateShell(desc: HydrationElement): HTMLElement | SVGElement | DocumentFragment {
+    const walk = desc.walkMark
+    let node: HTMLElement | SVGElement | DocumentFragment
+    if (desc.tag === Fragment) {
+        node = document.createDocumentFragment()
+    } else {
+        const rawProps = desc.rawProps
+        node = createHydrateMismatchElementNode(desc.tag as string, desc.isSVG, rawProps && typeof rawProps.is === 'string' ? rawProps.is : undefined) as HTMLElement
+    }
+    rememberTopDownDeferredShell(desc, {walk, fresh: desc.tag !== Fragment, approximate: false})
+    desc.node = node
+    stampTopDownHost(desc)
+    return node
 }
 
 // 按 CSR 重放 createElement。静态的子描述先物化，父元素的 createElement 循环因此把它们当作元素 child（提升元数据），不会各自

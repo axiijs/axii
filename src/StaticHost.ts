@@ -42,10 +42,10 @@ import {
     leaveTopDownWalk,
     liftTopDownLiveNode,
     markTopDownFreshElements,
-    markTopDownHostPlaced,
     placeTopDownExistingNode,
     removeTopDownCounterpart,
     reportTopDownLiveNode,
+    stampTopDownHost,
 } from "./hydrationCursor";
 import {innerHTMLOf} from "./markupNames";
 import {isDomNode} from "./nodeType";
@@ -952,7 +952,7 @@ function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], i
         if (childType === 'string' || childType === 'number' || childType === 'bigint') continue
         if (isHydrationElement(child)) {
             if (child.node === null && getTopDownLift(child) === 0) {
-                child.liftedBy = walk
+                child.walkMark = walk
                 collectTopDownDynamicChildren(child, path.concat(index), source, out, walk)
             }
         } else if (isDomNode(child)) {
@@ -1213,11 +1213,11 @@ export class StaticHost implements Host {
         let node: HTMLElement | SVGElement | DocumentFragment
         if (isHydrationElement(source)) {
             node = source.node as HTMLElement | SVGElement | DocumentFragment
-            markTopDownHostPlaced(source)
+            stampTopDownHost(source)
         } else {
             node = source as HTMLElement | SVGElement | DocumentFragment
             reportTopDownLiveNode(node)
-            markTopDownHostPlaced(node)
+            stampTopDownHost(node)
         }
         removeTopDownCounterpart(node)
         this.source = node
@@ -1237,7 +1237,7 @@ export class StaticHost implements Host {
         //  内容留给那个遍历（hydrationCursor.ts「同一个描述的多次放置」第 2 条）。这个 Host 没有内层 Host，≡ CSR
         if (getTopDownLift(desc) !== 0) {
             if (isFragment) this.element = claimTopDownComment('fragment start')
-            const node = claimTopDownDeferredShell(desc, false)
+            const node = claimTopDownDeferredShell(desc, false, true)
             if (!isFragment) this.element = node as HTMLElement | SVGElement
             this.source = node
             return
@@ -1266,7 +1266,7 @@ export class StaticHost implements Host {
         leaveTopDownWalk(outerWalk)
         if (!isFragment) this.element = node as HTMLElement | SVGElement
         this.source = node
-        markTopDownHostPlaced(desc)
+        stampTopDownHost(desc)
     }
     // ≡ createInnerHost，分派换成 createHydrateHost，placeholder 是 slot。CAUTION 两处的 context / position 规则一起改。
     createTopDownInnerHost(info: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
@@ -1711,11 +1711,11 @@ export class CompactElementHost extends StaticHost {
             let node: HTMLElement | SVGElement
             if (isHydrationElement(source)) {
                 node = source.node as HTMLElement | SVGElement
-                markTopDownHostPlaced(source)
+                stampTopDownHost(source)
             } else {
                 node = source as HTMLElement | SVGElement
                 reportTopDownLiveNode(node)
-                markTopDownHostPlaced(node)
+                stampTopDownHost(node)
             }
             placeTopDownExistingNode(node)
             this.source = this.element = node

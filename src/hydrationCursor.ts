@@ -42,7 +42,7 @@ import {
     summarizeChild,
 } from "./hydration"
 import {COMMENT_NODE, ELEMENT_NODE, TEXT_NODE} from "./nodeType"
-import {HOST_PLACED_CHILDREN, isHydrationElement, ROOT_SLOT} from "./hydrationElement"
+import {isHydrationElement, ROOT_SLOT} from "./hydrationElement"
 import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
 import type {Host} from "./Host"
 
@@ -56,18 +56,19 @@ let activationMismatchBase = 0
 const hydratedContainers: unknown[] = []
 
 export type TopDownActivationState = {
-    portals: Record<string, HTMLElement> | undefined, mismatchBase: number, containers: number, hostPlacedNodes: WeakSet<object> | undefined,
-    walkBase: number, walk: number, liveLifts: Map<object, TopDownLiveLift> | undefined, deferredShells: Map<object, number> | undefined,
+    portals: Record<string, HTMLElement> | undefined, mismatchBase: number, containers: number,
+    walkBase: number, walk: number, liveStamps: Map<object, number> | undefined, liveLifts: Map<object, TopDownLiveLift> | undefined,
+    deferredShells: Map<object, TopDownDeferredShell> | undefined,
 }
 
 /** 入口开始一次激活：返回之前的状态交给 leaveTopDownActivation（回调里嵌套的激活返回后外层照常继续）。 */
 export function enterTopDownActivation(portals: Record<string, HTMLElement> | undefined): TopDownActivationState {
-    const saved = {portals: activationPortals, mismatchBase: activationMismatchBase, containers: hydratedContainers.length, hostPlacedNodes,
-        walkBase: activationWalkBase, walk: currentTopDownWalk, liveLifts, deferredShells}
+    const saved = {portals: activationPortals, mismatchBase: activationMismatchBase, containers: hydratedContainers.length,
+        walkBase: activationWalkBase, walk: currentTopDownWalk, liveStamps, liveLifts, deferredShells}
     activationPortals = portals
     activationMismatchBase = mismatchCount
-    hostPlacedNodes = undefined
     activationWalkBase = currentTopDownWalk = topDownWalkSerial
+    liveStamps = undefined
     liveLifts = undefined
     deferredShells = undefined
     return saved
@@ -77,9 +78,9 @@ export function leaveTopDownActivation(saved: TopDownActivationState): void {
     activationPortals = saved.portals
     activationMismatchBase = saved.mismatchBase
     hydratedContainers.length = saved.containers
-    hostPlacedNodes = saved.hostPlacedNodes
     activationWalkBase = saved.walkBase
     currentTopDownWalk = saved.walk
+    liveStamps = saved.liveStamps
     liveLifts = saved.liveLifts
     deferredShells = saved.deferredShells
 }
@@ -574,24 +575,27 @@ export function removeTopDownCounterpart(node: Node): void {
 //
 // CSR 的时间顺序：外层的 createElement 在 JSX 求值时就把静态 child 插进去，并把它的元数据（动态 child、响应式属性、ref、
 //  detachStyle）提升到外层，它们归外层的 StaticHost；Host 在之后才渲染，渲染同一个元素时把它挪到 Host 那里，元数据已被提升走，
-//  不再为它建内层 Host。Fragment 的子节点在第一次被插入时就整体搬走，之后再插入它什么也不放。
+//  不再为它建内层 Host。同一个 createElement 里后面的 child 晚于前面的；之后才求值的 JSX（Host 渲染时新建的）晚于之前的一切。
+//  Fragment 的子节点在第一次被插入时就整体搬走，之后再插入它什么也不放。
 // 激活按文档顺序走：外层 StaticHost 先收集整棵静态子树（StaticHost.collectTopDownDynamicChildren，≡ 提升），之后逐个认领，
-//  中间穿插子 Host 的激活。按 CSR 的时间顺序：
-//  1. 收集：静态子树里还没认领、也还没被这次激活里别的遍历收集过的描述，liftedBy 记下收集它的遍历（enterTopDownWalk 的编号）；
-//     现成节点记在 liveLifts 里，它的 unhandledChildren 提升到收集它的遍历并从节点上取走（≡ createElement 的提升）。
+//  中间穿插子 Host 的激活与嵌套的遍历。一次收集加认领是一次「认领遍历」，编号全局递增（enterTopDownWalk）；按 CSR 的时间顺序：
+//  1. 收集：静态子树里还没认领、也还没被这次激活里别的遍历收集过的描述，walkMark 记下收集它的遍历；现成节点记在 liveLifts 里，
+//     它的 unhandledChildren 提升到收集它的遍历并从节点上取走（≡ createElement 的提升）。
 //  2. 被收集过、还没认领的描述先由别的一方放置（Host 的 source：函数、数组项、列表行、组件的结果；或者别的遍历里的静态 child——
-//     它的外层是之后才建的）：那一方只认领元素（Fragment 只有一个空的承载片段），内容留给收集它的遍历（「延后的内容」，
-//     DOM.claimTopDownDeferredShell）——≡ CSR 里这时元素的元数据已经提升走，Host 只放置它。收集它的遍历走到它的静态位置时
-//     删除服务端为这里写的那一份，在已放置的元素里认领内容（子节点、props），动态 child 用自己预先构造的 Host，元数据提升到自己
-//     （DOM.hydrateClaimedDescriptionChild）。之前后面兄弟的子 Host 会错位：两边各为它的动态 child 建了一份（#55 B4b）。
-//  3. 已认领的描述 / 现成节点又作为静态 child 出现：如果这是收集它的遍历，并且它在收集之后由别的一方放置过（markTopDownHostPlaced），
-//     不挪，只删除服务端为这里写的那一份（CSR 里那次放置更晚）；其余挪到这里（CSR 里这个静态位置更晚：同一个 createElement 里后面的
-//     child，或者之后才建的外层），由别的遍历挪走的同样记为「别的一方放置过」。
+//     它的外层是之后才建的；或者激活中按 CSR 渲染的代码）：那一方只认领元素（Fragment 只有一个空的承载片段），内容留给收集它的
+//     遍历（「延后的内容」，DOM.claimTopDownDeferredShell，收集它的遍历与失配状态记在 deferredShells 里）——≡ CSR 里这时元素的
+//     元数据已经提升走，Host 只放置它。收集它的遍历走到它的静态位置时删除服务端为这里写的那一份，在已放置的元素里认领内容（子节点、
+//     props），动态 child 用自己预先构造的 Host，元数据提升到自己（DOM.hydrateClaimedDescriptionChild）。之前后面兄弟的子 Host
+//     会错位：两边各为它的动态 child 建了一份（#55 B4b）。
+//  3. 放置的先后：每次放置记下时刻（认领之后描述的 walkMark，现成节点的 liveStamps）：遍历 W 的静态位置记 2W；Host（以及激活中
+//     按 CSR 渲染的代码）记 2×（已开始的最大遍历编号）+ 1。已放置的描述 / 现成节点又出现在遍历 W 的静态位置上时，上一次放置的
+//     时刻不晚于 2W（在 W 开始收集之前放置的，或者就是 W 前面的静态位置）就挪到这里，否则（W 开始之后由 Host 或嵌套的遍历放置的，
+//     CSR 里更晚）不挪，只删除服务端为这里写的那一份。Host 的放置总是挪过去（StaticHost.hydrateExistingSource）。
 //  近似：CSR 的「更早 / 更晚」以外层描述的创建为准，这里以外层的收集为准。外层先建好、被捕获、之后才由 Host 渲染的
 //   （const q = <p>{s}</p>; <div>{() => q}{s}</div>）两者不同，见设计 §11。
 
-// 认领遍历（StaticHost.hydrateSource 的一次收集加认领）的编号：全局递增、不回绕（Smi 范围内够用），所以之前的激活留在描述上的
-//  编号不会与这次的混淆；activationWalkBase 是这次激活开始时的值，大于它的编号属于这次激活。
+// 认领遍历的编号：全局递增、不回绕（Smi 范围内够用），所以之前的激活留下的编号与时刻都早于这次激活的任何遍历；
+//  activationWalkBase 是这次激活开始时的值，大于它的编号属于这次激活。
 let topDownWalkSerial = 0
 let activationWalkBase = 0
 let currentTopDownWalk = 0
@@ -612,9 +616,42 @@ export function getTopDownWalk(): number {
     return currentTopDownWalk
 }
 
-/** 这次激活里收集过这个描述的遍历的编号（没有时 0）。 */
-export function getTopDownLift(desc: {liftedBy: number}): number {
-    return desc.liftedBy > activationWalkBase ? desc.liftedBy : 0
+/**
+ * 还没认领的描述（调用方保证 node === null）：这次激活里收集过它、正在进行的遍历的编号，没有时 0。收集它的遍历结束时一定已经
+ * 认领了它（收集与遍历跳过同样的原始标记与单个文本 child），所以这次激活里收集过、还没认领的，收集它的遍历一定还在进行。
+ */
+export function getTopDownLift(desc: {walkMark: number}): number {
+    return currentTopDownWalk > activationWalkBase && desc.walkMark > activationWalkBase ? desc.walkMark : 0
+}
+
+/** 遍历 W 的静态位置放置了它（第 3 条）。 */
+export function stampTopDownStatic(value: object): void {
+    stampTopDownPlacement(value, currentTopDownWalk * 2)
+}
+
+/** Host（或激活中按 CSR 渲染的代码）放置了它（第 3 条）。 */
+export function stampTopDownHost(value: object): void {
+    stampTopDownPlacement(value, topDownWalkSerial * 2 + 1)
+}
+
+// 现成节点的放置时刻（少见）：这次激活的表，enterTopDownActivation 时换一个新的
+let liveStamps: Map<object, number> | undefined
+
+function stampTopDownPlacement(value: object, stamp: number): void {
+    if (isHydrationElement(value)) {
+        value.walkMark = stamp
+    } else {
+        (liveStamps ??= new Map()).set(value, stamp)
+    }
+}
+
+/**
+ * 已放置的描述 / 现成节点又出现在当前遍历的静态位置上时，要不要挪到这里（第 3 条）：上一次放置在这次遍历开始之前，或者就是这次
+ * 遍历前面的静态位置。描述在认领时都记了时刻；之前的激活里放置的、激活之外物化的，时刻都早于这次遍历。
+ */
+export function isTopDownPlacedBeforeWalk(value: object): boolean {
+    const stamp = isHydrationElement(value) ? value.walkMark : (liveStamps === undefined ? undefined : liveStamps.get(value))
+    return stamp === undefined || stamp <= currentTopDownWalk * 2
 }
 
 /** 现成节点的收集（见上面第 1 条）：收集它的遍历，以及提升走、还没在它的静态位置上渲染的预建 Host 数。 */
@@ -633,45 +670,21 @@ export function getTopDownLiveLift(node: object): TopDownLiveLift | undefined {
     return liveLifts === undefined ? undefined : liveLifts.get(node)
 }
 
-// 内容延后的描述（第 2 条）在认领元素时的失配状态：位 1 新建（R1），位 2 近似认领（§4.1）。只在误用的路径上分配
-let deferredShells: Map<object, number> | undefined
+/** 内容延后的描述（第 2 条）：收集它的遍历，认领元素时的失配状态（新建 R1、近似认领 §4.1）。只在误用的路径上分配 */
+export type TopDownDeferredShell = {walk: number, fresh: boolean, approximate: boolean}
+let deferredShells: Map<object, TopDownDeferredShell> | undefined
 
-export function rememberTopDownDeferredShell(desc: object, flags: number): void {
-    if (flags !== 0) (deferredShells ??= new Map()).set(desc, flags)
+export function rememberTopDownDeferredShell(desc: object, shell: TopDownDeferredShell): void {
+    (deferredShells ??= new Map()).set(desc, shell)
 }
 
-export function takeTopDownDeferredShell(desc: object): number {
-    if (deferredShells === undefined) return 0
-    const flags = deferredShells.get(desc)
-    if (flags === undefined) return 0
-    deferredShells.delete(desc)
-    return flags
+/** 内容还留给收集它的遍历的描述的记录；没有时 undefined。 */
+export function getTopDownDeferredShell(desc: object): TopDownDeferredShell | undefined {
+    return deferredShells === undefined ? undefined : deferredShells.get(desc)
 }
 
-/** 认领了元素、内容还留给收集它的遍历的描述（第 2 条）：已有 node，rawChildren 还没瘦身。 */
-export function isTopDownContentDeferred(desc: {node: unknown, rawChildren: unknown}): boolean {
-    return desc.node !== null && desc.rawChildren !== undefined && desc.rawChildren !== HOST_PLACED_CHILDREN
-}
-
-// 由收集它的遍历以外的一方放置过的描述与现成节点（第 3 条）。
-//  描述：认领后瘦身时 rawChildren 写成共享的 HOST_PLACED_CHILDREN（只多一次字段写入，不分配）；内容延后的描述本身就是这种状态，
-//  不改它的 rawChildren（内容还没认领）。现成节点（少见）：记在这次激活的 WeakSet 里（enterTopDownActivation 时换一个新的）。
-let hostPlacedNodes: WeakSet<object> | undefined
-
-/** 收集它的遍历以外的一方（Host、别的遍历）认领或放置了这个描述 / 现成节点。 */
-export function markTopDownHostPlaced(value: object): void {
-    if (isHydrationElement(value)) {
-        if (!isTopDownContentDeferred(value)) value.rawChildren = HOST_PLACED_CHILDREN
-    } else {
-        (hostPlacedNodes ??= new WeakSet()).add(value)
-    }
-}
-
-/** 这个描述 / 现成节点由收集它的遍历以外的一方放置过（描述：任何一次激活里；现成节点：这次激活里）。 */
-export function isTopDownHostPlaced(value: object): boolean {
-    return isHydrationElement(value) ?
-        value.rawChildren === HOST_PLACED_CHILDREN || isTopDownContentDeferred(value) :
-        hostPlacedNodes !== undefined && hostPlacedNodes.has(value)
+export function forgetTopDownDeferredShell(desc: object): void {
+    deferredShells!.delete(desc)
 }
 
 /**
