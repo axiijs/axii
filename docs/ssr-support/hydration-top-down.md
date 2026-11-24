@@ -186,7 +186,7 @@ interface Host {
 |---|---|
 | `null` / `undefined` | 无 |
 | 唯一的字符串 / 数字 / bigint（ElementChildText 单 child） | 非空：认领文本单元（`axii:t` 包边或裸 Text）；空：无 |
-| 多 child 中的字符串 / 数字 / bigint | 非空：认领文本单元；空：认领 `axii:0`，插入 `Text('')` |
+| 多 child 中的字符串 / 数字 / bigint | 非空：认领文本单元；空：认领 `axii:0`，插入 `Text('')`。例外：它是 `null` / `undefined` 之外唯一的 child 时服务端不写哨兵（`ssr.serializeChildren` 的 soleChild，元素与 Fragment 的 children 各自判定），这时只插入 `Text('')`；按这条规则决定，不能见到 `axii:0` 就拿（它可能属于后面的 atom / 函数单元） |
 | 元素描述 | 认领元素（§2.6.1），递归其子节点 |
 | Fragment 描述 | 在同一层展开，没有 `fragment start` |
 | atom | AtomHost，`TEXT_SLOT` |
@@ -280,6 +280,8 @@ interface Host {
 - 不认领任何 `axii:*`。
 
 这就是现在 `isCharacterDataParent` 的逻辑，只是挪到游标上。函数子节点在文本态时就是一个文本单元；结构态服务端会抛错（§3.2.1 R3），不变。#56 若要支持 `<textarea>` / `<title>` 的函数子节点，只需在 SSR 侧按文本态求值，激活侧不用再改。
+
+服务端在字符数据里也写不出结构注释：boolean child 被服务端跳过，CSR 却为它建 PrimitiveHost，在字符数据父节点里留下 `Text('')` 与 `<!--unhandledChild-->`（`<title>{cond && 'x'}</title>`、`<style>{dark && css}</style>` 的 false 分支）。B1 在字符数据模式下对结构注释同样插入而不认领，得到与 CSR 相同的 DOM（旧模型在这里抛错）。
 
 #### 2.6.7 table、SVG
 
@@ -821,7 +823,9 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **子 Host 的预先构造：** `StaticHost.hydrate` 先按文档顺序收集描述子树里的动态 child（`collectTopDownDynamicChildren`，path、source 与 CSR 提升后的 `unhandledChildren` 相同），像 `collectInnerHost` 一样构造（单个直接存、多个共享 hostPath 节点），认领遍历走到动态 child 时依次取出、`hydrate(slot)`。`createTopDownInnerHost` 是 `createInnerHost` 的另一份，两处互相指向。
 - **原始标记元素的 JSX children：** 不消费，也不为它们构造 Host（§2.6.2）。CSR 会为它们构造 Host、渲染进被 innerHTML 摘掉的 placeholder；这是开发期警告过的误用（I66），DOM 两边相同。
 - **激活中止：** B1 / B2 的失配用 `reportHydrationMismatch` 报告，抛出同一个错误。激活期间 `root.dispatch('error')` 把失配与「待实现」错误（`isTopDownAbort`）当作未消费，组件在激活中注册的 `root.on('error')` 不会吞掉它们；`FunctionHost` 结构态在新模型里不「渲染为空」，向上抛出。
-- **容器：** 容器这一层的 STYLE / SCRIPT / LINK 在认领时跳过（期望的正是同标签元素时不跳）。根认领 `<!--root-->` 之后，容器上只能剩下这三种；迁移服务端样式之后，激活区间之外还有节点是失配（B1 报告并抛出，清扫是 B3 的 R5 / D13）。
+- **容器：** 容器这一层的 STYLE / SCRIPT / LINK 在认领时跳过（期望的正是同标签元素时不跳；服务端样式 `data-axii-ssr` 永远跳过）。根认领 `<!--root-->` 之后，容器上只能剩下这三种；迁移服务端样式之后，激活区间之外还有节点是失配（B1 报告并抛出，清扫是 B3 的 R5 / D13）。
+- **根：** 内部入口创建的 root 只有第一次 `render` 走激活；之后 `root.destroy()` 再 `render`（包括激活中 error 监听器销毁 root、渲染错误提示）都是 CSR。激活中 root 被替换时（`root.render` 的重入说明），激活的树整体丢弃，入口不再对它做容器检查与不变量检查；其中已报告过的失配不重复报告。
+- **同一个描述出现两次：** 一次激活里同一个 JSX 元素被渲染第二次（`const s = <span/>; <div>{s}{s}</div>`，或激活中存下的 JSX 再次渲染，C6）时，描述已经认领、瘦身，显式抛「待实现」错误（B4 的「已有 `node` 就当作那个元素」分支），不再在空的 `rawChildren` 上 TypeError。
 - **lazy、reusable：** `lazy()` 的包装组件带 `__axiiLazy` 标记，`ComponentHost.hydrate` 见到它显式抛错（B4）。`reusable(x)` 在组件函数体里用 CSR 的 `createHost` 构造 innerHost，x 是描述时在 `createHost` 链尾（§2.2「事后渲染」的位置）显式抛错（B4）；`ReusableHost` 作为 source 进入 `createHydrateHost` 同样抛错。
 - **开发期不变量（§4.4）：** 在内部入口里检查，违反时以 `HydrationInvariantError`（`code: 'AXII_HYDRATION_INVARIANT'`）经 `reportAxiiError` 报告，不抛出。S 把内部入口变成 `hydrateRoot` 的实现时随之进入公开路径。
 
@@ -938,6 +942,8 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 ---
 
 ## 11. 范围外发现（只列出，未修）
+
+- **函数结构态的值又是函数（B1 发现，服务端缺陷）。** `{() => () => x}`：CSR 里内层 FunctionHost 的 placeholder 是外层的 `<!--computed node-->`（Comment-ph），服务端 `ssr.serializeStructureResult` 却经 `serializeChild` 按 Text-ph 写内层，多出一个 `<!--axii:0-->`（内层结构态时在内层的 `computed node` 之后）。旧模型激活后，x 为空时留下这个 `axii:0`，x 是元素时抛错；新模型在认领处报告并抛出（B3 的 R3 会删除它并报告）。根治在服务端：函数结果按 Comment-ph 写（`serializeFunctionHost(result, out, 'comment')`）。`hydrateTopDown.spec` 里有一条 `test.fails` 钉住它。atom 结果不受影响（服务端按 Comment-ph 写）。
 
 - **服务端 Compact 判定与 CSR 不一致（已在 chromium 复现）。** `serializeRxListRow` 只看行元素自己的 `detachStyle`，CSR 的 `detachStyledChildren` 还包括后代提升上来的。
   - 写法：`list.map(i => <li><span detachStyle={…}>{i}</span></li>)`；

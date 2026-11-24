@@ -120,8 +120,9 @@ const EMPTY_COMPONENT_PROP: Props = {}
 //  所以这类组件的 host 不捕获 ref、不解析 `$` 配置，合并后原样留在 props 里转发。
 //  用组件函数上的内部标记识别（同 Portal 的 __axiiPortal），不进公开类型。
 const FORWARD_PROPS_MARK = '__axiiForwardProps'
-// lazy() 的包装组件（lazy.ts）。只给 #55 新模型的激活用：lazy 的激活在 B4 落地，之前显式抛错
-export const LAZY_COMPONENT_MARK = '__axiiLazy'
+// lazy() 的包装组件（lazy.ts 写同一个字面量）。只给 #55 新模型的激活用：lazy 的激活在 B4 落地，之前显式抛错。
+//  不导出：index.ts 是 export * from './ComponentHost.js'
+const LAZY_COMPONENT_MARK = '__axiiLazy'
 function forwardsProps(type: Component): boolean {
     return (type as any)[FORWARD_PROPS_MARK] === true
 }

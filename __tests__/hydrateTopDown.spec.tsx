@@ -21,6 +21,12 @@ import {hydrateRootTopDown} from '../src/hydrateTopDown'
 import {HydrationMismatchError} from '../src/hydration'
 import {TopDownPendingError} from '../src/hydrationElement'
 import {componentTypeIds} from '../src/styleSerialize'
+import {
+    disableAxiiRetainedObjectDiagnostics,
+    enableAxiiRetainedObjectDiagnostics,
+    getAxiiRetainedObjectDiagnosticsSnapshot,
+    resetAxiiRetainedObjectDiagnostics,
+} from '../src/retainedObjectDiagnostics'
 
 let reports: unknown[]
 beforeEach(() => {
@@ -474,6 +480,72 @@ describe('not implemented yet on the internal entry: explicit throws (§7.2)', (
         try { hydrateRootTopDown(hyd, createElement(make(), null)) } catch (e) { thrown = e }
         expect(thrown).toBeInstanceOf(TopDownPendingError)
         expect((thrown as Error).message).toContain(`(#55 ${pr})`)
+    })
+})
+
+describe('retained objects (§5.2)', () => {
+    test('hydrate + destroy through the internal entry returns host / binding / style counters to zero (B1 kinds)', async () => {
+        enableAxiiRetainedObjectDiagnostics({reset: true})
+        try {
+            const label = atom('x')
+            const on = atom(true)
+            const refs: unknown[] = []
+            function Badge({}: any, {createElement, useEffect}: RenderContext) {
+                useEffect(() => () => {})
+                return <b className={() => label()}>{label}</b>
+            }
+            function Rows({}: any, {createElement, Fragment}: RenderContext) {
+                return <Fragment><i ref={(el: unknown) => refs.push(el)}>{() => label() + '!'}</i>{false}{null}</Fragment>
+            }
+            function App({}: any, {createElement}: RenderContext) {
+                return <div style={{color: 'red', '&:hover': {color: 'blue'}}}>
+                    <Badge/>
+                    {() => on() ? <p>{label}</p> : 'off'}
+                    <Rows/>
+                    {() => label()}
+                </div>
+            }
+            const {html, styles} = renderToString(createElement(App, null))
+            const hyd = mount()
+            hyd.innerHTML = styles ? `<style data-axii-ssr>${styles}</style>${html}` : html
+            const root = hydrateRootTopDown(hyd, createElement(App, null))
+            expect(reports).toEqual([])
+            const mid = getAxiiRetainedObjectDiagnosticsSnapshot()
+            expect(mid.hosts.totalActive).toBeGreaterThan(0)
+            expect(mid.lightBindings.totalActive).toBeGreaterThan(0)
+            on(false)
+            label('y')
+            await tick()
+            root.destroy()
+            const after = getAxiiRetainedObjectDiagnosticsSnapshot()
+            expect(after.hosts.totalActive).toBe(0)
+            expect(after.lightBindings.totalActive).toBe(0)
+            expect(after.styles.activeHostStyleStates).toBe(0)
+            expect(refs.length).toBe(2)
+            expect(refs[1]).toBe(null)
+        } finally {
+            disableAxiiRetainedObjectDiagnostics()
+            resetAxiiRetainedObjectDiagnostics()
+        }
+    })
+})
+
+describe('pre-existing server / CSR disagreement (out of B1 scope)', () => {
+    // 函数结构态的值又是（非 atom 的）函数：CSR 里内层 FunctionHost 的 placeholder 是外层的 <!--computed node-->（Comment-ph），
+    //  服务端 ssr.serializeStructureResult 却经 serializeChild 按 Text-ph 写内层（多一个 axii:0）。旧模型激活后留下一个 axii:0
+    //  （值为空时）或抛错（值是元素时）；新模型在认领处报告失配并抛出（B3 的 R3 会修复并报告）。
+    //  根治在服务端：serializeStructureResult 对函数结果按 Comment-ph 写（serializeFunctionHost(result, out, 'comment')）。
+    //  服务端修好之后这条翻转为通过。
+    test.fails('function child returning a function returning "" / an element: hydrates ≡ CSR without a report', () => {
+        for (const inner of [() => '', (createElement: any) => <b>e</b>]) {
+            reports = []
+            function App({}: any, {createElement}: RenderContext) { return <div>{() => () => inner(createElement)}<i>tail</i></div> }
+            const csrEl = mount()
+            createRoot(csrEl).render(createElement(App, null))
+            const hyd = ssrInto(createElement(App, null))
+            hydrateRootTopDown(hyd, createElement(App, null))
+            expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        }
     })
 })
 
