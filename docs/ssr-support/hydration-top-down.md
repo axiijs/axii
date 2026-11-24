@@ -127,7 +127,7 @@ export function isHydrationElement(v: unknown): v is HydrationElement   // 判�
 - **何时产生：** 新模型激活期间，对字符串标签与 `Fragment` 调用 `createElement` 和 `createSVGElement` 时。组件仍然返回 `ComponentNode`，不变。
 - **不碰 DOM：** 不创建元素，不认领，不应用 props，不提升元数据。`unhandledChildren`、`unhandledAttr`、`refHandles`、`detachStyledChildren` 都由消费它的 Host 在认领时按 CSR 的同一规则建立（§2.4）。
 - **字段预置：** 全部字段在构造器里预置，然后 `Object.preventExtensions`。这样形状单态，用户写入未知属性在严格模式下抛错（§3.4）。只在激活路径上分配。
-- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChildren`。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 `adoptSvgChildren` 的数组分支：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 处理（B3 之前报告并抛出）。
+- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChild`（SVG 父元素在 `createElement` 的子节点循环里改建）。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 CSR 改建的数组分支（`adoptSvgArrayItems`）：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 处理（B3 之前报告并抛出）。
 - **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
 - **两种对象：** 开发期返回包着描述的 Proxy，生产返回描述本身（§3.4）。用哪一种在 `beginHydration` 时按 `isAxiiDiagnosticsEnabled()` 定一次，同一次激活内不变。
 - **消费后瘦身：** 被认领或新建后，`rawProps` 和 `rawChildren` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。瘦身不会把描述变成节点：被闭包捕获的描述永远是描述（§3.1.1）。
@@ -289,7 +289,7 @@ interface Host {
 
 - **table：** `impliedTableBody` 的两头判定照旧（客户端 children 里没有显式分区元素，且 DOM 里 table 唯一的子节点是 TBODY），只是客户端一侧改为看描述的 `tag`。组件返回 `<tbody>` 的情况（#56）不受影响：这时 table 下还有 `<!--unhandledChild-->`，不满足「唯一子节点」。
   - B1 的实现（`DOM.resolveTopDownChildParent`）在客户端一侧也进入 Fragment 描述找分区元素：Fragment 在 table 这一层展开，服务端（`ssr.serializeTableContent` 的 `atTableLevel`）也把其中的分区元素算作 table 层。旧模型只看直接子元素，`<table><><tbody/></></table>` 会误判为隐含 tbody。
-- **SVG：** 描述的 `isSVG` 与 CSR 同一规则（§2.2「isSVG」），认领比较标签与命名空间。#56 已定为「CSR 跟随解析器」，只针对 SVG 元素的静态子元素（`adoptSvgChildren`）。函数 / 组件 / 列表稍后渲染的同名标签在 CSR 里仍是 HTML 元素，与解析器不同；新模型会在认领处看到标签或命名空间不符，按 R1 报告并新建，得到与 CSR 相同的 DOM（B3）。
+- **SVG：** 描述的 `isSVG` 与 CSR 同一规则（§2.2「isSVG」），认领比较标签与命名空间。#56 已定为「CSR 跟随解析器」，只针对 SVG 元素的静态子元素（`adoptSvgChild`）。函数 / 组件 / 列表稍后渲染的同名标签在 CSR 里仍是 HTML 元素，与解析器不同；新模型会在认领处看到标签或命名空间不符，按 R1 报告并新建，得到与 CSR 相同的 DOM（B3）。
 
 #### 2.6.8 现成的 DOM 节点作为 child
 
