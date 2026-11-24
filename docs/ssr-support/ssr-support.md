@@ -19,7 +19,7 @@ next-action: 无
 - Portal：`Portal` / `createPortal` 的 `container` 类型为 `HTMLElement`；构造期 `createRoot(container)` 并读 `container.isConnected`（`src/Portal.tsx`、`src/types.ts`）。
 - Node 兼容只到 import：`__tests__/node/importInNode.spec.ts`（BUG 7）；模块顶层不得碰 `document`（CompactElementHost CAUTION）。`vitest.node.config.ts` 提供 Node 配置。当前**没有任何** `renderToString` / `hydrate` API。
 - `package.json` exports：主入口 + `jsx-runtime` + 独立 `vite-plugin`；SSR 入口尚不存在。
-- data0 为 peerDependency `^2.16.0`；本环境存在兄弟 `../data0/src`。抽样：`computed` 创建时即求值；SSR 设计**不**要求修改 data0 内部实现。
+- data0 为 peerDependency `^2.16.0`（设计期的现状；#88 起为 `^2.17.0`）；本环境存在兄弟 `../data0/src`。抽样：`computed` 创建时即求值；SSR 设计**不**要求修改 data0 内部实现。
 
 ### 1.2 设计期验证实验（2026-08-06，证据目录 `docs/ssr-support/experiments/`）
 

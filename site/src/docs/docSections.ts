@@ -229,32 +229,48 @@ export const docGroups: DocGroup[] = [
       },
       {
         id: 'ssr',
-        title: 'SSR — renderToString + hydrateRoot (experimental)',
+        title: 'SSR — renderToString + hydrateRoot',
         group: 'Infrastructure',
         prose:
           'Server rendering uses the Node-safe entry axii/ssr: renderToString(source) returns ' +
           '{ html, styles, portals } with no DOM globals. html ends with <!--root-->. Inject styles ' +
           '(e.g. <style data-axii-ssr>) and write each portals[key].html into the matching container before ' +
-          'activation. On the client, hydrateRoot(container, source, { portals? }) claims existing nodes ' +
-          'instead of rebuilding them; matched identity is preserved, and most mismatches report ' +
-          'HydrationMismatchError and rebuild only the failing unit. Keep the component tree and reactive data ' +
-          'identical between SSR and hydrate — axii does not dehydrate application state. Streaming SSR and ' +
-          'state transfer are out of scope. Full design contracts live under docs/ssr-support/. ' +
-          'hydrateRoot is experimental. It claims server nodes while your JSX runs — children before their ' +
-          'parent, each element taking the first unclaimed server element with the same tag — and a child ' +
-          'component or function child renders only after its parent\'s JSX, with nothing in the server output ' +
-          'marking where that output starts. Known limits: (1) a component or function child placed before a ' +
-          'same-tag element of the parent — <div><Header/><main><p/></main></div> where Header renders a <p> — ' +
-          'lets that element take the child\'s node: content is lost with a HydrationMismatchError, or ' +
-          'hydrateRoot throws; (2) a function child returning text followed by one returning an element throws, ' +
-          'and a function returning a Fragment that holds another function child ends up with its nodes out of ' +
-          'order; (3) server/client structure differences (list row count, element vs text) are neither ' +
-          'reported nor repaired; (4) dangerouslySetInnerHTML markup that contains the element\'s own tag makes ' +
-          'the element claim the inner node of its markup: usually the element and its markup are removed ' +
-          '(reported), and as a list row its attributes and listeners silently land on that inner node — give ' +
-          'such an element a static id. These ' +
-          'limits, and the experimental label, go away when hydration claims nodes top-down by position ' +
-          '(axiijs/axii#55).',
+          'activation. On the client, hydrateRoot(container, source, { portals? }) reads the server output back ' +
+          'top-down, in the order the server wrote it: each component, function child and list takes its own ' +
+          'server nodes instead of searching the page for a same-tag element, so with matching output every ' +
+          'element claims the node written for it, matched nodes keep their identity, and hydration time ' +
+          'grows linearly with the page. ' +
+          'Keep the component tree and reactive data identical between SSR and hydrate — axii does not ' +
+          'dehydrate application state. Streaming SSR and state transfer are out of scope. Full design ' +
+          'contracts live under docs/ssr-support/. ' +
+          'Contract change: while hydrateRoot runs, JSX returns a hydration description, not a DOM node, and ' +
+          'that value never becomes a node. Reading a property of it gives undefined, calling a method or ' +
+          'passing it to a DOM API that takes only nodes throws a TypeError (append or replaceWith insert the ' +
+          'text [object Object] instead), writing a property throws in strict-mode code, and identity or ' +
+          'instanceof checks are false — also in event handlers that run long after hydration. ' +
+          'Reach nodes through ref, as Search does in the snippet; where code checks whether a JSX result is ' +
+          'a node, also check isHydrationElement(value). RxList.map rows and array items hold the claimed ' +
+          'nodes once hydration is done (a frozen array keeps the descriptions). JSX created during hydration ' +
+          'but first rendered after it is created ' +
+          'like in a client render. A node created outside hydration replaces the server node at its position ' +
+          'instead of reusing it; this includes an element passed directly to hydrateRoot, so pass a component ' +
+          '(<App />). Code in ref callbacks, useLayoutEffect, useEffect and root.on listeners runs outside ' +
+          'hydration and gets real nodes, and createRoot().render() is unchanged. ' +
+          'Differences in node structure or text between server HTML and the client render are reported ' +
+          '(code AXII_HYDRATION_MISMATCH, to configureDiagnostics({ onError }) and console.error) and ' +
+          'repaired where they are found, so structure, text and the attributes written by client props end ' +
+          'up equal to a client render; attribute values are written again from client props without a ' +
+          'report (a different static id is a mismatch), and attributes only the server wrote are removed on ' +
+          'the repair path. A component error ' +
+          'that no root.on(\'error\') listener handles, such as a missing Portal container, is thrown from ' +
+          'hydrateRoot as from createRoot().render(). Diagnostics are off by default ' +
+          'in the published package. With configureDiagnostics({ enabled: true }) called before hydrateRoot, ' +
+          'reading or writing a description is reported, with its JSX location when the JSX transform provides ' +
+          'it (AXII_HYDRATION_ELEMENT_ACCESS), ' +
+          'and so are JSX first rendered after hydration (AXII_HYDRATION_ELEMENT_LATE_RENDER), server nodes ' +
+          'replaced by nodes created outside hydration (AXII_HYDRATION_LIVE_NODE), server-only attributes left ' +
+          'on a cleanly claimed element (AXII_HYDRATION_ATTRIBUTE_RESIDUE) and broken consistency checks ' +
+          '(AXII_HYDRATION_INVARIANT). The README section "Hydration contract changes" has the full list.',
         raw: ssrRaw,
         html: ssrHtml,
         language: 'tsx',

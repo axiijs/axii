@@ -4,17 +4,21 @@ Notable changes to axii, newest release first. Each entry starts with one senten
 
 ## 4.9.0 (unreleased)
 
-4.9.0 is the result of a full audit of axii. Most entries are bug fixes, but many of them change what your pages render, so read **Breaking changes**, **Security** and **Dependencies** before upgrading. If you use server-side rendering, upgrade the server (`axii/ssr`) and the client (`axii`) together: `renderToString` output changed in several places, and `hydrateRoot` reports differences in older server HTML as mismatches and repairs them.
+4.9.0 is the result of a full audit of axii. Most entries are bug fixes, but many of them change what your pages render, so read **Breaking changes**, **Security** and **Dependencies** before upgrading. If you use server-side rendering, upgrade the server (`axii/ssr`) and the client (`axii`) together: `renderToString` output changed in several places. `hydrateRoot` still hydrates HTML from an older server: where its structure differs from the client render, each difference is reported as a mismatch and repaired (see the first entry under Breaking changes).
 
 ### Breaking changes
 
 Code that relies on the old behavior needs changes.
 
-- **`hydrateRoot` claims server nodes top-down by position and is no longer experimental, and while it runs JSX returns a hydration description instead of a DOM node.** Migration: reach elements through `ref` (in the ref callback or in `useLayoutEffect`) instead of keeping JSX results and using them as nodes. (issue #55; #67, #80, #84, #89, #93)
-  - Each host takes its own server nodes in document order, so hydration time grows linearly with the page.
-  - When server and client output differ, the difference is reported (`HydrationMismatchError`) and repaired: node structure, text and the attributes written by client props end up equal to a client render. Attributes that only the server wrote are removed on that repair path; elsewhere a leftover one is reported in development.
-  - A description kept in a variable never becomes a node: after `const input = <input/>`, calling `input.focus()` in a click handler throws a `TypeError`, `input.value` is `undefined` and `input === ref.current` is `false`. Development builds report such accesses with the JSX location.
-  - `RxList.map` rows and array items are replaced with the claimed nodes, and `createRoot().render()` is unchanged.
+- **`hydrateRoot` claims server nodes top-down, in the order the server wrote them, and is no longer experimental; while it runs, JSX returns a hydration description instead of a DOM node.** Migration: reach elements through `ref` (in the ref callback or in `useLayoutEffect`) instead of keeping JSX results and using them as nodes; "Hydration contract changes" in the README lists every affected pattern. (issue #55; #67, #75, #80, #84, #89, #93, #95, #96, #97)
+  - Each component, function child and list takes its own server nodes in document order instead of searching the page for a same-tag element. When the server output matches, every element claims the node written for it, and hydration time grows linearly with the page. The markers in the server HTML are unchanged.
+  - A description never becomes a node, not even after hydration: after `const input = <input/>`, calling `input.focus()` in a click handler throws a `TypeError`, `input.value` is `undefined` and `input === ref.current` is `false`.
+  - `RxList.map` rows and array items hold the claimed nodes once hydration is done (a frozen array keeps the descriptions). JSX created during hydration and first rendered after it is created like in a client render. A node created outside hydration, including an element passed directly to `hydrateRoot` (`hydrateRoot(root, <main/>)`), replaces the server node at its position instead of reusing it; pass a component (`<App/>`).
+  - Code in `ref` callbacks, `useLayoutEffect`, `useEffect` and `root.on()` listeners runs outside hydration, so JSX there returns real nodes. `createRoot().render()` is unchanged.
+  - Differences in node structure or text between server and client output are reported and repaired instead of thrown, including a container without `<!--root-->`. Afterwards structure, text and the attributes written by client props are equal to a client render; attribute values are written again from client props without a report, except a different static `id`, which is a mismatch. Attributes that only the server wrote are removed on the repair path and stay on an element claimed without a difference, and the `dangerouslySetInnerHTML` content of such an element is compared only when another mismatch was reported. Reports have `code: 'AXII_HYDRATION_MISMATCH'` and go to `configureDiagnostics({onError})` and `console.error` whether diagnostics are on or off.
+  - `hydrateRoot` still throws a component error that no `root.on('error')` listener handles, such as a missing Portal container, as `createRoot().render()` does, and an error thrown while a function child's content is hydrated even when a listener is registered.
+  - With diagnostics on (`configureDiagnostics({enabled: true})` before `hydrateRoot`; the published build has them off by default), reading or writing a description is reported with its JSX location when the JSX transform provides it (`AXII_HYDRATION_ELEMENT_ACCESS`), and so are JSX first rendered after hydration (`AXII_HYDRATION_ELEMENT_LATE_RENDER`), server nodes replaced by nodes created outside hydration (`AXII_HYDRATION_LIVE_NODE`), server-only attributes left on a cleanly claimed element (`AXII_HYDRATION_ATTRIBUTE_RESIDUE`) and broken consistency checks after hydration (`AXII_HYDRATION_INVARIANT`).
+  - New export: `isHydrationElement(value)` tells a description from other values. Removed: `materializeHydrateDeferred`, `ensureHydrateDeferredPortalContent` and `rematerializeDeferredFragmentChildren`, internal hydration functions that 4.8.1 exposed through the package entry.
   - This replaces the interim claiming rules and the "experimental" label added during 4.9.0 development (#62).
 - **`root.destroy()` keeps the listeners registered with `root.on()`, so they still fire after the same root renders again.** Migration: code that registers a listener again after `destroy()` now has it twice, so drop the re-registration or pass the same function reference; to remove a listener, call the function that `on()` returns. (#63)
   - This covers `error`, `attach`, `detach` and custom events.
@@ -38,11 +42,11 @@ Code that relies on the old behavior needs changes.
 
 - **A prop whose name starts with `on`, in any letter case, is never written as an attribute, so spreading an untrusted object can no longer create an executable inline handler.** Migration: write events as `onClick={fn}` and data as `data-*` attributes; component props are not affected. (#64)
   - Only `on` followed by an uppercase letter (`onClick`) binds a listener. Every other such name (`onclick`, `ONCLICK`, `once`, `online`, `onlyIcon`, `on-click`, SVG `xlink:onclick`) is dropped on every element, including SVG and custom elements, both on the client and by `renderToString`.
-  - Development builds warn once per dropped name.
+  - With diagnostics on, axii warns once per dropped name.
   - A bare `on` attribute (AMP's `on="tap:…"`) is now written by the server too.
   - A name with invalid characters such as `"ON x"` is dropped instead of throwing `InvalidCharacterError` on the client.
-- **Hydration builds a re-created element completely before inserting it, so a data script such as `<script type="application/json">` is no longer run as JavaScript.** No migration needed. (#76)
-  - This applies when hydration replaces a server element that does not match: the new element gets its children and attributes while it is still detached.
+- **Hydration builds a re-created element completely before inserting it, so a data script such as `<script type="application/json">` is no longer run as JavaScript.** No migration needed. (#76, #89, #96)
+  - This applies when hydration replaces a server element that does not match: the new element gets its children and attributes, including reactive ones such as `type={atom}`, while it is still detached.
   - `src`, `integrity`, `is` and `<select multiple>` on such an element behave as in a client render.
 - **Stylesheet rules and `renderToString` keep a style value only if the browser reads it as exactly one declaration, the same values a client-side inline style accepts.** No migration needed. (#48, #81)
   - These paths write values into CSS text, so a value that could add declarations or rules is dropped: a top-level `;` or `!important`, unbalanced brackets or quotes, a malformed unquoted `url(…)`, a line break (`\n`, `\r`, `\f`) inside a string, a top-level `{}` block outside a custom property, or `url(` after `<!--`.
@@ -138,7 +142,7 @@ These need no code changes in most apps, but what is rendered differs. Tests tha
 - **Function children whose value is a function, an `RxList` or a `reusable` are written in the client's shape, so they hydrate without leftover nodes or errors.** No migration needed. (#83)
   - The extra `<!--axii:0-->` or `<!--unhandledChild-->` is gone, and an empty atom in an array writes no `<!--axii:0-->`.
   - A function child returning an unsupported value now throws `unsupported render source` instead of `unsupported child type`.
-- **Holes in sparse arrays (`[a, , b]`) are skipped as on the client.** Migration: upgrade server and client together; HTML from an older server is reported as a hydration mismatch at each hole and repaired. (#87)
+- **Holes in sparse arrays (`[a, , b]`) are skipped as on the client.** Migration: upgrade server and client together; HTML from an older server, which writes extra markup at each hole, is reported as a hydration mismatch and repaired. (#87)
   - Explicit `undefined` and `null` items still render as empty.
   - On the client, an array whose first slot is a hole is now removed, replaced or moved as a whole; its content used to stay behind.
 - **`{__html: null}` and `{__html: undefined}` in `dangerouslySetInnerHTML` write empty content instead of the text `null` or `undefined`.** No migration needed. (#65)
@@ -159,7 +163,7 @@ No migration needed.
 - `PropTypes.atom`, `rxList`, `rxSet` and `rxMap` have `check` (alone they rejected every value, and inside `oneOfType` they threw), and `PropTypes.map({...}).check(null)` no longer throws. (#48)
 - `Form`: when one of several fields with the same name unmounts, or a list row is replaced, the value of the field that is still mounted is kept. (#48)
 - `RxDOMDragState`: a plain click no longer dispatches `dragend`; a drag interrupted by unmounting or destroying gets exactly one `dragend` carrying the last state and leaves no listeners behind. (#48)
-- `RxDOMFocused` updates again after its element is remounted, and `RxDOMSize` on a non-replaced inline element reports 0 consistently instead of a measured size that later drops to 0 (development builds suggest giving the element a box). (#48)
+- `RxDOMFocused` updates again after its element is remounted, and `RxDOMSize` on a non-replaced inline element reports 0 consistently instead of a measured size that later drops to 0 (with diagnostics on, axii suggests giving the element a box). (#48)
 - A `splice` that inserts more than about 100,000 rows no longer throws `RangeError`. (#48)
 - Content that a function child, a list or a root was still rendering when it got destroyed no longer leaks or ends up in the container. (#48)
 - A function child whose old content's cleanup destroys it no longer renders again or throws an uncaught `TypeError`, and a row cleanup that destroys its list runs each row's cleanup exactly once. (#48)

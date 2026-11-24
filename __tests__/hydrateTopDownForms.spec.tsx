@@ -153,6 +153,84 @@ describe('development Proxy (§3.4, §3.1.1)', () => {
     })
 })
 
+// #55 D：README / 站点「hydration 的契约变化」一节的迁移示例与 C9 的说法，钉在这里（文档里的每句说法都有对应用例）
+describe('migration as documented in the README (#55 D)', () => {
+    test('the "after" example: the ref holds the claimed input, the click focuses it, no report', () => {
+        function Search({}: any, {createElement, createRef}: RenderContext) {
+            const input = createRef()
+            return <div>
+                <input ref={input}/>
+                <button onClick={() => input.current.focus()}>Search</button>
+            </div>
+        }
+        for (const enabled of [true, false]) {
+            reports = []
+            configureDiagnostics({enabled, onError: (e: unknown) => { reports.push(e) }})
+            const hyd = mount()
+            hyd.innerHTML = renderToString(createElement(Search, null)).html
+            const serverInput = hyd.querySelector('input')
+            hydrateRoot(hyd, createElement(Search, null))
+            hyd.querySelector('button')!.click()
+            expect({enabled, same: hyd.querySelector('input') === serverInput, focused: document.activeElement === serverInput, reports})
+                .toEqual({enabled, same: true, focused: true, reports: []})
+        }
+    })
+
+    test('attribute values that differ from client props are rewritten without a report; a different static id is a mismatch', () => {
+        function App({}: any, {createElement}: RenderContext) {
+            return <div><p title="t" className="c" data-k="1">x</p><span id="s">y</span></div>
+        }
+        const html = renderToString(createElement(App, null)).html
+        const hyd = mount()
+        hyd.innerHTML = html
+        const p = hyd.querySelector('p')!
+        p.setAttribute('title', 'HACK')
+        p.setAttribute('class', 'x')
+        p.setAttribute('data-k', '2')
+        hydrateRoot(hyd, createElement(App, null))
+        expect({same: hyd.querySelector('p') === p, attrs: [p.title, p.className, p.dataset.k], reports})
+            .toEqual({same: true, attrs: ['t', 'c', '1'], reports: []})
+
+        reports = []
+        const hyd2 = mount()
+        hyd2.innerHTML = html
+        hyd2.querySelector('span')!.id = 'z'
+        hydrateRoot(hyd2, createElement(App, null))
+        expect({id: hyd2.querySelector('span')!.id, mismatches: mismatches().length}).toEqual({id: 's', mismatches: 1})
+    })
+
+    test('C9: JSX and createRoot().render() in user callbacks give real nodes', async () => {
+        for (const enabled of [true, false]) {
+            reports = []
+            configureDiagnostics({enabled, onError: (e: unknown) => { reports.push(e) }})
+            const made: [string, unknown][] = []
+            const side = document.createElement('div')
+            const make = (log: boolean) => function App({}: any, {createElement, useEffect, useLayoutEffect, pathContext}: RenderContext) {
+                if (log) {
+                    pathContext?.root.on('attach', () => { made.push(['attach', <i/>]) })
+                    useLayoutEffect(() => { made.push(['useLayoutEffect', <i/>]) })
+                    useEffect(() => {
+                        made.push(['useEffect', <i/>])
+                        createRoot(side).render(<u>side</u>)
+                    })
+                }
+                return <p ref={(el: Element | null) => { if (el && log) made.push(['ref', <i/>]) }}>x</p>
+            }
+            const hyd = mount()
+            hyd.innerHTML = renderToString(createElement(make(false), null)).html
+            hydrateRoot(hyd, createElement(make(true), null))
+            await tick()
+            expect({
+                enabled,
+                kinds: made.map(([k]) => k).sort(),
+                nodes: made.every(([, n]) => n instanceof HTMLElement && !isHydrationElement(n)),
+                side: side.firstElementChild instanceof HTMLElement && side.firstElementChild.outerHTML,
+                reports,
+            }).toEqual({enabled, kinds: ['attach', 'ref', 'useEffect', 'useLayoutEffect'], nodes: true, side: '<u>side</u>', reports: []})
+        }
+    })
+})
+
 describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
     test('JSX kept in the component body and first rendered after the activation ≡ CSR, its bindings work; AXII_HYDRATION_ELEMENT_LATE_RENDER while diagnostics are on', async () => {
         const make = () => {
