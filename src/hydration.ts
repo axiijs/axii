@@ -5,6 +5,7 @@
 
 import {isAtom, RxList} from "data0"
 import {reportAxiiError} from "./diagnostics"
+import {RAWTEXT_TAGS, RCDATA_TAGS} from "./markupNames"
 
 const claimedElements = new WeakSet<Element>()
 
@@ -73,6 +74,20 @@ function rebuildTextAtCursor(value: string, expectedDesc: string, actualDesc: st
     const before = parent.childNodes[childCursorIndex] ?? null
     parent.insertBefore(text, before)
     childCursorIndex++
+    return ownText(text)
+}
+
+// CAUTION 「placeholder 前面那个 Text 是不是我的」不能只看节点类型。
+//  空的 Comment-ph 单元（boolean 子节点、返回空值的组件 / 函数、atom('')）在 HTML 里没有任何节点
+//  （§3.2.1 A1c），这时 placeholder.previousSibling 是**前一个兄弟单元**的 Text：静态文本
+//  （ElementChildText）、atom 的 Text 占位、DirectNodes。它们认领时已经删掉了 axii:t 包边，
+//  在 DOM 上和「省略了包边的自有文本」（A2）长得一样。把它当成自己的，就会按「值漂移」换成一个
+//  空 Text：兄弟的文字消失，兄弟的 AtomHost 从此往一个脱离文档的节点里写。
+//  这里登记本次激活中已经有主的 Text。只在激活期间存在，begin / end 时丢弃——
+//  不同次激活之间不共享，WeakSet 也不持有节点。
+let ownedTexts: WeakSet<Text> | undefined
+function ownText(text: Text): Text {
+    (ownedTexts ??= new WeakSet()).add(text)
     return text
 }
 
@@ -105,6 +120,7 @@ export function isHydrateOnMainRoot(): boolean {
 
 export function beginHydration(container: ParentNode, portals?: Record<string, HTMLElement>): void {
     hydrating = true
+    ownedTexts = undefined
     hydrateRootEl = container
     hydratePortalEls = portals
     hydrateRootStack.length = 0
@@ -116,6 +132,7 @@ export function beginHydration(container: ParentNode, portals?: Record<string, H
 
 export function endHydration(): void {
     hydrating = false
+    ownedTexts = undefined
     claimedRollingStyleBases = undefined
     hydrateRootEl = null
     hydratePortalEls = undefined
@@ -124,6 +141,43 @@ export function endHydration(): void {
     childCursorIndex = 0
     childCursorStack.length = 0
     elementChildCursorDepth = 0
+}
+
+// CAUTION 激活上下文只属于框架自己的渲染路径（组件函数体、各 Host 的 render）。
+//  用户回调——useEffect / useLayoutEffect、ref、root.on(...) 监听器——虽然是在 hydrateRoot 的
+//  同步过程里被调用的，但它们里面的 createElement / createRoot().render() 是在创建新的 DOM
+//  （弹层、toast、命令式挂载的子树），不是在认领服务端节点。不退出上下文的话，这些 createElement
+//  会去容器里「认领」：拿到一个内容为空的 deferred stub，或者偷走还没被认领的服务端节点。
+//  这里把整份状态存起来再关掉标志位：回调里甚至可以再完整地跑一次 hydrateRoot
+//  （begin / end 会清空下面这些变量），返回后原样恢复、外层激活继续。
+export function runOutsideHydration<T>(run: () => T): T {
+    if (!hydrating) return run()
+    const savedRoot = hydrateRootEl
+    const savedPortals = hydratePortalEls
+    const savedRootStack = hydrateRootStack.slice()
+    const savedCursorParent = childCursorParent
+    const savedCursorIndex = childCursorIndex
+    const savedCursorStack = childCursorStack.slice()
+    const savedCursorDepth = elementChildCursorDepth
+    const savedOwnedTexts = ownedTexts
+    const savedRollingStyleBases = claimedRollingStyleBases
+    hydrating = false
+    try {
+        return run()
+    } finally {
+        hydrating = true
+        hydrateRootEl = savedRoot
+        hydratePortalEls = savedPortals
+        hydrateRootStack.length = 0
+        hydrateRootStack.push(...savedRootStack)
+        childCursorParent = savedCursorParent
+        childCursorIndex = savedCursorIndex
+        childCursorStack.length = 0
+        childCursorStack.push(...savedCursorStack)
+        elementChildCursorDepth = savedCursorDepth
+        ownedTexts = savedOwnedTexts
+        claimedRollingStyleBases = savedRollingStyleBases
+    }
 }
 
 export function rememberHydrateRollingStyleBase(el: Element, base: string): void {
@@ -302,7 +356,47 @@ function hasDirectComment(el: Element, data: string): boolean {
     return false
 }
 
+// CAUTION table 的隐含 tbody。
+//  HTML 解析器会给 table 下的裸 tr 补一层 tbody，renderToString 因此主动写出 <tbody>
+//  （ssr.ts tableNeedsTbodyWrap，§3.2），列表 / 数组 / 函数子节点的 placeholder 也都落在它里面；
+//  而客户端 createElement('table', null, <tr/>…) 的 children 里没有这一层。
+//  不认这一层的话，table 的子游标在 table.childNodes 上找不到任何行和 placeholder，
+//  随后 tbody 连同里面已经认领的行被当成「尾部孤儿」整体删掉——激活后表格是空的。
+//  判定两头都看：客户端 children 里没有显式的表格分区元素（与 tableNeedsTbodyWrap 的第一段
+//  同一组标签），且 DOM 里 table 唯一的子节点是 TBODY。组件子节点自己返回 <tbody> 时，
+//  table 下还有它的 <!--unhandledChild-->，不满足「唯一子节点」，不会被误判。
+const TABLE_SECTION_TAGS = new Set(['TBODY', 'THEAD', 'TFOOT', 'CAPTION', 'COLGROUP'])
+
+function impliedTableBody(el: Element, children: any[] | undefined): Element | null {
+    if (el.tagName !== 'TABLE') return null
+    const only = el.firstChild
+    if (!only || only !== el.lastChild || only.nodeType !== Node.ELEMENT_NODE
+        || (only as Element).tagName !== 'TBODY') {
+        return null
+    }
+    if (children) {
+        for (const c of children) {
+            // deferred stub 也是带 tagName 的真实元素
+            if (c instanceof Element && TABLE_SECTION_TAGS.has(c.tagName)) return null
+        }
+    }
+    return only as Element
+}
+
+/**
+ * 元素的 children 在 DOM 上实际所在的父节点：绝大多数就是元素自己，
+ * table 的隐含 tbody 例外（见 impliedTableBody）。隐含 tbody 同时记为已认领，
+ * 之后别处的 createElement('tbody') 不会把它偷走。
+ */
+export function resolveHydrateChildParent(el: Element, children: any[] | undefined): ParentNode {
+    const tbody = impliedTableBody(el, children)
+    if (!tbody) return el
+    claimedElements.add(tbody)
+    return tbody
+}
+
 function candidateFitsChildren(el: Element, children: any[] | undefined): boolean {
+    el = impliedTableBody(el, children) ?? el
     const deferContent = hasPortalDeferContent(children)
     const cnOnly = isComponentNodeOnlyChildren(children)
     if (!deferContent && !cnOnly) return true
@@ -359,8 +453,8 @@ function candidateFitsChildren(el: Element, children: any[] | undefined): boolea
 }
 
 /**
- * True when an earlier unclaimed Element sibling under the same parent blocks claiming `el`
- * (excluding STYLE/SCRIPT/LINK):
+ * True when `sib`, as an earlier unclaimed Element sibling under the same parent, blocks claiming
+ * a later same-tag candidate (excluding STYLE/SCRIPT/LINK):
  * - Different tag → D4/D5/D6 interstitial / wrong-tag unit
  * - Same tag with `id !== wantId` (when wantId set) → D8 same-tag interstitial / D9 swap partner
  *
@@ -371,22 +465,12 @@ function candidateFitsChildren(el: Element, children: any[] | undefined): boolea
  *
  * Ignore STYLE/SCRIPT/LINK (SSR `<style data-axii-ssr>` sits before the app root).
  */
-function hasBlockingEarlierSibling(el: Element, wantUpper: string, wantId: string | null): boolean {
-    const parent = el.parentNode
-    if (!parent) return false
-    const kids = parent.childNodes
-    for (let i = 0; i < kids.length; i++) {
-        const n = kids[i]
-        if (n === el) return false
-        if (n.nodeType !== Node.ELEMENT_NODE) continue
-        const sib = n as Element
-        const tag = sib.tagName
-        if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'LINK') continue
-        if (claimedElements.has(sib)) continue
-        if (tag !== wantUpper) return true
-        if (wantId != null && sib.id !== wantId) return true
-    }
-    return false
+function isClaimBlockingSibling(sib: Element, wantUpper: string, wantId: string | null): boolean {
+    const tag = sib.tagName
+    if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'LINK') return false
+    if (claimedElements.has(sib)) return false
+    if (tag !== wantUpper) return true
+    return wantId != null && sib.id !== wantId
 }
 
 /** Same-tag wrong-id earlier sibling only (D8/D9) — not different-tag (D4/D6). */
@@ -589,10 +673,15 @@ export function tryClaimElement(
     tagName: string,
     props?: any,
     children?: any[],
+    isSVG?: boolean,
 ): Element | null {
     const root = hydrateRootEl
     if (!root) throw new Error('[axii] hydrate claimElement without active hydration')
-    const upper = tagName.toUpperCase()
+    // CAUTION Element.tagName 只有 HTML 元素才是大写；SVG 元素保持原始大小写（'svg'、'clipPath'）。
+    //  一律拿大写去比的话，页面上所有内联 SVG 都认领不到——每个 svg 子树报一串假的失配并整体重建。
+    //  下面所有 `el.tagName === upper` 的比较都以这个值为准；大小写本身也把 HTML / SVG 的
+    //  同名标签（a / script / style / title）区分开了。
+    const upper = isSVG ? tagName : tagName.toUpperCase()
     const wantId = staticAttrId(props)
 
     // Cursor-first only inside enterElementChildCursor (element children), not list/array
@@ -609,11 +698,23 @@ export function tryClaimElement(
     let wrongIdMiss: Element | null = null
     let wrongIdDepth = -1
 
-    function walk(node: Node, depth: number) {
-        if (node.nodeType !== Node.ELEMENT_NODE) return
-        const el = node as Element
+    // CAUTION 「前面有没有挡路的未认领兄弟」沿兄弟顺序递推一次即可，结论与逐个候选回头数一遍完全相同。
+    //  曾经对每个候选都从父节点的第一个子节点重新数到自己：N 个同级行的列表里，一次认领是 O(N²)，
+    //  整个列表 O(N³)——1000 行的列表激活要十几秒（CSR 创建同一个列表是 1~2 毫秒）。
+    //  这里只去掉这一层重复计算；每次认领仍然遍历整个容器（整体 O(N²)），认领规则没有任何变化。
+    function walkChildren(parent: ParentNode, depth: number) {
+        const kids = parent.childNodes
+        let blockedByEarlier = false
+        for (let i = 0; i < kids.length; i++) {
+            const n = kids[i]
+            if (n.nodeType !== Node.ELEMENT_NODE) continue
+            walk(n as Element, depth, blockedByEarlier)
+            if (!blockedByEarlier && isClaimBlockingSibling(n as Element, upper, wantId)) blockedByEarlier = true
+        }
+    }
+
+    function walk(el: Element, depth: number, blocked: boolean) {
         if (!claimedElements.has(el) && el.tagName === upper) {
-            const blocked = hasBlockingEarlierSibling(el, upper, wantId)
             if (wantId != null && el.id !== wantId) {
                 // Attribute drift candidate — used only if no exact id match exists.
                 // Skip when a different-tag unclaimed sibling exists (role swap — D7):
@@ -643,16 +744,10 @@ export function tryClaimElement(
                 }
             }
         }
-        const kids = el.childNodes
-        for (let i = 0; i < kids.length; i++) {
-            walk(kids[i], depth + 1)
-        }
+        walkChildren(el, depth + 1)
     }
 
-    const top = root.childNodes
-    for (let i = 0; i < top.length; i++) {
-        walk(top[i], 0)
-    }
+    walkChildren(root, 0)
 
     if (best) {
         claimedElements.add(best)
@@ -872,9 +967,10 @@ export function removeHydrateContainerOrphans(
     }
 }
 
-export function exitElementChildCursor(): void {
+export function exitElementChildCursor(keepTrailing = false): void {
     // D10: claim path only clears interstitial/ahead blockers; trailing siblings never claimed.
-    removeTrailingOrphansAtCursor()
+    // keepTrailing：元素内容是 dangerouslySetInnerHTML 写出的原始标记，不属于任何 child 单元，不是孤儿。
+    if (!keepTrailing) removeTrailingOrphansAtCursor()
     if (elementChildCursorDepth > 0) elementChildCursorDepth--
     const prev = childCursorStack.pop()
     if (prev) {
@@ -907,6 +1003,16 @@ export function advancePastNode(node: Node): void {
             return
         }
     }
+}
+
+// CAUTION RCDATA / RAWTEXT 父节点（textarea / title / style / script…）里没有 axii:* 标记（§3.2.1 A3）：
+//  服务端把各文本单元首尾相接成一段字符数据，空单元不留任何节点。认领时按客户端单元的长度把
+//  这一个 Text 依次切开（splitText），正好是首尾相接的逆操作——各单元拿到自己的 Text，
+//  第一段保持原节点 identity。不切的话第一个单元拿整段去比，必然「值漂移」，后面的单元全部重建。
+function isCharacterDataParent(parent: ParentNode): boolean {
+    if (parent.nodeType !== Node.ELEMENT_NODE) return false
+    const name = (parent as Element).localName.toLowerCase()
+    return RCDATA_TAGS.has(name) || RAWTEXT_TAGS.has(name)
 }
 
 function removeAxiiBoundaryPair(open: Comment, close: Comment): void {
@@ -967,13 +1073,18 @@ export function claimTextUnit(expected?: string): Text {
             )
             const replacement = document.createTextNode(expected)
             parent.replaceChild(replacement, textNode)
-            return replacement
+            return ownText(replacement)
         }
-        return textNode
+        return ownText(textNode)
     }
 
     if (node.nodeType === Node.TEXT_NODE) {
         const textNode = node as Text
+        if (expected !== undefined && expected !== '' && textNode.nodeValue !== expected
+            && textNode.nodeValue!.startsWith(expected) && isCharacterDataParent(parent)) {
+            // 首尾相接的字符数据：切出本单元，余下的留给后面的单元
+            textNode.splitText(expected.length)
+        }
         advanceChild()
         if (expected !== undefined && textNode.nodeValue !== expected) {
             reportHydrationMismatch(
@@ -982,9 +1093,9 @@ export function claimTextUnit(expected?: string): Text {
             )
             const replacement = document.createTextNode(expected)
             parent.replaceChild(replacement, textNode)
-            return replacement
+            return ownText(replacement)
         }
-        return textNode
+        return ownText(textNode)
     }
 
     if (expected !== undefined) {
@@ -1007,6 +1118,14 @@ export function claimEmptyTextPh(): Text {
 
     const node = currentChild()
     if (!node || !isCommentData(node, 'axii:0')) {
+        if (isCharacterDataParent(parent)) {
+            // 字符数据父节点里空单元没有哨兵（A3 / C3）：直接在游标处插入空 Text，不算失配，
+            //  也不能动游标处的节点——那是下一个单元的文本。
+            const text = document.createTextNode('')
+            parent.insertBefore(text, node)
+            childCursorIndex++
+            return ownText(text)
+        }
         return rebuildTextAtCursor('', 'Comment("axii:0")→Text("")', summarizeChild(node))
     }
     const sentinel = node as Comment
@@ -1014,7 +1133,7 @@ export function claimEmptyTextPh(): Text {
     parent.insertBefore(text, sentinel)
     sentinel.remove()
     childCursorIndex++
-    return text
+    return ownText(text)
 }
 
 /**
@@ -1213,7 +1332,9 @@ export function claimTextBeforeCommentPlaceholder(placeholder: Comment, expected
         close.remove()
         return reconcileCommentPhText(text as Text, expected, parent)
     }
-    if (!prev || prev.nodeType === Node.COMMENT_NODE) {
+    // 已经有主的 Text 属于前一个兄弟单元，不是本单元的文本（见 ownedTexts）
+    if (!prev || prev.nodeType === Node.COMMENT_NODE
+        || (prev.nodeType === Node.TEXT_NODE && ownedTexts !== undefined && ownedTexts.has(prev as Text))) {
         // Empty Comment-ph: HTML omitted Text. Non-empty expected → missing text = mismatch (D12).
         if (expected !== undefined && expected !== '') {
             reportHydrationMismatch(
@@ -1222,11 +1343,11 @@ export function claimTextBeforeCommentPlaceholder(placeholder: Comment, expected
             )
             const replacement = document.createTextNode(expected)
             parent.insertBefore(replacement, placeholder)
-            return replacement
+            return ownText(replacement)
         }
         const text = document.createTextNode('')
         parent.insertBefore(text, placeholder)
-        return text
+        return ownText(text)
     }
     if (prev.nodeType === Node.TEXT_NODE) {
         return reconcileCommentPhText(prev as Text, expected, parent)
@@ -1242,9 +1363,9 @@ function reconcileCommentPhText(textNode: Text, expected: string | undefined, pa
         )
         const replacement = document.createTextNode(expected)
         parent.replaceChild(replacement, textNode)
-        return replacement
+        return ownText(replacement)
     }
-    return textNode
+    return ownText(textNode)
 }
 
 /**
@@ -1298,11 +1419,14 @@ export function stripAxiiTextBoundariesBetween(start: Node, end: Node): void {
  */
 function walkFragmentHydrateChildren(
     children: any[],
-    assignPlaceholder: (ph: Comment | Text) => void,
+    assignPlaceholder: (ph: Comment | Text, path: number[]) => void,
+    pathPrefix: number[] = [],
 ): void {
     for (let index = 0; index < children.length; index++) {
         const child = children[index]
         if (child == null) continue
+        // 本 child 在 Fragment 元数据里的 path（与 createElement 提升嵌套元数据时的 unshift 同形）
+        const path = pathPrefix.length ? pathPrefix.concat(index) : [index]
 
         const childType = typeof child
         if (childType === 'string' || childType === 'number' || childType === 'bigint') {
@@ -1315,14 +1439,14 @@ function walkFragmentHydrateChildren(
         } else if (childType === 'boolean') {
             // PrimitiveHost Comment-ph: empty content omitted in HTML; claim <!--unhandledChild-->.
             // PrimitiveHost.render inserts Text('') before the Comment (claimTextBeforeCommentPlaceholder).
-            assignPlaceholder(claimCommentAtCursor('unhandledChild'))
+            assignPlaceholder(claimCommentAtCursor('unhandledChild'), path)
         } else if (child instanceof DocumentFragment) {
             // Nested Fragment: contents already under parent; DF itself is not a sibling.
             // Recurse into deferred hydrate children so lifted unhandled (atom/fn/…) bind.
             const nested = (child as any).__axiiFragmentHydrateChildren as any[] | undefined
             delete (child as any).__axiiFragmentHydrateChildren
             if (nested?.length) {
-                walkFragmentHydrateChildren(nested, assignPlaceholder)
+                walkFragmentHydrateChildren(nested, assignPlaceholder, path)
             }
         } else if (child instanceof Node) {
             // Element already claimElement'd during arg eval; advance so later claims stay aligned.
@@ -1334,9 +1458,9 @@ function walkFragmentHydrateChildren(
                 const text = (snapshot === undefined || snapshot === null || typeof snapshot === 'boolean')
                     ? ''
                     : String((snapshot as any)?.toString ? (snapshot as any).toString() : JSON.stringify(snapshot))
-                assignPlaceholder(claimAtomTextPlaceholder(text))
+                assignPlaceholder(claimAtomTextPlaceholder(text), path)
             } else {
-                assignPlaceholder(claimFunctionTextPlaceholder())
+                assignPlaceholder(claimFunctionTextPlaceholder(), path)
             }
         } else if (Array.isArray(child)) {
             // Same as createElement array hydrate, with cursor already in the fragment region.
@@ -1378,7 +1502,9 @@ function walkFragmentHydrateChildren(
                         child: item,
                         path: [index],
                     })
-                } else if (item != null && typeof item === 'object') {
+                } else if (item == null || typeof item === 'boolean' || typeof item === 'object') {
+                    // null/undefined（EmptyHost）与 boolean（PrimitiveHost 空文本）同样以 <!--array item--> 收尾，
+                    //  与 createElement 的数组认领一致（见 DOM.ts 同一分支的 CAUTION）。
                     advanceCursorUntilComment('array item')
                     const itemPh = claimCommentAtCursor('array item')
                     ;((child as any).__axiiHydrateItemHosts ||= []).push({
@@ -1391,29 +1517,47 @@ function walkFragmentHydrateChildren(
                 }
             }
             ;(child as any).__axiiHydrateDirectNodes = hydrateDirectNodes
-            assignPlaceholder(claimCommentAtCursor('unhandledChild'))
+            assignPlaceholder(claimCommentAtCursor('unhandledChild'), path)
         } else if (child instanceof RxList) {
             const cursor = getChildCursor()
             ;(child as any).__axiiHydrateListParent = cursor.parent
             ;(child as any).__axiiHydrateListStart = cursor.index
             advanceCursorUntilRxListHostPlaceholder()
-            assignPlaceholder(claimCommentAtCursor('unhandledChild'))
+            assignPlaceholder(claimCommentAtCursor('unhandledChild'), path)
         } else {
             // ComponentNode / other object — content already before <!--unhandledChild-->
             advanceCursorUntilComment('unhandledChild')
-            assignPlaceholder(claimCommentAtCursor('unhandledChild'))
+            assignPlaceholder(claimCommentAtCursor('unhandledChild'), path)
         }
     }
+}
+
+function isSamePath(a: number[], b: number[]): boolean {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false
+    }
+    return true
 }
 
 function assignFragmentHydratePlaceholders(
     frag: DocumentFragment,
     children: any[],
 ): void {
-    const unhandled = (frag as {unhandledChildren?: {placeholder: Comment | Text, child: any}[]}).unhandledChildren
+    const unhandled = (frag as {unhandledChildren?: {placeholder: Comment | Text, child: any, path?: number[]}[]}).unhandledChildren
     let uIdx = 0
 
-    const assignPlaceholder = (ph: Comment | Text) => {
+    // CAUTION unhandledChildren 里不只有 Fragment 自己的动态 child：已认领的元素 child 会把它内部的
+    //  动态 child 条目提升上来（path 以该元素的下标开头、比本层更长），和本层条目按 child 顺序交错。
+    //  这里只为本层的动态 child 认领 placeholder，必须按 path 找到它自己的条目；
+    //  曾经只按出现次序往下数，<><b>{a}</b>{c}</> 里 c 的 placeholder 写进了 a 的条目——
+    //  a 的绑定指到 c 的文本上，c 的绑定留在一个脱离文档的临时节点上，没有任何报错。
+    const assignPlaceholder = (ph: Comment | Text, path: number[]) => {
+        while (unhandled && uIdx < unhandled.length) {
+            const entryPath = unhandled[uIdx].path
+            if (!entryPath || isSamePath(entryPath, path)) break
+            uIdx++
+        }
         if (!unhandled || uIdx >= unhandled.length) {
             throw new Error('[axii] hydrate Fragment reconcile: unhandledChildren mismatch')
         }

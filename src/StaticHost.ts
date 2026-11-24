@@ -5,7 +5,9 @@ import {
     insertBefore,
     isEventName,
     RefHandleInfo,
+    restoreSelectValueAfterRemoval,
     setAttribute,
+    setPendingStyleSheetFlush,
     UnhandledChildInfo,
     UnhandledPlaceholder
 } from "./DOM";
@@ -14,7 +16,7 @@ import {isAtom} from "data0";
 import {LightBindingEffect} from "./LightBindingEffect.js";
 import {trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {createHost} from "./createHost";
-import {assert, camelize, isPlainObject, removeNodesBetween} from "./util";
+import {assert, isPlainObject, removeNodesBetween} from "./util";
 import {ComponentHost} from "./ComponentHost.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {FunctionHost} from "./FunctionHost";
@@ -38,6 +40,7 @@ import {
     generateStyleContent as generateStyleContentShared,
     getComponentTypeId,
     isNestedStyleObject as isNestedStyleObjectShared,
+    sheetDeclaredKeys,
     splitStyleObject as splitStyleObjectShared,
     prepareStyleContent,
     renderPreparedStyle,
@@ -86,6 +89,15 @@ function isReactiveValue(v: any) {
 }
 
 const isAtomLike = isReactiveValue
+
+// CAUTION 响应式数组 prop 的逐项求值要递归进嵌套数组（见 DOM.ts flattenNestedArray 的说明）：
+//  转发进来的内层数组里同样可以有 atom/函数项（组件写 className={['card', props.className]}，
+//  调用方传 ['x', () => active() && 'on']）。只求值一层的话内层的函数项原样落到
+//  setAttribute，触发 "className can only be string or ..." 断言。
+//  模块级函数而不是每次更新新建的闭包；atom/函数的返回值不再往下求值（与之前一致）。
+function evaluateReactiveItem(v: any): any {
+    return Array.isArray(v) ? v.map(evaluateReactiveItem) : isAtomLike(v) ? v() : v
+}
 
 
 function generateGlobalElementStaticId(hostPath: LinkedNode<Host>, elementPath: number[]) {
@@ -251,6 +263,80 @@ class StyleManager {
     private nextRollingSeq = 0
     private rollingBaseOwners = new Map<string, HTMLElement>()
     private hostToRollingBaseIds = new WeakMap<Host, Set<string>>()
+    // document.adoptedStyleSheets 的写入合并，见 beginBatch
+    private batchDepth = 0
+    private batchRoot: object | undefined
+    private pendingInserts: Set<CSSStyleSheet> | undefined
+    private pendingDeletes: Set<CSSStyleSheet> | undefined
+    // 单例上唯一的一个闭包，登记给 DOM.ts 的插入路径
+    private flushPending = () => this.flushStyleSheetWrites()
+
+    /**
+     * 合并一段同步渲染/销毁里对 document.adoptedStyleSheets 的写入。
+     *
+     * CAUTION 每建/删一张表就整体赋值一次 adoptedStyleSheets，浏览器 setter 的开销是 O(表数)。
+     *  内容共用之后表数通常很小，但嵌套规则里带「每行不同的数据」（每行一个 hover 颜色）时
+     *  表数 = 行数，挂载/清空 N 行就是 O(N²)：4000 行各约 1.5s，而内容相同的 4000 行是 18ms / 2ms。
+     *  批次内只排队，批次结束时一次赋值（仍然走 setter，宿主的 setter 钩子照常看到）。
+     *
+     *  不变量——样式对用户代码的可见性与逐张写入完全一样：
+     *  1. 没有打开批次时立即写入（响应式样式更新、直接调用 createStyleSheet/deleteStyleSheet）；
+     *  2. 最外层批次结束时写入：批次都是同步的（元素子树的 render、RxList 的行渲染/patch/销毁），
+     *     结束点在返回用户代码、执行 flushAttachQueue（layoutEffect/ref）之前；
+     *  3. 框架把节点插入已连通的父节点之前写入（DOM.ts insertBefore/insertAfter）——
+     *     待写入的表只可能属于还没连入文档的元素；
+     *  4. 已连通的元素更新样式时立即写入（StyleManager.update）；
+     *  5. 批次不跨 root：内层 root（Portal）的批次结束时写入，它随后自己 appendChild 并派发 attach。
+     *  hydrate 时元素本来就在文档里，StaticHost.render 不打开批次。
+     *
+     * 返回外层批次的 root，原样传给 endBatch。必须配对调用（try/finally）。
+     * @internal
+     */
+    beginBatch(root: object): object | undefined {
+        const outerRoot = this.batchRoot
+        this.batchRoot = root
+        this.batchDepth++
+        return outerRoot
+    }
+    /** @internal */
+    endBatch(root: object, outerRoot: object | undefined) {
+        this.batchRoot = outerRoot
+        if (--this.batchDepth === 0 || outerRoot !== root) this.flushStyleSheetWrites()
+    }
+    private flushStyleSheetWrites() {
+        const inserts = this.pendingInserts
+        const deletes = this.pendingDeletes
+        if (inserts === undefined && deletes === undefined) return
+        this.pendingInserts = undefined
+        this.pendingDeletes = undefined
+        if (inserts !== undefined) setPendingStyleSheetFlush(undefined)
+        const current = document.adoptedStyleSheets
+        // CAUTION 必须在副本上操作再整体赋值：current 是 ObservableArray，原地改动绕过 setter
+        let sheets: CSSStyleSheet[] | undefined
+        if (deletes !== undefined && deletes.size) {
+            sheets = current.filter(sheet => !deletes.has(sheet))
+        }
+        if (inserts !== undefined && inserts.size) {
+            sheets ??= [...current]
+            // 按创建顺序逐张定位，结果与逐张写入完全相同（顺序相等的表保持创建顺序）
+            for (const styleSheet of inserts) {
+                const index = this.locateStyleSheet(sheets, this.sheetToOrder.get(styleSheet)!)
+                if (index === sheets.length) {
+                    sheets.push(styleSheet)
+                } else {
+                    sheets.splice(index, 0, styleSheet)
+                }
+            }
+        }
+        if (sheets !== undefined) document.adoptedStyleSheets = sheets
+    }
+    // 批次内返回 true：表已排队（或同一批里创建又删除，从未写进过 document）
+    private deferStyleSheetDelete(styleSheet: CSSStyleSheet): boolean {
+        if (this.pendingInserts !== undefined && this.pendingInserts.delete(styleSheet)) return true
+        if (this.batchDepth === 0) return false
+        ;(this.pendingDeletes ??= new Set()).add(styleSheet)
+        return true
+    }
 
     getStyleSheetId(hostPath: LinkedNode<Host>, elementPath: number[], el: ExtendedElement | null, hydrateReclaimEl?: ExtendedElement | null) {
         const pathToLastComponent = GetPathToLastComponent(hostPath)
@@ -293,7 +379,10 @@ class StyleManager {
     }
     public createStyleSheet(id: string, styleObject: StyleObject, group: number = 0) {
         const prepared = prepareStyleContent(styleObject)
-        return this.installStyleSheet(renderPreparedStyle(`.${id}`, prepared), getStyleSheetOrder(group, prepared))
+        const styleSheet = this.installStyleSheet(renderPreparedStyle(`.${id}`, prepared), getStyleSheetOrder(group, prepared))
+        // 直接调用方（不经过 update）期望表立即生效，即使正处在某个批次里（见 beginBatch）
+        if (this.pendingInserts !== undefined) this.flushStyleSheetWrites()
+        return styleSheet
     }
     private installStyleSheet(rules: string[], order: StyleSheetOrder) {
         const styleSheet = new CSSStyleSheet()
@@ -327,7 +416,22 @@ class StyleManager {
     //  整体赋值的开销不再随元素数增长。
     private insertStyleSheet(styleSheet: CSSStyleSheet, order: StyleSheetOrder) {
         this.sheetToOrder.set(styleSheet, order)
+        if (this.batchDepth > 0) {
+            if (this.pendingInserts === undefined) {
+                this.pendingInserts = new Set()
+                setPendingStyleSheetFlush(this.flushPending)
+            }
+            this.pendingInserts.add(styleSheet)
+            return
+        }
         const current = document.adoptedStyleSheets
+        const first = this.locateStyleSheet(current, order)
+        document.adoptedStyleSheets = first === current.length ?
+            [...current, styleSheet] :
+            [...current.slice(0, first), styleSheet, ...current.slice(first)]
+    }
+    // 新表在 current 里的插入位置（current.length 表示追加到末尾）
+    private locateStyleSheet(current: readonly CSSStyleSheet[], order: StyleSheetOrder): number {
         const lastOrder = this.sheetToOrder.get(current[current.length - 1])
         let first = 0
         let last = current.length
@@ -347,16 +451,23 @@ class StyleManager {
                 first = middle + 1
             }
         }
-        document.adoptedStyleSheets = first === current.length ?
-            [...current, styleSheet] :
-            [...current.slice(0, first), styleSheet, ...current.slice(first)]
+        return first
     }
     deleteStyleSheet(id: string): CSSStyleSheet | null {
+        const styleSheet = this.removeStyleSheet(id)
+        // 直接调用方期望表立即从 document 上消失，即使正处在某个批次里（见 beginBatch）
+        if (styleSheet && this.pendingDeletes !== undefined) this.flushStyleSheetWrites()
+        return styleSheet
+    }
+    // 引用计数归零时的内部移除：批次内只排队
+    private removeStyleSheet(id: string): CSSStyleSheet | null {
         const styleSheet = this.styleScripts.get(id)
         if (!styleSheet) return null
 
         this.styleScripts.delete(id)
-        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== styleSheet)
+        if (!this.deferStyleSheetDelete(styleSheet)) {
+            document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== styleSheet)
+        }
         return styleSheet
     }
     collect(host: Host, id: string) {
@@ -364,7 +475,7 @@ class StyleManager {
         if (!ids) {
             ids = new Map()
             this.hostToStyleIds.set(host, ids)
-            trackStyleHostStateCreated()
+            trackStyleHostStateCreated(host)
         }
         ids.set(id, (ids.get(id) ?? 0) + 1)
         this.updateRefCount(id, +1)
@@ -378,7 +489,7 @@ class StyleManager {
         if (uses > 1) ids.set(id, uses - 1)
         else ids.delete(id)
         if (this.updateRefCount(id, -1) <= 0) {
-            this.deleteStyleSheet(id)
+            this.removeStyleSheet(id)
         }
     }
     mount(host: Host) {
@@ -403,7 +514,7 @@ class StyleManager {
             this.hostToRollingBaseIds.delete(host)
         }
         if (this.hostToStyleIds.has(host)) {
-            trackStyleHostStateDestroyed()
+            trackStyleHostStateDestroyed(host)
         }
         const ids = this.hostToStyleIds.get(host)
         if (!ids) return
@@ -425,7 +536,16 @@ class StyleManager {
         //  每行都整体赋值一次会让卸载 N 行变成 O(N × 表数)，并让宿主的 setter 钩子白跑 N 次。
         if (styleSheetsToDelete) {
             const toDelete = styleSheetsToDelete
-            document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => !toDelete.has(sheet))
+            if (this.batchDepth > 0 || this.pendingInserts !== undefined) {
+                // 批次内排队，由 flushStyleSheetWrites 一次写入（见 beginBatch）
+                for (const styleSheet of toDelete) {
+                    if (!this.deferStyleSheetDelete(styleSheet)) {
+                        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== styleSheet)
+                    }
+                }
+            } else {
+                document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => !toDelete.has(sheet))
+            }
         }
     }
     updateRefCount(id: string, delta: number): number {
@@ -466,10 +586,18 @@ class StyleManager {
         // 跨元素共享的静态 id 基础（路径含 FunctionHost 时不共享）
         const sharedStaticBaseId = hasFunctionHostInPath ? null : generateComponentElementStaticId(pathToLastComponent, elementPath)
         let rollingBaseId: string | undefined
+        // 前面是否已经有行内声明：之后的 stylesheet 条目要让它们让位（见下面 stylePatches 的 CAUTION）
+        let sawInline = false
         const splitStyleObjects = evaluatedEntries.map(({value: evaluatedStyleObject, entryIsDynamic, isBound}, index) => {
             // 分离普通和嵌套样式
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
             const usesStyleSheet = isBound || Object.keys(nestedStyles).length > 0
+            let yieldPatch: StyleObject | undefined
+            if (usesStyleSheet) {
+                if (sawInline) yieldPatch = inlineYieldPatchOf(evaluatedStyleObject, entryIsDynamic)
+            } else if (!sawInline) {
+                sawInline = hasInlineDeclarations(simpleStyles)
+            }
             const prepared = usesStyleSheet ? prepareStyleContent(evaluatedStyleObject) : undefined
             const signature = prepared?.shareable ? serializePreparedStyle(prepared) : undefined
             let isDynamic = entryIsDynamic || !!prepared && (prepared.isReactive || !prepared.shareable)
@@ -506,6 +634,7 @@ class StyleManager {
               prepared,
               signature,
               simpleStyles,
+              yieldPatch,
             }
         })
         // 是否应该更新 itor？
@@ -516,6 +645,17 @@ class StyleManager {
         let activeRollingClassIds: Set<string>|undefined
         let contentIds = this.elToContentStyleIds.get(el)
         splitStyleObjects.forEach(so => {
+            // CAUTION style 数组的契约是「后写的条目赢」（mergeProp 把 AOP / bindProps / 外部传入的 style
+            //  放在后面正是为了覆写），但行内声明永远压过 stylesheet 规则：[{color:'blue'}, {color:'red',
+            //  '&:hover':{…}}] 里先写的 blue 会赢，外部覆盖一旦带上 &:hover（或来自 bindProps）就静默失效。
+            //  这里按条目顺序写行内样式，stylesheet 条目在自己的位置上把它顶层声明的属性从行内删掉
+            //  （值为 '' 的 patch，el.style[k] = '' 即 removeProperty），交给它的规则；更靠后的行内条目
+            //  还能再写回来。删除由 CSSOM 完成，简写/分项天然正确（{margin: 0} 之后的 {marginTop: 5}
+            //  只删 margin-top）。不把前面的行内条目搬进 stylesheet：那会让每行/每帧不同的行内值各自
+            //  建一张表（列表里 O(N) 张表、每次更新都换表），也会改变它们与外部 CSS 的特异性关系。
+            //  已知局限（与 v4.8.1 相同）：更早的行内值仍然压过后面条目里的**嵌套**规则
+            //  （[{color:'red'}, {'&:hover': {color:'blue'}}] 的 hover 不生效）。
+            if (so.yieldPatch) stylePatches.push(so.yieldPatch)
             // 如果是 boundProps，优先使用 stylesheet，因为 boundProps 通常是组件级别的基础样式
             // 如果包含 nested style，只能使用 stylesheet，因为依赖于 CSS selector
             if (so.contentId !== undefined) {
@@ -638,6 +778,9 @@ class StyleManager {
             this.elToInlineStyleKeys.set(el, nextInlineKeys)
         }
         setAttribute(el, 'style', stylePatches, el instanceof SVGElement)
+        // CAUTION 已连通的元素不能等批次结束：批次内的用户代码（组件函数体、函数节点）可能马上读它的
+        //  computed style。排队的表只允许属于还没连入文档的元素（见 beginBatch 的不变量 4）。
+        if (this.pendingInserts !== undefined && el.isConnected) this.flushStyleSheetWrites()
     }
     isNestedStyleObject(key: string, styleObject: any): boolean {
         return isNestedStyleObjectShared(key, styleObject)
@@ -664,6 +807,45 @@ type StyleObject = { [k: string]: any }
 // elToInlineStyleKeys 里的哨兵 key：标记「上一轮 inline 样式是字符串 cssText 整体覆写」，
 //  翻转回对象/null 形态时必须整体清除 cssText（字符串里写过哪些 key 无从得知）。
 const CSS_TEXT_SENTINEL = '__cssText__'
+
+function hasInlineDeclarations(simpleStyles: StyleObject | string): boolean {
+    if (typeof simpleStyles === 'string') return true
+    for (const _ in simpleStyles) return true
+    return false
+}
+
+// 静态（非 dynamic、值里没有函数/atom）的 stylesheet 条目对象 → 它的让位 patch（null 表示无需让位）。
+//  bindProps 的样式对象被一个组件的所有实例共用：列表里每行每次更新都不必重新求值、分配。
+const staticYieldPatches = new WeakMap<object, StyleObject | null>()
+
+// stylesheet 条目把它顶层声明的属性从前面的行内样式里删掉（见 StyleManager.update 的 CAUTION）
+function inlineYieldPatchOf(styleObject: StyleObject, entryIsDynamic: boolean): StyleObject | undefined {
+    if (!styleObject || typeof styleObject !== 'object') return undefined
+    const cacheable = !entryIsDynamic && !hasFunctionValue(styleObject)
+    if (cacheable) {
+        const cached = staticYieldPatches.get(styleObject)
+        if (cached !== undefined) return cached ?? undefined
+    }
+    const keys = sheetDeclaredKeys(styleObject)
+    let patch: StyleObject | undefined
+    if (keys) {
+        patch = {}
+        for (const key of keys) patch[key] = ''
+    }
+    if (cacheable) staticYieldPatches.set(styleObject, patch ?? null)
+    return patch
+}
+
+function hasFunctionValue(styleObject: StyleObject): boolean {
+    for (const key in styleObject) {
+        const value = styleObject[key]
+        if (typeof value === 'function') return true
+        if (Array.isArray(value)) {
+            for (const item of value) if (typeof item === 'function') return true
+        }
+    }
+    return false
+}
 
 // 添加全局配置对象
 export const StaticHostConfig = {
@@ -740,6 +922,9 @@ class ReactiveAttributeEffect extends LightBindingEffect {
         public isSVG: boolean,
     ) {
         super()
+        // CAUTION 属性绑定由元素 host 的 destroyAttrEffects 显式销毁，不能被创建时恰好打开的
+        //  collect frame / 父 effect 接管（归属不变量见 detachEffectFromCreationContext）。
+        this.detachFromCreationContext()
     }
     update() {
         // CAUTION 属性更新（含初始求值）抛错：如果外部通过 root.on('error') 注册了处理器，
@@ -839,11 +1024,23 @@ export class StaticHost implements Host {
             this.element = this.source
         }
 
-        this.collectInnerHost()
-        this.collectReactiveAttr()
-        this.collectRefHandles()
-        this.collectDetachStyledChildren()
-        this.renderReactiveHosts()
+        // CAUTION 子树里每个带嵌套样式的元素（响应式属性、列表行、子组件）都可能新建 stylesheet，
+        //  合并成一次 document.adoptedStyleSheets 写入（见 StyleManager.beginBatch）。写入发生在
+        //  下面把自己插入文档之前，随后的 ref/layoutEffect 读到的样式与逐张写入时完全一样。
+        //  纯静态元素（没有任何响应式元数据）与 hydrate 不打开批次，路径与原来相同。
+        const sourceMeta = this.source as ExtendedElement
+        if (!hydrating && (sourceMeta.unhandledAttr !== undefined || sourceMeta.unhandledChildren !== undefined)) {
+            const styleManager = StaticHost.styleManager
+            const root = this.pathContext.root
+            const outerRoot = styleManager.beginBatch(root)
+            try {
+                this.collectAndRenderInner()
+            } finally {
+                styleManager.endBatch(root, outerRoot)
+            }
+        } else {
+            this.collectAndRenderInner()
+        }
 
         if (!hydrating) {
             insertBefore(this.element, this.placeholder)
@@ -871,6 +1068,14 @@ export class StaticHost implements Host {
         if (this.placeholder.isConnected) {
             this.pathContext.root.flushAttachQueue()
         }
+    }
+    // render 的「收集元数据 + 渲染内层 host」部分，批次内外共用同一份（见 render 里的说明）
+    collectAndRenderInner() {
+        this.collectInnerHost()
+        this.collectReactiveAttr()
+        this.collectRefHandles()
+        this.collectDetachStyledChildren()
+        this.renderReactiveHosts()
     }
     setupRefHandles() {
         if (this.refHandles?.length) {
@@ -1018,24 +1223,21 @@ export class StaticHost implements Host {
             return StaticHost.styleManager.update(this, this.pathContext.hostPath, path, value, el)
         } else {
             const final = Array.isArray(value) ?
-                value.map(v => isAtomLike(v) ? v() : v) :
+                value.map(evaluateReactiveItem) :
                 isAtomLike(value) ? value() : value
             if (key === 'className' || key === 'class') {
                 // CAUTION className 更新是整体覆写 class attribute，
                 //  必须把 StyleManager 挂上去的 stylesheet class 补回来，否则嵌套样式/boundProps 样式静默丢失。
                 setAttribute(el, key, final, isSVG)
                 StaticHost.styleManager.reapplyStyleClasses(el)
-            } else if (/^data-/.test(key)) {
-                // 使用 dataset 的时候 key 要进行驼峰化
-                // ref: https://developer.mozilla.org/zh-CN/docs/Web/API/HTMLElement/dataset#%E5%90%8D%E7%A7%B0%E8%BD%AC%E6%8D%A2
-                // CAUTION null/undefined 表示移除属性，dataset 赋值会把它们字符串化成
-                //  字面 "null"/"undefined"，必须用 delete。
-                if (final == null) {
-                    delete el.dataset[camelize(key.slice(5))]
-                } else {
-                    el.dataset[camelize(key.slice(5))] = final
-                }
             } else {
+                // CAUTION data-* 与其他属性走同一条 setAttribute 路径，不再经 dataset 赋值：
+                //  dataset 的名字转换只认「'-' + 小写字母」，而这里曾用通用的 camelize（连 '_'、
+                //  '-数字' 也折叠）来算 dataset key——data-item_id={atom} 实际写出的是 data-item-id、
+                //  data-level-1 写出的是 data-level1，同一个 JSX 属性一旦变成响应式，属性名就变了
+                //  （选择器、test id、埋点钩子静默失效）。静态路径本来就是按字面属性名写的，
+                //  两条路径共用一份实现才不会再分叉：null/undefined 移除、false 写字面 "false"、
+                //  数组整体字符串化，都由 setAttribute 统一处理。
                 setAttribute(el, key, final, isSVG)
             }
         }
@@ -1110,13 +1312,16 @@ export class StaticHost implements Host {
             try {
                 // CAUTION 整段区间已脱离 DOM / 父节点失配，说明区间已被外部整体清理，
                 //  这是被容忍的合法状态；「同父但兄弟链断了」的破坏交给 removeNodesBetween 的诊断抛出。
+                const parent = this.placeholder.parentNode
                 if (!parentHandle &&
-                    this.placeholder.parentNode &&
-                    this.element.parentNode === this.placeholder.parentNode) {
+                    parent &&
+                    this.element.parentNode === parent) {
                     removeNodesBetween(this.element!, this.placeholder, true, {
                         ownerHost: this,
                         operation: 'destroy',
                     })
+                    // 移除的可能是被选中的 option/optgroup，select 要按存值重放
+                    restoreSelectValueAfterRemoval(parent)
                 }
             } finally {
                 if (this.usesStyleManager) {
@@ -1164,8 +1369,9 @@ export class StaticHost implements Host {
                 //  节点**永久残留在文档里**（诊断开关都一样）。静态 falsy 在注册时就被
                 //  guard 掉了，函数/atom 的 falsy 求值结果是唯一会走到这里的形态。
                 const evaluated = isAtomLike(value) ? value() : value
+                // 数组可以嵌套（转发进来的 detachStyle 数组），先逐项求值再摊平，否则 styleKeys 变成数组下标
                 const finalStyle: StyleObject = Array.isArray(evaluated) ?
-                    Object.assign({}, ...evaluated.map(v => isAtomLike(v) ? v() : v)) :
+                    Object.assign({}, ...evaluated.map(evaluateReactiveItem).flat(Infinity)) :
                     (evaluated && typeof evaluated === 'object' ? evaluated : {})
 
                 const styleKeys = Object.keys(finalStyle)
@@ -1193,7 +1399,7 @@ export class StaticHost implements Host {
             // 出发 transition 和 animation
             this.detachStyledChildren?.forEach(({ el, style: value, path }) => {
                 const final = Array.isArray(value) ?
-                    value.map(v => isAtomLike(v) ? v() : v) :
+                    value.map(evaluateReactiveItem) :
                     isAtomLike(value) ? value() : value
                 // falsy 求值结果（条件离场动画未启用，F55）：什么都不应用。
                 //  不能把 falsy 交给 setAttribute 的 style 分支——那是「清空 inline style」
@@ -1274,7 +1480,10 @@ export class CompactElementHost extends StaticHost {
         this.destroyReactiveHosts()
         this.detachRefsWithErrorHook()
         if (!parentHandle) {
-            (this.element as HTMLElement).remove()
+            const parent = this.element.parentNode
+            ;(this.element as HTMLElement).remove()
+            // 移除的可能是被选中的 option 行，select 要按存值重放
+            restoreSelectValueAfterRemoval(parent)
         }
         if (this.usesStyleManager) {
             StaticHost.styleManager.unmount(this)

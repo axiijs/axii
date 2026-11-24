@@ -28,6 +28,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     textNode: Text|null = null
     cleanups?: (() => any)[]
     sourceContext?: FunctionNodeContext
+    // undefined 表示存活，否则是 destroy 收到的 parentHandle（见 renderSourceWithoutTrace 的重入说明）。
+    //  declare：存活的节点不付槽位
+    declare destroyedWith?: boolean
     // 「跳过 pathContext 克隆」时的轻量位置信息（见 createHost/collectInnerHost）：
     //  文本快速路径（绝大多数函数节点）从不消费 hostPath，函数返回结构内容时才用它
     //  惰性物化完整的子 context（见 childPathContext）。declare：不走该路径的实例不付槽位
@@ -148,7 +151,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     }
     renderSourceWithoutTrace(effect: DeferredBindingEffect) {
         // CAUTION 每次都清空上一次的结果
-        this.runCleanups()
+        if (this.cleanups !== undefined) {
+            this.runCleanups()
+            // 重入销毁之零：上一次登记的清理函数同步销毁了本节点（「这块内容消失就关掉弹层」）。
+            //  不能再调用 source：它是为一个已经不存在的节点求值。只在有清理函数时检查。
+            if (this.destroyedWith !== undefined) return
+        }
         let node: ReturnType<FunctionNode>|null = null
         try {
             // 零参 source 用不到 context，直接传 undefined，省掉每实例的 context 分配
@@ -156,7 +164,15 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         } catch (e) {
             // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
             // （effect 保持活跃，依赖恢复后该区域可以恢复渲染），否则保持向上抛出的行为。
-            if (!this.pathContext.root.dispatch('error', e)) throw e
+            if (this.destroyedWith === undefined && !this.pathContext.root.dispatch('error', e)) throw e
+        }
+        // CAUTION 重入销毁之一：source 自己（或它调用的回调）同步销毁了本节点（关掉所在的弹层、
+        //  root.destroy()、删掉所在的列表行）。占位符可能已经被摘掉，没有地方可渲染：
+        //  继续往下走，文本路径会对已脱离的占位符 insertBefore（TypeError），结构路径会渲染出
+        //  一棵没有人销毁的子树。destroy 之后才登记的 onCleanup 在这里补跑。
+        if (this.destroyedWith !== undefined) {
+            this.runCleanups()
+            return
         }
 
         const valueType = typeof node
@@ -175,6 +191,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
                 return
             }
             this.destroyInnerHost()
+            // 重入销毁之一（续）：旧内容的清理函数同步销毁了本节点。占位符可能已被摘掉，
+            //  下面的 insertBefore 会 TypeError（见 destroyInnerHost 之后结构路径的同一检查）。
+            if (this.destroyedWith !== undefined) return
             if (this.placeholder instanceof Text) {
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
                 this.placeholder.nodeValue = text
@@ -206,6 +225,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             this.textNode = null
         }
         this.destroyInnerHost()
+        // 旧内容（innerHost）的清理函数同步销毁了本节点：占位符可能已被摘掉，不能再在它前面
+        //  建新内容（insertBefore 会 TypeError；就算没被摘掉，新内容也没有人销毁）。
+        if (this.destroyedWith !== undefined) return
         // Hydrate FTS/FCS：认领已有 <!--computed node-->，禁止新建（§3.2.4 FS2 / §3.2.5）
         const hydrating = isHydrating()
         const newPlaceholder = hydrating
@@ -235,6 +257,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             } else if (!hydrating) {
                 newPlaceholder.remove()
             }
+            // 本节点在新内容渲染到一半时已被销毁：这棵子树马上丢弃，root 的监听器也已清空，
+            //  它的错误没有归属（与组件销毁后 async effect 的 rejection 不再上报同一语义）。
+            if (this.destroyedWith !== undefined) {
+                this.destroyInnerHost(this.destroyedWith)
+                return
+            }
             if (!this.pathContext.root.dispatch('error', e)) throw e
             return
         } finally {
@@ -244,6 +272,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             Notifier.instance.resetTracking()
         }
         this.innerHost = host
+        // CAUTION 重入销毁之二：新内容渲染到一半时本节点被同步销毁（内容里的组件在 effect 里删掉了
+        //  自己所在的列表行 / 关掉了所在的 root，或 error 监听器调用了 root.destroy()）。
+        //  那一刻 innerHost 还没有赋值（新 host 只在局部变量里），destroy 够不到新内容；
+        //  渲染栈退出后如果不在这里补销毁，这棵子树的清理函数永不执行、绑定一直订阅。
+        //  此时子树已经完整，按本节点被销毁时的方式（parentHandle）销毁恰好一次。
+        if (this.destroyedWith !== undefined) this.destroyInnerHost(this.destroyedWith)
     }
     destroyInnerHost(parentHandle = false) {
         const host = this.innerHost
@@ -263,6 +297,7 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         }
     }
     destroy(parentHandle?: boolean) {
+        this.destroyedWith = !!parentHandle
         trackHostDestroyed(this)
         trackLightBindingDestroyed(this)
         // CAUTION 用静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数

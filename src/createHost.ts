@@ -74,6 +74,32 @@ class PrimitiveHost implements Host{
     }
 }
 
+/**
+ * @internal
+ *
+ * Comment / Text 节点直接作为内容：组件、函数节点、列表行返回一个现成的节点。
+ * 公开的 JSXElement 类型包含 Comment，Text 作为数组项、静态 child 本来就支持，
+ * 这里补上「作为 host 的 source」这个入口，否则同一个值换个入口就是 unknown child type。
+ */
+class NodeHost implements Host{
+    element: Comment|Text
+    constructor(public source: Comment|Text, public placeholder: UnhandledPlaceholder, public pathContext: PathContext) {
+        // 与其余 host 一致：渲染之前 element 就是占位符
+        this.element = placeholder
+    }
+    render() {
+        this.element = this.source
+        insertBefore(this.source, this.placeholder)
+    }
+    destroy(parentHandle?: boolean) {
+        trackHostDestroyed(this)
+        if (!parentHandle) {
+            this.element.remove()
+            this.placeholder.remove()
+        }
+    }
+}
+
 const HOST_TYPE_NAMES = [
     'StaticHost',
     'PrimitiveHost',
@@ -84,6 +110,7 @@ const HOST_TYPE_NAMES = [
     'ComponentHost',
     'AtomHost',
     'FunctionHost',
+    'NodeHost',
 ]
 
 /**
@@ -153,6 +180,9 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     } else if( sourceType === 'object' && typeof source?.type === 'function') {
         host = new ComponentHost(source, placeholder, pathContext)
         typeIndex = 6
+    } else if (source instanceof Comment || source instanceof Text) {
+        host = new NodeHost(source, placeholder, pathContext)
+        typeIndex = 9
     } else {
         assert(false, `unknown child type ${source}`)
     }

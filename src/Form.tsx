@@ -41,6 +41,15 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
 }: RenderContext) {
 
     const instances: { [k: string]: FormItemInstance | FormItemInstance[] } = {}
+    // 非 multiple 的同名字段：被后注册者顶替、但自己还没注销的实例（按注册顺序）。
+    //  只有真的出现同名字段时才分配。
+    let shadowed: { [k: string]: FormItemInstance[] } | undefined
+    const removeShadowed = (name: string, instance: FormItemInstance) => {
+        const list = shadowed?.[name]
+        if (!list) return
+        const index = list.indexOf(instance)
+        if (index > -1) list.splice(index, 1)
+    }
 
     const register = (name: string, instance: FormItemInstance, multiple?: boolean) => {
         if (multiple) {
@@ -61,6 +70,14 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
             instanceList.push(instance)
 
         } else {
+            const previous = instances[name]
+            // CAUTION 重新登记的实例（A → B → A）要先从待交还列表里拿掉：否则它注销时
+            //  （instances[name] === A 分支）列表里还留着它自己的旧位置，下一次交还给出的是
+            //  一个已经注销的字段，它的值被写回表单。
+            removeShadowed(name, instance)
+            if (previous && previous !== instance && !Array.isArray(previous)) {
+                ((shadowed ??= {})[name] ||= []).push(previous)
+            }
             values.set(name, instance.value)
             instances[name] = instance
         }
@@ -80,9 +97,22 @@ export function Form({name, children, onChange, onSubmit, onClear, onReset, valu
             if (index > -1) {
                 (instances[name] as Array<FormItemInstance>).splice(index, 1)
             }
+        } else if (instances[name] === instance) {
+            // 当前登记的就是它：还有被它顶替、仍然挂载着的同名字段时交还给最近的那个，否则才删除
+            const previous = shadowed?.[name]?.pop()
+            if (previous) {
+                values.set(name, previous.value)
+                instances[name] = previous
+            } else {
+                values.delete(name)
+                delete instances[name]
+            }
         } else {
-            values.delete(name)
-            delete instances[name]
+            // CAUTION 必须核对 instance：同名字段是自然写法（一组 radio、条件切换的两个输入、
+            //  列表行被 splice 替换时新行先注册旧行后注销），不核对的话旧字段的注销会把
+            //  **仍然挂载着**的字段的值从 values 里删掉，表单状态与界面静默分叉。
+            //  这里注销的是已被顶替的实例，只把它从待交还列表里拿掉。
+            removeShadowed(name, instance)
         }
     }
 
