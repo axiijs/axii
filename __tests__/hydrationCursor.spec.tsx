@@ -53,9 +53,11 @@ function element(tag: string, html: string): HTMLElement {
     host.appendChild(el)
     depth = enterTopDownContainer(host)
     claimTopDownElement(tag, false, null)
-    enterTopDownElement(el)
+    enterTopDownElement(el, false)
     return el
 }
+/** 测试里代替 DOM.insertBefore 的插入（StaticHost 传 DOM.insertBefore） */
+const insertAt = (el: Element, before: Comment) => before.parentNode!.insertBefore(el, before)
 function nodes(parent: Node): string[] {
     return Array.from(parent.childNodes).map(n => n.nodeType === Node.TEXT_NODE ? `"${n.nodeValue}"`
         : n.nodeType === Node.COMMENT_NODE ? `<!--${(n as Comment).data}-->`
@@ -269,7 +271,7 @@ describe('elements (R1)', () => {
     test('HTML tags compare case-insensitively, SVG tags exactly; the case also tells HTML <a> from SVG <a>', () => {
         const host = container('<svg><clipPath></clipPath><a></a></svg><a></a>')
         const svg = claimTopDownElement('svg', true, null)!
-        enterTopDownElement(svg)
+        enterTopDownElement(svg, false)
         expect(claimTopDownElement('clipPath', true, null)!.localName).toBe('clipPath')
         // HTML <a> 期望、游标处是 SVG <a>：不同标签，没有静态 id，替换这一个单元（D5）
         expect(claimTopDownElement('a', false, null)).toBe(null)
@@ -346,20 +348,26 @@ describe('elements (R1)', () => {
         expect(mismatches()).toEqual(['Element(<li id="x">) → Comment("unhandledChild")', 'Element(<li>) → eof'])
     })
 
-    test('after a mismatch was reported in a parent, later claims there are approximate (§4.1); other parents are not', () => {
-        const outer = element('section', '<b></b><p><i></i></p><u></u>')
+    test('after a mismatch was reported in a parent, later claims there are approximate (§4.1), and so is the subtree of an approximate claim; a clean parent is not', () => {
+        const outer = element('section', '<b></b><p><i></i></p><u></u><div><s></s></div>')
         claimTopDownText('t')
-        // section 这一层已经失配：之后在这一层认领的 <p> 是近似认领，<p> 自己那一层不受影响
+        // section 这一层已经失配：之后在这一层认领的 <p> 是近似认领，进入它时子树也按近似认领处理
         const p = claimTopDownElement('p', false, null)!
         expect(isTopDownClaimApproximate()).toBe(true)
-        enterTopDownElement(p)
+        enterTopDownElement(p, true)
         claimTopDownElement('i', false, null)
-        expect(isTopDownClaimApproximate()).toBe(false)
+        expect(isTopDownClaimApproximate()).toBe(true)
         exitTopDownElement()
         claimTopDownElement('u', false, null)
         expect(isTopDownClaimApproximate()).toBe(true)
+        // 干净认领的元素（这里按调用方传入的 approximate = false 进入）里没有失配过：子元素是干净认领
+        const div = claimTopDownElement('div', false, null)!
+        enterTopDownElement(div, false)
+        claimTopDownElement('s', false, null)
+        expect(isTopDownClaimApproximate()).toBe(false)
         exitTopDownElement()
-        expect(nodes(outer)).toEqual(['"t"', '<p>', '<u>'])
+        exitTopDownElement()
+        expect(nodes(outer)).toEqual(['"t"', '<p>', '<u>', '<div>'])
     })
 })
 
@@ -405,7 +413,7 @@ describe('a rebuilt element: the fresh layer and its insertion (R1, #73)', () =>
         expect(claimTopDownComment('unhandledChild')).toBe(p.lastChild)
         exitTopDownElement()
         expect(nodes(p)).toEqual(['<!--axii:fresh-->', '<!--unhandledChild-->'])
-        insertTopDownFreshElements(mark)
+        insertTopDownFreshElements(mark, insertAt)
         expect(nodes(p)).toEqual(['<i>', '<!--unhandledChild-->'])
         expect(mismatches()).toEqual(['Element(<i>) → Element(<b>)'])
     })
@@ -420,9 +428,9 @@ describe('a rebuilt element: the fresh layer and its insertion (R1, #73)', () =>
         claimTopDownElement('u', false, null)
         const second = document.createElement('u')
         placeTopDownFreshElement(second)
-        insertTopDownFreshElements(innerMark)
+        insertTopDownFreshElements(innerMark, insertAt)
         expect({first: first.parentNode, second: second.parentNode === p}).toEqual({first: null, second: true})
-        insertTopDownFreshElements(outerMark)
+        insertTopDownFreshElements(outerMark, insertAt)
         exitTopDownElement()
         expect(nodes(p)).toEqual(['<i>', '<u>'])
     })

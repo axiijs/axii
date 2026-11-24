@@ -35,6 +35,7 @@ import {
     isCharacterDataParent,
     isCommentData,
     reportHydrationMismatch,
+    runOutsideHydration,
     summarizeChild,
 } from "./hydration"
 import {COMMENT_NODE, ELEMENT_NODE, TEXT_NODE} from "./nodeType"
@@ -56,14 +57,14 @@ let cursorMismatched = false
 const FRAME_SIZE = 6
 const outerFrames: any[] = []
 
-function pushFrame(parent: ParentNode, isContainer: boolean, fresh: boolean): void {
+function pushFrame(parent: ParentNode, isContainer: boolean, fresh: boolean, mismatched: boolean): void {
     if (cursorParent !== null) outerFrames.push(cursorParent, cursorNext, cursorCharData, cursorIsContainer, cursorFresh, cursorMismatched)
     cursorParent = parent
     cursorNext = fresh ? null : parent.firstChild
     cursorCharData = !isContainer && isCharacterDataParent(parent)
     cursorIsContainer = isContainer
     cursorFresh = fresh
-    cursorMismatched = false
+    cursorMismatched = mismatched
 }
 
 function popFrame(): void {
@@ -90,8 +91,14 @@ let mismatchCount = 0
 /** 报告一条失配（交给 onError，不抛出），并记下这一层已经失配。 */
 function reportAt(expected: string, actual: ChildNode | null): void {
     cursorMismatched = true
+    report(expected, summarizeChild(actual))
+}
+
+// onError 是用户代码，与 useEffect、事件监听器一样在激活上下文之外执行（runOutsideHydration）：它创建的 JSX 是真实节点，
+//  它改动的已激活列表按 CSR 插入新行。B3 起激活在报告之后继续，回调里的改动会落在这次激活的树上（#55 B3 独立审查）
+function report(expected: string, actual: string): void {
     mismatchCount++
-    reportHydrationMismatch(expected, summarizeChild(actual))
+    runOutsideHydration(() => reportHydrationMismatch(expected, actual))
 }
 
 /** 到目前为止报告过的失配条数，入口在激活前后各读一次。 */
@@ -215,7 +222,7 @@ function sweepRest(expected: string): void {
  */
 export function enterTopDownContainer(container: ParentNode): number {
     const depth = cursorParent === null ? -1 : outerFrames.length
-    pushFrame(container, true, false)
+    pushFrame(container, true, false, false)
     return depth
 }
 
@@ -239,9 +246,12 @@ export function finishTopDownContainer(): void {
     sweepRest('end of hydrate root children')
 }
 
-/** 进入一个被认领的元素（或 table 的隐含 tbody），游标从它的第一个子节点开始。 */
-export function enterTopDownElement(parent: ParentNode): void {
-    pushFrame(parent, false, false)
+/**
+ * 进入一个被认领的元素（或 table 的隐含 tbody），游标从它的第一个子节点开始。approximate：这个元素是近似认领的（§4.1），
+ * 它可能跨了角色，子树里的认领也一样：这一层从「已失配」开始，子元素同样先清掉服务端的属性（#55 B3 独立审查）。
+ */
+export function enterTopDownElement(parent: ParentNode, approximate: boolean): void {
+    pushFrame(parent, false, false, approximate)
 }
 
 /**
@@ -249,7 +259,7 @@ export function enterTopDownElement(parent: ParentNode): void {
  * 元素建好之后由调用方 placeTopDownFreshElement 放到外层的游标处。
  */
 export function enterTopDownFreshElement(el: ParentNode): void {
-    pushFrame(el, false, true)
+    pushFrame(el, false, true, false)
 }
 
 /**
@@ -294,10 +304,14 @@ export function markTopDownFreshElements(): number {
  * 所属 StaticHost 绑定了响应式属性之后（StaticHost.hydrate / CompactElementHost.hydrate 第 4 步之后）：把它的子树里
  * 新建的元素换到占位的位置。嵌套的 StaticHost 先于外层完成，各自只处理 mark 之后自己的那些。
  */
-export function insertTopDownFreshElements(mark: number): void {
+export function insertTopDownFreshElements(mark: number, insert: (el: HTMLElement, before: Comment) => unknown): void {
     for (let i = mark; i < pendingFresh.length; i += 2) {
-        const anchor = pendingFresh[i]
-        anchor.parentNode!.replaceChild(pendingFresh[i + 1], anchor)
+        const anchor = pendingFresh[i] as Comment
+        // CAUTION 经调用方传入的 DOM.insertBefore 插入（≡ CSR 的 Host 插入）：插入之前写入待生效的 stylesheet；插进 <select> 的
+        //  <option> 按 select 记下的值重放选中状态——裸 replaceChild 会让浏览器选中第一项（select 的 props 在新建的 option
+        //  连入之前就应用了）。模块不直接导入 DOM.ts：DOM.ts 导入这里。
+        insert(pendingFresh[i + 1] as HTMLElement, anchor)
+        anchor.remove()
     }
     pendingFresh.length = mark
 }
@@ -336,8 +350,7 @@ export function verifyTopDownRawElements(mark: number, mismatchesBefore: number)
             const probe = el.cloneNode(false) as Element
             probe.innerHTML = markup as string
             if (!sameChildNodes(el, probe)) {
-                mismatchCount++
-                reportHydrationMismatch(`raw markup of <${el.localName}>`, summarizeChild(el.firstChild))
+                report(`raw markup of <${el.localName}>`, summarizeChild(el.firstChild))
                 el.innerHTML = markup as string
             }
         }
@@ -457,6 +470,10 @@ export function claimTopDownComment(data: string): Comment {
     return ahead
 }
 
+function isWhitespaceText(node: ChildNode): boolean {
+    return node.nodeType === TEXT_NODE && /^\s*$/.test(node.nodeValue!)
+}
+
 // 失配报告里的期望（只在失配时拼接，匹配路径不分配）
 function describeElement(tag: string, wantId: string | null): string {
     return wantId === null ? `Element(<${tag}>)` : `Element(<${tag} id=${JSON.stringify(wantId)}>)`
@@ -483,7 +500,19 @@ export function claimTopDownElement(tag: string, isSVG: boolean, wantId: string 
     lastClaimApproximate = false
     if (cursorFresh) return null
     const expectedTagName = isSVG ? tag : tag.toUpperCase()
-    const node = peek(tag.toLowerCase())
+    let node = peek(tag.toLowerCase())
+    // 容器这一层的空白 Text：页面模板里激活容器的缩进、换行（<div id="app">\n  ${html}\n</div>），服务端输出不会在期望元素的
+    //  位置写出空白 Text。按杂节点删除（报告一次），继续在游标处认领；按 D5 替换的话，没有静态 id 的根元素会整棵新建，
+    //  服务端的节点（输入状态、焦点、iframe）全部丢失（#55 B3 独立审查）
+    if (cursorIsContainer && node !== null && isWhitespaceText(node)) {
+        reportAt(describeElement(tag, wantId), node)
+        do {
+            const next: ChildNode | null = node!.nextSibling
+            node!.remove()
+            cursorNext = next
+            node = peek(tag.toLowerCase())
+        } while (node !== null && isWhitespaceText(node))
+    }
     if (node !== null && node.nodeType === ELEMENT_NODE) {
         const el = node as Element
         if (el.tagName === expectedTagName) {

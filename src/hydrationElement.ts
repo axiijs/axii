@@ -100,4 +100,23 @@ export function throwConsumedDescription(): never {
  */
 export function isTopDownAbort(error: unknown): boolean {
     return error instanceof HydrationMismatchError || error instanceof TopDownPendingError
+        || (abortingError !== NOT_ABORTING && error === abortingError)
+}
+
+const NOT_ABORTING: unique symbol = Symbol('not aborting')
+// 新模型激活中正在向上中止的渲染错误（FunctionHost 结构态的内容渲染抛错，见 markTopDownAbort）
+let abortingError: unknown = NOT_ABORTING
+
+/**
+ * FunctionHost 结构态的内容在激活中渲染抛错：新模型不「渲染为空」（服务端节点没有消费完、元素层已经压栈，游标接不上），
+ * 向上中止激活（§7.6「激活中止」）。FunctionHost 自己的 update 会把这个错误交给 root.dispatch('error')；记下它，
+ * dispatch 就按未消费处理，注册了 error 监听器也不会在错位的游标上继续（#55 B3 独立审查）。错误可以是任意值，所以记值而不是标记对象。
+ */
+export function markTopDownAbort(error: unknown): void {
+    abortingError = error
+}
+
+/** 入口结束（包括中止）时清掉。 */
+export function clearTopDownAbort(): void {
+    abortingError = NOT_ABORTING
 }

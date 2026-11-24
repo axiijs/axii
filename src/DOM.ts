@@ -1883,7 +1883,7 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
         if (fresh) {
             enterTopDownFreshElement(el)
         } else {
-            enterTopDownElement(resolveTopDownChildParent(el, tag, children))
+            enterTopDownElement(resolveTopDownChildParent(el, tag, children), approximate)
         }
         const childrenLength = children.length
         const firstChildType = childrenLength === 1 ? typeof children[0] : undefined

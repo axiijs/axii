@@ -36,7 +36,7 @@ import {RxListHost} from "./RxListHost"
 import {StaticArrayHost} from "./StaticArrayHost"
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
 import type {Host} from "./Host"
-import {isHydrationSlot} from "./hydrationElement"
+import {clearTopDownAbort, isHydrationSlot} from "./hydrationElement"
 
 export function hydrateRootTopDown(
     container: HTMLElement,
@@ -49,15 +49,18 @@ export function hydrateRootTopDown(
     const rawMark = markTopDownRawElements()
     const mismatchesBefore = getTopDownMismatchCount()
     try {
-        const root = createRootInternal(container, undefined, undefined, true)
+        // 激活的树完整之后、派发 attach（ref / layoutEffect 是用户代码，可能改动原始标记的内容）之前：
+        //  R5：容器这一层在 <!--root--> 之后剩下的节点（STYLE / SCRIPT / LINK 除外）删除并报告；
+        //  这次激活有失配时，干净认领的原始元素可能跨了角色：核对它们的内容（§4.1、§2.6.2）。
+        //  root.render 只在激活的树没有被丢弃时调用它
+        const root = createRootInternal(container, undefined, undefined, true, () => {
+            finishTopDownContainer()
+            verifyTopDownRawElements(rawMark, mismatchesBefore)
+        })
         const host = root.render(source)
         // 激活中 root 被销毁（error 监听器 root.destroy()，可能随后渲染了别的内容）：激活的树已整体丢弃（root.render 的重入
         //  说明，丢弃的树在那里销毁），容器清扫与不变量都不适用
         if (root.host !== host) return root
-        // R5：容器这一层在 <!--root--> 之后剩下的节点（STYLE / SCRIPT / LINK 除外）删除并报告
-        finishTopDownContainer()
-        // 这次激活有失配时，干净认领的原始元素可能跨了角色：核对它们的内容（§4.1、§2.6.2）
-        verifyTopDownRawElements(rawMark, mismatchesBefore)
         // Adopted stylesheets are live; drop SSR <style data-axii-ssr> without FOUC.
         migrateSsrStyleTags(container)
         // D13：CSR 的 createRoot 之后容器里只有根 Host 的区间 [host.element … <!--root-->]。服务端样式迁移之后，
@@ -69,6 +72,7 @@ export function hydrateRootTopDown(
         // 中止时还没插入的新建元素、记下的原始元素随激活的树丢弃
         dropTopDownFreshElements(freshMark)
         dropTopDownRawElements(rawMark)
+        clearTopDownAbort()
         leaveTopDownContainer(depth)
         endTopDownHydration(saved)
     }
@@ -78,7 +82,7 @@ export function hydrateRootTopDown(
  * §4.4 开发期不变量（O(n)，只在诊断开启时运行）：
  *  1. 每个 Host 的 placeholder 都是真实节点，不是 slot 常量；
  *  2. 每个 Host 的 [element … placeholder] 区间可达、在文档中（复用 assertRangeReachable）；
- *  3. 容器里没有残留的 axii:t / axii:/t / axii:0 标记。
+ *  3. 容器里没有残留的 axii:t / axii:/t / axii:0 标记，也没有没换成新建元素的占位 axii:fresh。
  * 违反时报告 AXII_HYDRATION_INVARIANT（HydrationInvariantError），不抛出。
  */
 function pushAll(into: Host[], hosts: Host[]): void {
@@ -125,7 +129,7 @@ function checkTopDownInvariants(container: ParentNode, rootHost: Host): void {
     }
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_COMMENT)
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-        if (isCommentData(node, 'axii:t') || isCommentData(node, 'axii:/t') || isCommentData(node, 'axii:0')) {
+        if (isCommentData(node, 'axii:t') || isCommentData(node, 'axii:/t') || isCommentData(node, 'axii:0') || isCommentData(node, 'axii:fresh')) {
             reportAxiiError(new HydrationInvariantError(`a leftover <!--${(node as Comment).data}--> marker`))
         }
     }

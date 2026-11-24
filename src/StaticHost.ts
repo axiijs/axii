@@ -1144,7 +1144,7 @@ export class StaticHost implements Host {
         this.collectRefHandles()
         this.collectDetachStyledChildren()
         // 5. 失配新建的元素在响应式属性绑定之后连入文档（#73）
-        insertTopDownFreshElements(freshMark)
+        insertTopDownFreshElements(freshMark, insertBefore)
         // ≡ render 的尾部
         this.setupRefHandles()
         if (this.usesStyleManager) {
@@ -1624,7 +1624,7 @@ export class CompactElementHost extends StaticHost {
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.collectDetachStyledChildren()
-        insertTopDownFreshElements(freshMark)
+        insertTopDownFreshElements(freshMark, insertBefore)
         this.setupRefHandles()
         if (this.usesStyleManager) {
             StaticHost.styleManager.mount(this)

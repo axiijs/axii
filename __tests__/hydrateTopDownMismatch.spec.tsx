@@ -518,3 +518,93 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
         root.destroy()
     })
 })
+
+describe('independent review findings (B3)', () => {
+    test('an error thrown while a function child\'s structure is activated aborts the activation even with an error listener (B1: no "render empty" on the cursor); the cursor is restored', () => {
+        const caught: unknown[] = []
+        const make = (clientBroken: boolean) => {
+            function Bad({}: any, {createElement}: RenderContext) {
+                // 客户端独有的非法 child：createHydrateHost 的 unknown child type 断言
+                return <span>{clientBroken ? new Date(0) as any : 'ok'}</span>
+            }
+            return function App({}: any, {createElement, pathContext}: RenderContext) {
+                if (pathContext) pathContext.root.on('error', (e: unknown) => { caught.push(e) })
+                return <div>{() => <p><Bad/></p>}<i>x</i></div>
+            }
+        }
+        const hyd = parse(htmlOf(make(false)))
+        expect(() => hydrateRootTopDown(hyd, createElement(make(true), null))).toThrow('unknown child type')
+        expect(caught).toEqual([])
+        // 激活的状态已恢复：下一次激活从自己的容器开始
+        const again = parse(htmlOf(make(false)))
+        hydrateRootTopDown(again, createElement(make(false), null))
+        expect(kids(again)).toBe(kids(csrOf(make(false))))
+    })
+
+    test.each([
+        ['static', () => 'b'],
+        ['reactive', () => atom('b')],
+    ] as const)('a rebuilt <option> keeps the %s value of its claimed <select>, like CSR', (_name, value) => {
+        const make = () => function App({}: any, {createElement}: RenderContext) {
+            return <div><select value={value()}><option value="a">A</option><option value="b">B</option></select></div>
+        }
+        const hyd = parse(htmlOf(make()))
+        hyd.querySelector('option[value="b"]')!.remove()
+        const select = hyd.querySelector('select')
+        hydrateRootTopDown(hyd, createElement(make(), null))
+        const csrEl = csrOf(make())
+        expect({value: (hyd.querySelector('select') as HTMLSelectElement).value, same: hyd.querySelector('select') === select, dom: kids(hyd), reported: mismatches() > 0})
+            .toEqual({value: (csrEl.querySelector('select') as HTMLSelectElement).value, same: true, dom: kids(csrEl), reported: true})
+        expect((hyd.querySelector('select') as HTMLSelectElement).value).toBe('b')
+    })
+
+    test('raw markup is checked before refs and layout effects run: content they change is kept, like CSR', () => {
+        const make = (text: string) => function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <span>{text}</span>
+                <pre ref={(el: HTMLElement | null) => { el?.firstElementChild?.classList.add('hl') }} dangerouslySetInnerHTML={{__html: '<code>x</code>'}}/>
+            </div>
+        }
+        const hyd = parse(htmlOf(make('server')))
+        hydrateRootTopDown(hyd, createElement(make('client'), null))
+        expect({dom: kids(hyd), reported: mismatches() > 0}).toEqual({dom: kids(csrOf(make('client'))), reported: true})
+        expect(hyd.querySelector('pre code')!.className).toBe('hl')
+    })
+
+    test('template whitespace around the server HTML in the container is removed without rebuilding the root element', () => {
+        function App({}: any, {createElement}: RenderContext) { return <main><input/><p>x</p></main> }
+        const hyd = parse(`\n    ${htmlOf(App)}\n  `)
+        const [main, input] = [hyd.querySelector('main'), hyd.querySelector('input')]
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({dom: kids(hyd), kept: [hyd.querySelector('main') === main, hyd.querySelector('input') === input], reported: mismatches() > 0})
+            .toEqual({dom: kids(csrOf(App)), kept: [true, true], reported: true})
+    })
+
+    test('onError runs outside the activation context: JSX it creates and list rows it adds are real nodes, like CSR', () => {
+        const list = new RxList([1, 2])
+        function App({}: any, {createElement}: RenderContext) {
+            return <div><ul>{list.map(i => <li>{i}</li>)}</ul><p>{'client'}</p></div>
+        }
+        const html = htmlOf(App)
+        const hyd = parse(html.replace('client', 'server'))
+        const made: unknown[] = []
+        configureDiagnostics({enabled: true, onError: (e: unknown) => {
+            reports.push(e)
+            made.push(createElement('b', null))
+            if (list.data.length < 3) list.push(3)
+        }})
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({rows: Array.from(hyd.querySelectorAll('li')).map(li => li.textContent), made: made.every(n => n instanceof HTMLElement), others: others()})
+            .toEqual({rows: ['1', '2', '3'], made: true, others: []})
+    })
+
+    test('the subtree of an approximate claim is approximate too: server-only attributes of its children are cleared (§4.1)', () => {
+        function App({}: any, {createElement}: RenderContext) { return <div><span id="a"><i>x</i></span></div> }
+        const hyd = parse(htmlOf(App))
+        const span = hyd.querySelector('span')!
+        span.id = 'z'
+        span.querySelector('i')!.setAttribute('data-junk', '1')
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({dom: kids(hyd), mismatches: mismatches()}).toEqual({dom: kids(csrOf(App)), mismatches: 1})
+    })
+})
