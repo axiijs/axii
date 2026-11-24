@@ -24,7 +24,7 @@ import {
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {CompactElementHost} from '../src/StaticHost.js'
-import {hydrate} from './helpers/hydrate'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 /** 递归的结构签名：标签、Comment、Text（不含属性），用于比较服务端解析结果与 CSR 的 DOM 形状。 */
 function structure(n: Node): string {
@@ -174,7 +174,8 @@ describe('#68 RxList Compact row: server ≡ CSR, hydration claims without misma
     })
 
     for (const c of CASES) {
-        test(c.name, () => {
+        // 内部入口那一遍：每个 case 都激活一个 RxList（列表的激活在 #55 B2），不激活的 case 照常运行
+        test.skipIf(pendingTopDown('B2') && c.hydrate !== false)(c.name, () => {
             // CSR 基准
             const csrEl = document.body.appendChild(document.createElement('div'))
             const csrList = new RxList([1, 2])
@@ -234,7 +235,7 @@ describe('#68 exit animation of a hydrated row whose descendant has detachStyle'
         configureDiagnostics({})
     })
 
-    test('removed row stays while the descendant plays its exit transition, then leaves', async () => {
+    test.skipIf(pendingTopDown('B2'))('removed row stays while the descendant plays its exit transition, then leaves', async () => {
         const list = new RxList(['a', 'b'])
         function App({}, {createElement}: RenderContext) {
             return <ul id="t">{list.map((k: string) =>

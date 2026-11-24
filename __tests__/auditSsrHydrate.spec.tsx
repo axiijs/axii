@@ -215,7 +215,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
-    test('F1d hydration time must not grow cubically with the number of sibling rows', () => {
+    test.skipIf(pendingTopDown('B2'))('F1d hydration time must not grow cubically with the number of sibling rows', () => {
         const hydrateMs = (n: number) => {
             const make = () => {
                 const list = new RxList(Array.from({length: n}, (_, i) => i))
@@ -318,7 +318,7 @@ describe('F1 regression: static trees hydrate in place (deterministic fuzz)', ()
         return function App({}: any, {createElement: h}: RenderContext) { return render(spec, h) }
     }
 
-    test('F1i 300 generated trees: DOM ≡ CSR, no report, server nodes kept, listeners at their own position', () => {
+    test.skipIf(pendingTopDown('B2'))('F1i 300 generated trees: DOM ≡ CSR, no report, server nodes kept, listeners at their own position', () => {
         for (let seed = 1; seed <= 300; seed++) {
             const spec = generate(seed)
             const log: string[] = []
@@ -388,7 +388,7 @@ describe('F2 regression: text ownership in other containers and across hydration
     function ArrayApp({}: any, {createElement}: RenderContext) {
         return <p>{['Hello', false, 'World', true]}</p>
     }
-    test('F2c Fragment root and array (DirectNodes) siblings keep their text', () => {
+    test.skipIf(pendingTopDown('B2'))('F2c Fragment root and array (DirectNodes) siblings keep their text', () => {
         for (const App of [FragmentApp, ArrayApp]) {
             const hyd = ssrInto(App)
             hydrate(hyd, createElement(App, null as any))
@@ -431,7 +431,7 @@ describe('F2 regression: text ownership in other containers and across hydration
 
 // Found while writing the F2 regression: array children with null / boolean items.
 describe('N1 array child with null / boolean items (list.map(i => cond ? <li/> : null))', () => {
-    test('N1a element-child array: hydrates, equals CSR, no report', () => {
+    test.skipIf(pendingTopDown('B2'))('N1a element-child array: hydrates, equals CSR, no report', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <ul>{[1, 2, 3, 4].map(i => i % 2 ? <li>{i}</li> : null)}{[false, 'x', undefined, true]}</ul>
         }
@@ -442,7 +442,7 @@ describe('N1 array child with null / boolean items (list.map(i => cond ? <li/> :
             .toEqual({dom: kids(csr(App)), reports: [], sameLi: true})
     })
 
-    test('N1b the same arrays under a Fragment root', () => {
+    test.skipIf(pendingTopDown('B2'))('N1b the same arrays under a Fragment root', () => {
         function App({}: any, {createElement, Fragment}: RenderContext) {
             return <Fragment>{[1, 2, 3].map(i => i % 2 ? <b>{i}</b> : null)}{['x', false]}</Fragment>
         }
@@ -570,7 +570,7 @@ describe('F5 SSR wraps bare rows in <tbody>; hydration removes that tbody', () =
         expect({cells: hyd.querySelectorAll('td').length, reports}).toEqual({cells: 1, reports: []})
     })
 
-    test('F5b <table>{list.map(row)}</table>: rows survive and the list stays live', () => {
+    test.skipIf(pendingTopDown('B2'))('F5b <table>{list.map(row)}</table>: rows survive and the list stays live', () => {
         const make = () => {
             const list = new RxList([1, 2])
             function App({}: any, {createElement}: RenderContext) {
@@ -599,7 +599,7 @@ describe('F5 regression: implied vs authored tbody', () => {
             .toEqual({sameTd: true, text: '1', reports: []})
     })
 
-    test('F5d authored <thead>/<tbody> are claimed as themselves; a conditional row function stays live', async () => {
+    test.skipIf(pendingTopDown('B2'))('F5d authored <thead>/<tbody> are claimed as themselves; a conditional row function stays live', async () => {
         const make = () => {
             const more = atom(false)
             const list = new RxList([1])
@@ -748,7 +748,7 @@ describe('F7 regression: hydration of the new server output', () => {
 })
 
 describe('F7 regression: dangerouslySetInnerHTML on an element rebuilt after a tag mismatch', () => {
-    test('F7g the rebuilt element gets its raw markup', () => {
+    test.skipIf(pendingTopDown('B3'))('F7g the rebuilt element gets its raw markup', () => {
         const app = (tag: string) => function App({}: any, {createElement}: RenderContext) {
             return <section>{createElement(tag, {id: 'raw', dangerouslySetInnerHTML: '<em>raw</em>'})}</section>
         }
@@ -1160,7 +1160,7 @@ describe('I50 dangerouslySetInnerHTML={{__html}}: CSR, reactive form, hydration'
     // The raw-content decision of a claimed element (DOM.createElement → exitElementChildCursor) reads
     // the unwrapped value: a nullish {__html} is not raw markup, exactly like the nullish string form.
     // Undefined is the baseline (static path); a bare null goes through the reactive attribute path.
-    test('I50g drift: server markup, client nullish {__html} → handled exactly like client undefined', () => {
+    test.skipIf(pendingTopDown('B3'))('I50g drift: server markup, client nullish {__html} → handled exactly like client undefined', () => {
         const read = (client: any) => {
             const hyd = ssrInto(rawApp({__html: '<b>x</b>'}))
             reports.length = 0

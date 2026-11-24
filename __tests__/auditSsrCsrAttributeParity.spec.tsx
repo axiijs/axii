@@ -8,7 +8,7 @@ import {atom, configureDiagnostics, createElement, createRoot, RenderContext} fr
 import {describe, expect, test, vi} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {htmlPropertyTypeEntries, type HtmlPropertyType} from '../src/htmlPropertyTypes.js'
-import {hydrate} from './helpers/hydrate'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 function attributesOf(root: Element): string[] {
     const out: string[] = []
@@ -536,7 +536,7 @@ describe('#52 checkbox / radio: a nullish value never touches the checked state,
         expectMatrix(server)
     })
 
-    test('hydrateRoot over the server HTML', () => {
+    test.skipIf(pendingTopDown('B2'))('hydrateRoot over the server HTML', () => {
         const container = document.createElement('div')
         container.innerHTML = renderToString(<App/>).html
         document.body.appendChild(container)

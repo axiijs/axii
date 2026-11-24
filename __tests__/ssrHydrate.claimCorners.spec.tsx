@@ -37,7 +37,7 @@ import {
     stripAxiiTextBoundariesBetween,
     tryClaimElement,
 } from '../src/hydration.js'
-import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS, pendingTopDown} from './helpers/hydrate'
 
 function captureMismatches(): unknown[] {
     const errors: unknown[] = []
@@ -505,7 +505,7 @@ describe('hydrateRoot end-to-end claim corners', () => {
         root.destroy()
     })
 
-    test('component-root element with array child claims DirectNodes layout', () => {
+    test.skipIf(pendingTopDown('B2'))('component-root element with array child claims DirectNodes layout', () => {
         function App({}, {createElement}: RenderContext) {
             return <div>{['a', 'b']}</div>
         }
@@ -518,7 +518,7 @@ describe('hydrateRoot end-to-end claim corners', () => {
         root.destroy()
     })
 
-    test('Comment-ph drift: SSR text missing while expected non-empty reports + inserts fresh Text', () => {
+    test.skipIf(pendingTopDown('B3'))('Comment-ph drift: SSR text missing while expected non-empty reports + inserts fresh Text', () => {
         const name = atom('x')
         const {html} = renderToString(name)
         rootEl.innerHTML = html.replace('<!--axii:t-->x<!--axii:/t-->', '')
@@ -534,13 +534,13 @@ describe('hydrateRoot end-to-end claim corners', () => {
         root.destroy()
     })
 
-    test('root atom hydrate throws when an Element sits before <!--root-->', () => {
+    test.skipIf(pendingTopDown('B3'))('root atom hydrate throws when an Element sits before <!--root-->', () => {
         const name = atom('x')
         rootEl.innerHTML = '<span></span><!--root-->'
         expect(() => hydrate(rootEl, name)).toThrow('expected Text before Comment placeholder')
     })
 
-    test('hydrateRoot throws when the container is missing <!--root-->', () => {
+    test.skipIf(pendingTopDown('B4'))('hydrateRoot throws when the container is missing <!--root-->', () => {
         rootEl.innerHTML = '<span></span>'
         expect(() => hydrate(rootEl, createElement('span', null))).toThrow('missing <!--root-->')
     })
