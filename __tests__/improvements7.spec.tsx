@@ -42,7 +42,9 @@ describe('improvements regression (2026-07 round-6 review)', () => {
             consoleError.mockRestore()
         }
         const el = document.getElementById('i28a') as any
-        expect({attr: el.hasAttribute('once'), listeners: el._listeners}).toEqual({attr: false, listeners: undefined})
+        // listenerBoundArgs 只在元素上有真正的事件时才分配（ComponentHost.hasEventProps 用 isEventName）
+        expect({attr: el.hasAttribute('once'), listeners: el._listeners, boundArgs: el.listenerBoundArgs})
+            .toEqual({attr: false, listeners: undefined, boundArgs: undefined})
     })
 
     test('I28b: atom-valued on* non-event prop is not bound as a reactive attribute', () => {

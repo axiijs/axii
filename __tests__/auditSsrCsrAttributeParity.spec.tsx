@@ -4,7 +4,7 @@
  * attributes as a client render of the same JSX. The server has no DOM to ask for a property's
  * type, so it follows a static table; this spec is what keeps the two sides from drifting apart.
  */
-import {atom, configureDiagnostics, createElement, createRoot, RenderContext} from '@framework'
+import {atom, configureDiagnostics, createElement, createRoot, hydrateRoot, RenderContext} from '@framework'
 import {describe, expect, test, vi} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 
@@ -276,13 +276,70 @@ describe('#49 on* props that are not event handlers are written on neither side'
 
     test('server and client agree: on* names dropped on both sides, a bare `on` (AMP on="tap:…") kept on both', () => {
         quietly(() => {
-            expectParity(function App({}: any, {createElement}: RenderContext) {
+            const {server, client} = both(function App({}: any, {createElement}: RenderContext) {
                 return <div>
                     <div once="x" online="y" onlyIcon="z" on-click="w"/>
                     <div ONCLICK={SCRIPT}/>
                     <button on="tap:lightbox"/>
                 </div>
             })
+            expect({server, client}).toEqual({
+                server: client,
+                client: ['0.<div>', '0.0.<div>', '0.1.<div>', '0.2.<button on="tap:lightbox">'],
+            })
+        })
+    })
+
+    test('SVG xlink-prefixed names that become on* once the prefix is stripped are dropped on both sides', () => {
+        delete (window as any)[HIT]
+        function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <svg id="xlink-fn" xlinkOnclick={() => () => { (window as any)[HIT] = 'fn' }}/>
+                <svg id="xlink-colon-fn" {...{'xlink:onclick': () => () => { (window as any)[HIT] = 'fn' }}}/>
+                <svg id="xlink-str" xlinkOnclick={SCRIPT}/>
+                <svg id="xlink-colon-str" {...{'xlink:ONCLICK': SCRIPT}}/>
+            </div>
+        }
+        quietly(() => {
+            const server = renderServer(<App/>)
+            const {client, root} = renderClient(<App/>)
+            clickAll(client)
+            expect({
+                client: onAttributesOf(client),
+                live: liveHandlersOf(client),
+                parity: attributesOf(server),
+            }).toEqual({client: [], live: [], parity: attributesOf(client)})
+            root.destroy()
+            client.remove()
+        })
+    })
+
+    test('hydrateRoot over the server HTML leaves no on* attribute and still binds real events', () => {
+        delete (window as any)[HIT]
+        const calls: string[] = []
+        const script = atom(SCRIPT)
+        function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <div id="h-upper" ONCLICK={SCRIPT}/>
+                <div id="h-mixed" oNclick={() => { calls.push('render'); return () => calls.push('click') }}/>
+                <div id="h-once" once="x"/>
+                <svg id="h-svg" onclick={script}/>
+                <button id="h-event" onClick={() => calls.push('onClick')}/>
+            </div>
+        }
+        quietly(() => {
+            const container = renderServer(<App/>)
+            document.body.appendChild(container)
+            const root = hydrateRoot(container, <App/>)
+            clickAll(container)
+            expect({
+                attrs: onAttributesOf(container),
+                live: liveHandlersOf(container),
+                hit: (window as any)[HIT],
+                calls,
+            }).toEqual({attrs: [], live: [], hit: undefined, calls: ['onClick']})
+            root.destroy()
+            container.remove()
         })
     })
 
@@ -295,6 +352,7 @@ describe('#49 on* props that are not event handlers are written on neither side'
                 <button id="capture" onClickCapture={() => calls.push('capture')}/>
                 <button id="falsy" onClick={false}/>
                 <button id="nullish" onClick={null}/>
+                <button id="array-conditions" onClick={[() => calls.push('cond'), true, null, [false, undefined]]}/>
             </div>
         }
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -307,7 +365,7 @@ describe('#49 on* props that are not event handlers are written on neither side'
                 client: onAttributesOf(client),
                 calls,
                 warned: consoleError.mock.calls.length,
-            }).toEqual({server: [], client: [], calls: ['single', 'a', 'b', 'capture'], warned: 0})
+            }).toEqual({server: [], client: [], calls: ['single', 'a', 'b', 'capture', 'cond'], warned: 0})
             root.destroy()
             client.remove()
         } finally {
@@ -325,6 +383,7 @@ describe('#49 on* props that are not event handlers are written on neither side'
                     <svg onclientwarn49={() => 'c'}/>
                     <div onAuxClick="alert(1)"/>
                     <div onAuxClick="alert(2)"/>
+                    <div onPointerLeave={[() => {}, 0]}/>
                 </div>
             }
             const {client, root} = renderClient(<App/>)
@@ -337,8 +396,9 @@ describe('#49 on* props that are not event handlers are written on neither side'
             expect({
                 dropped: messages.filter(m => m.includes('"onclientwarn49"')).length,
                 eventName: messages.filter(m => m.includes('"onAuxClick"')).length,
+                calledFalsyItem: messages.filter(m => m.includes('"onPointerLeave"')).length,
                 prefixed: messages.every(m => m.startsWith('[axii]')),
-            }).toEqual({dropped: 1, eventName: 1, prefixed: true})
+            }).toEqual({dropped: 1, eventName: 1, calledFalsyItem: 1, prefixed: true})
         } finally {
             consoleError.mockRestore()
         }

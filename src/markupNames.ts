@@ -87,11 +87,13 @@ export function isEventName(name: string): boolean {
 }
 
 /**
+ * @internal
  * 名字以 on 开头（不区分大小写）且长于 2：可能被浏览器当成事件处理器 content attribute 的那一类名字。
  * CAUTION HTML 的属性名大小写不敏感（解析和 setAttribute 都会转小写），ONCLICK / oNclick 写出去就是
  *  可执行的 onclick；SVG 和自定义元素上的 onclick 同样是事件处理器。所以这类名字只有
  *  「isEventName 且值是函数 / 函数数组」时才是事件（客户端 addEventListener），其余一律两端都不写——
- *  既不写 attribute 也不写 property，也不建立响应式属性绑定（#49，与 React 的 shouldIgnoreAttribute 一致）。
+ *  既不写 attribute 也不写 property，也不建立响应式属性绑定（#49，规则与 React 的 shouldIgnoreAttribute 相同）。
+ *  不区分元素类型：SVG、自定义元素上的 onclick attribute 同样可执行，一并丢弃。
  *  单独的 on 不是任何事件属性（AMP 的 on="tap:…" 是合法属性），与 React 一样照常写出。
  *  热路径约束：DOM.setAttribute 用它替换原来的 isEventName 分发判断，名字首字符不是 o/O 时
  *  只读一次 charCode，和原来的首字符比较等价，普通属性写入不多付任何代价。

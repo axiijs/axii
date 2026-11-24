@@ -158,11 +158,18 @@ export function isAxiiDiagnosticsEnabled() {
 // 同一个 prop 名只警告一次（#49）。只在诊断开启时分配，生产环境从不创建。
 let warnedOnPropNames: Set<string> | undefined
 
-// 合法的事件处理器值：函数 / 函数数组。数组里的 falsy 是条件项（onClick={[a, cond && b]}），
-//  值本身 falsy 表示解绑（onClick={cond && fn}），都不是错误。
+// 合法的事件处理器值：函数 / 函数数组。规则与实际绑定、调用一致：
+//  - 值本身 falsy 表示解绑（DOM.setAttribute 事件分支的 if (value)：onClick={cond && fn}）；
+//  - 数组项只有 nullish / boolean 是条件项（invokeEventEntries 跳过它们：onClick={[a, cond && b]}），
+//    0 / '' 这类 falsy 项会被调用、每次事件都抛 TypeError，所以要警告；嵌套数组在绑定时摊平。
 function isEventHandlerValue(value: unknown): boolean {
-    if (Array.isArray(value)) return value.every(isEventHandlerValue)
-    return !value || typeof value === 'function'
+    if (!value) return true
+    return Array.isArray(value) ? value.every(isEventHandlerItem) : typeof value === 'function'
+}
+
+function isEventHandlerItem(item: unknown): boolean {
+    if (item == null || typeof item === 'boolean') return true
+    return Array.isArray(item) ? item.every(isEventHandlerItem) : typeof item === 'function'
 }
 
 /**

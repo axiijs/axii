@@ -781,7 +781,9 @@ function serializeAttrs(
         //  事件（isEventName + 函数）只在客户端绑定；其余（ONCLICK / oNclick / once / onclick）两端都丢弃——
         //  这里原来只跳过严格以小写 o、n 开头的 key，ONCLICK / oNclick 原样写进 HTML，解析后就是可执行的 onclick，
         //  ONCLICK={fn} 还会在下面被当成响应式属性调用。必须在取快照之前跳过。
-        if (hasOnPrefix(key)) {
+        //  SVG 上的 xlink 前缀名（xlinkOnclick / xlink:onclick）剥掉前缀后是 on* 名字的，客户端同样丢弃（DOM.setAttribute）。
+        if (hasOnPrefix(key) ||
+            (isSVG && key.charCodeAt(0) === 120 && key.startsWith('xlink') && hasOnPrefix(key.replace(/^xlink\:?/, '')))) {
             warnInvalidOnProp(key, props[key])
             continue
         }

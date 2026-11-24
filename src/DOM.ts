@@ -393,6 +393,8 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             warnInvalidOnProp(name, value)
             return
         }
+        // 书写时的 prop 名（剥掉 Capture 之前），开发期警告按它去重；只是引用，不分配
+        const propName = name
         // CAUTION Capture 后缀表示捕获阶段，但 gotpointercapture / lostpointercapture 是事件名本身：
         //  无条件剥掉后缀的话 onGotPointerCapture 会在不存在的 gotpointer 事件上挂一个捕获监听，
         //  永远不触发且没有任何报错。它们的捕获形态是 onGotPointerCaptureCapture（与 React 一致）。
@@ -433,7 +435,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                 } else {
                     // 事件名配非函数值（onClick="alert(1)"）不是合法的事件处理器（#49）：从不写成 attribute，
                     //  仍按原样绑定（事件触发时抛错，行为不变），开发期按 prop 名警告一次。
-                    warnInvalidOnProp(useCapture ? `${name}Capture` : name, value)
+                    warnInvalidOnProp(propName, value)
                 }
             }
             // CAUTION 同一个 proxy 重复 addEventListener 会被 DOM 自动去重，这里无需判断
@@ -705,6 +707,13 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     } else {
         /* v8 ignore next 4 */
         const ns = isSvg && (name !== (name = name.replace(/^xlink\:?/, '')))
+        // CAUTION xlink 前缀在上面的 hasOnPrefix 分发之后才剥掉：xlinkOnclick / xlink:onclick 剥完就是 on* 名字，
+        //  函数值会走下面不带 namespace 的 setAttribute('onclick', fn)，写出可执行的 onclick。同样丢弃（#49，
+        //  ssr.ts serializeAttrs 用同一条规则）。只有 SVG 上带 xlink 前缀的名字才多这一次判断。
+        if (ns && hasOnPrefix(name)) {
+            warnInvalidOnProp(`xlink:${name}`, value)
+            return
+        }
         // svg 的 presentation attribute 要从驼峰转换成连字符风格（见 svgPresentationAttributeNames）。
         // CAUTION 写入和移除必须用同一个名字：移除曾用驼峰原名（removeAttribute('strokeWidth')
         //  是空操作），响应式值变成 null/undefined/false 后 stroke-width 永久残留。
