@@ -28,6 +28,20 @@ export class HydrationMismatchError extends Error {
     }
 }
 
+/**
+ * #55 §4.4 开发期不变量（只在诊断开启时检查）：新模型激活结束后，Host 区间不可达、placeholder 还是 slot 常量、
+ * 残留 axii:* 标记。只报告（reportAxiiError），不抛出。
+ */
+export class HydrationInvariantError extends Error {
+    readonly code = 'AXII_HYDRATION_INVARIANT' as const
+    readonly cause?: unknown
+    constructor(detail: string, cause?: unknown) {
+        super(`[axii] hydration invariant broken: ${detail} (AXII_HYDRATION_INVARIANT)`)
+        this.name = 'HydrationInvariantError'
+        if (cause !== undefined) this.cause = cause
+    }
+}
+
 /** Report §3.7 mismatch (never silent wrong bindings — caller must rebuild or abort). */
 export function reportHydrationMismatch(expected: string, actual: string): HydrationMismatchError {
     const err = new HydrationMismatchError(expected, actual)
@@ -36,7 +50,7 @@ export function reportHydrationMismatch(expected: string, actual: string): Hydra
     return err
 }
 
-function summarizeChild(node: ChildNode | null | undefined): string {
+export function summarizeChild(node: ChildNode | null | undefined): string {
     if (!node) return 'eof'
     if (node.nodeType === Node.TEXT_NODE) return `Text(${JSON.stringify(node.nodeValue)})`
     if (node.nodeType === Node.COMMENT_NODE) return `Comment(${JSON.stringify((node as Comment).data)})`
@@ -102,7 +116,20 @@ function ownText(text: Text): Text {
 //  分不清「原始元素」和「它标记里的同标签节点」，要靠自顶向下按位置认领解决。
 let rawContentParents: WeakSet<ParentNode> | undefined
 
-let hydrating = false
+/**
+ * 激活模式（#55，设计 docs/ssr-support/hydration-top-down.md §7.1 第 2 点）：
+ *  - HYDRATION_MODE_NONE：不在激活中（CSR）；
+ *  - HYDRATION_MODE_LEGACY：公开的 hydrateRoot 正在激活（旧模型：子先于父认领）；
+ *  - HYDRATION_MODE_TOP_DOWN：不导出的内部入口正在激活（新模型：createElement 返回描述，各 Host 自顶向下认领）。
+ * isHydrating() 仍表示「旧模型激活中」，旧模型的调用点一行不改；两个模型共用语义的调用点用 isAnyHydrating()；
+ * createElement 开头与 FunctionHost 的首次运行读 getHydrationMode() 按模式分流。#55 S 删除旧模型后退回布尔量。
+ * CAUTION 只有内部入口（src/hydrateTopDown.ts，经 beginTopDownHydration）会把模式置为 TOP_DOWN；
+ *  公开产物里没有它（§7.1 第 4 点）。
+ */
+export const HYDRATION_MODE_NONE = 0
+export const HYDRATION_MODE_LEGACY = 1
+export const HYDRATION_MODE_TOP_DOWN = 2
+let hydrationMode = HYDRATION_MODE_NONE
 let claimedRollingStyleBases: WeakMap<Element, string> | undefined
 let hydrateRootEl: ParentNode | null = null
 /** hydrateRoot options.portals — key → already-filled container (§3.3.d) */
@@ -120,17 +147,28 @@ const childCursorStack: {parent: ParentNode, index: number}[] = []
  */
 let elementChildCursorDepth = 0
 
+/** 旧模型（公开的 hydrateRoot）激活中。 */
 export function isHydrating(): boolean {
-    return hydrating
+    return hydrationMode === HYDRATION_MODE_LEGACY
+}
+
+/** 任一模型激活中：两个模型共用的语义（用户回调退出激活上下文、滚动样式 id 回收）用它。 */
+export function isAnyHydrating(): boolean {
+    return hydrationMode !== HYDRATION_MODE_NONE
+}
+
+/** 当前激活模式（见 HYDRATION_MODE_*）。只给按模式分流的调用点用：createElement 开头、FunctionHost 的首次运行。 */
+export function getHydrationMode(): number {
+    return hydrationMode
 }
 
 /** Outermost hydrate root (not inside pushHydrateRoot / Portal container). */
 export function isHydrateOnMainRoot(): boolean {
-    return hydrating && hydrateRootStack.length === 0
+    return hydrationMode === HYDRATION_MODE_LEGACY && hydrateRootStack.length === 0
 }
 
 export function beginHydration(container: ParentNode, portals?: Record<string, HTMLElement>): void {
-    hydrating = true
+    hydrationMode = HYDRATION_MODE_LEGACY
     ownedTexts = undefined
     rawContentParents = undefined
     hydrateRootEl = container
@@ -142,8 +180,26 @@ export function beginHydration(container: ParentNode, portals?: Record<string, H
     elementChildCursorDepth = 0
 }
 
+/**
+ * @internal 新模型的激活开始 / 结束（#55）。只由内部入口 hydrateRootTopDown 调用：tree-shaking 后公开产物里没有，
+ * 产物里也就没有任何代码把模式置为 TOP_DOWN（§7.1 第 4 点）。
+ * 返回之前的状态交给 endTopDownHydration 恢复（回调里嵌套的激活返回后，外层照常继续）。
+ */
+export function beginTopDownHydration(): {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined} {
+    const saved = {mode: hydrationMode, rollingStyleBases: claimedRollingStyleBases}
+    hydrationMode = HYDRATION_MODE_TOP_DOWN
+    claimedRollingStyleBases = undefined
+    return saved
+}
+
+/** @internal 见 beginTopDownHydration。 */
+export function endTopDownHydration(saved: {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined}): void {
+    hydrationMode = saved.mode
+    claimedRollingStyleBases = saved.rollingStyleBases
+}
+
 export function endHydration(): void {
-    hydrating = false
+    hydrationMode = HYDRATION_MODE_NONE
     ownedTexts = undefined
     rawContentParents = undefined
     claimedRollingStyleBases = undefined
@@ -163,8 +219,11 @@ export function endHydration(): void {
 //  会去容器里「认领」：拿到一个内容为空的 deferred stub，或者偷走还没被认领的服务端节点。
 //  这里把整份状态存起来再关掉标志位：回调里甚至可以再完整地跑一次 hydrateRoot
 //  （begin / end 会清空下面这些变量），返回后原样恢复、外层激活继续。
+//  两个模型都要退出：新模型的游标在 hydrationCursor.ts 里按栈保存，回调里再跑一次激活（任一入口）只压入自己的一层、
+//  返回前弹出，这里只需要保存并恢复模式本身和下面这些旧模型的状态。
 export function runOutsideHydration<T>(run: () => T): T {
-    if (!hydrating) return run()
+    const savedMode = hydrationMode
+    if (savedMode === HYDRATION_MODE_NONE) return run()
     const savedRoot = hydrateRootEl
     const savedPortals = hydratePortalEls
     const savedRootStack = hydrateRootStack.slice()
@@ -175,11 +234,11 @@ export function runOutsideHydration<T>(run: () => T): T {
     const savedOwnedTexts = ownedTexts
     const savedRawContentParents = rawContentParents
     const savedRollingStyleBases = claimedRollingStyleBases
-    hydrating = false
+    hydrationMode = HYDRATION_MODE_NONE
     try {
         return run()
     } finally {
-        hydrating = true
+        hydrationMode = savedMode
         hydrateRootEl = savedRoot
         hydratePortalEls = savedPortals
         hydrateRootStack.length = 0
@@ -236,7 +295,7 @@ export function resolveHydratePortalContainer(key: string): HTMLElement {
     return el
 }
 
-function isCommentData(node: Node | null | undefined, data: string): node is Comment {
+export function isCommentData(node: Node | null | undefined, data: string): node is Comment {
     return !!node && node.nodeType === Node.COMMENT_NODE && (node as Comment).data === data
 }
 
@@ -297,7 +356,7 @@ export function unclaimHydrateElement(el: Element): void {
     claimedElements.delete(el)
 }
 
-function staticAttrId(props: any): string | null {
+export function staticAttrId(props: any): string | null {
     if (!props || !Object.prototype.hasOwnProperty.call(props, 'id')) return null
     let v = props.id
     if (typeof v === 'function' && !isAtom(v)) return null
@@ -1095,7 +1154,7 @@ export function advancePastNode(node: Node): void {
 //  服务端把各文本单元首尾相接成一段字符数据，空单元不留任何节点。认领时按客户端单元的长度把
 //  这一个 Text 依次切开（splitText），正好是首尾相接的逆操作——各单元拿到自己的 Text，
 //  第一段保持原节点 identity。不切的话第一个单元拿整段去比，必然「值漂移」，后面的单元全部重建。
-function isCharacterDataParent(parent: ParentNode): boolean {
+export function isCharacterDataParent(parent: ParentNode): boolean {
     if (parent.nodeType !== Node.ELEMENT_NODE) return false
     const name = (parent as Element).localName.toLowerCase()
     return RCDATA_TAGS.has(name) || RAWTEXT_TAGS.has(name)

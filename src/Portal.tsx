@@ -1,6 +1,7 @@
 import {ComponentNode, RenderContext} from "./types.js";
 import {createRoot, hydratePortalContent} from "./render.js";
-import {isHydrating, resolveHydratePortalContainer} from "./hydration";
+import {isAnyHydrating, isHydrating, resolveHydratePortalContainer} from "./hydration";
+import {throwTopDownPending} from "./hydrationElement";
 /**
  * @category Basic
  */
@@ -91,6 +92,9 @@ export function Portal({ container, content, destroyOnUnmount, portalKey }: Port
         const key = resolvePortalExportKey(container, portalKey)
         portalEl = resolveHydratePortalContainer(key)
         root = hydratePortalContent(portalEl, content as any, pathContext)
+    } else if (isAnyHydrating()) {
+        // #55 新模型：Portal 为容器推入新的游标栈（§2.6.5），B4 落地，之前显式抛错
+        throwTopDownPending('Portal / createPortal', 'B4')
     } else {
         portalEl = resolveCsrContainer(container)
         root = createRoot(portalEl, pathContext)

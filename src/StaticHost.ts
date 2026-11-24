@@ -2,6 +2,7 @@ import {
     createElement,
     DetachStyledInfo,
     ExtendedElement,
+    Fragment,
     insertBefore,
     RefHandleInfo,
     restoreSelectValueAfterRemoval,
@@ -28,8 +29,13 @@ import {
 } from "./retainedObjectDiagnostics.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
-import {claimFragmentStartBefore, getHydrateRollingStyleBase, isHydrating, reconcileFragmentHydrateChildren, stripAxiiTextBoundariesBetween} from "./hydration";
-import {rematerializeDeferredFragmentChildren} from "./DOM";
+import {claimFragmentStartBefore, getHydrateRollingStyleBase, isAnyHydrating, isHydrating, reconcileFragmentHydrateChildren, stripAxiiTextBoundariesBetween} from "./hydration";
+import {hydrateElementDescription, rematerializeDeferredFragmentChildren, type TopDownInnerHosts} from "./DOM";
+import {createHydrateHost} from "./createHost";
+import {HydrationElement, HydrationSlot, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
+import {claimTopDownComment} from "./hydrationCursor";
+import {innerHTMLOf} from "./markupNames";
+import {isDomNode} from "./nodeType";
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from "./styleCascade";
 import {isFragmentNode} from "./nodeType";
 import {
@@ -359,7 +365,7 @@ class StyleManager {
     private allocateRollingStyleId(staticId: string, reclaimEl?: ExtendedElement | null): string {
         // Separate SSR payloads can start their sequences at R0. A mounted owner reserves
         // its base through inline/content transitions, even after its last frame expires.
-        let id = reclaimEl && isHydrating()
+        let id = reclaimEl && isAnyHydrating()
             ? getHydrateRollingStyleBase(reclaimEl) ?? reclaimRollingStyleId(reclaimEl, staticId)
             : null
         while (!id || this.rollingBaseOwners.has(id)) {
@@ -890,6 +896,45 @@ function warnIfRenderingConsumedElement(source: object) {
     }
 }
 
+const EMPTY_PATH: number[] = []
+
+/**
+ * #55 新模型：按文档顺序收集描述子树里的动态 child（≡ CSR createElement 提升后 StaticHost 根元素上的 unhandledChildren：
+ * 顺序、path、source 逐项相同）。分类与 DOM.hydrateDescriptionChildren 的遍历逐项一致：null / undefined 与文本单元跳过，
+ * 子描述递归（Fragment 也多一级 path），现成的 DOM 节点留给遍历显式抛错，其余是动态 child（函数含 atom 用 TEXT_SLOT）。
+ * 唯一的文本 child（非 Fragment）是 CSR 的 textContent 快速路径，没有动态 child；内容是原始标记的元素不消费 children。
+ * source：最近的带 JSX source 的祖先或自身（≡ liftElementMetadata 的继承规则）。
+ */
+function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], inheritedSource: AxiiSource | undefined, out: UnhandledChildInfo[]) {
+    const rawProps = desc.rawProps
+    const isFragment = desc.tag === Fragment
+    if (!isFragment && rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null) return
+    const children = desc.rawChildren!
+    const childrenLength = children.length
+    if (!isFragment && childrenLength === 1) {
+        const t = typeof children[0]
+        if (t === 'string' || t === 'number' || t === 'bigint') return
+    }
+    const source = (rawProps ? rawProps.__source as AxiiSource | undefined : undefined) ?? inheritedSource
+    for (let index = 0; index < childrenLength; index++) {
+        const child = children[index]
+        if (child == null) continue
+        const childType = typeof child
+        if (childType === 'string' || childType === 'number' || childType === 'bigint') continue
+        if (isHydrationElement(child)) {
+            // 已认领的描述（同一个描述出现第二次）没有 children 了，遍历走到它时显式抛错（DOM.hydrateDescriptionChildren）
+            if (child.node === null) collectTopDownDynamicChildren(child, path.concat(index), source, out)
+        } else if (!isDomNode(child)) {
+            out.push({
+                placeholder: (childType === 'function' ? TEXT_SLOT : UNHANDLED_CHILD_SLOT) as unknown as UnhandledPlaceholder,
+                child,
+                path: path.concat(index),
+                source,
+            })
+        }
+    }
+}
+
 // CAUTION 小 elementPath 驻留池：同一模板位置在长列表的每一行都会产生一个内容
 //  相同的 path 数组（如每行文本绑定的 [0]），驻留后全列表共享一份（每行省一个
 //  数组 ~28B）。驻留的数组语义上是 frozen 的：所有消费方（样式 id、诊断、
@@ -1077,6 +1122,74 @@ export class StaticHost implements Host {
             this.pathContext.root.flushAttachQueue()
         }
     }
+    /**
+     * #55 新模型（设计 §2.4、§2.5 StaticHost 行、§2.6.1）：source 是元素或 Fragment 的描述。
+     *  1. 先按文档顺序构造静态子树里的全部子 Host（≡ collectInnerHost：构造只需要 source 与 slot；ComponentHost 的构造器
+     *     分配组件类型 id，首次出现的组件类型因此按与 CSR 相同的顺序拿到 id，样式类名一致）；
+     *  2. 认领：元素描述按位置认领元素并递归，Fragment 描述先认领 `fragment start`、在同一层消费子节点；
+     *     遍历到动态 child 时依次取出第 1 步的 Host，hydrate(slot)（DOM.hydrateElementDescription）；
+     *  3. 认领自己的 slot；
+     *  4. 与 render 相同地收集响应式属性、ref、detachStyle（元数据由认领步骤按 CSR 的规则提升到 source 上）。
+     * 与 CSR 的差别只在先后（§2.9，D5 已接受）：后代子 Host 的激活先于祖先元素的响应式属性绑定。
+     * 认领后 source 换成认领到的元素（Fragment 换成一个空的 DocumentFragment，destroy / forceHandleElement 按它判断 fragment）。
+     */
+    hydrate(slot: HydrationSlot): void {
+        const desc = this.source as unknown as HydrationElement
+        const isFragment = desc.tag === Fragment
+        // 1. 构造子 Host（≡ collectInnerHost）
+        const infos: UnhandledChildInfo[] = []
+        collectTopDownDynamicChildren(desc, EMPTY_PATH, desc.rawProps?.__source, infos)
+        let innerHosts: TopDownInnerHosts | undefined
+        if (infos.length === 1) {
+            const host = this.createTopDownInnerHost(infos[0])
+            this.reactiveHosts = host
+            innerHosts = {hosts: [host], next: 0}
+        } else if (infos.length) {
+            // 所有（非函数）子 host 共享同一个 hostPath 节点（≡ collectInnerHost）
+            let hostPath: LinkedNode<Host>|undefined
+            const hosts = infos.map(info => this.createTopDownInnerHost(info, typeof info.child === 'function' ?
+                undefined :
+                (hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath))))
+            this.reactiveHosts = hosts
+            innerHosts = {hosts, next: 0}
+        }
+        // 2. 认领
+        if (isFragment) this.element = claimTopDownComment('fragment start')
+        const node = hydrateElementDescription(desc, innerHosts)
+        if (!isFragment) this.element = node as HTMLElement | SVGElement
+        this.source = node
+        // 3. 自己的 slot
+        this.placeholder = claimTopDownComment(slot)
+        // 4. ≡ collectAndRenderInner 里除 collectInnerHost / renderReactiveHosts 之外的部分
+        this.collectReactiveAttr()
+        this.collectRefHandles()
+        this.collectDetachStyledChildren()
+        // ≡ render 的尾部
+        this.setupRefHandles()
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.mount(this)
+        }
+        if (this.placeholder.isConnected) {
+            this.pathContext.root.flushAttachQueue()
+        }
+    }
+    // ≡ createInnerHost，分派换成 createHydrateHost，placeholder 是 slot。CAUTION 两处的 context / position 规则一起改。
+    createTopDownInnerHost({ placeholder, child, path, source }: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
+        const slot = placeholder as unknown as HydrationSlot
+        if (typeof child === 'function') {
+            return createHydrateHost(child, slot, this.pathContext, {
+                owner: this,
+                elementPath: internElementPath(path),
+                debugSource: source,
+            })
+        }
+        return createHydrateHost(child, slot, {
+            ...this.pathContext,
+            hostPath: sharedHostPath ?? createLinkedNode<Host>(this, this.pathContext.hostPath),
+            elementPath: internElementPath(path),
+            debugSource: source ?? (isHydrationElement(child) ? child.rawProps?.__source : child?.__axiiSource) ?? this.pathContext.debugSource,
+        })
+    }
     // render 的「收集元数据 + 渲染内层 host」部分，批次内外共用同一份（见 render 里的说明）
     collectAndRenderInner() {
         this.collectInnerHost()
@@ -1146,6 +1259,7 @@ export class StaticHost implements Host {
     //  它们的文本快速路径从不消费 hostPath，位置信息以一个 3 字段的 position
     //  对象传入（诊断/结构渲染按需读取），比「克隆 context + LinkedNode」
     //  少一半以上的每绑定常驻内存。
+    // CAUTION 新激活模型的 createTopDownInnerHost 是它的另一份（分派换成 createHydrateHost），context / position 规则一起改（#55 B1）
     createInnerHost({ placeholder, child, path, source }: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
         if (typeof child === 'function') {
             // debugSource 只存 child 自己的（host 使用处会回退到 pathContext.debugSource）

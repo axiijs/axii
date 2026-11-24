@@ -44,6 +44,7 @@ import {
     StyleSize,
 } from "@framework";
 import {renderToString} from "../src/ssr.js";
+import {hydrate} from './helpers/hydrate'
 
 async function settle() {
     for (let i = 0; i < 100; i++) await Promise.resolve()
@@ -657,7 +658,7 @@ describe('audit attrs: regressions for the fixes', () => {
                 // before hydrate only the SSR <style> applies
                 rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
                 expect(getComputedStyle(rootEl.querySelector('#t')!).color).toBe('rgb(255, 0, 0)')
-                hydrated = hydrateRoot(rootEl, createElement(App, null as any))
+                hydrated = hydrate(rootEl, createElement(App, null as any))
                 const el = rootEl.querySelector('#t') as HTMLElement
                 expect(styleClassesOf(el)).toEqual(csrClasses)
                 expect(el.style.cssText).toBe(csrInline)
@@ -683,7 +684,7 @@ describe('audit attrs: regressions for the fixes', () => {
                 }
                 const {html, styles} = renderToString(createElement(App, null as any))
                 rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-                hydrated = hydrateRoot(rootEl, createElement(App, null as any))
+                hydrated = hydrate(rootEl, createElement(App, null as any))
                 const computed = getComputedStyle(rootEl.querySelector('#t')!)
                 expect([computed.marginTop, computed.marginRight, computed.marginBottom, computed.marginLeft]).toEqual(['5px', '4px', '4px', '4px'])
             } finally {
@@ -707,7 +708,7 @@ describe('audit attrs: regressions for the fixes', () => {
                 }
                 const {html, styles} = renderToString(createElement(App, null as any))
                 rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-                hydrated = hydrateRoot(rootEl, createElement(App, null as any))
+                hydrated = hydrate(rootEl, createElement(App, null as any))
                 const el = rootEl.querySelector('#t') as HTMLElement
                 expect(styleClassesOf(el).length).toBe(1)
                 expect(el.style.cssText).toBe('margin-top: 3px;')
