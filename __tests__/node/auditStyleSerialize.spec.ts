@@ -200,6 +200,9 @@ describe('audit: style serialization without a DOM', () => {
             ['content', '"a\f;position:fixed;x:"'],
             ['color', 'hover, & {position:fixed}'],                  // re-parsed as a nested rule
             ['--', 'hover, & {position:fixed}'],                     // "--" alone is not a custom property
+            ['color', '(<!--url(/*));position:fixed;*/))'],          // "<!--" is one token: url( after it is a url token
+            ['color', 'f(<!--url(a")"))'],
+            ['color', 'f(<!--url(/*));}body{display:none}x{*/))'],
         ]
         for (const [key, value] of hostile) {
             const style = {[key]: value, marginTop: 3}
@@ -207,8 +210,20 @@ describe('audit: style serialization without a DOM', () => {
             expect({key, value, rules}).toEqual({key, value, rules: '.x {\nmargin-top:3px;\n}'})
             const sheetPath = renderToString(createElement('div', {style: {...style, '&:hover': {opacity: 1}}}))
             const inlinePath = renderToString(createElement('div', {style}))
-            expect([sheetPath.styles, sheetPath.html, inlinePath.html].join('\n')).not.toContain('position')
+            expect([sheetPath.styles, sheetPath.html, inlinePath.html].join('\n')).not.toMatch(/position|display/)
             expect(inlinePath.html).toContain('style="margin-top:3px"')
+        }
+    })
+
+    test('style keys cannot make the SSR stylesheet grow another rule', () => {
+        for (const key of [
+            '@media <!--url(/*){}body{display:none}@media x{*/)',
+            '& <!--url(/*){}body{display:none}x{*/)',
+            '@x;body',                                               // ";" ends an at-rule prelude
+        ]) {
+            const {styles} = renderToString(createElement('div', {style: {marginTop: 3, [key]: {color: 'red'}}}))
+            expect({key, styles}).toEqual({key, styles: expect.not.stringMatching(/body|color/)})
+            expect(styles).toContain('margin-top:3px;')
         }
     })
 

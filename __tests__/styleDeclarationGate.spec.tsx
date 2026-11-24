@@ -57,12 +57,15 @@ function diff(expected: Record<string, string>, actual: Record<string, string>):
     return diffs
 }
 
-// 规则里声明了 position、或者 style 规则下面长出了嵌套规则（注入的形态），返回它们的文本
-function injectedRules(sheets: Iterable<CSSStyleSheet>): string[] {
+// 注入的形态，返回这些规则的文本：声明了 position、style 规则下面长出了嵌套规则、
+//  或者 selector 里没有这个元素自己的 class（一条值拼出了别的全局规则，例如 body {…}）
+function injectedRules(sheets: Iterable<CSSStyleSheet>, owner: Element): string[] {
     const found: string[] = []
+    const classes = Array.from(owner.classList).map(name => `.${name}`)
     const walk = (rules: CSSRuleList) => {
         for (const rule of Array.from(rules)) {
-            if (rule instanceof CSSStyleRule && (rule.style.getPropertyValue('position') || rule.cssRules.length)) {
+            if (rule instanceof CSSStyleRule && (rule.style.getPropertyValue('position') || rule.cssRules.length
+                || !classes.some(name => rule.selectorText.includes(name)))) {
                 found.push(rule.cssText)
             }
             if ('cssRules' in rule) walk((rule as CSSGroupingRule).cssRules)
@@ -81,7 +84,7 @@ function measure(declarations: Record<string, any>) {
     const ssr = {
         inline: computedOf(ssrEl.querySelector('#inline')!, declarations),
         sheet: computedOf(ssrEl.querySelector('#sheet')!, declarations),
-        injected: injectedRules([ssrEl.querySelector('style')!.sheet!]),
+        injected: injectedRules([ssrEl.querySelector('style')!.sheet!], ssrEl.querySelector('#sheet')!),
     }
     ssrEl.remove()
 
@@ -90,7 +93,7 @@ function measure(declarations: Record<string, any>) {
     const csr = {
         inline: computedOf(inlineEl, declarations),
         sheet: computedOf(rootEl.querySelector('#sheet')!, declarations),
-        injected: injectedRules(document.adoptedStyleSheets),
+        injected: injectedRules(document.adoptedStyleSheets, rootEl.querySelector('#sheet')!),
     }
     return {ssr, csr, inlineStyle: inlineEl.style}
 }
@@ -119,11 +122,17 @@ describe('#78 hostile values add no declaration or rule (stylesheet path and SSR
         ['a {} block as the whole value', {color: '{position:fixed}'}],
         // 只有 "--" 后面还有字符才是自定义属性；"--" 本身的 {} 同样被重新解析成规则
         ['"--" is not a custom property', {'--': 'hover, & {position:fixed}'}],
+        // "<!--" 是一个 CDO token：后面的 url( 是新的 url token，不是函数 --url(（独立审查发现）
+        ['CDO before url( inside a block', {color: '(<!--url(/*));position:fixed;*/))'}],
+        ['CDO before a bad url inside a block', {color: '(<!--url(x"));position:fixed;"))'}],
+        ['CDO before url( swallows what follows', {color: 'f(<!--url(a")"))'}],
+        ['CDO: one value adds a global rule', {color: 'f(<!--url(/*));}body{display:none}x{*/))'}],
     ]
     for (const [name, declarations] of corpus) {
         test(name, () => {
-            const {ssr, csr} = measure(declarations)
+            const {ssr, csr, inlineStyle} = measure({...declarations, marginTop: '3px'})
             expect(csr.inline.position).toBe('static')
+            expect(inlineStyle.marginTop).toBe('3px')
             expect({
                 sheetRules: csr.injected,
                 ssrRules: ssr.injected,
@@ -179,6 +188,32 @@ describe('#78 legal complex values keep working (stylesheet path and SSR ≡ CSR
     }
 })
 
+// key 来自开发者代码，这里是纵深防御：SSR 的 <style> 没有 insertRule 兜底，规则门闩放行的规则必须恰好是一条
+describe('#78 style keys cannot add rules to the SSR stylesheet (rule gate)', () => {
+    const keys = [
+        '@media <!--url(/*){}body{display:none}@media x{*/)',
+        '& <!--url(/*){}body{display:none}x{*/)',
+        // at-rule 的前言遇到顶层 ";" 就结束，后面的文本成为另一条规则
+        '@x;body',
+    ]
+    for (const key of keys) {
+        test(JSON.stringify(key), () => {
+            function KeyApp({}: any, {createElement}: RenderContext) {
+                return <div id="k" style={{marginTop: '3px', [key]: {color: 'rgb(1, 2, 3)'}}}>x</div>
+            }
+            const {html, styles} = renderToString(createElement(KeyApp, {}))
+            const ssrEl = document.createElement('div')
+            ssrEl.innerHTML = `<style>${styles}</style>${html}`
+            document.body.appendChild(ssrEl)
+            const injected = injectedRules([ssrEl.querySelector('style')!.sheet!], ssrEl.querySelector('#k')!)
+            const bodyDisplay = getComputedStyle(document.body).display
+            const marginTop = getComputedStyle(ssrEl.querySelector('#k')!).marginTop
+            ssrEl.remove()
+            expect({injected, bodyDisplay, marginTop}).toEqual({injected: [], bodyDisplay: 'block', marginTop: '3px'})
+        })
+    }
+})
+
 describe('#78 differential fuzz: a declaration the gate accepts parses as exactly that declaration', () => {
     // mulberry32：确定性种子，失败时打印编号与值，可原样重放
     function random(seed: number) {
@@ -197,7 +232,7 @@ describe('#78 differential fuzz: a declaration the gate accepts parses as exactl
         '\u000b', '\u0000', '\u0001', '\u007f', '\u00e9', '<!--', '-->',
         'a', 'b', '1', '1px', 'a.png', 'red', 'rgb(1, 2, 3)', 'position:fixed', 'x:', 'hover, & ',
     ]
-    const URL_OPENERS = ['url(', 'URL(', '\\75rl(', 'u\\72 l(', 'url( ']
+    const URL_OPENERS = ['url(', 'URL(', '\\75rl(', 'u\\72 l(', 'url( ', '<!--url(', '(<!--url(', 'f(<!--url(']
     const reference = (name: string, value: string) => {
         const style = document.createElement('div').style
         style.setProperty(name, value)
@@ -265,18 +300,26 @@ describe('#78 differential fuzz: a declaration the gate accepts parses as exactl
 
     test('the rule gate accepts only what the browser parses as exactly one rule', () => {
         const next = random(7878)
+        const pick = () => FRAGMENTS[Math.floor(next() * FRAGMENTS.length)]
         const failures: string[] = []
         let accepted = 0
-        for (let n = 0; n < 20000; n++) {
+        for (let n = 0; n < 40000; n++) {
+            // 前言也随机：selector（嵌套 key）与 at-rule 前言（@media 等 key）都来自 style 对象
+            let prelude = next() < 0.4 ? '.p' : next() < 0.5 ? '.p ' : '@media '
+            if (prelude !== '.p') for (let count = Math.floor(next() * 5); count > 0; count--) prelude += pick()
             let body = ''
-            for (let count = Math.floor(next() * 8); count > 0; count--) body += FRAGMENTS[Math.floor(next() * FRAGMENTS.length)]
-            const rule = `.p {${body}}`
+            for (let count = Math.floor(next() * 8); count > 0; count--) body += pick()
+            const rule = `${prelude} {${body}}`
             if (!isAcceptableSingleCssRule(rule)) continue
             accepted++
             const whole = new CSSStyleSheet()
             whole.replaceSync(`${rule}\n.sentinel {color: red}`)
-            const rules = Array.from(whole.cssRules) as CSSStyleRule[]
-            if (rules.length !== 2 || rules[0].selectorText !== '.p' || rules[1].selectorText !== '.sentinel') {
+            const rules = Array.from(whole.cssRules)
+            const last = rules[rules.length - 1]
+            const before = rules.slice(0, -1)
+            // 最多多出这一条规则本身（前言不合法时浏览器整条丢弃），哨兵必须原样在最后
+            if (!(last instanceof CSSStyleRule) || last.selectorText !== '.sentinel' || before.length > 1
+                || before.some(r => !(r instanceof CSSMediaRule || (r instanceof CSSStyleRule && r.selectorText.startsWith('.p'))))) {
                 failures.push(`#${n} ${JSON.stringify(rule)} → ${rules.map(r => r.cssText).join(' | ')}`)
             }
         }

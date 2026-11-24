@@ -575,6 +575,7 @@ export function generateStyleContent(selector: string, styleObject: StyleObject)
 //  - 注释只在 token 之间识别；未闭合的注释、字符串、url、块会一直吞到文本结尾，返回 -1
 //    （CSSOM 会在值的末尾自动补齐，这里更严格，见 README「Style arrays」）。
 //  - () [] {} 块按嵌套配对，块内的 ; ! 不是分隔符。
+//  - "<!--"（CDO）是一个 token，之后另起一个 token；"-->"（CDC）以 ">" 结尾，名字在这里自然断开。
 //  拿不准与浏览器分界是否相同的，一律返回 -1，由调用方拒绝或放弃，不做猜测性修补。
 //  性能：逐字符一遍扫描 O(n)，只用 charCodeAt，不切片、不建正则匹配、不分配；块栈是模块级复用的数组
 //  （扫描是同步的，不会重入）。stylesheet 条目每条声明都要过一次（declarationOf）。
@@ -648,6 +649,9 @@ export function scanCssComponentValues(text: string, start: number, flags: numbe
         } else if (c === 0x23 || c === 0x40) {
             name = -2
             i++
+        } else if (c === 0x3C && text.charCodeAt(i + 1) === 0x21 && text.charCodeAt(i + 2) === 0x2D && text.charCodeAt(i + 3) === 0x2D) {
+            // "<!--" 是一个 CDO token：后面另起一个 token（<!--url( 是 url token，不是函数 --url(）
+            i += 4
         } else if (c === 0x5B || c === 0x7B) {
             if (c === 0x7B) {
                 if (flags & CSS_NO_BRACES) return -1
@@ -775,7 +779,8 @@ function skipCssString(text: string, i: number, quote: number): number {
  * §3.6.1 CSS rule escape gate — dual of Chromium `CSSStyleSheet.insertRule` single-rule acceptance:
  *  前言（selector / at-rule prelude）之后恰好一个 {} 块，并且它在文本结尾闭合。按浏览器词法扫描（见上），
  *  字符串、注释、url token、转义里的 "{" / "}" 不计入；SSR 的 <style> 没有 insertRule 兜底，
- *  这里放行的规则不能在样式表里吞掉或长出别的规则。
+ *  这里放行的规则不能在样式表里吞掉或长出别的规则。前言里顶层的 ";" 会结束一条 at-rule
+ *  （@x;body {…} 是两条规则），一律拒绝。
  */
 export function isAcceptableSingleCssRule(rule: string): boolean {
     let start = 0
@@ -783,7 +788,7 @@ export function isAcceptableSingleCssRule(rule: string): boolean {
     while (start < end && isCssWhitespace(rule.charCodeAt(start))) start++
     while (end > start && isCssWhitespace(rule.charCodeAt(end - 1))) end--
     if (start === end) return false
-    const open = scanCssComponentValues(rule, start, CSS_STOP_OPEN_BRACE | CSS_STOP_CLOSE_BRACE)
+    const open = scanCssComponentValues(rule, start, CSS_STOP_SEMICOLON | CSS_STOP_OPEN_BRACE | CSS_STOP_CLOSE_BRACE)
     if (open < 0 || open >= end || rule.charCodeAt(open) !== 0x7B) return false
     return scanCssComponentValues(rule, open + 1, CSS_STOP_CLOSE_BRACE) === end - 1
 }
