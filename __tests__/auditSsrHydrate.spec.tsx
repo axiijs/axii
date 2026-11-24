@@ -82,40 +82,6 @@ function ssrInto(App: any): HTMLElement {
 }
 const tick = () => new Promise(r => setTimeout(r, 0))
 
-/**
- * test.fails only checks that the body throws, so an unrelated error in hydrateRoot (a regression
- * elsewhere, a typo) would silently count as "the known defect". Every known-defect case below calls
- * hydrateRoot through this guard:
- *  - `reason` given (F3a, F4d): the defect IS a throw; only an error whose message matches is rethrown;
- *  - no `reason`: the defect shows up as a failed assertion, so hydrateRoot must not throw at all.
- * Any other error is logged and the body returns normally — test.fails then reports the case as
- * failing instead of swallowing the error. Once the defect is fixed the body passes and test.fails
- * fails as before (flip the case to `test`).
- */
-function hydrateKnownDefect(container: HTMLElement, source: any, reason?: RegExp): boolean {
-    // 内部入口那一遍（#55 §7.2）：这些是普通用例，不经守卫——任何错误都直接让用例失败
-    if (TOP_DOWN_PASS) {
-        hydrate(container, source)
-        return true
-    }
-    try {
-        hydrate(container, source)
-        return true
-    } catch (e) {
-        if (reason && reason.test(String((e as Error)?.message))) throw e
-        // eslint-disable-next-line no-console
-        console.error('[known-defect case] unexpected error, not the documented failure:', e)
-        return false
-    }
-}
-
-/**
- * #55 的 11 条（§6）：旧入口那一遍是 test.fails + hydrateKnownDefect 守卫；内部入口那一遍是普通 test（§7.2）。
- * F1b、F1f–F1h、F1j、F3a、F3b 从 B1 起、F4a–F4d 从 B3（失配规则 R1–R5）起在内部入口上通过。
- * #55 S 把公开的 hydrateRoot 切到新模型时，两者都改成 test。
- */
-const knownDefect = TOP_DOWN_PASS ? test : test.fails
-
 // ───────────────────────── Finding 1: element claim order ─────────────────────────
 // v4.8.1 claimed the deepest same-tag element of the whole root (F1a / F1c / F1e). #54 claims the first
 // one in children-before-parent order (the order JSX evaluates createElement) and skips raw markup.
@@ -125,14 +91,14 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
             return <div><span>a</span><p><span>b</span></p></div>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
     // #55: App's <p>hello</p> is claimed while App's JSX is evaluated, before <Header/> renders; the
     // first unclaimed <p> in children-before-parent order is Header's. Needs component-region
     // awareness (top-down claim), not a different search order.
-    knownDefect('F1b child component deeper than a later sibling: content must survive hydration', () => {
+    test('F1b child component deeper than a later sibling: content must survive hydration', () => {
         function Header({}: any, {createElement}: RenderContext) {
             return <header><nav><p>deep</p></nav></header>
         }
@@ -140,7 +106,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
             return <div><Header/><main><p>hello</p></main></div>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         expect(kids(hyd)).toBe(kids(csr(App)))
     })
 
@@ -153,7 +119,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
             </div>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         ;(hyd.querySelectorAll('button')[0] as HTMLButtonElement).click()
         expect(log).toEqual(['A'])
     })
@@ -163,7 +129,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
             return <div><div id="raw" dangerouslySetInnerHTML={'<p><em>raw</em></p>'}/><em>sibling</em></div>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
@@ -174,33 +140,33 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
     // F1f / F1g passed on 4e5dbef only because the deepest-candidate rule happened to pick the deeper
     // element; that rule is what broke F1a / F1c, and the static form is far more common. F1h fails
     // under both rules (it throws). Fixing these needs top-down claim by position (#55).
-    knownDefect('F1f component output shallower than a same-tag element in a later sibling', () => {
+    test('F1f component output shallower than a same-tag element in a later sibling', () => {
         function Comp({}: any, {createElement}: RenderContext) { return <p>c</p> }
         function App({}: any, {createElement}: RenderContext) {
             return <div><Comp/><main><p>x</p></main></div>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
-    knownDefect('F1g function child output shallower than a same-tag element in a later sibling', () => {
+    test('F1g function child output shallower than a same-tag element in a later sibling', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <div>{() => <p>f</p>}<main><p>x</p></main></div>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
-    knownDefect('F1h component wrapping a same-tag element, same depth as one in a later sibling', () => {
+    test('F1h component wrapping a same-tag element, same depth as one in a later sibling', () => {
         function Comp({}: any, {createElement}: RenderContext) { return <header><div>logo</div></header> }
         function App({}: any, {createElement}: RenderContext) {
             return <div><Comp/><main><div>x</div></main></div>
         }
         const hyd = ssrInto(App)
         // throws: App's <div>x</div> takes Comp's <div>, so Comp's <header> no longer fits the cursor
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any), /<!--unhandledChild--> not found from cursor/)) return
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
@@ -211,12 +177,12 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
     // marker for it). Already failing on 4e5dbef (the deepest-candidate rule picks the inner node too).
     // Here the raw element and its markup are removed (reported); as an RxList row it is silent instead:
     // no report, class / listeners land on the inner node. A static id avoids it (exact-id match).
-    knownDefect('F1j raw markup containing the raw element\'s own tag: the element claims itself, not its markup', () => {
+    test('F1j raw markup containing the raw element\'s own tag: the element claims itself, not its markup', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <section><div className="raw" dangerouslySetInnerHTML={'<div><b>raw</b></div>'}/><b>sibling</b></section>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
@@ -978,7 +944,7 @@ describe('N2 Fragment with an element that has its own dynamic child, followed b
 
 // ───────────────── Finding 3: FTS anchor look-ahead takes another function child's anchor ─────────────────
 describe('F3 claimFunctionTextPlaceholder takes the first computed+axii:0 pair it sees', () => {
-    knownDefect('F3a text-state function child before a structure-state one must hydrate', async () => {
+    test('F3a text-state function child before a structure-state one must hydrate', async () => {
         const make = () => {
             const title = atom('title')
             function App({}: any, {createElement}: RenderContext) {
@@ -989,18 +955,18 @@ describe('F3 claimFunctionTextPlaceholder takes the first computed+axii:0 pair i
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
         const h = make()
-        if (!hydrateKnownDefect(hyd, createElement(h.App, null as any), /hydrate mismatch: expected text unit/)) return
+        hydrate(hyd, createElement(h.App, null as any))
         h.title('t2')
         await tick()
         expect(hyd.textContent).toBe('t2badge')
     })
 
-    knownDefect('F3b function → Fragment → function: node order must equal CSR', () => {
+    test('F3b function → Fragment → function: node order must equal CSR', () => {
         function App({}: any, {createElement, Fragment}: RenderContext) {
             return <div>{() => <Fragment>{() => <b>x</b>}</Fragment>}</div>
         }
         const hyd = ssrInto(App)
-        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        hydrate(hyd, createElement(App, null as any))
         expect(kids(hyd)).toBe(kids(csr(App)))
     })
 })
@@ -1013,16 +979,16 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
             return <ul>{list.map(i => <li>{i}</li>)}</ul>
         }
     }
-    knownDefect('F4a client list has one more row than the server HTML', () => {
+    test('F4a client list has one more row than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2]))
-        if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2, 3]), null as any))) return
+        hydrate(hyd, createElement(listApp([1, 2, 3]), null as any))
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(listApp([1, 2, 3])))})
     })
 
-    knownDefect('F4b client list has one row fewer than the server HTML', () => {
+    test('F4b client list has one row fewer than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2, 3]))
-        if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2]), null as any))) return
+        hydrate(hyd, createElement(listApp([1, 2]), null as any))
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(listApp([1, 2])))})
     })
@@ -1030,17 +996,17 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
     const fnApp = (asElement: boolean) => function App({}: any, {createElement}: RenderContext) {
         return <div>{() => asElement ? <b>el</b> : 'text'}<i>tail</i></div>
     }
-    knownDefect('F4c server rendered an element, client function returns text', () => {
+    test('F4c server rendered an element, client function returns text', () => {
         const hyd = ssrInto(fnApp(true))
-        if (!hydrateKnownDefect(hyd, createElement(fnApp(false), null as any))) return
+        hydrate(hyd, createElement(fnApp(false), null as any))
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(fnApp(false)))})
     })
 
-    knownDefect('F4d server rendered text, client function returns an element', () => {
+    test('F4d server rendered text, client function returns an element', () => {
         const hyd = ssrInto(fnApp(false))
         // throws instead of rebuilding
-        if (!hydrateKnownDefect(hyd, createElement(fnApp(true), null as any), /expected <!--computed node--> before FunctionHost placeholder/)) return
+        hydrate(hyd, createElement(fnApp(true), null as any))
         expect(kids(hyd)).toBe(kids(csr(fnApp(true))))
     })
 })
