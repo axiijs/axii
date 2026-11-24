@@ -1,9 +1,9 @@
 # hydration 自顶向下认领 — 设计（#55）
 
 - 状态：设计稿，待审阅。本文只定方案，不含实现。
-- 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式）、#52（复选框 value / checked）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
+- 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
-- 基线：origin/main `4712285`（含 #62 / #63 / #64）。
+- 基线：origin/main `9d2a93c`（含 #62 / #63 / #64，以及 #65 / #66 合入的 #50、#52）。现状复现与原型在 `4712285` 上完成；#50 / #52 只改了原始标记的取值和复选框的勾选通道，不影响 §1 的失败机制，二者对本设计的接口见 §2.6.1、§2.6.2。
 
 ---
 
@@ -199,8 +199,8 @@ interface Host {
 
 现在分散在 `createElement` 激活分支里的元素级处理，原样移到「认领元素」这一步：
 1. 比较标签（SVG 按原始大小写，HTML 按大写，同 `tryClaimElement` 的 CAUTION），并按 R1 处理 id；
-2. 处理 `data-axii-ssr` 样式类，记下滚动样式基名（现 `DOM.ts` ~1370–1393）；
-3. 有 `value` prop 的 `<textarea>`：清空子文本（现 ~1107）；
+2. 处理 `data-axii-ssr` 样式类，记下滚动样式基名（现 `createElement` 激活分支里读 `SSR_STYLE_CLASSES_ATTRIBUTE` 的那一段）；
+3. 有 `value` prop 的 `<textarea>`：清空子文本（现 `createElement` 激活分支里 `type === 'textarea'` 的那一段）；
 4. table 的隐含 tbody：游标下沉到 tbody；
 5. 递归消费子节点；
 6. **子节点之后**再应用 props。这与 `createElement` 的「props 在 children 之后」一致，select / option 的语义需要这个顺序：
@@ -212,9 +212,15 @@ interface Host {
 
 元数据的路径（`path`）与 CSR `createElement` 提升时的规则相同，样式 id 依赖这些路径，必须逐位一致。PR-B 把路径的拼接规则收成一个函数，CSR 与激活共用。
 
+「应用 props」同样只有一份：PR-A 把 `createElement` 里「props 在 children 之后、`value` / `checked` 延后」的那段抽成函数，CSR 与认领步骤共用。这样下面两处已合入的规则在激活路径上自动一致，不另写一遍：
+- #52：元素同时带 `value` 与 `checked` 时记下 `__axiiInputHasCheckedProp__`；
+- #50：`dangerouslySetInnerHTML` 经 `innerHTMLOf` 解包，`{__html}` 形式走静态路径。
+
 #### 2.6.2 原始标记（`dangerouslySetInnerHTML`）
 
-元素本身按位置认领，内容整体视为不透明：不进入、不清扫、不参与任何认领。F1j 按构造解决。`rawContentParents` 删除。本设计不依赖 #50 怎样解包 `{__html}`：解包只影响「值是什么」，不影响「内容不透明」。
+元素本身按位置认领，内容整体视为不透明：不进入、不清扫、不参与任何认领。F1j 按构造解决。`rawContentParents` 删除。
+
+「内容是原始标记」的判定沿用 #50 合入后的唯一写法：`innerHTMLOf(props.dangerouslySetInnerHTML) != null`（`markupNames.ts`；`{__html: null}` 与 `null` 一样不是原始标记）。本设计只依赖这个判定，不依赖 `{__html}` 的解包细节。
 
 #### 2.6.3 Fragment
 
@@ -569,7 +575,7 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 
 | PR | 内容 | 转为通过 | 验收 |
 |---|---|---|---|
-| **PR-A：激活路径与 CSR 路径分离（不改行为）** | 各 Host 新增 `hydrate()`，把现有的 `if (isHydrating())` 分支从 `render()` 搬进去，父级在激活时调用 `hydrate()`。认领仍用现在的模型。下标游标换成节点指针游标。`data0Contract.spec.tsx` 加入 §3.3 的写回契约。元数据路径拼接规则收成一个函数（§2.6.1） | 无（`test.fails` 不变） | 三道门禁全绿；`rxListFuzz`；§5.3 的 A/B/A′ 测量（预期 ≤ 噪声或略快）；`retainedObjectDiagnostics` 归零用例 |
+| **PR-A：激活路径与 CSR 路径分离（不改行为）** | 各 Host 新增 `hydrate()`，把现有的 `if (isHydrating())` 分支从 `render()` 搬进去，父级在激活时调用 `hydrate()`。认领仍用现在的模型。下标游标换成节点指针游标。`data0Contract.spec.tsx` 加入 §3.3 的写回契约。元数据路径拼接规则与「应用 props」各收成一个函数（§2.6.1） | 无（`test.fails` 不变） | 三道门禁全绿；`rxListFuzz`；§5.3 的 A/B/A′ 测量（预期 ≤ 噪声或略快）；`retainedObjectDiagnostics` 归零用例 |
 | **PR-B：切换到延迟描述与自顶向下认领（原子）** | `HydrationElement` 与唯一判定；`createHydrateHost`；所有 Host 的 `hydrate(slot)` 按 §2.5 消费；§2.6 的各种特殊形态；R1–R5；§3.3 写回；§3.4 的开发期 Proxy 与生产 `preventExtensions`；§3.2 的内部调用点；删除 §2.8 的代码；`ssr.ts` 的 Compact 判定改用共享谓词（若 §11 的范围外问题尚未单独修复，在此一并处理）；`claimCorners` 白盒用例迁移（§8）；F1i 生成器去掉排除项（组件、函数子节点、Fragment、F1j 写法，采用原型生成器） | F1b、F1f、F1g、F1h、F1j、F3a、F3b、F4a、F4b、F4c、F4d | 三道门禁全绿；`rxListFuzz`；扩展后的 F1i（300 棵，DOM ≡ CSR、无报告、服务端节点全部保留、监听器在自己的位置）；`ssrHydrate.*` 全部原断言；F1d 增长倍数接近 4 倍（线性）；§5.3 测量；开发期不变量（§4.4）在全量用例下不报告 |
 | **PR-C：漂移 fuzz 与文档收尾** | 漂移 fuzz：在 F1i 生成的树上随机注入行增减、元素 ↔ 文本、标签替换、插入杂节点、删除标记、文本篡改，断言 DOM ≡ CSR、至少一条报告、从不静默；README（中英）、站点 SSR 一节、`ssr-support.md` 去掉「实验性」标注与已知局限，加入 §3.1 迁移说明；CHANGELOG 条目交给 #61 汇总 | （无新的 `test.fails`） | 门禁全绿；漂移 fuzz 300 棵 × 多种注入；文档检查脚本（`check-doc-coverage`、`check-exports`） |
 
