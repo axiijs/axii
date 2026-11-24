@@ -5,7 +5,7 @@
  */
 import {afterEach, describe, expect, test} from 'vitest'
 import {createElement, renderToString} from '../../src/ssr.js'
-import {generateStyleContent, setAutoUnitType} from '../../src/styleSerialize.js'
+import {generateStyleContent, isAcceptableInlineDeclaration, setAutoUnitType} from '../../src/styleSerialize.js'
 
 const lastSelector = (rules: string[]) => rules.at(-1)!.split('{')[0].trim()
 
@@ -228,6 +228,14 @@ describe('audit: style serialization without a DOM', () => {
         const {styles} = renderToString(createElement('div', {style: {...legal, marginTop: 3, '&:hover': {opacity: 1}}}))
         for (const value of Object.values(legal)) expect(styles).toContain(`:${value};`)
         expect(styles).toContain('margin-top:3px;')
+    })
+
+    test('the gate rejects nesting deeper than its block stack holds, so a hostile value cannot grow it', () => {
+        const nested = (depth: number) => `${'calc('.repeat(depth)}1px${')'.repeat(depth)}`
+        expect(isAcceptableInlineDeclaration('width', nested(1024))).toBe(true)
+        expect(isAcceptableInlineDeclaration('width', nested(1025))).toBe(false)
+        expect(isAcceptableInlineDeclaration('--x', `${'{'.repeat(200000)}${'}'.repeat(200000)}`)).toBe(false)
+        expect(isAcceptableInlineDeclaration('width', 'calc(1px + (2px * 3))')).toBe(true)
     })
 
     test('property names follow what el.style accepts: cssFloat and lower-case vendor prefixes', () => {

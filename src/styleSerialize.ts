@@ -578,6 +578,8 @@ export function generateStyleContent(selector: string, styleObject: StyleObject)
 //  拿不准与浏览器分界是否相同的，一律返回 -1，由调用方拒绝或放弃，不做猜测性修补。
 //  性能：逐字符一遍扫描 O(n)，只用 charCodeAt，不切片、不建正则匹配、不分配；块栈是模块级复用的数组
 //  （扫描是同步的，不会重入）。stylesheet 条目每条声明都要过一次（declarationOf）。
+//  块栈常驻内存，长度是扫描过的最大嵌套深度：嵌套超过 CSS_MAX_BLOCK_DEPTH 层的文本直接返回 -1，
+//  一个恶意的值（百万个 "("）不能让它永久占用内存。
 export const CSS_STOP_SEMICOLON = 1     // 顶层的 ";" 结束扫描，返回它的位置
 export const CSS_STOP_BANG = 2          // 顶层的 "!" 结束扫描
 export const CSS_STOP_OPEN_BRACE = 4    // 顶层的 "{" 结束扫描（块内的 {} 照常配对）
@@ -585,6 +587,7 @@ export const CSS_STOP_CLOSE_BRACE = 8   // 顶层多出来的 "}" 结束扫描�
 export const CSS_NO_BRACES = 16         // 任何位置的 "{" / "}"（字符串、注释、url 之外）都返回 -1
 
 const cssBlockClosers: number[] = []
+const CSS_MAX_BLOCK_DEPTH = 1024
 
 // ASCII 里的 name code point：字母、数字、"-"、"_"。U+0000 在进入 tokenizer 前被替换成 U+FFFD，同样算；
 //  非 ASCII 一律是 name code point。
@@ -632,6 +635,7 @@ export function scanCssComponentValues(text: string, start: number, flags: numbe
                 }
                 // url("…")：普通函数，按块配对
             }
+            if (depth === CSS_MAX_BLOCK_DEPTH) return -1
             cssBlockClosers[depth++] = 0x29
             i++
         } else if (c === 0x22 || c === 0x27) {
@@ -649,6 +653,7 @@ export function scanCssComponentValues(text: string, start: number, flags: numbe
                 if (flags & CSS_NO_BRACES) return -1
                 if (depth === 0 && flags & CSS_STOP_OPEN_BRACE) return i
             }
+            if (depth === CSS_MAX_BLOCK_DEPTH) return -1
             cssBlockClosers[depth++] = c === 0x5B ? 0x5D : 0x7D
             i++
         } else if (c === 0x29 || c === 0x5D || c === 0x7D) {
