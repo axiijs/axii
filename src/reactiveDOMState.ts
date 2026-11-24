@@ -495,12 +495,6 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
             const targetRect = this.element!.getBoundingClientRect()
 
             const innerAbortController = new AbortController()
-            // CAUTION 本次拖拽挂在 boundary / window 上的监听必须跟随外层一起解绑：
-            //  拖到一半元素被卸载或 state 被销毁（拖拽删除、拖动中列表重渲染都是自然场景）时，
-            //  外层 abort 只摘掉了 mousedown，这些监听会一直留到下一次 mouseup——期间的
-            //  mousemove 把拖拽状态重新写回已经置 null 的 value，mouseup 还会再派发一次 dragend。
-            //  这条 abort 监听自己也挂在 inner signal 上，拖拽正常结束时随之移除，不在外层 signal 上累积。
-            abortController.signal.addEventListener('abort', () => innerAbortController.abort(), {signal: innerAbortController.signal})
 
             let started = false
 
@@ -532,6 +526,16 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
                 this.eventBus.dispatchEvent(new CustomEvent('dragend', {detail: lastState}))
             }
 
+            // CAUTION 本次拖拽挂在 boundary / window 上的监听必须跟随外层一起解绑：
+            //  拖到一半元素被卸载或 state 被销毁（拖拽删除、拖动中列表重渲染都是自然场景）时，
+            //  外层 abort 只摘掉了 mousedown，这些监听会一直留到下一次 mouseup——期间的
+            //  mousemove 把拖拽状态重新写回已经置 null 的 value，mouseup 还会再派发一次 dragend。
+            //  外层解绑按「拖拽结束」处理（dragEnd）：已经派发过 dragstart 的拖拽必须配对一次 dragend，
+            //  否则靠这对事件维护「拖拽中」状态的监听方（父组件里的 draggingId 等）永远停在拖拽中。
+            //  没有移动过的按下（普通点击）照常不派发。
+            //  这条 abort 监听自己也挂在 inner signal 上，拖拽正常结束时随之移除，不在外层 signal 上累积。
+            abortController.signal.addEventListener('abort', dragEnd, {signal: innerAbortController.signal})
+
             this.boundary.current.addEventListener('mouseup', dragEnd, {signal: innerAbortController.signal})
 
             this.boundary.current.addEventListener('mouseleave', dragEnd, { signal: innerAbortController.signal})
@@ -541,8 +545,9 @@ export class RxDOMDragState extends RxDOMState<HTMLElement, DragState>{
         }, {signal: abortController.signal})
 
         this.abort = () => {
-            this.value(null)
+            // 先 abort：进行中的拖拽在 dragEnd 里带着最后的状态派发 dragend，再置空
             abortController.abort()
+            this.value(null)
         }
     }
 }

@@ -1019,7 +1019,8 @@ describe('audit attrs: regressions for the fixes', () => {
                 boundary.dispatchEvent(new MouseEvent('mouseleave'))
                 window.dispatchEvent(new Event('blur'))
                 expect(drag.value()).toBeNull()
-                expect(events).toEqual(['dragstart'])
+                // the started drag is ended exactly once, by the destroy
+                expect(events).toEqual(['dragstart', 'dragend'])
             } finally {
                 onBoundary.restore()
                 onWindow.restore()
@@ -1040,8 +1041,9 @@ describe('audit attrs: regressions for the fixes', () => {
                 expect(onBoundary.live()).toEqual([])
                 expect(onWindow.live()).toEqual([])
                 mouse(boundary, 'mousemove', 20)
+                mouse(boundary, 'mouseup', 20)
                 expect(drag.value()).toBeNull()
-                expect(events).toEqual(['dragstart'])
+                expect(events).toEqual(['dragstart', 'dragend'])
             } finally {
                 onBoundary.restore()
                 onWindow.restore()
@@ -1562,5 +1564,42 @@ describe('Form same-name fields: re-registration', () => {
         expect(values.get('x')).toBe(A.value)
         form.unregister('x', A)
         expect(values.get('x')).toBeUndefined()
+    })
+})
+
+describe('RxDOMDragState: a drag cut short by destroy', () => {
+    function mount() {
+        let drag!: RxDOMDragState
+        function App({}: any, {createElement}: RenderContext) {
+            drag = new RxDOMDragState()
+            return <div ref={drag.ref} style={{width: 50, height: 50}}>drag</div>
+        }
+        root.render(<App/>)
+        const events: [string, any][] = []
+        drag.addEventListener('dragstart', (e: any) => events.push(['dragstart', e.detail?.clientX]))
+        drag.addEventListener('dragend', (e: any) => events.push(['dragend', e.detail?.clientX]))
+        return {drag, events, el: rootEl.firstElementChild as HTMLElement}
+    }
+    const mouse = (target: EventTarget, type: string, x: number) =>
+        target.dispatchEvent(new MouseEvent(type, {bubbles: true, clientX: x, clientY: x}))
+
+    test('a started drag gets its dragend, with the last state, when the state is destroyed', () => {
+        const {drag, events, el} = mount()
+        mouse(el, 'mousedown', 5)
+        mouse(document.body, 'mousemove', 12)
+        root.destroy()
+        expect(drag.value()).toBeNull()
+        expect(events).toEqual([['dragstart', 12], ['dragend', 12]])
+        mouse(document.body, 'mouseup', 12)
+        expect(events.length).toBe(2)
+    })
+
+    test('a press without a move that is destroyed emits nothing', () => {
+        const {drag, events, el} = mount()
+        mouse(el, 'mousedown', 5)
+        root.destroy()
+        mouse(document.body, 'mouseup', 5)
+        expect(drag.value()).toBeNull()
+        expect(events).toEqual([])
     })
 })
