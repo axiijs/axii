@@ -333,7 +333,7 @@ describe('component boundary and construction order (§2.4)', () => {
 })
 
 describe('element claim details (§2.6.1, §2.6.7)', () => {
-    test('HTML / SVG shared-name tags as static children of <svg> are claimed as SVG (≡ CSR adoptSvgChildren, #56); integration points keep HTML', () => {
+    test('HTML / SVG shared-name tags as static children of <svg> are claimed as SVG (≡ CSR adoptSvgChild, #56); integration points keep HTML', () => {
         const make = () => {
             const tip = atom('t1')
             function App({}: any, {createElement, Fragment}: RenderContext) {
@@ -601,7 +601,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
     })
 
     test('an array under an element that only became SVG keeps HTML items like CSR: the parser\'s SVG <title> is reported, not claimed silently', () => {
-        // CSR 的 adoptSvgChildren 只在创建时就是 SVG 的元素上改建数组项；被父元素改建、或作为数组项被改建的 <a> 不改建它的数组项，
+        // CSR 只在创建时就是 SVG 的元素上改建数组项（adoptSvgArrayItems）；被父元素改建、或作为数组项被改建的 <a> 不改建它的数组项，
         //  其中的 <title> 是 HTML 元素，解析器却按 SVG 解析。激活与 CSR 一致按 HTML 认领，在认领处报告失配（B3 修复）
         const ns = (root: Element) => Array.from(root.querySelectorAll('title')).map(n => n.namespaceURI === 'http://www.w3.org/2000/svg' ? 'svg' : 'html')
         const shapes = [
