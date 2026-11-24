@@ -185,6 +185,7 @@ hydration 改为自顶向下按位置认领（axiijs/axii#55）之后，这些�
 ### 设计说明 / 限制
 
 - **事件处理器只绑定一次，不是响应式的。** `on*` 属性在元素创建时通过 `addEventListener` 绑定，传入 atom 或返回 handler 的函数并不会让绑定本身变成响应式。如果需要条件行为，请把条件写在 handler *内部*（例如 `onClick={(e) => enabled() && doSomething(e)}`），而不是试图动态替换 handler。
+- **`<svg>` 里的 `<a>`、`<title>`、`<style>`、`<script>`。** 这几个标签名在 HTML 和 SVG 里都有。直接写在 SVG 元素的 JSX 里（不在 `<foreignObject>`、`<desc>`、`<title>` 里面）时，它们是 SVG 元素，与 HTML 解析器处理服务端输出的方式相同：SVG 父元素创建时把它们改建到 SVG 命名空间。在父元素创建之前拿到的子元素引用（`const t = <title/>; <svg>{t}</svg>`）指向被丢弃的 HTML 元素，直接加在它上面的监听器也不会带过去，请用 `ref`。由函数子节点、组件或列表稍后渲染时，它们仍是 HTML 元素，这种位置请用 `createSVGElement`。
 
 ## 🤝 贡献
 

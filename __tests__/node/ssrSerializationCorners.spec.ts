@@ -236,6 +236,62 @@ describe('renderToString table tbody gating', () => {
         expect(html).toContain('<table><tbody><tr></tr>')
         expect(html).toContain('</tbody></table><!--root-->')
     })
+
+    // #56: the decision follows what is written directly under the table, not the child's kind
+    test('sections rendered by a list / function / array / fragment are not wrapped in another tbody', () => {
+        const section = (n: number) => createElement('tbody', null, createElement('tr', null, createElement('td', null, String(n))))
+        // [source, number of <tbody> the source itself renders]: the server adds none
+        const cases: [any, number][] = [
+            [new RxList([section(1), section(2)]), 2],
+            [() => section(1), 1],
+            [[section(1)], 1],
+            [createElement(Fragment, null, createElement('thead', null), section(1)), 1],
+            [new RxList<any>([]), 0],
+            [() => null, 0],
+        ]
+        for (const [source, sections] of cases) {
+            const {html} = renderToString(createElement('table', null, source))
+            expect(html.match(/<tbody>/g)?.length ?? 0).toBe(sections)
+        }
+    })
+
+    test('a function or component row under table still gets the explicit tbody', () => {
+        const row = () => createElement('tr', null, createElement('td', null, 'f'))
+        expect(renderToString(createElement('table', null, row)).html.startsWith('<table><tbody><tr>')).toBe(true)
+        // a nested table decides for itself; the outer one only sees its own direct children
+        const nested = renderToString(createElement('table', null, createElement('tbody', null, createElement('tr', null,
+            createElement('td', null, createElement('table', null, row))))))
+        expect(nested.html.match(/<tbody>/g)!.length).toBe(2)
+    })
+})
+
+describe('renderToString #56 character-data function children and SVG shared tag names', () => {
+    test('function children of title / textarea / style / script write their current text', () => {
+        const n = atom(3)
+        expect(renderToString(createElement('title', null, 'Inbox (', () => n(), ') ', () => null, () => false)).html)
+            .toBe('<title>Inbox (3) </title><!--root-->')
+        expect(renderToString(createElement('textarea', null, () => 'a<b')).html)
+            .toBe('<textarea>a&lt;b</textarea><!--root-->')
+        expect(renderToString(createElement('style', null, () => 'p>a{color:red}')).html)
+            .toBe('<style>p>a{color:red}</style><!--root-->')
+        expect(renderToString(createElement('script', {type: 'text/plain'}, 'x=', () => 1n)).html)
+            .toBe('<script type="text/plain">x=1</script><!--root-->')
+    })
+
+    test('a function child of a character-data parent that returns structure still throws', () => {
+        expect(() => renderToString(createElement('title', null, () => createElement('i', null, 'x'))))
+            .toThrow('a function child of <title> must return text')
+    })
+
+    test('a / title / style / script under <svg> use the SVG attribute rules; outside svg and in foreignObject they stay HTML', () => {
+        const a = (key: string) => createElement('a', {href: '#x', fillOpacity: 0.5, xlinkTitle: 't', 'data-k': key})
+        const {html} = renderToString(createElement('div', null,
+            createElement('svg', null, a('svg'), createElement('foreignObject', null, a('fo'))),
+            a('html')))
+        expect(html).toContain('<a href="#x" fill-opacity="0.5" xlink:title="t" data-k="svg">')
+        expect(html).toContain('<a href="#x" fillOpacity="0.5" xlinkTitle="t" data-k="fo">')
+        expect(html).toContain('<a href="#x" fillOpacity="0.5" xlinkTitle="t" data-k="html">')
+    })
 })
 
 describe('renderToString StaticArray item types', () => {
