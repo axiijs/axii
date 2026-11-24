@@ -5,6 +5,8 @@
 //   server DOM instead of rebuilding it (matched nodes keep identity).
 // - Callers must keep the reactive tree/data identical between the two
 //   moments; axii does not ship a state dehydrate protocol.
+// - `hydrateRoot` is experimental: see the known limits in the prose above
+//   (a child component placed before a same-tag element of its parent, etc.).
 import { createElement, hydrateRoot, atom, Portal } from 'axii'
 import { renderToString } from 'axii/ssr'
 
