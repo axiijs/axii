@@ -165,7 +165,7 @@ hydrateRoot(root, <App />)
 1. **子组件或函数子节点排在父级某个同标签元素之前。** `<div><Header/><main><p>…</p></main></div>` 里 `Header` 渲染了 `<p>` 时，`<main>` 里的 `<p>` 会拿走 `Header` 的 `<p>`：`<main>` 变空，并报告 `HydrationMismatchError`。如果父级的外层元素与 `Header` 渲染的某个元素同标签（外层是 `<div>`，`Header` 渲染 `<header><div>…</div></header>`），`hydrateRoot` 会抛错。
 2. **输出形态混合的函数子节点。** 返回文本的函数子节点后面跟着返回元素的函数子节点（`<h1>{() => title()}{() => <b/>}</h1>`）会让 `hydrateRoot` 抛错；函数返回的 Fragment 里还有函数子节点时，激活后的节点顺序与客户端渲染不同。
 3. **服务端与客户端渲染的结构不同。** 列表多一行或少一行、函数在一端返回元素在另一端返回文本，既不报告也不修复：页面保留服务端的结构，多出或缺少的行从此与数据不同步（服务端是文本、客户端是元素时抛错）。请按上面的约定保持两端数据一致。
-4. **`dangerouslySetInnerHTML` 的标记里含有元素自己的标签**，例如 `<div dangerouslySetInnerHTML={'<div>…</div>'}/>`：元素会认领到自己标记里的那个 `<div>`，它的属性和监听器静默地落在那里。给这样的元素加一个静态 `id`：带静态 `id` 的元素只认领 `id` 相同的服务端节点。
+4. **`dangerouslySetInnerHTML` 的标记里含有元素自己的标签**，例如 `<div dangerouslySetInnerHTML={'<div>…</div>'}/>`：元素会认领到自己标记里的那个 `<div>`。通常随后这个元素连同标记被删掉，并报告 `HydrationMismatchError`；作为列表行时则不报告，它的属性和监听器静默地落在里面那个 `<div>` 上。给这样的元素加一个静态 `id`：带静态 `id` 的元素只认领 `id` 相同的服务端节点。
 
 hydration 改为自顶向下按位置认领（axiijs/axii#55）之后，这些局限会消失，届时去掉「实验性」标注。
 

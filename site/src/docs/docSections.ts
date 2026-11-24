@@ -250,7 +250,9 @@ export const docGroups: DocGroup[] = [
           'and a function returning a Fragment that holds another function child ends up with its nodes out of ' +
           'order; (3) server/client structure differences (list row count, element vs text) are neither ' +
           'reported nor repaired; (4) dangerouslySetInnerHTML markup that contains the element\'s own tag makes ' +
-          'the element silently claim the inner node of its markup — give such an element a static id. These ' +
+          'the element claim the inner node of its markup: usually the element and its markup are removed ' +
+          '(reported), and as a list row its attributes and listeners silently land on that inner node — give ' +
+          'such an element a static id. These ' +
           'limits, and the experimental label, go away when hydration claims nodes top-down by position ' +
           '(axiijs/axii#55).',
         raw: ssrRaw,

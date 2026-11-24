@@ -190,7 +190,8 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
     // element of the same tag inside that markup comes first in children-before-parent order, and the
     // DOM alone cannot tell the raw element from the nodes of its own markup (the server writes no
     // marker for it). Already failing on 4e5dbef (the deepest-candidate rule picks the inner node too).
-    // Silent: no report, class / listeners land on the inner node. A static id avoids it (exact-id match).
+    // Here the raw element and its markup are removed (reported); as an RxList row it is silent instead:
+    // no report, class / listeners land on the inner node. A static id avoids it (exact-id match).
     test.fails('F1j raw markup containing the raw element\'s own tag: the element claims itself, not its markup', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <section><div className="raw" dangerouslySetInnerHTML={'<div><b>raw</b></div>'}/><b>sibling</b></section>
