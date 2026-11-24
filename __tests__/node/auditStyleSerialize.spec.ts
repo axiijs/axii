@@ -187,6 +187,49 @@ describe('audit: style serialization without a DOM', () => {
         expect(html).not.toContain('position')
     })
 
+    // #78：门闩按浏览器的 CSS 词法判断（浏览器侧的 computed 对照见 __tests__/styleDeclarationGate.spec.tsx）
+    test('values the browser tokenizes into more than one declaration never reach a rule or a style attribute', () => {
+        const hostile: [string, string][] = [
+            ['backgroundImage', 'url(a(b);position:fixed;x:())'],   // bad-url ends at the first ")"
+            ['backgroundImage', 'url(a"b);position:fixed;x:("c)'],
+            ['backgroundImage', 'url(a b(c);position:fixed;x:())'],
+            ['backgroundImage', '\\75rl(a(b);position:fixed;x:())'], // an escaped name is still url(
+            ['backgroundImage', 'u\\72 l(a(b);position:fixed;x:())'],
+            ['backgroundImage', 'u\\72\r\nl(a(b);position:fixed;x:())'],
+            ['content', '"a\r;position:fixed;x:"'],                  // \r and \f end a string like \n
+            ['content', '"a\f;position:fixed;x:"'],
+            ['color', 'hover, & {position:fixed}'],                  // re-parsed as a nested rule
+            ['--', 'hover, & {position:fixed}'],                     // "--" alone is not a custom property
+        ]
+        for (const [key, value] of hostile) {
+            const style = {[key]: value, marginTop: 3}
+            const rules = generateStyleContent('.x', style).join('\n')
+            expect({key, value, rules}).toEqual({key, value, rules: '.x {\nmargin-top:3px;\n}'})
+            const sheetPath = renderToString(createElement('div', {style: {...style, '&:hover': {opacity: 1}}}))
+            const inlinePath = renderToString(createElement('div', {style}))
+            expect([sheetPath.styles, sheetPath.html, inlinePath.html].join('\n')).not.toContain('position')
+            expect(inlinePath.html).toContain('style="margin-top:3px"')
+        }
+    })
+
+    test('legal values the browser reads as one declaration are kept, and their rules survive the SSR rule gate', () => {
+        const legal: Record<string, string> = {
+            backgroundImage: 'url(a}b.png)',
+            listStyleImage: 'url(a\\29 b.png)',
+            fontFamily: 'a\\}b',
+            color: 'rgb(1, 2, 3) /* } */',
+            quotes: '"{" "}"',
+            content: '"a\\\r\nb"',
+            '--json': '{"k": [1, 2]}',
+            '--y': 'a {b} c',
+        }
+        const rules = generateStyleContent('.x', legal).join('\n')
+        for (const value of Object.values(legal)) expect(rules).toContain(`:${value};`)
+        const {styles} = renderToString(createElement('div', {style: {...legal, marginTop: 3, '&:hover': {opacity: 1}}}))
+        for (const value of Object.values(legal)) expect(styles).toContain(`:${value};`)
+        expect(styles).toContain('margin-top:3px;')
+    })
+
     test('property names follow what el.style accepts: cssFloat and lower-case vendor prefixes', () => {
         const sheet = generateStyleContent('.x', {cssFloat: 'left', webkitLineClamp: 2, WebkitBoxOrient: 'vertical', mozAppearance: 'none', '--a-B': '1'}).join('\n')
         expect(sheet).toContain('float:left;')
