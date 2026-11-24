@@ -1004,12 +1004,72 @@ function liftElementMetadata<T extends {path: number[], source?: AxiiSource}>(
     return entries
 }
 
+// 下面四个是 applyElementProps 的冷路径，单独成函数只为让 applyElementProps 本身保持可内联（见它的 CAUTION）。
+// CAUTION 项对象的字面量各只有这一处（字段顺序决定隐藏类），不要在别处另写同类字面量。
+function warnInnerHTMLWithChildren() {
+    /* eslint-disable no-console */
+    console.error('[axii] an element received both "dangerouslySetInnerHTML" and children. ' +
+        'innerHTML overwrites the children (including reactive child placeholders), so the children ' +
+        'will not render and reactive children will silently stop updating. Provide only one of them.')
+    /* eslint-enable no-console */
+}
+
+// 自己的 ref 放在子元素提升上来的 ref 之前（ref handles should be attached before children）
+function prependOwnRef(refHandles: RefHandleInfo[] | undefined, handle: any, el: HTMLElement | DocumentFragment | SVGElement): RefHandleInfo[] {
+    const ownRef: RefHandleInfo = {handle, path: [], el}
+    if (refHandles) {
+        refHandles.unshift(ownRef)
+        return refHandles
+    }
+    return [ownRef]
+}
+
+function appendOwnDetachStyle(detachStyledChildren: DetachStyledInfo[] | undefined, style: any, el: HTMLElement | DocumentFragment | SVGElement): DetachStyledInfo[] {
+    (detachStyledChildren ||= []).push({el, style, path: []})
+    return detachStyledChildren
+}
+
+function appendOwnUnhandledAttr(unhandledAttr: UnhandledAttrInfo[] | undefined, el: HTMLElement | DocumentFragment | SVGElement, key: string, value: any, source: AxiiSource | undefined): UnhandledAttrInfo[] {
+    (unhandledAttr ||= []).push({el: el as ExtendedElement, key, value, path: [], source})
+    return unhandledAttr
+}
+
+// value / checked 的延后应用（1：有 value，2：有 checked），在其余 prop 全部应用之后
+function applyDeferredFormProps(
+    container: HTMLElement | DocumentFragment | SVGElement,
+    rawProps: AttributesArg,
+    isSVG: boolean,
+    debugSource: AxiiSource | undefined,
+    unhandledAttr: UnhandledAttrInfo[] | undefined,
+    deferredFormProps: number,
+): UnhandledAttrInfo[] | undefined {
+    // CAUTION 显式的 checked 永远决定勾选状态，与书写顺序无关（#52，规则见 setAttribute 的 checkbox 分支）：
+    //  同时带 value 和 checked 的 input 在应用这两个 key 之前记下这个事实，之后每一次 value 写入
+    //  （首帧按键序或经 unhandledAttr 延后、响应式更新、type 翻转后的重放）都只读这一个标记。
+    //  只带其中一个 key 的元素（列表行里常见的 <input type="checkbox" checked={done}/>）不多字段。
+    if (deferredFormProps === 3 && (container as HTMLElement).tagName === 'INPUT') {
+        (container as InputWithAxiiValue).__axiiInputHasCheckedProp__ = true
+    }
+    for (const key in rawProps) {
+        if (key !== 'value' && key !== 'checked') continue
+        const value = rawProps[key]
+        // 响应式 value/checked 同样延后登记，保证 LightBindingEffect 的初始求值
+        // 也发生在 type/multiple 等（可能也是响应式的）属性之后
+        if (!createElement.isValidAttribute(key, value)) {
+            unhandledAttr = appendOwnUnhandledAttr(unhandledAttr, container, key, value, debugSource)
+        } else {
+            setAttribute(container as ExtendedElement, key, value, isSVG)
+        }
+    }
+    return unhandledAttr
+}
+
 /**
  * 「应用 props」（#55 PR-A；CSR 与激活共用，只有这一份）：children 处理完之后应用元素的 props，
  * value / checked 延后到其余 prop 之后，再把元数据挂到元素上。
  *
  * - 在 children 之后：select 的 value 依赖 option 已经就位（select / option 的语义）。
- * - value / checked 延后，及 __axiiInputHasCheckedProp__（#52）：见函数体里的 CAUTION。
+ * - value / checked 延后，及 __axiiInputHasCheckedProp__（#52）：见函数体与 applyDeferredFormProps 的 CAUTION。
  * - dangerouslySetInnerHTML 经 setAttribute → innerHTMLOf 解包（#50）；claimed（激活认领到的服务端元素）
  *   上不重新赋值，保留服务端写出的标记。
  * - 属性写入规则在 setAttribute / markupNames（#51），这里只决定「哪些 key、什么顺序、静态还是响应式」。
@@ -1018,6 +1078,13 @@ function liftElementMetadata<T extends {path: number[], source?: AxiiSource}>(
  *
  * 子元素提升上来的四类元数据由调用方传入（局部变量，不分配收集对象），在这里与自己的合并后一次性挂上。
  * 没有 rawProps 时也要调用：元数据与 __axiiSource 照样要挂。
+ *
+ * CAUTION 热路径（每个元素一次）：这个函数必须能被 TurboFan 内联进 createElement。它是从 createElement
+ *  里搬出来的；不内联时每个元素多一次 10 个参数的调用，同页 A/B 实测纯 createElement 慢约 1.5%
+ *  （--trace-turbo-inlining 显示「Cannot consider applyElementProps for inlining (reason: 5)」，
+ *  即字节码超过 max_inlined_bytecode_size = 460）。所以冷路径（I66 警告、自己的 ref / detachStyle /
+ *  unhandledAttr 项、value / checked 的延后应用）都在上面的独立函数里，这里只留每个 key 都要走的判断。
+ *  往这里加逻辑之前，先用 --print-bytecode --print-bytecode-filter=applyElementProps 看字节码长度。
  */
 function applyElementProps(
     container: HTMLElement | DocumentFragment | SVGElement,
@@ -1038,18 +1105,14 @@ function applyElementProps(
         //  任何报错。React 对这个组合直接抛错；这里保持渲染语义不变（innerHTML 胜出），
         //  开发期给出明确警告。诊断关闭（生产）时只付一个布尔检查。
         if (childrenLength && isAxiiDiagnosticsEnabled() && rawProps.dangerouslySetInnerHTML !== undefined) {
-            /* eslint-disable no-console */
-            console.error('[axii] an element received both "dangerouslySetInnerHTML" and children. ' +
-                'innerHTML overwrites the children (including reactive child placeholders), so the children ' +
-                'will not render and reactive children will silently stop updating. Provide only one of them.')
-            /* eslint-enable no-console */
+            warnInnerHTMLWithChildren()
         }
         // CAUTION value/checked 的语义依赖同元素的其他 prop 已经就位：
         //  select 的数组 value 依赖 multiple（单选 select 上逐个 selected 会互相顶掉），
         //  input 的 value/checked 解释依赖 type（value={true} type="checkbox" 是 checked 语义），
         //  range 的 value 会被 min/max 截断。JSX 属性顺序是用户的书写顺序，不能要求用户
-        //  把 value 写在最后——这两个 key 统一延后到其余 prop 全部应用之后再处理。
-        //  value 与 checked 之间的先后不决定勾选状态（#52）：见下面的 __axiiInputHasCheckedProp__。
+        //  把 value 写在最后——这两个 key 统一延后到其余 prop 全部应用之后再处理（applyDeferredFormProps）。
+        //  value 与 checked 之间的先后不决定勾选状态（#52）：见 __axiiInputHasCheckedProp__。
         // 1：有 value，2：有 checked
         let deferredFormProps = 0
         for (const key in rawProps) {
@@ -1066,25 +1129,15 @@ function applyElementProps(
             }
             const value = rawProps[key]
             if (key === 'ref') {
-                // ref handles should be attached before children
-                if (value) {
-                    const ownRef: RefHandleInfo = {handle: value, path: [], el: container as HTMLElement}
-                    if (refHandles) {
-                        refHandles.unshift(ownRef)
-                    } else {
-                        refHandles = [ownRef]
-                    }
-                }
+                if (value) refHandles = prependOwnRef(refHandles, value, container)
                 continue
             }
             if (key === 'detachStyle') {
-                if (value) {
-                    (detachStyledChildren ||= []).push({el: container as HTMLElement, style: value, path: []})
-                }
+                if (value) detachStyledChildren = appendOwnDetachStyle(detachStyledChildren, value, container)
                 continue
             }
             if (!createElement.isValidAttribute(key, value)) {
-                (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
+                unhandledAttr = appendOwnUnhandledAttr(unhandledAttr, container, key, value, debugSource)
             } else if (claimed && key === 'dangerouslySetInnerHTML') {
                 // SSR HTML already has markup; re-assigning innerHTML would destroy claimed nodes
                 // （失配后新建的元素里没有这段标记，照常赋值）
@@ -1093,24 +1146,7 @@ function applyElementProps(
             }
         }
         if (deferredFormProps) {
-            // CAUTION 显式的 checked 永远决定勾选状态，与书写顺序无关（#52，规则见 setAttribute 的 checkbox 分支）：
-            //  同时带 value 和 checked 的 input 在应用这两个 key 之前记下这个事实，之后每一次 value 写入
-            //  （首帧按键序或经 unhandledAttr 延后、响应式更新、type 翻转后的重放）都只读这一个标记。
-            //  只带其中一个 key 的元素（列表行里常见的 <input type="checkbox" checked={done}/>）不多字段。
-            if (deferredFormProps === 3 && (container as HTMLElement).tagName === 'INPUT') {
-                (container as InputWithAxiiValue).__axiiInputHasCheckedProp__ = true
-            }
-            for (const key in rawProps) {
-                if (key !== 'value' && key !== 'checked') continue
-                const value = rawProps[key]
-                // 响应式 value/checked 同样延后登记，保证 LightBindingEffect 的初始求值
-                // 也发生在 type/multiple 等（可能也是响应式的）属性之后
-                if (!createElement.isValidAttribute(key, value)) {
-                    (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
-                } else {
-                    setAttribute(container as ExtendedElement, key, value, isSVG)
-                }
-            }
+            unhandledAttr = applyDeferredFormProps(container, rawProps, isSVG, debugSource, unhandledAttr, deferredFormProps)
         }
     }
 
