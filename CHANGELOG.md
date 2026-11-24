@@ -2,7 +2,7 @@
 
 Notable changes to axii, newest release first. Each entry starts with one sentence on what changes for your code and how to migrate; the nested points under it give details and examples. Numbers in parentheses are pull requests in [axiijs/axii](https://github.com/axiijs/axii/pulls) unless marked as an issue. Releases before 4.9.0 are not recorded here.
 
-## 4.9.0 (unreleased)
+## 4.9.0 (2026-11-25)
 
 4.9.0 is the result of a full audit of axii. Most entries are bug fixes, but many of them change what your pages render, so read **Breaking changes**, **Security** and **Dependencies** before upgrading. If you use server-side rendering, upgrade the server (`axii/ssr`) and the client (`axii`) together: `renderToString` output changed in several places. `hydrateRoot` still hydrates HTML from an older server: where its structure differs from the client render, each difference is reported as a mismatch and repaired (see the first entry under Breaking changes).
 
