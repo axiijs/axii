@@ -2,6 +2,7 @@
 import {afterEach, beforeEach, expect, test} from 'vitest'
 import {atom, createElement, createRoot, hydrateRoot, RenderContext} from '@framework'
 import {renderToString} from '../src/ssr.js'
+import {hydrate} from './helpers/hydrate'
 
 const hover = {'&:hover': {opacity: 0.5}}
 let container: HTMLDivElement
@@ -25,7 +26,7 @@ test('reclaimed rolling classes stay independent across hydrated and client root
     container.innerHTML = `<style data-axii-ssr>${first.styles}</style>${first.html}`
     const firstNode = container.querySelector('#rolling')!
     const firstId = firstNode.className
-    root = hydrateRoot(container, <App index={BigInt(1)}/>)
+    root = hydrate(container, <App index={BigInt(1)}/>)
     expect(firstNode.className).toBe(firstId)
 
     const clientContainer = document.body.appendChild(document.createElement('div'))
@@ -42,7 +43,7 @@ test('reclaimed rolling classes stay independent across hydrated and client root
         const secondNode = serverContainer.querySelector('#rolling')!
         expect.soft(getComputedStyle(secondNode).zIndex).toBe('3')
         expect(getComputedStyle(firstNode).order).toBe('0')
-        secondRoot = hydrateRoot(serverContainer, <App index={BigInt(3)} order={BigInt(5)}/>)
+        secondRoot = hydrate(serverContainer, <App index={BigInt(3)} order={BigInt(5)}/>)
 
         expect(getComputedStyle(firstNode).zIndex).toBe('1')
         expect(getComputedStyle(clientNode).zIndex).toBe('2')
@@ -52,7 +53,7 @@ test('reclaimed rolling classes stay independent across hydrated and client root
         root.destroy()
         root = undefined
         container.innerHTML = `<style data-axii-ssr>${first.styles}</style>${first.html}`
-        root = hydrateRoot(container, <App index={BigInt(1)}/>)
+        root = hydrate(container, <App index={BigInt(1)}/>)
         expect(container.querySelector('#rolling')!.className).toBe(firstId)
     } finally {
         secondRoot?.destroy()
@@ -80,7 +81,7 @@ test('SSR reclaims one base for all rolling entries despite a static user class'
     const base = firstId.replace(/F0I0$/, '')
     expect.soft(secondId).toBe(`${base}F1I0`)
 
-    root = hydrateRoot(container, <App/>)
+    root = hydrate(container, <App/>)
     expect(Array.from(element.classList)).toEqual(initialClasses)
     expect(getComputedStyle(element).zIndex).toBe('12')
     expect(getComputedStyle(element).order).toBe('15')
@@ -132,7 +133,7 @@ test('hydrate drops the old content class when a sibling still uses its styleshe
     changed.classList.add('axs-authoredF0')
 
     color('blue')
-    root = hydrateRoot(container, createElement(App, null as any))
+    root = hydrate(container, createElement(App, null as any))
     expect(container.querySelector('#changed')).toBe(changed)
     expect(getComputedStyle(changed).color).toBe('rgb(0, 0, 255)')
     expect(getComputedStyle(unchanged).color).toBe('rgb(255, 0, 0)')
@@ -159,7 +160,7 @@ test('hydrate reconciles content classes when client styles are inline or absent
     container.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
 
     server = false
-    root = hydrateRoot(container, createElement(App, null as any))
+    root = hydrate(container, createElement(App, null as any))
     const inline = container.querySelector('#inline')!
     const removed = container.querySelector('#removed')!
     const authored = container.querySelector('#authored')!

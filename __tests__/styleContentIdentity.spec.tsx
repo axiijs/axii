@@ -1,7 +1,8 @@
 /** @jsx createElement */
-import {atom, createElement, createRoot, hydrateRoot, RenderContext, StaticHost} from '@framework'
+import {atom, createElement, createRoot, RenderContext, StaticHost} from '@framework'
 import {afterEach, beforeEach, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {hydrate} from './helpers/hydrate'
 
 const hover = {'&:hover': {opacity: 0.5}}
 
@@ -34,7 +35,7 @@ test('function styles distinguish the CSS text of native CSS values', () => {
     expect(getComputedStyle(a).width).toBe('12px')
     expect(getComputedStyle(b).width).toBe('24px')
 
-    root = hydrateRoot(container, render())
+    root = hydrate(container, render())
     expect(getComputedStyle(a).width).toBe('12px')
     expect(getComputedStyle(b).width).toBe('24px')
 })
@@ -75,7 +76,7 @@ test('reactive declarations are read once when determining identity and writing 
     expect(getComputedStyle(container.querySelector('div')!).width).toBe('12px')
 
     reads = 0
-    root = hydrateRoot(container, render())
+    root = hydrate(container, render())
     expect(reads).toBe(1)
     width(24)
     expect(reads).toBe(2)
@@ -103,7 +104,7 @@ test.each([false, true])('relationship selectors use per-element classes (dynami
     expect(ssrClasses[0]).not.toBe(ssrClasses[1])
     expect(getComputedStyle(rows[1]).opacity).toBe('1')
 
-    root = hydrateRoot(container, render())
+    root = hydrate(container, render())
     expect(Array.from(rows, row => row.className)).toEqual(ssrClasses)
     expect(getComputedStyle(rows[1]).opacity).toBe('1')
 })

@@ -15,7 +15,6 @@ import {
     atom,
     createElement,
     createRoot,
-    hydrateRoot,
     RenderContext,
     RxList,
     enableAxiiRetainedObjectDiagnostics,
@@ -26,6 +25,7 @@ import {
 import * as framework from '@framework'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {hydrate} from './helpers/hydrate'
 
 const N = 1000
 
@@ -275,7 +275,7 @@ describe('content-addressed stylesheets', () => {
         // before hydrate only the SSR <style> applies
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
         expect(getComputedStyle(rootEl.querySelector('#t')!).color).toBe('rgb(0, 0, 255)')
-        root = hydrateRoot(rootEl, createElement(App, null as any))
+        root = hydrate(rootEl, createElement(App, null as any))
         expect(getComputedStyle(rootEl.querySelector('#t')!).color).toBe('rgb(0, 0, 255)')
     })
 
@@ -357,7 +357,7 @@ describe('content-addressed stylesheets', () => {
         expect(ssrClasses.length).toBe(1)
         expect(ssrClasses[0]).toMatch(/R\d+F0I0$/)
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        root = hydrateRoot(rootEl, createElement(App, null as any))
+        root = hydrate(rootEl, createElement(App, null as any))
         const el = rootEl.querySelector('#c')!
         expect(styleClassesOf(el)).toEqual(ssrClasses)
         expect(getComputedStyle(el).width).toBe('12px')
@@ -385,7 +385,7 @@ describe('content-addressed stylesheets', () => {
         expect(ssrClasses[0]).toMatch(/^axs-[0-9a-z]+F0$/)
 
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        root = hydrateRoot(rootEl, createElement(App, null as any))
+        root = hydrate(rootEl, createElement(App, null as any))
         const el = rootEl.querySelector('#c')!
         expect(styleClassesOf(el)).toEqual(ssrClasses)
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')

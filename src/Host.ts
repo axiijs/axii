@@ -2,6 +2,7 @@ import {computed} from "data0";
 import {Root} from "./render";
 import {LinkedNode} from "./LinkedList";
 import type {AxiiSource} from "./diagnostics";
+import type {HydrationSlot} from "./hydrationElement";
 /**
  * @internal
  */
@@ -12,6 +13,10 @@ export interface Host {
     pathContext: PathContext
     computed?: ReturnType<typeof computed>
     render: () => void
+    // #55 新激活模型（设计 docs/ssr-support/hydration-top-down.md §2.4）：从当前游标消费 [内容…, placeholder]，
+    //  认领后写入 placeholder / element。由 createHydrateHost 创建的 Host 调用；CSR 不经过它。
+    //  slot 是 placeholder 的种类（hydrationElement.ts），构造时就作为 placeholder 传入。
+    hydrate?: (slot: HydrationSlot) => void
     // 声明是否强制由自己来处理 element，例如 StaticHost 在有 detachStyledChildren 的时候，就需要自己处理 element
     forceHandleElement?: boolean
     // CAUTION 曾经还有第二个参数 parentHandleComputed（父级 computed rerun 时级联清理 effect），

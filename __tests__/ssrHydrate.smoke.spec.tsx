@@ -6,12 +6,12 @@
 import {
     createElement,
     createRoot,
-    hydrateRoot,
     RenderContext,
 } from '@framework'
 import {atom} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {hydrate} from './helpers/hydrate'
 
 function shapeOf(el: Node): string[] {
     return Array.from(el.childNodes).map(n => {
@@ -86,7 +86,7 @@ describe('M-01 hydrateRoot smoke', () => {
         ) as Comment
         expect(rootCommentBefore).toBeTruthy()
 
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         const divAfter = rootEl.querySelector('#t')!
@@ -150,7 +150,7 @@ describe('M-01 hydrateRoot smoke', () => {
         const textsBefore = Array.from(div.childNodes).filter(n => n.nodeType === Node.TEXT_NODE) as Text[]
         expect(textsBefore.map(t => t.nodeValue)).toEqual(['hello', 'world'])
 
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(div.childNodes.length).toBe(2)
         expect(div.childNodes[0]).toBe(textsBefore[0])
@@ -177,7 +177,7 @@ describe('M-01 hydrateRoot smoke', () => {
         expect(div.childNodes.length).toBe(1)
         expect((div.firstChild as Comment).data).toBe('axii:0')
 
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(div.childNodes.length).toBe(1)
         const inserted = div.firstChild as Text
@@ -199,7 +199,7 @@ describe('M-01 hydrateRoot smoke', () => {
         expect(emptyBefore.data).toBe('empty')
         expect(rootBefore.data).toBe('root')
 
-        const root = hydrateRoot(rootEl, null)
+        const root = hydrate(rootEl, null)
         expect(rootEl.childNodes[0]).toBe(emptyBefore)
         expect(rootEl.childNodes[1]).toBe(rootBefore)
         expect(shapeOf(rootEl)).toEqual(['<!--empty-->', '<!--root-->'])
@@ -221,7 +221,7 @@ describe('M-01 hydrateRoot smoke', () => {
         rootEl.innerHTML = html
         const emptyBefore = rootEl.childNodes[0]
         const rootBefore = rootEl.childNodes[1]
-        hydrateRoot(rootEl, createElement(NullComp, null as any))
+        hydrate(rootEl, createElement(NullComp, null as any))
         expect(rootEl.childNodes[0]).toBe(emptyBefore)
         expect(rootEl.childNodes[1]).toBe(rootBefore)
     })

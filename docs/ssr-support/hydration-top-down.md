@@ -1,5 +1,6 @@
 # hydration 自顶向下认领 — 设计（#55）
 
+- 实现进度：PR-A（#75）、B1 已合入；B1 与上文的差别记在 §7.6。
 - 状态：设计稿，按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
 - 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）、#68（服务端 Compact 判定，排在实现 PR 之前修）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
@@ -115,7 +116,8 @@ export class HydrationElement {
                                       //  ComponentNode 判定（typeof source.type === 'function'）误认
     rawProps: AttributesArg | null    // 原样（as / AOP 已由 ComponentHost 处理完）
     rawChildren: any[]                // 原样；嵌套的描述、atom、函数、组件、RxList……
-    isSVG: boolean                    // 与 CSR 同一规则：_isSVG ?? svgOnlyElementNames.has(tag)
+    isSVG: boolean                    // 创建时与 CSR 同一规则：_isSVG ?? svgOnlyElementNames.has(tag)；
+                                      //  认领时再按 #56 的父元素规则补一条（见下面「isSVG」）
     node: Element | DocumentFragment | null       // 认领或新建后的真实节点
     listenerBoundArgs: any[] | undefined          // ComponentHost 写入，认领时转交给 node
 }
@@ -125,6 +127,7 @@ export function isHydrationElement(v: unknown): v is HydrationElement   // 判�
 - **何时产生：** 新模型激活期间，对字符串标签与 `Fragment` 调用 `createElement` 和 `createSVGElement` 时。组件仍然返回 `ComponentNode`，不变。
 - **不碰 DOM：** 不创建元素，不认领，不应用 props，不提升元数据。`unhandledChildren`、`unhandledAttr`、`refHandles`、`detachStyledChildren` 都由消费它的 Host 在认领时按 CSR 的同一规则建立（§2.4）。
 - **字段预置：** 全部字段在构造器里预置，然后 `Object.preventExtensions`。这样形状单态，用户写入未知属性在严格模式下抛错（§3.4）。只在激活路径上分配。
+- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChildren`。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。
 - **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
 - **两种对象：** 开发期返回包着描述的 Proxy，生产返回描述本身（§3.4）。用哪一种在 `beginHydration` 时按 `isAxiiDiagnosticsEnabled()` 定一次，同一次激活内不变。
 - **消费后瘦身：** 被认领或新建后，`rawProps` 和 `rawChildren` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。瘦身不会把描述变成节点：被闭包捕获的描述永远是描述（§3.1.1）。
@@ -183,7 +186,7 @@ interface Host {
 |---|---|
 | `null` / `undefined` | 无 |
 | 唯一的字符串 / 数字 / bigint（ElementChildText 单 child） | 非空：认领文本单元（`axii:t` 包边或裸 Text）；空：无 |
-| 多 child 中的字符串 / 数字 / bigint | 非空：认领文本单元；空：认领 `axii:0`，插入 `Text('')` |
+| 多 child 中的字符串 / 数字 / bigint | 非空：认领文本单元；空：认领 `axii:0`，插入 `Text('')`。例外：它是 `null` / `undefined` 之外唯一的 child 时服务端不写哨兵（`ssr.serializeChildren` 的 soleChild，元素与 Fragment 的 children 各自判定），这时只插入 `Text('')`；按这条规则决定，不能见到 `axii:0` 就拿（它可能属于后面的 atom / 函数单元） |
 | 元素描述 | 认领元素（§2.6.1），递归其子节点 |
 | Fragment 描述 | 在同一层展开，没有 `fragment start` |
 | atom | AtomHost，`TEXT_SLOT` |
@@ -278,10 +281,13 @@ interface Host {
 
 这就是现在 `isCharacterDataParent` 的逻辑，只是挪到游标上。函数子节点在文本态时就是一个文本单元；结构态服务端会抛错（§3.2.1 R3），不变。#56 若要支持 `<textarea>` / `<title>` 的函数子节点，只需在 SSR 侧按文本态求值，激活侧不用再改。
 
+服务端在字符数据里也写不出结构注释：boolean child 被服务端跳过，CSR 却为它建 PrimitiveHost，在字符数据父节点里留下 `Text('')` 与 `<!--unhandledChild-->`（`<title>{cond && 'x'}</title>`、`<style>{dark && css}</style>` 的 false 分支）。B1 在字符数据模式下对结构注释同样插入而不认领，得到与 CSR 相同的 DOM（旧模型在这里抛错）。
+
 #### 2.6.7 table、SVG
 
 - **table：** `impliedTableBody` 的两头判定照旧（客户端 children 里没有显式分区元素，且 DOM 里 table 唯一的子节点是 TBODY），只是客户端一侧改为看描述的 `tag`。组件返回 `<tbody>` 的情况（#56）不受影响：这时 table 下还有 `<!--unhandledChild-->`，不满足「唯一子节点」。
-- **SVG：** 描述的 `isSVG` 与 CSR 同一规则，认领比较标签与命名空间。#56 里 `<svg>` 内 `<title>` / `<a>` / `<style>` / `<script>` 的命名空间若与解析器不同，新模型会在认领处看到标签或命名空间不符，按 R1 报告并新建，得到与 CSR 相同的 DOM。是否让 CSR 跟随解析器的命名空间规则，由 #56 决定。
+  - B1 的实现（`DOM.resolveTopDownChildParent`）在客户端一侧也进入 Fragment 描述找分区元素：Fragment 在 table 这一层展开，服务端（`ssr.serializeTableContent` 的 `atTableLevel`）也把其中的分区元素算作 table 层。旧模型只看直接子元素，`<table><><tbody/></></table>` 会误判为隐含 tbody。
+- **SVG：** 描述的 `isSVG` 与 CSR 同一规则（§2.2「isSVG」），认领比较标签与命名空间。#56 已定为「CSR 跟随解析器」，只针对 SVG 元素的静态子元素（`adoptSvgChildren`）。函数 / 组件 / 列表稍后渲染的同名标签在 CSR 里仍是 HTML 元素，与解析器不同；新模型会在认领处看到标签或命名空间不符，按 R1 报告并新建，得到与 CSR 相同的 DOM（B3）。
 
 #### 2.6.8 现成的 DOM 节点作为 child
 
@@ -648,7 +654,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 ### 5.3 测量方法与原型数据
 
 **测量方法（PR-A、B1、S 的验收都用它，见 §7.3）：**
-1. **构建：** 生产构建 `npm run build`，三份放在同一页面：A 是 origin/main，A′ 是 A 的逐字节副本（A/A 对照），B 是改动后的构建。
+1. **构建：** 生产构建 `npm run build`，三份放在同一页面：A 是 origin/main，A′ 是 A 的逐字节副本（A/A 对照），B 是改动后的构建。**每份构建各一份负载模块**：内容逐字相同、URL 不同，各自导入自己那份构建。三份构建共用一个负载函数的话，调用点在三份构建之间多态、反复去优化（PR-A 的一次 10 轮预热 + 10 轮的追踪里去优化 67 次），噪声比要测的差别还大。
 2. **预热：** 每份 30 轮。
 3. **轮次：** 每轮随机打乱 A、A′、B 的顺序，至少 60 轮。
 4. **工作量：** 每轮工作量要让单次计时远大于计时分辨率，单次 ≥ 100 ms。浏览器 `performance.now()` 的分辨率约 0.1 ms。
@@ -755,13 +761,15 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 
 ### 7.2 测试怎样先对内部入口跑
 
-- **激活入口的辅助函数：** 调用 `hydrateRoot` 的 15 个 spec 文件（共 208 处调用）在 B1 改为调用测试辅助函数 `hydrate(container, source, options?)`。替换是机械的。辅助函数按「这一遍」调用 `hydrateRoot` 或内部入口；B4 起还按这一遍设置诊断开关（§3.4）。
+- **激活入口的辅助函数：** 调用 `hydrateRoot` 的 spec 文件在 B1 改为调用测试辅助函数 `hydrate(container, source, options?)`（`__tests__/helpers/hydrate.ts`）。替换是机械的。辅助函数按「这一遍」调用 `hydrateRoot` 或内部入口；B4 起还按这一遍设置诊断开关（§3.4）。
+  - 设计时（`36e540c`）是 15 个文件、208 处；B1 落地时（`473b3a5`，其间 #56、#68、#73 等新增了激活用例）是 19 个文件、223 处，全部改为经辅助函数激活。`vitest.config.ts` 的 `TOP_DOWN_HYDRATE_SPECS` 列出这 19 个文件；新增调用激活的 spec 文件时加进这张表。
+  - 注意：在调用激活之前求值的 JSX 元素（`hydrate(el, <p/>)`、`hydrate(el, createElement('span', null))`）是激活之外创建的现成节点，内部入口上走 §2.6.8 的路径（B4），不是元素描述；根是组件、函数、原始值时不受影响。
 - **两遍：** `vitest.config.ts` 用 Vitest 3.2 的 `test.projects`：
   - 现有项目照旧跑全部用例，走 `hydrateRoot`（旧模型）；
   - 新增一个只含这 15 个文件的项目，用 `define` 指定走内部入口。
 
   `npx vitest run` 一次跑完，三道门禁的命令不变。
-- **待实现标记：** 内部入口那一遍里，用到尚未实现的形态的用例，用一个辅助函数 `pendingTopDown('B2')` 标出：这一遍跳过，旧入口那一遍照常运行。
+- **待实现标记：** 内部入口那一遍里，用到尚未实现的形态的用例，用一个辅助函数 `pendingTopDown('B2')` 标出：这一遍跳过，旧入口那一遍照常运行。写法是 `test.skipIf(pendingTopDown('B2'))(…)`；按表生成的用例把条件写进 skipIf（例如只跳过激活的那些行）。只标两种失败：内部入口显式抛出的「not implemented yet」，与对故意改动过的服务端 HTML 报告并抛出的 `HydrationMismatchError`（修复在 B3）；未改动的 `renderToString` 输出在内部入口上失配是实现缺陷，不能用标记盖住。每个 PR 关掉标记跑一遍内部入口，确认被标记的用例都按上面两种方式失败。
   - 未实现的形态在内部入口下显式抛错（「top-down entry: <kind> not implemented yet」），不回退到旧模型，也不静默。
   - 每个 PR 的验收写明内部入口那一遍「通过 / 待实现」的用例数，以及它去掉了哪些标记。
   - B4 要求标记数为 0。
@@ -806,6 +814,20 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - 建议在 B1 合入到 D 合入之间不发版。
 - 必须发版时：公开行为不变（7.1 第 4 点），只是包体积变大；数字见各 PR 报告的产物大小。
 - S 与 D 之间发版，会发出改了契约却没有迁移说明的版本，所以 D 应紧跟 S 合入。
+
+### 7.6 B1 落地记录（与上文不同或上文没有写到的）
+
+- **模块：** 描述、slot 常量与「待实现」错误在 `src/hydrationElement.ts`；节点指针游标在 `src/hydrationCursor.ts`；认领步骤是 `DOM.hydrateElementDescription`；分派是 `createHost.createHydrateHost`；各 Host 的 `hydrate(slot)` 是原型方法；根由 `render.createRootInternal` 的 `topDown` 参数走 `createHydrateHost(source, 'root')`；内部入口是 `src/hydrateTopDown.ts`。模式变量与 `beginTopDownHydration` / `endTopDownHydration` 在 `hydration.ts`，后两者只有内部入口调用，随它一起被 tree-shaking 去掉。
+- **导出面：** 认领步骤要调用 `applyElementProps` / `liftElementMetadata`（PR-A 交接：挪模块会循环导入），所以写在 `DOM.ts` 里，以 `@internal` 导出给 `StaticHost`。`src/index.ts` 是 `export * from './DOM'`，它因此在包的导出面上可见，与已有的 `materializeHydrateDeferred` 等旧模型内部函数同类。`isHydrationElement` 还没有从 `src/index.ts` 导出（C4 说它导出），留给改变契约的 S / D。
+- **元数据提升：** 认领步骤按 CSR `createElement` 循环的同一段规则提升 `unhandledAttr` / `refHandles` / `detachStyledChildren`（`liftElementMetadata`，ref / detachStyle 的项不继承 source）。PR-A 交接建议把「四类各调一次」收成一个共用函数；没有收：CSR 那一段在热路径上，共用函数要返回三个累加值，只能分配或者借模块状态，而旧模型的 `materializeHydrateDeferred` 会在循环中途重入 `createElement`。两处各有 CAUTION 互相指向，`hydrateTopDown.spec` 断言激活后的路径、顺序、元素位置与 CSR 逐项相同。`unhandledChildren` 不提升：子 Host 由 `StaticHost.hydrate` 预先构造。
+- **子 Host 的预先构造：** `StaticHost.hydrate` 先按文档顺序收集描述子树里的动态 child（`collectTopDownDynamicChildren`，path、source 与 CSR 提升后的 `unhandledChildren` 相同），像 `collectInnerHost` 一样构造（单个直接存、多个共享 hostPath 节点），认领遍历走到动态 child 时依次取出、`hydrate(slot)`。`createTopDownInnerHost` 是 `createInnerHost` 的另一份，两处互相指向。
+- **原始标记元素的 JSX children：** 不消费，也不为它们构造 Host（§2.6.2）。CSR 会为它们构造 Host、渲染进被 innerHTML 摘掉的 placeholder；这是开发期警告过的误用（I66），DOM 两边相同。
+- **激活中止：** B1 / B2 的失配用 `reportHydrationMismatch` 报告，抛出同一个错误。激活期间 `root.dispatch('error')` 把失配与「待实现」错误（`isTopDownAbort`）当作未消费，组件在激活中注册的 `root.on('error')` 不会吞掉它们；`FunctionHost` 结构态在新模型里不「渲染为空」，向上抛出。
+- **容器：** 容器这一层的 STYLE / SCRIPT / LINK 在认领时跳过（期望的正是同标签元素时不跳；服务端样式 `data-axii-ssr` 永远跳过）。根认领 `<!--root-->` 之后，容器上只能剩下这三种；迁移服务端样式之后，激活区间之外还有节点是失配（B1 报告并抛出，清扫是 B3 的 R5 / D13）。
+- **根：** 内部入口创建的 root 只有第一次 `render` 走激活；之后 `root.destroy()` 再 `render`（包括激活中 error 监听器销毁 root、渲染错误提示）都是 CSR。激活中 root 被替换时（`root.render` 的重入说明），激活的树整体丢弃，入口不再对它做容器检查与不变量检查；其中已报告过的失配不重复报告。
+- **同一个描述出现两次：** 一次激活里同一个 JSX 元素被渲染第二次（`const s = <span/>; <div>{s}{s}</div>`，或激活中存下的 JSX 再次渲染，C6）时，描述已经认领、瘦身，显式抛「待实现」错误（B4 的「已有 `node` 就当作那个元素」分支），不再在空的 `rawChildren` 上 TypeError。
+- **lazy、reusable：** `lazy()` 的包装组件带 `__axiiLazy` 标记，`ComponentHost.hydrate` 见到它显式抛错（B4）。`reusable(x)` 在组件函数体里用 CSR 的 `createHost` 构造 innerHost，x 是描述时在 `createHost` 链尾（§2.2「事后渲染」的位置）显式抛错（B4）；`ReusableHost` 作为 source 进入 `createHydrateHost` 同样抛错。
+- **开发期不变量（§4.4）：** 在内部入口里检查，违反时以 `HydrationInvariantError`（`code: 'AXII_HYDRATION_INVARIANT'`）经 `reportAxiiError` 报告，不抛出。S 把内部入口变成 `hydrateRoot` 的实现时随之进入公开路径。
 
 ---
 
@@ -920,6 +942,8 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 ---
 
 ## 11. 范围外发现（只列出，未修）
+
+- **函数结构态的值又是函数（B1 发现，服务端缺陷）。** `{() => () => x}`：CSR 里内层 FunctionHost 的 placeholder 是外层的 `<!--computed node-->`（Comment-ph），服务端 `ssr.serializeStructureResult` 却经 `serializeChild` 按 Text-ph 写内层，多出一个 `<!--axii:0-->`（内层结构态时在内层的 `computed node` 之后）。旧模型激活后，x 为空时留下这个 `axii:0`，x 是元素时抛错；新模型在认领处报告并抛出（B3 的 R3 会删除它并报告）。根治在服务端：函数结果按 Comment-ph 写（`serializeFunctionHost(result, out, 'comment')`）。`hydrateTopDown.spec` 里有一条 `test.fails` 钉住它。atom 结果不受影响（服务端按 Comment-ph 写）。
 
 - **服务端 Compact 判定与 CSR 不一致（已在 chromium 复现）。** `serializeRxListRow` 只看行元素自己的 `detachStyle`，CSR 的 `detachStyledChildren` 还包括后代提升上来的。
   - 写法：`list.map(i => <li><span detachStyle={…}>{i}</span></li>)`；

@@ -8,6 +8,8 @@ import type {HostPosition} from "./createHost";
 import {isHydrating} from "./hydration";
 import {claimTextBeforeCommentPlaceholder} from "./hydration";
 import {isCommentNode, isTextNode} from "./nodeType";
+import {HydrationSlot, TEXT_SLOT} from "./hydrationElement";
+import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
 
 
 function stringValue(v: any) {
@@ -105,6 +107,27 @@ export class AtomHost extends LightBindingEffect implements Host{
                 Notifier.instance.resetTracking()
             }
             this.element = claimTextBeforeCommentPlaceholder(this.placeholder, expected)
+        }
+        this.run()
+    }
+    // #55 新模型（§2.5）：按当前值认领文本单元，再像 render 一样建立绑定。
+    //  TEXT_SLOT（元素子节点里的 Text-ph）：非空认领文本单元，空认领 axii:0；这个 Text 同时是 element 和 placeholder。
+    //  Comment slot：非空认领文本单元，空时（服务端什么都不写）插入 Text('')，然后认领 slot。
+    //  run() 随后写入同一个值（文本更新的路径不变）。
+    hydrate(slot: HydrationSlot): void {
+        trackLightBindingCreated(this, 'AtomTextBinding')
+        Notifier.instance.pauseTracking()
+        let text: string
+        try {
+            text = stringValue(this.source())
+        } finally {
+            Notifier.instance.resetTracking()
+        }
+        if (slot === TEXT_SLOT) {
+            this.element = this.placeholder = text === '' ? claimTopDownEmptyTextPlaceholder() : claimTopDownText(text)
+        } else {
+            this.element = text === '' ? insertTopDownEmptyText() : claimTopDownText(text)
+            this.placeholder = claimTopDownComment(slot)
         }
         this.run()
     }
