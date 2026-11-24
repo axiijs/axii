@@ -27,6 +27,7 @@ import {describe, expect, test} from "vitest";
 import {
     atom,
     autorun,
+    batch,
     computed,
     Computed,
     destroyComputed,
@@ -465,5 +466,186 @@ describe('data0 -> axii ownership contract', () => {
         source.push(2)
         value(1)
         expect(patches).toBe(1)
+    })
+})
+
+/**
+ * 写回契约（#55 设计 §3.3，axii 依赖的 data0 内部行为，不是文档化的 API）：
+ * 新的激活模型里，RxList 的行在激活期间是描述（HydrationElement）。RxListHost 认领一行后，
+ * 如果 source.data[i] 仍是这个描述，就用普通下标赋值把它换成认领到的元素（`source.data[i] = node`），
+ * 绕过 RxList 的方法、不派发任何 patch。这依赖：
+ * 13a. RxList.data 是普通数组：按下标赋值不触发任何 effect（patch 订阅、at(i)、迭代、length、
+ *      下游 map 都收不到通知），不改变 length。根列表与 map 派生列表都如此
+ *      （RxListHost 的 source 通常是 list.map(...) 的派生列表）。
+ * 13b. map 派生列表的增量 patch 与 effectFramesArray 按下标平行维护，不按 item 身份缓存：
+ *      写回的值与行 effect 一起随 splice / 重排按下标移动；行 effect 重跑时按该行现在的下标
+ *      替换这一行（重新对 source.data[下标] 求值，与 CSR 一样替换掉旧行）；带下标 atom 的
+ *      多 info 批次退回全量重算，同样从 source 重新求值。
+ * 13c. 之后的 splice / set / 重排以 data 为准：patch 的 methodResult / set 的旧值里是写回后的值，
+ *      重排移动的也是写回后的值。
+ * 本组只钉 RxList 本身与 map。filter / concat / slice 等把上游 item 原样放进自己 data 的派生
+ * 操作，写回只改到被渲染的那一个列表，上游仍持有描述——不在本契约内。
+ */
+describe('data0 -> axii write-back contract (#55 §3.3)', () => {
+    const toBeEach = (actual: readonly unknown[], expected: readonly unknown[]) => {
+        expect(actual.length).toBe(expected.length)
+        expected.forEach((value, i) => expect(actual[i]).toBe(value))
+    }
+
+    test('13a. a raw index write to RxList.data notifies no effect and keeps length (root list and map-derived list)', () => {
+        const source = new RxList<string>(['a', 'b', 'c'])
+        const mapped = source.map(item => ({desc: item}))
+        const downstream = mapped.map(row => row)
+        const observe = (list: RxList<any>) => {
+            const patches = captureTriggerInfos(list)
+            const runs = {at: 0, iterate: 0, length: 0}
+            const length = list.length
+            const stops = [
+                autorun(() => { list.at(1); runs.at++ }, true),
+                autorun(() => { list.forEach(() => {}); runs.iterate++ }, true),
+                autorun(() => { length(); runs.length++ }, true),
+            ]
+            return {list, patches, runs, length, stops}
+        }
+        const observers = [observe(source), observe(mapped)]
+        const mappedBefore = mapped.data.slice()
+        const downstreamBefore = downstream.data.slice()
+
+        // 根列表：下游 map 不重算，派生行原样保留
+        source.data[1] = 'B'
+        toBeEach(mapped.data, mappedBefore)
+        // map 派生列表：RxListHost.hydrate 的写回
+        const claimed = {claimed: 1}
+        mapped.data[1] = claimed
+
+        for (const {list, patches, runs, length} of observers) {
+            expect(patches.take()).toEqual([])
+            expect(runs).toEqual({at: 1, iterate: 1, length: 1})
+            expect(list.data.length).toBe(3)
+            expect(length()).toBe(3)
+        }
+        toBeEach(downstream.data, downstreamBefore)
+        expect(source.at(1)).toBe('B')
+        expect(mapped.at(1)).toBe(claimed)
+
+        for (const {patches, stops} of observers) {
+            patches.destroy()
+            stops.forEach(stop => stop())
+        }
+        downstream.destroy()
+        mapped.destroy()
+        source.destroy()
+    })
+
+    test('13b. map keeps rows and effectFramesArray parallel by index, not by item identity', () => {
+        const labels = ['a', 'b', 'c', 'd'].map(label => atom(label))
+        // CAUTION RxList 直接把传入的数组当作自己的 data：传副本，labels[i] 才一直指向同一个 atom
+        const source = new RxList(labels.slice())
+        // 行里读 atom：每行有自己的行 effect（effectFramesArray 的项非空），data0 同时启用下标 atom
+        const mapped = source.map(label => ({label: label()}))
+        const frames = () => (mapped as any).effectFramesArray as unknown[][]
+        expect(frames().length).toBe(4)
+        for (const frame of frames()) expect(frame.length).toBe(1)
+
+        // RxListHost.hydrate 认领每一行后写回
+        const claimed = mapped.data.map((_, i) => ({claimed: i}))
+        claimed.forEach((node, i) => { mapped.data[i] = node })
+        const rowEffects = frames().slice()
+
+        // splice：写回的值与行 effect 一起按下标移动
+        source.splice(0, 0, atom('x'))
+        expect(mapped.data[0]).toEqual({label: 'x'})
+        toBeEach(mapped.data.slice(1), claimed)
+        expect(frames().length).toBe(mapped.data.length)
+        toBeEach(frames().slice(1), rowEffects)
+
+        source.splice(2, 1) // 删掉 'b' 那一行
+        toBeEach(mapped.data.slice(1), [claimed[0], claimed[2], claimed[3]])
+        toBeEach(frames().slice(1), [rowEffects[0], rowEffects[2], rowEffects[3]])
+
+        // 重排：同一组下标对搬移行值与行 effect
+        source.swap(1, 3)
+        toBeEach(mapped.data.slice(1), [claimed[3], claimed[2], claimed[0]])
+        toBeEach(frames().slice(1), [rowEffects[3], rowEffects[2], rowEffects[0]])
+
+        // 行 effect 重跑：按该行现在的下标（'d' 在 1）替换，其余写回的行不动
+        const sub = captureTriggerInfos(mapped)
+        labels[3]('D')
+        expect(mapped.data[1]).toEqual({label: 'D'})
+        toBeEach(mapped.data.slice(2), [claimed[2], claimed[0]])
+        const keyChanges = sub.take().filter(info => info.type === TriggerOpTypes.EXPLICIT_KEY_CHANGE)
+        expect(keyChanges.length).toBe(1)
+        expect(keyChanges[0].key).toBe(1)
+        expect(keyChanges[0].methodResult).toBe(claimed[3])
+        expect(frames()[1]).toBe(rowEffects[3])
+        // 已删除行的 atom 不再影响列表
+        labels[1]('B')
+        expect(sub.take()).toEqual([])
+
+        // 带下标 atom 的多 info 批次：退回全量重算，每一行都从 source 重新求值（与 CSR 相同，旧行被替换）
+        batch(() => {
+            source.push(atom('y'))
+            source.splice(0, 1)
+        })
+        expect(mapped.data).toEqual([{label: 'D'}, {label: 'c'}, {label: 'a'}, {label: 'y'}])
+        for (const node of claimed) expect(mapped.data.includes(node as any)).toBe(false)
+        expect(frames().length).toBe(mapped.data.length)
+
+        sub.destroy()
+        mapped.destroy()
+        source.destroy()
+    })
+
+    test('13c. after a write-back, splice / set / reorder operate on data and carry the written-back values', () => {
+        // 根列表直接作为 child（行本身就是描述）
+        const root = new RxList<any>([{desc: 0}, {desc: 1}, {desc: 2}, {desc: 3}])
+        const claimed = root.data.map((_, i) => ({claimed: i}))
+        claimed.forEach((node, i) => { root.data[i] = node })
+        const sub = captureTriggerInfos(root)
+
+        root.swap(0, 2)
+        toBeEach(root.data, [claimed[2], claimed[1], claimed[0], claimed[3]])
+        expect(sub.take()[0].method).toBe('reorder')
+
+        toBeEach(root.splice(1, 1), [claimed[1]])
+        let infos = sub.take()
+        expect(infos[0].method).toBe('splice')
+        toBeEach(infos[0].methodResult as any[], [claimed[1]])
+
+        const fresh = {desc: 'fresh'}
+        expect(root.set(0, fresh)).toBe(claimed[2])
+        const keyChange = sub.take().find(info => info.type === TriggerOpTypes.EXPLICIT_KEY_CHANGE)!
+        expect(keyChange.methodResult).toBe(claimed[2])
+        expect(keyChange.newValue).toBe(fresh)
+        toBeEach(root.data, [fresh, claimed[0], claimed[3]])
+        sub.destroy()
+
+        // map 派生列表：源列表的操作到达派生列表时，patch 里同样是写回后的值
+        const source = new RxList(['a', 'b', 'c'])
+        const mapped = source.map(item => ({desc: item}))
+        const rows = mapped.data.map((_, i) => ({claimed: i}))
+        rows.forEach((node, i) => { mapped.data[i] = node })
+        const mappedSub = captureTriggerInfos(mapped)
+
+        source.splice(0, 1)
+        infos = mappedSub.take()
+        toBeEach(infos[0].methodResult as any[], [rows[0]])
+        toBeEach(mapped.data, [rows[1], rows[2]])
+
+        source.set(0, 'B')
+        const mappedKeyChange = mappedSub.take().find(info => info.type === TriggerOpTypes.EXPLICIT_KEY_CHANGE)!
+        expect(mappedKeyChange.key).toBe(0)
+        expect(mappedKeyChange.methodResult).toBe(rows[1])
+        expect(mapped.data[0]).toEqual({desc: 'B'})
+
+        source.swap(0, 1)
+        expect(mappedSub.take()[0].method).toBe('reorder')
+        expect(mapped.data[0]).toBe(rows[2])
+        expect(mapped.data[1]).toEqual({desc: 'B'})
+
+        mappedSub.destroy()
+        mapped.destroy()
+        source.destroy()
+        root.destroy()
     })
 })
