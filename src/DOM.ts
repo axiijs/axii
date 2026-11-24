@@ -14,6 +14,7 @@ import {
     emptyOrBooleanWrite,
     hasOnPrefix,
     innerHTMLOf,
+    isBooleanPropertyName,
     isEventName,
     isInnerHTMLObject,
     isRawWriteProperty,
@@ -149,6 +150,8 @@ function setProperty(node: HTMLElement, name: string, value: any) {
  *  原样写入的例外（不读 property）：自定义元素（tagName 带 '-'，property 的语义由组件自己定义），
  *  以及 markupNames.isRawWriteProperty 的名字（contentEditable / writingSuggestions / aria* / hidden）。
  *  value / checked（表单控件）不走这里，各有专门的分支。
+ *  boolean 值写 markupNames.isBooleanPropertyName 的名字也不走这里（#59）：结果同样是原样赋值，
+ *  setAttribute 直接交给 setProperty，省掉 tagName 和 property 两次读取。
  */
 function setEmptyOrBooleanProperty(node: HTMLElement, name: string, value: null | undefined | boolean) {
     if (value === null) {
@@ -643,7 +646,11 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         }
         // CAUTION 热路径（string/number 值）不读 property、不做类型判断，
         //  只有 null/undefined/boolean 才进入按 property 类型决定写法的慢路径。
-        if (value === null || value === undefined || value === true || value === false) {
+        //  boolean 值写 isBooleanPropertyName 的名字（open / selected / readOnly / required / hidden …）同样不进慢路径（#59）：
+        //  这些名字的 boolean 值在任何元素上都是原样赋值，落到最后的 setProperty。慢路径每次要读 tagName 和 property，
+        //  这两次读取就是 #48 之后响应式 boolean 切换变慢的原因（同页微基准见 #59）。
+        //  不新增调用点：null 等其余值的分发顺序与比较次数不变。
+        if (value === null || value === undefined || ((value === true || value === false) && !isBooleanPropertyName(name))) {
             setEmptyOrBooleanProperty(node, name, value)
         } else if (typeof value === 'string' && (name === 'draggable' || name === 'spellcheck' || name === 'translate')) {
             // CAUTION 这三个是「enumerated attribute + boolean IDL property」：字符串值是 HTML 关键字
@@ -651,6 +658,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             //  写出与作者相反的 draggable="true" / translate="yes"。字符串原样写成 attribute。
             node.setAttribute(name, value)
         } else {
+            // string / number / object 值，以及 boolean 值写 isBooleanPropertyName 的名字：原样赋值
             setProperty(node, name, value)
         }
         // range 会在 min/max/step 约束变化时就地 sanitize 当前 value。这里必须重放

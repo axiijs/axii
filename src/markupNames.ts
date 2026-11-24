@@ -172,6 +172,44 @@ export function isRawWriteProperty(name: string): boolean {
     return name === 'contentEditable' || name === 'writingSuggestions' || name === 'hidden' || isAriaReflectionProperty(name)
 }
 
+/**
+ * @internal
+ * true / false 写进这个 property 时与元素无关、一定原样赋值的名字（#59）：DOM.setAttribute 对这些名字上的 boolean 值
+ *  不读 tagName、不读 property，直接赋值（响应式 open / selected / readOnly / required / hidden 切换的热路径）。
+ *  成立的条件是两种情况的写法相同（见 emptyOrBooleanWrite 的表）：
+ *  - 名字在每个定义它的 HTML 元素接口上都是 boolean 型 IDL 属性：boolean 型 property 的 true / false 原样写；
+ *  - 自定义元素（标签名带 '-'）上的所有名字原样写，不读组件的 getter；
+ *  - hidden 是原样赋值的名字（isRawWriteProperty），boolean 值同样原样写。
+ *  undefined / null 不走这里（它们要按真实 attribute 名移除），仍由 setEmptyOrBooleanProperty 处理。
+ * CAUTION 只收「所有元素上都是 boolean」的名字，任何一个元素上类型不同就不能收：loop 在 audio / video 上是 boolean，
+ *  在 marquee 上是 long（loop={false} 必须写 ''、移除 attribute），所以不在表里。disabled 在 DOM.setAttribute 有专门分支，
+ *  只读的 boolean（complete / paused …）赋值本来就失败，都不收。不在表里的名字照旧读 typeof，结果不变、只是慢一些。
+ *  __tests__/auditDom.spec.tsx 的 #59 组在真实浏览器里枚举每一个 HTML 元素接口核对这张表，并核对它与 htmlPropertyTypes 一致。
+ * CAUTION 热路径：按长度分组后逐个比较（属性名是内部化字符串，比较只是指针比较）。实测比 Set / 对象查表都快，
+ *  不在表里的名字（title={false}、自定义元素的切换）基本不多付代价；改写成查表前先跑同页微基准（见 #59）。
+ */
+export function isBooleanPropertyName(name: string): boolean {
+    switch (name.length) {
+        case 4: return name === 'open'
+        case 5: return name === 'inert' || name === 'muted' || name === 'async' || name === 'defer' || name === 'isMap'
+        case 6: return name === 'hidden' || name === 'noWrap' || name === 'noHref'
+        case 7: return name === 'checked' || name === 'default' || name === 'compact' || name === 'noShade' || name === 'declare'
+        case 8: return name === 'readOnly' || name === 'required' || name === 'selected' || name === 'multiple' ||
+            name === 'autoplay' || name === 'controls' || name === 'reversed' || name === 'noModule' || name === 'noResize'
+        case 9: return name === 'autofocus' || name === 'draggable' || name === 'translate'
+        case 10: return name === 'spellcheck' || name === 'noValidate'
+        case 11: return name === 'playsInline'
+        case 12: return name === 'defaultMuted'
+        case 13: return name === 'indeterminate'
+        case 14: return name === 'defaultChecked' || name === 'formNoValidate'
+        case 15: return name === 'defaultSelected' || name === 'allowFullscreen'
+        case 18: return name === 'shadowRootClonable'
+        case 22: return name === 'shadowRootSerializable'
+        case 24: return name === 'shadowRootDelegatesFocus'
+    }
+    return false
+}
+
 // emptyOrBooleanWrite 的写入码：低两位是写进 property 的值，REMOVE_ATTRIBUTE 表示随后按真实 attribute 名移除。
 /** @internal 原样写入 value */
 export const WRITE_VALUE = 0

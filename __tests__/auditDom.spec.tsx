@@ -2,6 +2,8 @@
 /** @jsxFrag Fragment */
 import {atom, createElement, createRoot, Fragment, RxList, setAutoUnitType, StaticHost} from "@framework";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
+import {isBooleanPropertyName, isRawWriteProperty} from "../src/markupNames.js";
+import {htmlPropertyTypeEntries} from "../src/htmlPropertyTypes.js";
 
 async function settle() { for (let i = 0; i < 100; i++) await Promise.resolve() }
 
@@ -814,6 +816,153 @@ describe('audit: DOM.ts / StaticHost.ts', () => {
             otherRoot.render(<div><div id="t" popover={true}>t</div><img id="ti" crossOrigin={true}/></div>)
             expect([get('t').getAttribute('popover'), get('ti').getAttribute('crossorigin')]).toEqual(['', ''])
             otherRoot.destroy()
+        })
+    })
+
+    // ---------------------------------------------------------------- #59
+    describe('#59 boolean values on boolean IDL properties skip the type read', () => {
+        // 当前与已废弃的 HTML 标签（含 Chromium 实验性的），以及一个未定义的自定义元素
+        const ALL_TAGS = ('a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code ' +
+            'col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form ' +
+            'h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu ' +
+            'meta meter nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp script search ' +
+            'section select slot small source span strong style sub summary sup table tbody td template textarea tfoot th ' +
+            'thead time title tr track u ul var video wbr acronym applet basefont bgsound big blink center dir font frame ' +
+            'frameset image isindex keygen listing marquee menuitem multicol nextid nobr noembed noframes param plaintext rb ' +
+            'rtc spacer strike tt xmp selectedcontent fencedframe permission x-axii-59').split(' ')
+
+        test('#59a: reactive toggles read neither tagName nor the property (nor a custom element\'s getter)', async () => {
+            let customReads = 0
+            const customWrites: unknown[] = []
+            if (!customElements.get('axii-59-open')) {
+                customElements.define('axii-59-open', class extends HTMLElement {
+                    get open() { customReads++; return 'custom' }
+                    set open(v: unknown) { customWrites.push(v) }
+                })
+            }
+            const on = atom(false)
+            root.render(<div>
+                <input id="input" readOnly={on} required={on}/>
+                <textarea id="textarea" readOnly={on}/>
+                <details id="details" open={on}/>
+                <dialog id="dialog" open={on}/>
+                <select><option id="option" selected={on}>o</option></select>
+                <div id="div" hidden={on} inert={on}/>
+                <axii-59-open id="custom" open={on}/>
+            </div>)
+            const reads: string[] = []
+            const restore: (() => void)[] = []
+            const spy = (proto: object, prop: string) => {
+                const desc = Object.getOwnPropertyDescriptor(proto, prop)!
+                Object.defineProperty(proto, prop, {...desc, get() { reads.push(prop); return desc.get!.call(this) }})
+                restore.push(() => Object.defineProperty(proto, prop, desc))
+            }
+            spy(Element.prototype, 'tagName')
+            spy(HTMLInputElement.prototype, 'readOnly')
+            spy(HTMLInputElement.prototype, 'required')
+            spy(HTMLTextAreaElement.prototype, 'readOnly')
+            spy(HTMLDetailsElement.prototype, 'open')
+            spy(HTMLDialogElement.prototype, 'open')
+            spy(HTMLOptionElement.prototype, 'selected')
+            spy(HTMLElement.prototype, 'hidden')
+            spy(HTMLElement.prototype, 'inert')
+            const states: string[] = []
+            try {
+                for (const next of [true, false, true]) {
+                    on(next)
+                    await settle()
+                    const get = (id: string) => document.getElementById(id) as any
+                    // 只读 attribute：getAttributeNames 不经过被包装的 getter
+                    states.push(['input', 'textarea', 'details', 'dialog', 'option', 'div', 'custom']
+                        .map(id => `${id}:${get(id).getAttributeNames().filter((n: string) => n !== 'id').sort().join(',')}`).join(' '))
+                }
+            } finally {
+                restore.forEach(r => r())
+            }
+            const get = (id: string) => document.getElementById(id) as any
+            expect({
+                reads, customReads, customWrites, states,
+                props: [get('input').readOnly, get('input').required, get('textarea').readOnly, get('details').open,
+                    get('dialog').open, get('option').selected, get('div').hidden, get('div').inert],
+            }).toEqual({
+                reads: [], customReads: 0, customWrites: [false, true, false, true],
+                states: [
+                    // option.selected 不反射成 attribute（attribute 对应 defaultSelected），只看 property
+                    'input:readonly,required textarea:readonly details:open dialog:open option: div:hidden,inert custom:',
+                    'input: textarea: details: dialog: option: div: custom:',
+                    'input:readonly,required textarea:readonly details:open dialog:open option: div:hidden,inert custom:',
+                ],
+                props: [true, true, true, true, true, true, true, true],
+            })
+        })
+
+        test('#59b: every accepted name is boolean on every HTML element interface that defines it', () => {
+            const instances = new Map<Function, Element>()
+            for (const tag of ALL_TAGS) {
+                const el = document.createElement(tag)
+                if (!instances.has(el.constructor)) instances.set(el.constructor, el)
+            }
+            const interfaces = Object.getOwnPropertyNames(window)
+                .filter(n => /^HTML\w*Element$/.test(n) && typeof (window as any)[n] === 'function')
+                .map(n => [n, (window as any)[n]] as [string, Function])
+            const candidates = new Set<string>()
+            for (const [, ctor] of interfaces) for (const p of Object.getOwnPropertyNames(ctor.prototype)) candidates.add(p)
+            const {global, elements} = htmlPropertyTypeEntries()
+            for (const p in global) candidates.add(p)
+            for (const tag in elements) for (const p in elements[tag]) candidates.add(p)
+            const problems: string[] = []
+            // 定义了表里名字的每一个接口都要有实例可查（抽象接口由子类实例代表）
+            for (const [name, ctor] of interfaces) {
+                const own = Object.getOwnPropertyNames(ctor.prototype).filter(isBooleanPropertyName)
+                if (own.length === 0) continue
+                const el = [...instances.values()].find(e => e instanceof (ctor as any))
+                if (!el) {
+                    problems.push(`${name} defines ${own.join(', ')} but no tag in ALL_TAGS creates it`)
+                    continue
+                }
+                for (const p of own) {
+                    if (typeof (el as any)[p] !== 'boolean' && !isRawWriteProperty(p)) problems.push(`${name}.${p} is ${typeof (el as any)[p]}`)
+                }
+            }
+            // 继承来的名字：每个实例上，凡是有这个名字的都必须是 boolean
+            const accepted = [...candidates].filter(isBooleanPropertyName).sort()
+            for (const el of instances.values()) {
+                for (const p of accepted) {
+                    if (p in el && typeof (el as any)[p] !== 'boolean' && !isRawWriteProperty(p)) {
+                        problems.push(`<${el.localName}>.${p} is ${typeof (el as any)[p]}`)
+                    }
+                }
+            }
+            expect({problems, accepted}).toEqual({
+                problems: [],
+                // 表里的每个名字都是浏览器或静态类型表认识的 property（拼错的名字不会出现在这里）
+                accepted: ['allowFullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'compact', 'controls', 'declare',
+                    'default', 'defaultChecked', 'defaultMuted', 'defaultSelected', 'defer', 'draggable', 'formNoValidate',
+                    'hidden', 'indeterminate', 'inert', 'isMap', 'multiple', 'muted', 'noHref', 'noModule', 'noResize',
+                    'noShade', 'noValidate', 'noWrap', 'open', 'playsInline', 'readOnly', 'required', 'reversed', 'selected',
+                    'shadowRootClonable', 'shadowRootDelegatesFocus', 'shadowRootSerializable', 'spellcheck', 'translate'],
+            })
+        })
+
+        test('#59c: agrees with the server\'s static type table; loop stays out because marquee.loop is a number', () => {
+            const {global, elements} = htmlPropertyTypeEntries()
+            const typesOf = new Map<string, Set<string>>()
+            const add = (p: string, t: string) => {
+                if (!typesOf.has(p)) typesOf.set(p, new Set())
+                typesOf.get(p)!.add(t)
+            }
+            for (const p in global) add(p, global[p])
+            for (const tag in elements) for (const p in elements[tag]) add(p, elements[tag][p])
+            const BOOLEAN_TYPES = new Set(['b', 'k', 'y', 'h'])
+            const disagree: string[] = []
+            const missing: string[] = []
+            for (const [p, types] of typesOf) {
+                const allBoolean = [...types].every(t => BOOLEAN_TYPES.has(t))
+                if (isBooleanPropertyName(p) && !allBoolean) disagree.push(`${p}: ${[...types].join('/')}`)
+                if (!isBooleanPropertyName(p) && allBoolean) missing.push(p)
+            }
+            expect({disagree, missing, marqueeLoop: typeof (document.createElement('marquee') as any).loop})
+                .toEqual({disagree: [], missing: ['loop'], marqueeLoop: 'number'})
         })
     })
 })
