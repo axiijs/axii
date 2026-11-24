@@ -803,6 +803,21 @@ describe('pre-existing server / CSR disagreement (out of B2 scope, same class as
     })
 })
 
+describe('a hole in a sparse static array (pre-existing server / CSR disagreement)', () => {
+    // CSR 的 StaticArrayHost.render 用 forEach，跳过空位；服务端 serializeStaticArray 用 for…of，为空位写 <!--empty--><!--array item-->。
+    //  激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复），不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
+    test('the activation follows CSR (the hole is skipped) and reports the extra server markup', () => {
+        // eslint-disable-next-line no-sparse-arrays
+        function App({}: any, {createElement}: RenderContext) { return <p>{['a', , 'b']}</p> }
+        const hyd = ssrInto(createElement(App, null))
+        expect(hyd.innerHTML).toContain('<!--empty--><!--array item-->')
+        let thrown: unknown
+        try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
+        expect(thrown).toBeInstanceOf(HydrationMismatchError)
+        expect(reports.length).toBe(1)
+    })
+})
+
 describe('development invariants after the activation (§4.4)', () => {
     test('a host range broken during the activation is reported as AXII_HYDRATION_INVARIANT (diagnostics on only)', () => {
         const make = () => function App({}: any, {createElement}: RenderContext) {

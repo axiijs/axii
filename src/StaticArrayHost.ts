@@ -267,7 +267,8 @@ export class StaticArrayHost implements Host{
      *  - 现成的 Text（激活之外创建的节点，§2.6.8）在 render 里也是 DirectNodes，新模型在 B4 落地，之前显式抛错；
      *  - 其余项 createHydrateHost(项, 'array item')：函数（含 atom）不克隆 pathContext、以 position 传位置，
      *    其余共享一个 hostPath 节点。
-     * 先构造全部子 Host，再按文档顺序认领（≡ render：forEach 构造，再逐个 render），组件类型 id 的分配顺序与 CSR 相同。
+     * 先构造全部子 Host，再按文档顺序认领（≡ render：forEach 构造，再逐个 render），组件类型 id 的分配顺序与 CSR 相同；
+ * 与 forEach 一样跳过稀疏数组的空位。
      * 项是描述时，认领之后把 source[index] 写回为认领到的节点（§3.3；Fragment 项是那个空的 DocumentFragment）。
      */
     hydrate(slot: HydrationSlot): void {
@@ -275,6 +276,9 @@ export class StaticArrayHost implements Host{
         const length = source.length
         let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
         for (let index = 0; index < length; index++) {
+            // ≡ render 的 forEach：稀疏数组的空位跳过（服务端的 for…of 却为空位写 <!--empty--><!--array item-->，
+            //  见设计 §11；这里与 CSR 一致，服务端多写的部分在认领处报告失配，不静默）
+            if (!(index in source)) continue
             const item = source[index]
             const itemType = typeof item
             if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') continue
@@ -290,6 +294,7 @@ export class StaticArrayHost implements Host{
         }
         let next = 0
         for (let index = 0; index < length; index++) {
+            if (!(index in source)) continue
             const item = source[index]
             const itemType = typeof item
             if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') {
