@@ -14,7 +14,7 @@
  *  旧元素的 abort 被新 listen 覆盖：旧监听/ResizeObserver 观察永久泄漏，
  *  旧元素的变化还会继续写进同一个 value atom。
  */
-import {beforeEach, describe, expect, test} from "vitest";
+import {beforeEach, describe, expect, test, vi} from "vitest";
 import {atom, createElement, createRoot, RenderContext, RxDOMSize} from "@framework";
 import PropTypes from "../src/propTypes";
 
@@ -28,24 +28,38 @@ describe('improvements regression (2026-07 round-6 review)', () => {
         root = createRoot(rootEl)
     })
 
-    test('I28a: lowercase on* non-event props are set as attributes, not swallowed as events', () => {
+    // CAUTION #49（维护者决定，与 React 一致）改变了 I28a/I28b 的期望：名字以 on 开头（不区分大小写）、
+    //  但不是合法事件处理器的 prop 两端都不写成 attribute（开发期警告一次）。I28 原本要防的
+    //  「被吞进事件分支、挂上永不触发的假监听器」仍然成立：这类 prop 既不写属性，也不绑定监听。
+    test('I28a: lowercase on* non-event props are neither written as attributes nor swallowed as events', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <div id="i28a" once="true">x</div>
         }
-        root.render(<App/>)
-        expect(document.getElementById('i28a')!.getAttribute('once')).toBe('true')
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            root.render(<App/>)
+        } finally {
+            consoleError.mockRestore()
+        }
+        const el = document.getElementById('i28a') as any
+        expect({attr: el.hasAttribute('once'), listeners: el._listeners}).toEqual({attr: false, listeners: undefined})
     })
 
-    test('I28b: atom-valued on* non-event prop becomes a reactive attribute binding', () => {
+    test('I28b: atom-valued on* non-event prop is not bound as a reactive attribute', () => {
         const online = atom('yes')
         function App({}: any, {createElement}: RenderContext) {
             return <div id="i28b" online={online}>x</div>
         }
-        root.render(<App/>)
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            root.render(<App/>)
+        } finally {
+            consoleError.mockRestore()
+        }
         const el = document.getElementById('i28b')!
-        expect(el.getAttribute('online')).toBe('yes')
+        expect(el.hasAttribute('online')).toBe(false)
         online('no')
-        expect(el.getAttribute('online')).toBe('no')
+        expect(el.hasAttribute('online')).toBe(false)
     })
 
     test('I28c: real events (on + uppercase) still bind, including Capture', () => {
