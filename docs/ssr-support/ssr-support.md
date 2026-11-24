@@ -176,6 +176,8 @@ next-action: 无
 
 **元素认领顺序（现状，#54；实验性）**：JSX 先求值子节点、后求值父节点，元素的 `createElement` 发生时父元素还没有认领、没有游标。此时 `tryClaimElement` 在整个激活根里按「子先于父」的顺序（DOM 后序）取第一个未认领、标签相同且合格的元素——一棵静态 JSX 树里各元素的 `createElement` 恰好按这个顺序发生。已认领的 `dangerouslySetInnerHTML` 元素的内容不参与搜索。已知局限（`auditSsrHydrate.spec.tsx` 的 `test.fails`，归 #55 自顶向下按位置认领）：子组件、函数子节点在父级 JSX 求值之后才渲染，服务端输出里也没有它们内容起点的标记，父级里排在后面的同标签元素会先拿走它们的节点（F1b、F1f–F1h）；原始标记元素认领自己时仍会搜到自己标记里的同标签节点（F1j）；另有 F3（函数子节点锚点前瞻）、F4（结构漂移不报告不修复）。在 #55 落地之前，README 与站点文档把 `hydrateRoot` 标为实验性。
 
+**元素认领顺序（#55 设计，待实现）**：激活期间 `createElement` 返回延迟描述，各 Host 按文档顺序自顶向下消费自己的节点，先内容、后 placeholder；服务端标记不变。设计、受影响的契约与迁移、失配修复规则、零开销保证与实现拆分见 [`hydration-top-down.md`](./hydration-top-down.md)。新模型先经不导出的内部入口分步落地，`hydrateRoot` 在切换 PR（该文档 §7 的 S）合入后改用它；此后本段「现状」与 §3.7 的修复粒度以该文档为准。
+
 **CSR 隔离**：SSR 实现放在独立导出 `axii/ssr`（类比已有 `axii/vite-plugin`），不打进浏览器主包。Hydration 认领逻辑仅在 hydrate 入口设置的短生命周期上下文中生效；`LightBindingEffect` / atom 文本更新 / `RxListHost` patch / `createHost` 分发在非 hydrating 稳态下不增加分支成本（允许 hydrate 期间 Host.`render` 上一次布尔读，禁止热更新路径常驻 SSR 分支）。
 
 ### 3.2 标记与 DOM 对应
@@ -677,7 +679,7 @@ function isFunctionHostTextSnapshot(node: unknown): boolean {
 
 1. 忽略仅由 HTML 解析插入、且 CSR `createElement` 路径不会创建的包装差异时，按白名单折叠（首版：**隐式/显式 tbody** 在「仅含 tr/注释/空白」时视为透明）。
 2. **仅当**比对「尚未跑完 B3/BC3/BD3/BE3/E3/ED3/EE3/FS4 的解析树」或 SSR 字符串中间态时：成对剥离 `data==='axii:t'` 与紧随文本后的 `data==='axii:/t'`；将孤立 `data==='axii:0'` 规范为「空 Text 占位」语义（比对工具可映射为 `Text('')` 槽，**不得**在生产 DOM 上留下哨兵）。Comment-ph 空行的结构 Comment **不是** `axii:0`，比对时保留为 Comment。FTS 解析树上 `computed node` 后的 `axii:0` 映射为 FunctionHost 尾 placeholder 槽。FCS / Root / EmptyHost / **G3-RL 外层** / **G3-RU `reusable`** 的结构 Comment（`root` / `rx list item` / `array item` / `computed node` / `empty` / `fragment start` / `reusable` 等）**保留**，**不得**剥离或改写 data。**不得**忽略任意 `data==='/'` 或未配对注释。Compact-row **不得**被规范工具「补」`rx list item`；非 G3-F FCS **不得**被规范工具改成 `rx list item`；EmptyHost **不得**被规范工具改成「仅 outer + 空 Text」；嵌套 RxList **不得**被规范工具扁平掉外层行锚。
-3. 属性：按序列化规范比较（布尔属性统一为出现且值为 `"true"`）。
+3. 属性：按 attribute 名与值逐项比较（#51 起服务端写出的就是客户端留在元素上的 attribute，见 §3.6.1「布尔值与 property 写法」，不再把布尔属性统一规范为 `"true"`）。
 4. 不计事件监听与 JS 属性（只比 DOM 树形状与 attribute/text）。
 
 激活完成后 vs 解析认领前：元素与**非空**被认领文本 **identity 相等**；Comment-ph 的结构 Comment identity 相等；Compact-row 元素 identity 相等；空文本按 §3.2.1 D；激活完成后 vs CSR：无 `axii:*` 残留前提下比形状（Comment-ph 含结构 Comment；Compact-row 无行级 `rx list item`）。
@@ -1087,7 +1089,7 @@ type PortalContainerRef = HTMLElement | string | { id: string }
 |---|---|
 | NORMAL 文本节点 | 转义 `& < >` |
 | 属性值 | 转义 `& < > "`；按双引号属性输出 |
-| 布尔值（`true` / `false`；`null` / `undefined` 一律不输出） | 与 CSR `setAttribute` / `setEmptyOrBooleanProperty` 同一套规则（服务端没有 DOM 可问 property 类型，string 型 property 用 `ssr.ts` `STRING_TYPED_PROPERTIES` 静态表）：① string 型 property（`title`/`href`/`download`/`popover`/`alt`…）与 `hidden`：真 → `name=""`，假 → 不输出；② 关键字型：`contenteditable`/`spellcheck`（任一大小写写法）、`aria-*`/`data-*`、`draggable`、`writingSuggestions`、`ariaXxx` → `"true"`/`"false"`，`translate` → `"yes"`/`"no"`；③ `disabled` 与其余名字（真正的 boolean attribute、表里没有的名字、SVG 与自定义元素上的任何名字）：真 → `name="true"`，假 → 不输出。表单的 `checked`/`selected` 见 §3.6.2 |
+| 布尔值（`true` / `false`；`null` / `undefined` 一律不输出）与 property 写法 | 服务端写出「客户端最终留在元素上的 attribute」（#51），规则只有一份，在 `src/markupNames.ts`：按 `DOM.setAttribute` 的分发顺序——① 专门分支：`disabled`（任何元素，真值 → `"true"`，假值含 `0`/`''` 不输出）、`option` 的 `selected` 与表单通道（§3.6.2）；② HTML 元素上是反射 property 的名字（SVG 不走这条）：写入规则 `emptyOrBooleanWrite`（客户端喂运行时的 `typeof node[name]`，服务端喂静态类型表 `htmlPropertyType` 的样本）+ 浏览器反射——string / 可空 string 型 `true` → `""`、boolean 型 `true` → `""`、数值型 `true` → `"1"`、DOMTokenList → `"true"`，`false` 都不输出；`contentEditable`/`writingSuggestions`/`ariaXxx` 原样 → `"true"`/`"false"`，`draggable`/`spellcheck` → `"true"`/`"false"`，`translate` → `"yes"`/`"no"`，`hidden` → `""`/不输出；自定义元素上的全局 property 一律原样赋值（`title={false}` → `"false"`、`tabIndex={false}` → `"0"`）；`option`/`button`/`data` 与 `li`/`meter`/`progress` 的 `value` 走 value 分支原样赋值（`"true"`/`"false"` 与 `"1"`/`"0"`）。boolean 型的非 boolean 值按真假（`required={0}`、`hidden={0}` 不输出）；数值型的 WebIDL 数值转换不模拟。attribute 名经 `attributeNameOfProperty`（`htmlFor`→`for`、`defaultValue`→`value`、`defaultChecked`→`checked`、`ch`→`char` …），只对该元素上确实是 property 的名字改名（`<div htmlFor>` 原样）；③ 其余（不是 property 的名字、SVG 元素）走 attribute 分支：真 → `name="true"`，假 → 不输出；`contenteditable`/`spellCheck` 等 attribute 写法、`aria-*`/`data-*` 的假值保留 `"false"`。静态类型表的每一项由 `auditSsrCsrAttributeParity.spec.tsx` 在真实浏览器里与客户端逐项核对 |
 | RCDATA 子文本（`textarea`/`title`） | 转义 `& < >`（实体会被解码；可安全承载字面 `</textarea>` 等，d4）；**禁止**暗示与 RAWTEXT 相同 |
 | RAWTEXT 子文本（`style`/`script`/…） | **不做** `& < >` 实体转义（F15：不解码）。序列化前做**终止序列门闩**（见下）；命中则 **SSR 抛错**，禁止静默截断 DOM |
 | 外来内容里的 RAWTEXT 标签（`<svg>` / `<math>` 之下、不在 integration point 里的 `style`/`script`/…） | 解析器在外来内容里创建 SVG / MathML 元素，**不切换** tokenizer 状态：文本是普通数据（实体解码、`<` 开始标签，`<img>`/`<p>` 等还会跳出外来内容成为 HTML 元素）。按 **RCDATA 行**转义，不写 `axii:*`（hydration 仍按 localName 视为字符数据父节点）；**禁止**按标签名原样写出（`<svg><style>{userCss}</style></svg>` 会注入元素）。上下文按解析器规则推导：HTML 内容里只有标签名 `svg`/`math` 开启外来内容（`_isSVG` 不算）；SVG `foreignObject`/`desc`/`title` 与 MathML `mi`/`mo`/`mn`/`ms`/`mtext`（`mglyph`/`malignmark` 除外）、`annotation-xml`（encoding 为 HTML）回到 HTML；Portal 内容从 HTML 开始。不建模「跳出外来内容」（无效嵌套，按外来转义只多出字面实体，方向安全） |
@@ -1143,10 +1145,12 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 | **IV** | `input`（`type` 不是 checkbox 的 value→checked 双通道语义；含 text/password/hidden/number/radio 的 value 等）上的 `value` | `value="{escape(String(applied))}"`，`applied = v == null ? '' : v` | 省略导致解析 `.value` 与数据不符；把 radio/text 的 value 当成 checked |
 | **CK** | `input` 上**仅** `checked` prop（无同元素 `value` prop），`type` 为 checkbox 或 radio | 真：`checked="true"`；假：不输出 `checked`；**不**输出 `value` 属性（保留浏览器缺省 `.value==='on'` 等） | 因 checked 而误写 `value="true"`；checkbox 假时残留 `checked` |
 | **CB** | `input type=checkbox` 上存在 `value` prop（无论是否另有 `checked`） | 见下方 **CB 发出算法**与矩阵 | 「同 CK 行」只发 checked；省略 value 属性 |
-| **TA** | `textarea` 的 value | **子文本**按 §3.6.1 RCDATA 转义；**禁止** `value` 属性冒充；**禁止** `axii:*`（§3.2.1 A3） | 只靠 value 属性；发文本标记 |
+| **TA** | `textarea` 的 value；没有 value 时的 `defaultValue`（#51，客户端赋值替换子文本；boolean / nullish 为空串） | **子文本**按 §3.6.1 RCDATA 转义；**禁止** `value` 属性冒充；**禁止** `axii:*`（§3.2.1 A3）；hydrate 时这段子文本由 `createElement` 拿掉、由 prop 写回（`markupNames.textareaContentProp`） | 只靠 value 属性；发文本标记 |
 | **SO** | `select` 的 value / multiple 数组，或独立 `option selected` | 对应 `option` 上 `selected="true"`（多选多个）；假/未选不输出 | 依赖 CSR 无 attr 的 outerHTML |
 
 字面量与 CSR 布尔约定对齐：`checked="true"`、`selected="true"`、`disabled="true"`。属性值转义一律 §3.6.1。
+
+`defaultValue` / `defaultChecked` / `defaultSelected` / `defaultMuted` 与驱动同一状态的 prop（IV / CK / CB 的 `value`、`checked`，SO，`muted`）同时出现时，HTML 只能写出一个 attribute：服务端写后者、丢掉 default*（解析后的当前状态与客户端一致，`defaultValue` 等 IDL 由 hydrate 写回；#51）。
 
 ##### CB — checkbox `value` 通道（完整有限）
 
@@ -1201,6 +1205,8 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 | 观测 | 测试可断言：诊断被触发；失配子树节点 identity 与解析前不同；匹配子树 identity 保持 |
 
 版本/数据漂移与 HTML 篡改均落入本条款。正确匹配路径禁止重建（identity 断言）。
+
+自顶向下认领下的失配规则（按「游标处期望什么」分类的局部修复 R1–R5，以及「位置对齐 ⇒ DOM ≡ CSR」的不变量）见 [`hydration-top-down.md`](./hydration-top-down.md) §4。
 
 ### 3.8 公开 API 与产物
 
