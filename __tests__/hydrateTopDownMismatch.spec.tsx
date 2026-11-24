@@ -159,6 +159,10 @@ describe('R1: an element rebuilt on a mismatch is built like CSR (§4.2 R1, B3 a
         ['a Compact list row', 'x-b3-probe', (v: any) => function App({}: any, {createElement}: RenderContext) {
             return <ul>{new RxList([1]).map(() => createElement('x-b3-probe', {'data-v': v}))}</ul>
         }],
+        // 组件直接返回列表：列表上面没有 StaticHost，新建的行只能由它自己的 CompactElementHost 插入
+        ['a Compact row of a list returned by the root component', 'x-b3-probe', (v: any) => function App({}: any, {createElement}: RenderContext) {
+            return new RxList([1]).map(() => createElement('x-b3-probe', {'data-v': v}))
+        }],
         ['the value of a function child', 'x-b3-probe', (v: any) => function App({}: any, {createElement}: RenderContext) {
             return <div>{() => createElement('x-b3-probe', {'data-v': v})}</div>
         }],
