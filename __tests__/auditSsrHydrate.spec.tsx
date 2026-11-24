@@ -368,10 +368,9 @@ describe('F1 regression: static trees hydrate in place (deterministic fuzz)', ()
 // own tag. Every tree: DOM ≡ CSR, no report, every server element kept, each listener at its own position, and the Host
 // kinds the activation creates equal the kinds a CSR render creates, kind by kind (§2.4.1: createHydrateHost and
 // createHost must not diverge; CompactElementHost included). Over the 300 trees each landed kind appears on both sides.
-// Not generated (not landed yet, or a known server defect): reusable(), live DOM nodes, Portal, lazy (B4); the same JSX
-// element twice (C6, B4); a function child whose value is another function or an RxList (ssr.serializeStructureResult
-// falls back to the element-child writer: a Text-ph for the function, #82; an extra <!--unhandledChild--> after the rows —
-// pinned in hydrateTopDown.spec「pre-existing server / CSR disagreement」).
+// Not generated (not landed yet): reusable(), live DOM nodes, Portal, lazy (B4); the same JSX element twice (C6, B4).
+// A function child whose value is another function or an RxList is generated: the server writes it as a Comment-ph
+// since #82 (it used to fall back to the element-child writer).
 // Internal entry only until #55 S replaces the generator above with this one (the old model does not support these shapes).
 describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): every landed Host kind hydrates in place', () => {
     const TAGS = ['div', 'span', 'b', 'em', 'section']
@@ -435,27 +434,26 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
             if (r < 0.28) return element(depth)
             if (r < 0.38) return text()
             if (r < 0.45) return {k: 'atom', v: rnd() < 0.2 ? '' : `a${n++}`}
-            if (r < 0.55) return {k: 'fn', body: source(depth + 1, true)}
-            if (r < 0.65) return {k: 'comp', body: source(depth + 1, false)}
-            if (r < 0.73) return {k: 'list', rows: many(depth + 1, 3, d => source(d, false))}
-            if (r < 0.81) return {k: 'arr', items: many(depth + 1, 3, d => source(d, false))}
+            if (r < 0.55) return {k: 'fn', body: source(depth + 1)}
+            if (r < 0.65) return {k: 'comp', body: source(depth + 1)}
+            if (r < 0.73) return {k: 'list', rows: many(depth + 1, 3, source)}
+            if (r < 0.81) return {k: 'arr', items: many(depth + 1, 3, source)}
             if (r < 0.88) return {k: 'frag', kids: many(depth + 1, 3, child)}
             if (r < 0.95) return {k: 'bool', v: rnd() < 0.5}
             return {k: 'nil', v: rnd() < 0.5 ? null : undefined}
         }
-        // the source of a Host: a function's value, a component's result, a list row, an array item.
-        // functionValue: a function's own value is never a function (#82) nor an RxList (the same server defect)
-        const source = (depth: number, functionValue: boolean): Gen => {
+        // the source of a Host: a function's value, a component's result, a list row, an array item
+        const source = (depth: number): Gen => {
             if (depth >= 5) return rnd() < 0.5 ? text() : element(depth)
             const r = rnd()
             if (r < 0.3) return element(depth)
             if (r < 0.4) return {k: 'frag', kids: many(depth + 1, 3, child)}
             if (r < 0.5) return text()
             if (r < 0.57) return {k: 'atom', v: rnd() < 0.2 ? '' : `a${n++}`}
-            if (r < 0.66) return functionValue ? element(depth) : {k: 'fn', body: source(depth + 1, true)}
-            if (r < 0.75) return {k: 'comp', body: source(depth + 1, false)}
-            if (r < 0.82) return functionValue ? element(depth) : {k: 'list', rows: many(depth + 1, 3, d => source(d, false))}
-            if (r < 0.89) return {k: 'arr', items: many(depth + 1, 3, d => source(d, false))}
+            if (r < 0.66) return {k: 'fn', body: source(depth + 1)}
+            if (r < 0.75) return {k: 'comp', body: source(depth + 1)}
+            if (r < 0.82) return {k: 'list', rows: many(depth + 1, 3, source)}
+            if (r < 0.89) return {k: 'arr', items: many(depth + 1, 3, source)}
             if (r < 0.95) return {k: 'bool', v: rnd() < 0.5}
             return {k: 'nil', v: rnd() < 0.5 ? null : undefined}
         }
@@ -497,6 +495,7 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
     function countShapes(g: Gen, into: {[k: string]: number}) {
         into[g.k] = (into[g.k] ?? 0) + 1
         if (g.k === 'el' && g.raw !== undefined) into.raw = (into.raw ?? 0) + 1
+        if (g.k === 'fn' && (g.body.k === 'fn' || g.body.k === 'list')) into[`fn→${g.body.k}`] = (into[`fn→${g.body.k}`] ?? 0) + 1
         const nested = g.k === 'el' || g.k === 'frag' ? g.kids : g.k === 'arr' ? g.items : g.k === 'list' ? g.rows
             : g.k === 'fn' || g.k === 'comp' ? [g.body] : []
         nested.forEach(c => countShapes(c, into))

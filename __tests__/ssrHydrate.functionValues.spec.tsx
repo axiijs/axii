@@ -17,7 +17,7 @@ import {createElement, createRoot, configureDiagnostics, RenderContext} from '@f
 import {atom, RxList} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, pendingTopDown} from './helpers/hydrate'
+import {hydrate} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -200,7 +200,7 @@ describe('#82 hydration ≡ CSR: function child whose value is a function', () =
 })
 
 describe('#82 hydration ≡ CSR: list rows / array items / RxList and array values (#55 B2 on the internal entry)', () => {
-    test.skipIf(pendingTopDown('B2')).each(KINDS)('list row and array items are a function returning a function (%s)', async (k) => {
+    test.each(KINDS)('list row and array items are a function returning a function (%s)', async (k) => {
         await check(() => {
             const {fn, updates} = nested(k)
             const rows = new RxList([1, 2])
@@ -215,7 +215,7 @@ describe('#82 hydration ≡ CSR: list rows / array items / RxList and array valu
         })
     })
 
-    test.skipIf(pendingTopDown('B2'))('function returning an RxList / a function returning an RxList / an array', async () => {
+    test('function returning an RxList / a function returning an RxList / an array', async () => {
         await check(() => {
             const rows = new RxList([1, 2])
             const show = atom(true)
@@ -233,7 +233,7 @@ describe('#82 hydration ≡ CSR: list rows / array items / RxList and array valu
         })
     })
 
-    test.skipIf(pendingTopDown('B2'))('array items that are atoms (Comment-ph): empty / non-empty, next to text', async () => {
+    test('array items that are atoms (Comment-ph): empty / non-empty, next to text', async () => {
         await check(() => {
             const e = atom('')
             const a = atom('a')

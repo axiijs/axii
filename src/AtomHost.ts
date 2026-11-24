@@ -8,7 +8,7 @@ import type {HostPosition} from "./createHost";
 import {isHydrating} from "./hydration";
 import {claimTextBeforeCommentPlaceholder} from "./hydration";
 import {isCommentNode, isTextNode} from "./nodeType";
-import {ARRAY_ITEM_SLOT, HydrationSlot, TEXT_SLOT} from "./hydrationElement";
+import {HydrationSlot, TEXT_SLOT} from "./hydrationElement";
 import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
 
 
@@ -113,8 +113,6 @@ export class AtomHost extends LightBindingEffect implements Host{
     // #55 新模型（§2.5）：按当前值认领文本单元，再像 render 一样建立绑定。
     //  TEXT_SLOT（元素子节点里的 Text-ph）：非空认领文本单元，空认领 axii:0；这个 Text 同时是 element 和 placeholder。
     //  Comment slot：非空认领文本单元，空时（服务端什么都不写）插入 Text('')，然后认领 slot。
-    //  例外是数组项（'array item'）：服务端 ssr.serializeStaticArrayItemContent 对 atom 项按 Text-ph 写（emitTextPh），
-    //  空值写 <!--axii:0-->，所以空值认领哨兵（插入 Text('')、删除哨兵）。CSR 里它仍是 Comment-ph 的 AtomHost，DOM 相同。
     //  run() 随后写入同一个值（文本更新的路径不变）。
     hydrate(slot: HydrationSlot): void {
         trackLightBindingCreated(this, 'AtomTextBinding')
@@ -128,9 +126,7 @@ export class AtomHost extends LightBindingEffect implements Host{
         if (slot === TEXT_SLOT) {
             this.element = this.placeholder = text === '' ? claimTopDownEmptyTextPlaceholder() : claimTopDownText(text)
         } else {
-            this.element = text !== '' ? claimTopDownText(text)
-                : slot === ARRAY_ITEM_SLOT ? claimTopDownEmptyTextPlaceholder()
-                : insertTopDownEmptyText()
+            this.element = text === '' ? insertTopDownEmptyText() : claimTopDownText(text)
             this.placeholder = claimTopDownComment(slot)
         }
         this.run()

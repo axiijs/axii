@@ -574,7 +574,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             .toEqual({rows: true, items: true, reports: []})
     })
 
-    test('an empty atom as an array item: the server writes a Text-ph sentinel before <!--array item-->; hydrates ≡ CSR, updates ≡ CSR', async () => {
+    test('atoms as array items (Comment-ph AtomHost on <!--array item-->), empty and non-empty, next to DirectNodes: hydrates ≡ CSR, updates ≡ CSR', async () => {
         const make = () => {
             const a = atom('')
             const b = atom('y')
@@ -588,7 +588,8 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         const c = make()
         createRoot(csrEl).render(createElement(c.App, null))
         const hyd = ssrInto(createElement(make().App, null))
-        expect(hyd.innerHTML).toContain('<!--axii:0--><!--array item-->')
+        // 空值的 Comment-ph 文本单元服务端不写任何节点（#82 之前曾写 axii:0），激活在 placeholder 前插入 Text('')
+        expect(hyd.innerHTML).not.toContain('<!--axii:0--><!--array item-->')
         const h = make()
         hydrateRootTopDown(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reports, markers: hyd.innerHTML.includes('axii:')}).toEqual({dom: kids(csrEl), reports: [], markers: false})
@@ -779,13 +780,12 @@ describe('server / CSR agreement found in B1 (fixed in #82)', () => {
     })
 })
 
-describe('pre-existing server / CSR disagreement (out of B2 scope, same class as #82)', () => {
-    // 函数结构态的值是 RxList（{() => list.map(...)}）：CSR 里 RxListHost 的 placeholder 就是 FunctionHost 的 <!--computed node-->，
-    //  服务端 ssr.serializeStructureResult 却经 serializeChild 按「元素 child」写这个列表，行之后多一个 <!--unhandledChild-->。
-    //  与 #82（值是函数时多一个 axii:0）是同一个函数的同一类问题：serializeStructureResult 的兜底分支写出了元素 child 位置的标记。
-    //  旧模型激活后把这个 <!--unhandledChild--> 留在 DOM 里，之后 push 的行插在它后面（DOM 与 CSR 不同，不报告）；
-    //  新模型在认领 <!--computed node--> 处报告失配并抛出（B3 的 R3 会删除它并报告）。根治在服务端，修好之后这条翻转为通过。
-    test.fails('function child returning list.map(...): hydrates ≡ CSR without a report, push ≡ CSR', () => {
+describe('server / CSR agreement found in B2 (fixed in #82)', () => {
+    // 函数结构态的值是 RxList（{() => list.map(...)}）：CSR 里 RxListHost 的 placeholder 就是 FunctionHost 的 <!--computed node-->。
+    //  服务端曾经经 serializeChild 按「元素 child」写这个列表，行之后多一个 <!--unhandledChild-->：旧模型把它留在 DOM 里，
+    //  之后 push 的行插在它后面；新模型在认领 <!--computed node--> 处报告失配并抛出。#82 在服务端按 Comment-ph 的分派修复
+    //  （ssr.serializeStructureResult → serialize），B2 写下这条时是 test.fails，合入 #82 之后翻转为 test。
+    test('function child returning list.map(...): hydrates ≡ CSR without a report, push ≡ CSR', () => {
         const make = () => {
             const list = new RxList([1, 2])
             function App({}: any, {createElement}: RenderContext) { return <div>{() => list.map(i => <li>{i}</li>)}<p>x</p></div> }
