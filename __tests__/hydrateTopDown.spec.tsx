@@ -229,12 +229,13 @@ describe('root sources (§2.5 「根」)', () => {
         // 激活之外求值的 JSX 元素（hydrateRoot(c, <p/>) 的参数）是现成节点（§2.6.8，B4），元素根用函数 / 组件表达
         const c = make()
         const csrEl = mount()
-        createRoot(csrEl).render(c.source())
+        const csrRoot = createRoot(csrEl)
+        csrRoot.render(c.source())
         const hyd = mount()
         hyd.innerHTML = renderToString(make().source()).html
         const serverNodes = Array.from(hyd.querySelectorAll('*'))
         const h = make()
-        hydrateRootTopDown(hyd, h.source())
+        const root = hydrateRootTopDown(hyd, h.source())
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         expect(Array.from(hyd.querySelectorAll('*')).filter(e => !serverNodes.includes(e))).toEqual([])
         if (c.update) {
@@ -243,6 +244,10 @@ describe('root sources (§2.5 「根」)', () => {
             await tick()
             expect(kids(hyd)).toBe(kids(csrEl))
         }
+        // 销毁与 CSR 相同（Fragment 的 source 认领后换成 DocumentFragment，按 fragment 区间整段删除）
+        csrRoot.destroy()
+        root.destroy()
+        expect(kids(hyd)).toBe(kids(csrEl))
     })
 })
 
