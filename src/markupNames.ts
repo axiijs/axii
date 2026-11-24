@@ -73,6 +73,7 @@ export function isAriaReflectionProperty(name: string): boolean {
 }
 
 /**
+ * @internal
  * 事件名：on + 大写字母（onClick / onChangeCapture）。事件名的唯一判定，DOM.ts / ComponentHost /
  * StaticHost / diagnostics 都用这一份（DOM.ts 原样导出它，公开 API 不变）。
  * CAUTION 宽松的 startsWith('on') 会把 once/online 这类普通 prop 吞进事件分支——

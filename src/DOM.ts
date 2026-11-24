@@ -338,10 +338,8 @@ export type UnhandledPlaceholder = Comment | Text
 
 
 // 事件名判定（on + 大写字母）与「以 on 开头、不区分大小写」的判定都只在 markupNames.ts 定义一份：
-//  axii/ssr 与 diagnostics 也要用，而它们不能 import 本模块。这里原样导出 isEventName，公开 API 不变。
-/**
- * @internal
- */
+//  axii/ssr 与 diagnostics 也要用，而它们不能 import 本模块。这里原样导出 isEventName（定义处的 @internal
+//  标记保证它和原来一样不进入发布的类型声明），运行时导出不变。
 export {isEventName}
 
 
