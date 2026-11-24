@@ -41,6 +41,8 @@ import {
     attributeNameOfProperty,
     hasOnPrefix,
     innerHTMLOf,
+    isDataAttributeName,
+    isFalseKeywordAttributeName,
     isSvgHtmlIntegrationPoint,
     svgAttributeName,
     svgHtmlSharedElementNames,
@@ -731,15 +733,9 @@ function attributeValueOf(key: string, value: any, tagLower: string, isSVG: bool
         if (reflected !== undefined) return reflected
     }
     if (value === true) return 'true'
-    if (value === false) {
-        const lower = key.toLowerCase()
-        // attribute 写法（contenteditable / spellCheck）保留关键字；aria-* / data-* 的 false 是有语义的值，不是移除
-        if (lower === 'contenteditable' || lower === 'spellcheck' ||
-            ((key[0] === 'a' || key[0] === 'd') && (/^aria-/.test(key) || /^data-/.test(key)))) {
-            return 'false'
-        }
-        return null
-    }
+    // attribute 写法（contenteditable / spellCheck）保留关键字；aria-* / data-* 的 false 是有语义的值，不是移除
+    //  （≡ DOM.setAttribute，同一个判定 markupNames.isFalseKeywordAttributeName）
+    if (value === false) return isFalseKeywordAttributeName(key) ? 'false' : null
     return String(value)
 }
 
@@ -927,7 +923,7 @@ function serializeAttrs(
             if (key[0] === '$' || key.startsWith('prop:')) continue
         }
         // data-* 的数组是用户给的值，整体字符串化（data-ids={[1, 2]} -> "1,2"）；其余数组取最后一项
-        value = snapshotAttrValue(value, key.charCodeAt(0) === 100 && key.startsWith('data-'))
+        value = snapshotAttrValue(value, isDataAttributeName(key))
         if (value == null || typeof value === 'function') continue
         if (key === 'uuid') {
             // ≡ DOM.setAttribute：uuid 写成 data-uuid（nullish 表示没有 uuid，上面已经跳过）

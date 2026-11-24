@@ -292,4 +292,19 @@ describe('audit: style serialization without a DOM', () => {
         expect(styles).toContain('margin-left:3rem;')
         expect(new framework.StyleSize(2).toString()).toBe('2rem')
     })
+
+    // #60：补单位名单只有一份（浏览器侧的完整核对见 __tests__/styleAutoUnit.spec.tsx）
+    test('#60: length properties outside the old list get the unit in SSR inline styles and rules; unitless ones do not', () => {
+        const style = {borderTopLeftRadius: 4, outlineOffset: 2, translate: [5, 6], height: BigInt(10), lineHeight: 1.5, zIndex: 2}
+        const {html, styles} = renderToString(createElement('div', null,
+            createElement('p', {style}),
+            createElement('p', {style: {...style, '&:hover': {scrollMarginTop: 7}}}),
+        ))
+        const declarations = 'border-top-left-radius:4px;outline-offset:2px;translate:5px 6px;height:10px;line-height:1.5;z-index:2'
+        expect(html).toContain(`style="${declarations}"`)
+        expect(styles).toContain(declarations.replace(/;/g, ';\n') + ';')
+        expect(styles).toContain('scroll-margin-top:7px;')
+        // 混合简写（border / outline）不在名单里：0 原样写出
+        expect(generateStyleContent('.x', {border: 0, outline: 0, inset: 0})[0]).toContain('border:0;\noutline:0;\ninset:0px;')
+    })
 })

@@ -5,7 +5,15 @@ import {DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isDomNode, isElementNode, isFragme
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
-import {SSR_STYLE_CLASSES_ATTRIBUTE, autoUnit, getAutoUnitType, setAutoUnitType} from './styleSerialize'
+import {
+    AUTO_ADD_UNIT_ATTR,
+    COMMA_MULTI_VALUE_ATTR,
+    SSR_STYLE_CLASSES_ATTRIBUTE,
+    autoUnit,
+    getAutoUnitType,
+    setAutoUnitType,
+    stringifyCssValue,
+} from './styleSerialize'
 import {
     REMOVE_ATTRIBUTE,
     WRITE_EMPTY,
@@ -15,7 +23,9 @@ import {
     hasOnPrefix,
     innerHTMLOf,
     isBooleanPropertyName,
+    isDataAttributeName,
     isEventName,
+    isFalseKeywordAttributeName,
     isInnerHTMLObject,
     isRawWriteProperty,
     isSvgHtmlIntegrationPoint,
@@ -76,62 +86,14 @@ import {
 } from "./hydrationCursor";
 import type {Host} from "./Host";
 
-export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
-// CAUTION 单位状态与 autoUnit 的实现只在 styleSerialize 里有一份（stylesheet / SSR 与行内样式共用），
-//  这里只是保持原有的对外导出。
-export {setAutoUnitType, autoUnit}
-
-export const COMMA_MULTI_VALUE_ATTR = /^(boxShadow|textShadow|transition|animation|backgroundImage)/
-
-// [number, string] 简写（[12, 'px'] => '12px'）只对真正的 CSS 单位生效：
-// margin: [0, 'auto'] 这类「数字 + 关键字」的空格简写是自然写法，误判成单位会拼出
-// "0auto" 这种非法值，浏览器静默拒绝整条声明（样式无效且没有任何报错）。
-const CSS_UNIT_VALUE = /^(px|em|rem|%|vw|vh|vmin|vmax|pt|pc|in|cm|mm|q|ex|ch|ic|cap|lh|rlh|fr|s|ms|deg|rad|grad|turn|dpi|dpcm|dppx|cqw|cqh|cqi|cqb|cqmin|cqmax|svw|svh|lvw|lvh|dvw|dvh)$/i
+// CAUTION 样式值 → CSS 文本（补单位名单、逗号列表、[数字, 单位] 简写、单位状态）只在 styleSerialize 有一份，
+//  行内样式与 stylesheet / SSR 共用（#60：这里曾有一份自己的 stringifyStyleValue 与同样的三张表）。
+//  这里只是保持原有的对外导出。例外：style 分支里的 CSS 自定义属性（--x）仍把原值交给 setProperty，
+//  数组的写法与 stylesheet / SSR 不同（见 styleSerialize 的「样式值 → CSS 文本」）。
+export {AUTO_ADD_UNIT_ATTR, COMMA_MULTI_VALUE_ATTR, setAutoUnitType, autoUnit}
 
 export function stringifyStyleValue(k:string, v: any): string {
-    // CAUTION style 对象的值可以是 atom/函数（style={{color: colorAtom}} 是自然写法），
-    //  这里统一求值。调用点都在响应式绑定（LightBindingEffect / StyleManager.update）内，
-    //  读取会正确建立依赖。不求值的话函数源码会被字符串化成非法 CSS，且没有任何响应性。
-    if (typeof v === 'function') v = v()
-    // 当值是 falsy 的时候 设置 style[k] 为 ''，用来清除 inline style
-    // CAUTION boolean 必须和 null/undefined 一样按「清除」处理：{fontWeight: cond && 'bold'} 的
-    //  条件写法翻转为 false 时，'false' 是非法 CSS 值，浏览器会静默拒绝这次赋值——
-    //  旧值（'bold'）不会被清除，样式永久残留（F36）。
-    if (v === undefined || v === null || typeof v === 'boolean') return ''
-    if(Array.isArray(v)) {
-        // CAUTION [数字, 单位] 简写必须先于逗号列表判断：接受时间单位的属性（transitionDuration /
-        //  transitionDelay / animationDuration / animationDelay）全部命中 COMMA_MULTI_VALUE_ATTR，
-        //  先走逗号分支的话 [300, 'ms'] 被拼成 "300,ms"——非法值，浏览器静默拒绝整条声明，
-        //  CSS_UNIT_VALUE 里的 s/ms 永远用不上。「数字 + 单位名」本身不可能是合法的逗号列表。
-        if (v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string' && CSS_UNIT_VALUE.test(v[1])) {
-            // [12, 'px'] => 12px
-            return `${v[0]}${v[1]}`
-        }
-        // CAUTION 这里的 v 都加上了 v.toString()，因为有可能是 StyleSize
-        if (COMMA_MULTI_VALUE_ATTR.test(k)) {
-            // attr like box-shadow
-            // 这里不可能是 StyleSize 所以不用 toString；数组项同样支持 atom/函数值。
-            // CAUTION 条件项（cond && '0 0 2px blue'）的 falsy 结果必须过滤掉：
-            //  'false' 混进逗号列表会让整条声明非法，浏览器静默丢弃 => 旧值永远残留（F36）。
-            const parts: string[] = []
-            for (let i of v) {
-                if (typeof i === 'function') i = i()
-                if (i === undefined || i === null || typeof i === 'boolean' || i === '') continue
-                parts.push(i)
-            }
-            return parts.join(',')
-        } else {
-            // padding/margin/transform|translate|scale|rotate|skew
-            // 支持 undefined 值自动 fallback 到 0 值
-            return v.map((i:any) => stringifyStyleValue(k, i ?? 0)).join(' ')
-        }
-    }
-    // number/string/StyleSize
-    // CAUTION 空字符串的语义是「清除该 key」（与 React 一致），绝不能被 `v||0` 塞成 "0px"：
-    //  {width: cond ? 100 : ''} 的条件写法翻转后宽度会静默变成 0 而不是恢复默认。
-    //  到达这里的 v 不可能是 null/undefined（开头已 return），无需 fallback。
-    if (v === '') return ''
-    return (!(v instanceof StyleSize) && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v) : v.toString()
+    return stringifyCssValue(k, v)
 }
 
 
@@ -342,7 +304,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     //  静态路径不能把它塌成最后一项，否则同一个属性静态/响应式写出的值不同。
     if (Array.isArray(value) && name !== 'style' && name !== 'className' && !isEventName(name) &&
         !(name === 'value' && node.tagName === 'SELECT') &&
-        !(name.charCodeAt(0) === 100 && name.startsWith('data-'))) {
+        !isDataAttributeName(name)) {
         // 全都是覆盖模式，只处理最后一个
         return setAttribute(node, name, value.at(-1), isSvg)
     }
@@ -474,7 +436,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
                         }
                     }else {
                         // @ts-ignore
-                        node.style[k] = stringifyStyleValue(k, v)
+                        node.style[k] = stringifyCssValue(k, v)
                     }
                 })
             } else {
@@ -711,15 +673,9 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         if (value == null || value === false) {
             if (ns) {
                 node.removeAttributeNS('http://www.w3.org/1999/xlink', name.toLowerCase())
-            } else if (value === false &&
-                // spellCheck 是 React 的写法，不是 DOM property 名（property 是 spellcheck），所以落在
-                //  attribute 分支：false 被移除的话拼写检查仍然开着（缺省值是 true）。
-                (name.toLowerCase() === 'contenteditable' || name.toLowerCase() === 'spellcheck' ||
-                    ((name[0] === 'a' || name[0] === 'd') && (/^aria-/.test(name) || /^data-/.test(name))))) {
-                // CAUTION aria-*/data-* 的 false 是有语义的值，不是「移除」：
-                //  aria-expanded/aria-checked 等状态属性缺席与 "false" 对屏幕阅读器完全不同
-                //  （缺席 = 不可展开/不是开关，"false" = 收起/未选中）。React 同样字面化渲染。
-                //  data-* 的响应式路径（dataset 赋值）本来就产出 "false"，静态路径必须一致。
+            } else if (value === false && isFalseKeywordAttributeName(name)) {
+                // CAUTION aria-* / data-* / contenteditable / spellcheck 的 false 是有语义的值，不是「移除」
+                //  （名单与理由见 markupNames.isFalseKeywordAttributeName，axii/ssr 用同一份）。
                 //  null/undefined 仍然是移除语义（条件属性的自然写法）。
                 node.setAttribute(name, 'false')
             } else {
