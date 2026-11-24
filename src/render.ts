@@ -153,9 +153,12 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
     let errorListenersSilenced = false
     // CAUTION 重入的 destroy 不重复派发 detach（#58）：树的销毁会执行用户代码（清理函数、detach 监听器），
     //  「这块内容消失就关掉弹层」会在销毁过程中再次调用 root.destroy()。同一次销毁只派发一次 detach——
-    //  detach 监听器里无条件调用 destroy 的话，重复派发就是无界递归。destroying 在最外层那次 destroy
-    //  执行期间为 true；detachDispatched 表示 root 当前的内容已经派发过 detach。销毁过程中清理函数又往
-    //  这个 root 渲染了新内容时，render 把它清掉：新内容被销毁时照常派发自己的 detach。
+    //  detach 监听器里无条件调用 destroy 的话，重复派发就是无界递归。
+    //  destroying：树的销毁正在执行——最外层那次 destroy 期间，以及 render 在渲染栈退出时补做的
+    //  被丢弃树的销毁（那是渲染中途那次 destroy 的后半段，见 render 的重入说明）。
+    //  detachDispatched：root 现在的内容（destroy 之后就是「没有内容」）已经派发过 detach，只由 render 清掉。
+    //  重入的 destroy 在 detachDispatched 时不再派发；销毁过程中清理函数又往这个 root 渲染了新内容时，
+    //  新内容被销毁时照常派发自己的 detach。不是重入的 destroy 照常派发（两次独立的 destroy 各一次）。
     //  两个布尔量在每个 root 上，destroy / render 每次调用不分配。
     let destroying = false
     let detachDispatched = false
@@ -214,10 +217,16 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                     //  同样不属于 root 现在的内容，由 dispatch 报告并按已消费处理，销毁不会停在第一个
                     //  抛错的清理函数上；没有经过 dispatch 的错误（DOM 区间诊断等）在这里报告。
                     if (root.host !== host) {
+                        // 渲染中途那次 destroy 的后半段：这里面的清理函数再调用 root.destroy() 是重入
+                        //  （见 destroying 的说明），不再为同一次销毁派发 detach
+                        const outerDestroying = destroying
+                        destroying = true
                         try {
                             host.destroy()
                         } catch (error) {
                             reportAxiiError(error)
+                        } finally {
+                            destroying = outerDestroying
                         }
                         return host
                     }
@@ -274,8 +283,9 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                 // CAUTION 还在渲染的树不在这里销毁，见 render 的重入说明
                 if (host !== renderingHost) host?.destroy()
             } finally {
-                // 最外层那次结束（包括没有 error 钩子时清理函数抛错中途结束）：之后的 destroy 不再是重入
-                if (!reentrant) destroying = detachDispatched = false
+                // 最外层那次结束（包括没有 error 钩子时清理函数抛错中途结束）：之后的 destroy 不再是重入。
+                //  detachDispatched 保留到下一次 render（见 destroying 的说明）。
+                if (!reentrant) destroying = false
                 resumeRunningEffect(running)
                 // CAUTION 在旧树销毁之后才让监听器静默（见 errorListenersSilenced）：error 监听器
                 //  启动的这次销毁里，清理函数 / ref(null) 抛出的错误仍然交给监听器消费，否则
