@@ -798,7 +798,7 @@ export function isAcceptableSingleCssRule(rule: string): boolean {
 //  自定义属性里（CSS Syntax 3「consume a declaration」）：别的属性的值带顶层 {} 时整条声明无效，
 //  规则里的嵌套解析器会把它重新解析成一条嵌套规则（color: 'hover, & {position:fixed}' 让元素本身
 //  position:fixed）。"--" 本身不是自定义属性名，同样会被重新解析。
-const CSS_DECLARATION_NAME = /^[-_a-zA-Z0-9 -￿]+$/
+const CSS_DECLARATION_NAME = /^[-_a-zA-Z0-9\u00A0-\uFFFF]+$/
 export function isAcceptableInlineDeclaration(name: string, value: string): boolean {
     if (!CSS_DECLARATION_NAME.test(name)) return false
     const isCustomProperty = name.length > 2 && name.charCodeAt(0) === 0x2D && name.charCodeAt(1) === 0x2D
