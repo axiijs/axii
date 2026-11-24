@@ -560,81 +560,269 @@ export function generateStyleContent(selector: string, styleObject: StyleObject)
     return renderPreparedStyle(selector, prepareStyleContent(styleObject))
 }
 
+// ─────────────────────────── CSS 词法：声明门闩、规则门闩、SSR 字符串条目拆分共用（#78） ───────────────────────────
+// CAUTION 样式值拼进规则文本或 style 属性之后，由浏览器的 CSS tokenizer 重新切分（CSS Syntax 3 §4）。
+//  「这段文本在哪里结束、是不是恰好一条声明 / 一条规则」只能按同一套词法判断：朴素扫描与浏览器分界
+//  不同的每一处都是注入口（#78：url(a(b);position:fixed;x:()) 在浏览器里是 bad-url 加两条声明）。
+//  所以词法只有这一份（scanCssComponentValues），三个调用方都用它：
+//  - 不带引号的 url( 是一个 url token，在第一个未转义的 ")" 处结束，里面的 "(" 与引号不配对、不成串。
+//    含引号、"("、不可打印字符、内部空白、不合法转义（\ + 换行）的是 bad-url：它同样在第一个 ")" 处结束，
+//    并且在任何属性里都无效（CSSOM 整条拒绝），这里一律返回 -1。url 后面（可隔空白）跟引号时才是普通函数。
+//    函数名按转义解码后比较（\75rl( 与 u\72 l( 都是 url(）；#url( / @url( / 1url( / -url( 不是。
+//  - 字符串：未转义的换行（\n、\r、\f 都是换行）让它成为 bad-string，在换行前结束，返回 -1；\ + 换行是续行。
+//  - 转义：\ 后跟 1–6 个十六进制数字时连同其后的一个空白（\r\n 算一个）一起消耗；\ + 换行不是转义；
+//    结尾的 \ 会转义拼在后面的 ";"，返回 -1。
+//  - 注释只在 token 之间识别；未闭合的注释、字符串、url、块会一直吞到文本结尾，返回 -1
+//    （CSSOM 会在值的末尾自动补齐，这里更严格，见 README「Style arrays」）。
+//  - () [] {} 块按嵌套配对，块内的 ; ! 不是分隔符。
+//  - "<!--"（CDO）是一个 token，之后另起一个 token；"-->"（CDC）以 ">" 结尾，名字在这里自然断开。
+//  拿不准与浏览器分界是否相同的，一律返回 -1，由调用方拒绝或放弃，不做猜测性修补。
+//  性能：逐字符一遍扫描 O(n)，只用 charCodeAt，不切片、不建正则匹配、不分配；块栈是模块级复用的数组
+//  （扫描是同步的，不会重入）。stylesheet 条目每条声明都要过一次（declarationOf）。
+//  块栈常驻内存，长度是扫描过的最大嵌套深度：嵌套超过 CSS_MAX_BLOCK_DEPTH 层的文本直接返回 -1，
+//  一个恶意的值（百万个 "("）不能让它永久占用内存。
+export const CSS_STOP_SEMICOLON = 1     // 顶层的 ";" 结束扫描，返回它的位置
+export const CSS_STOP_BANG = 2          // 顶层的 "!" 结束扫描
+export const CSS_STOP_OPEN_BRACE = 4    // 顶层的 "{" 结束扫描（块内的 {} 照常配对）
+export const CSS_STOP_CLOSE_BRACE = 8   // 顶层多出来的 "}" 结束扫描（否则返回 -1）
+export const CSS_NO_BRACES = 16         // 任何位置的 "{" / "}"（字符串、注释、url 之外）都返回 -1
+
+const cssBlockClosers: number[] = []
+const CSS_MAX_BLOCK_DEPTH = 1024
+
+// ASCII 里的 name code point：字母、数字、"-"、"_"。U+0000 在进入 tokenizer 前被替换成 U+FFFD，同样算；
+//  非 ASCII 一律是 name code point。
+const CSS_ASCII_NAME_CODE_POINT = new Uint8Array(128)
+for (let c = 0; c < 128; c++) {
+    CSS_ASCII_NAME_CODE_POINT[c] = (c >= 0x61 && c <= 0x7A) || (c >= 0x41 && c <= 0x5A) || (c >= 0x30 && c <= 0x39)
+        || c === 0x2D || c === 0x5F || c === 0 ? 1 : 0
+}
+
 /**
- * §3.6.1 CSS rule escape gate — dual of Chromium `CSSStyleSheet.insertRule` single-rule acceptance.
- * Rejects multi-rule breakout strings; accepts quoted `}` inside a single rule.
+ * 从 start 开始按浏览器的 CSS 词法扫描一串 component value，返回第一个停止字符（flags 指定）的位置；
+ * 扫到结尾且所有块都已闭合时返回 text.length；其余（未闭合、不配对、bad-string / bad-url、结尾的 \）返回 -1。
  */
-export function isAcceptableSingleCssRule(rule: string): boolean {
-    const s = rule.trim()
-    if (!s) return false
+export function scanCssComponentValues(text: string, start: number, flags: number): number {
+    const length = text.length
     let depth = 0
-    let quote: string | null = null
-    let sawOpen = false
-    for (let i = 0; i < s.length; i++) {
-        const ch = s[i]
-        if (quote) {
-            if (ch === '\\') {
-                i++
-                continue
-            }
-            if (ch === quote) quote = null
+    // 当前名字（ident、函数名、数字的单位）的起点：-1 不在名字里；-2 名字属于前面的 # / @
+    //  （hash / at-keyword token，#url( 不是 url token）
+    let name = -1
+    // 当前名字里最后一个非 ASCII 字符（未转义）的位置。Chromium 把所有非 ASCII 都当名字字符，现行
+    //  CSS Syntax 3 只认其中若干区段（U+00A0 等不在内）；SSR 的输出由各家引擎解析。名字在非 ASCII 字符
+    //  之后的部分是 url 时（\u00A0url(），一种引擎里是普通函数、另一种里是 url token，两种分界不同，
+    //  无法确定，返回 -1。
+    let nonAscii = -1
+    let i = start
+    while (i < length) {
+        const c = text.charCodeAt(i)
+        if (c >= 0x80) {
+            if (name === -1) name = i
+            nonAscii = i
+            i++
             continue
         }
-        if (ch === '"' || ch === "'") {
-            quote = ch
+        if (CSS_ASCII_NAME_CODE_POINT[c] === 1) {
+            if (name === -1) name = i
+            i++
             continue
         }
-        if (ch === '{') {
-            depth++
-            sawOpen = true
-        } else if (ch === '}') {
-            depth--
-            if (depth < 0) return false
-            if (depth === 0) {
-                const rest = s.slice(i + 1).trim()
-                return sawOpen && rest.length === 0
+        if (c === 0x5C && isCssValidEscape(text, i)) {
+            if (name === -1) name = i
+            i = skipCssEscape(text, i)
+            if (i < 0) return -1
+            continue
+        }
+        const nameStart = name
+        const nameNonAscii = nonAscii
+        name = -1
+        nonAscii = -1
+        if (c === 0x28) {
+            if (nameNonAscii >= 0 && isCssUrlName(text, nameNonAscii + 1, i)) return -1
+            if (nameStart >= 0 && isCssUrlName(text, nameStart, i)) {
+                let j = i + 1
+                while (j < length && isCssWhitespace(text.charCodeAt(j))) j++
+                const q = text.charCodeAt(j)
+                if (q !== 0x22 && q !== 0x27) {
+                    i = skipCssUrlToken(text, j)
+                    if (i < 0) return -1
+                    continue
+                }
+                // url("…")：普通函数，按块配对
             }
+            if (depth === CSS_MAX_BLOCK_DEPTH) return -1
+            cssBlockClosers[depth++] = 0x29
+            i++
+        } else if (c === 0x22 || c === 0x27) {
+            i = skipCssString(text, i + 1, c)
+            if (i < 0) return -1
+        } else if (c === 0x2F && text.charCodeAt(i + 1) === 0x2A) {
+            const end = text.indexOf('*/', i + 2)
+            if (end < 0) return -1
+            i = end + 2
+        } else if (c === 0x23 || c === 0x40) {
+            name = -2
+            i++
+        } else if (c === 0x3C && text.charCodeAt(i + 1) === 0x21 && text.charCodeAt(i + 2) === 0x2D && text.charCodeAt(i + 3) === 0x2D) {
+            // "<!--" 是一个 CDO token：后面另起一个 token（<!--url( 是 url token，不是函数 --url(）
+            i += 4
+        } else if (c === 0x5B || c === 0x7B) {
+            if (c === 0x7B) {
+                if (flags & CSS_NO_BRACES) return -1
+                if (depth === 0 && flags & CSS_STOP_OPEN_BRACE) return i
+            }
+            if (depth === CSS_MAX_BLOCK_DEPTH) return -1
+            cssBlockClosers[depth++] = c === 0x5B ? 0x5D : 0x7D
+            i++
+        } else if (c === 0x29 || c === 0x5D || c === 0x7D) {
+            if (c === 0x7D && flags & CSS_NO_BRACES) return -1
+            if (depth === 0) return c === 0x7D && flags & CSS_STOP_CLOSE_BRACE ? i : -1
+            if (cssBlockClosers[--depth] !== c) return -1
+            i++
+        } else if (depth === 0 && ((c === 0x3B && flags & CSS_STOP_SEMICOLON) || (c === 0x21 && flags & CSS_STOP_BANG))) {
+            return i
+        } else {
+            // 其他单字符 token；\ + 换行不是转义，"\" 自己是一个 delim，换行在下一轮作为空白
+            i++
         }
     }
-    return false
+    return depth === 0 ? length : -1
+}
+
+function isCssWhitespace(c: number): boolean {
+    return c === 0x20 || c === 0x09 || c === 0x0A || c === 0x0C || c === 0x0D
+}
+
+function isCssNewline(c: number): boolean {
+    return c === 0x0A || c === 0x0C || c === 0x0D
+}
+
+function isCssHexDigit(c: number): boolean {
+    return (c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66) || (c >= 0x41 && c <= 0x46)
+}
+
+// text[i] 是 "\"：后面不是换行就是合法转义（文本结尾也算，由 skipCssEscape 拒绝）
+function isCssValidEscape(text: string, i: number): boolean {
+    return !isCssNewline(text.charCodeAt(i + 1))
+}
+
+// text[i] 是合法转义的 "\"，返回转义之后的位置；"\" 在结尾时返回 -1（会转义拼在后面的字符）
+function skipCssEscape(text: string, i: number): number {
+    let j = i + 1
+    if (j >= text.length) return -1
+    if (!isCssHexDigit(text.charCodeAt(j))) return j + 1
+    const max = j + 6
+    do j++; while (j < max && j < text.length && isCssHexDigit(text.charCodeAt(j)))
+    const c = text.charCodeAt(j)
+    if (c === 0x0D && text.charCodeAt(j + 1) === 0x0A) return j + 2
+    return isCssWhitespace(c) ? j + 1 : j
+}
+
+// [start, end) 这个名字解码转义之后是不是 url（ASCII 不区分大小写）
+function isCssUrlName(text: string, start: number, end: number): boolean {
+    let matched = 0
+    for (let i = start; i < end; matched++) {
+        let c = text.charCodeAt(i)
+        if (c === 0x5C) {
+            const next = skipCssEscape(text, i)
+            if (isCssHexDigit(text.charCodeAt(i + 1))) {
+                c = 0
+                for (let j = i + 1; j < next && isCssHexDigit(text.charCodeAt(j)); j++) {
+                    const h = text.charCodeAt(j)
+                    c = c * 16 + (h <= 0x39 ? h - 0x30 : (h | 0x20) - 0x57)
+                }
+            } else {
+                c = text.charCodeAt(i + 1)
+            }
+            i = next
+        } else {
+            i++
+        }
+        const lower = c | 0x20
+        if (matched === 0 ? lower !== 0x75 : matched === 1 ? lower !== 0x72 : matched !== 2 || lower !== 0x6C) return false
+    }
+    return matched === 3
+}
+
+// url token 的内容（i 在 "url(" 之后、前导空白之后），返回 ")" 之后的位置；bad-url 或未闭合返回 -1
+function skipCssUrlToken(text: string, i: number): number {
+    while (i < text.length) {
+        const c = text.charCodeAt(i)
+        if (c === 0x29) return i + 1
+        if (isCssWhitespace(c)) {
+            do i++; while (i < text.length && isCssWhitespace(text.charCodeAt(i)))
+            return text.charCodeAt(i) === 0x29 ? i + 1 : -1
+        }
+        // 引号、"("、不可打印字符：bad-url
+        if (c === 0x22 || c === 0x27 || c === 0x28 || (c >= 0x01 && c <= 0x08) || c === 0x0B || (c >= 0x0E && c <= 0x1F) || c === 0x7F) return -1
+        if (c === 0x5C) {
+            if (!isCssValidEscape(text, i)) return -1
+            i = skipCssEscape(text, i)
+            if (i < 0) return -1
+        } else {
+            i++
+        }
+    }
+    return -1
+}
+
+// 字符串的内容（i 在开引号之后），返回闭引号之后的位置；bad-string（未转义的换行）或未闭合返回 -1
+function skipCssString(text: string, i: number, quote: number): number {
+    while (i < text.length) {
+        const c = text.charCodeAt(i)
+        if (c === quote) return i + 1
+        if (isCssNewline(c)) return -1
+        if (c === 0x5C) {
+            const n = text.charCodeAt(i + 1)
+            if (n === 0x0D && text.charCodeAt(i + 2) === 0x0A) {
+                i += 3
+            } else if (isCssNewline(n)) {
+                i += 2
+            } else {
+                i = skipCssEscape(text, i)
+                if (i < 0) return -1
+            }
+        } else {
+            i++
+        }
+    }
+    return -1
+}
+
+/**
+ * §3.6.1 CSS rule escape gate — dual of Chromium `CSSStyleSheet.insertRule` single-rule acceptance:
+ *  前言（selector / at-rule prelude）之后恰好一个 {} 块，并且它在文本结尾闭合。按浏览器词法扫描（见上），
+ *  字符串、注释、url token、转义里的 "{" / "}" 不计入；SSR 的 <style> 没有 insertRule 兜底，
+ *  这里放行的规则不能在样式表里吞掉或长出别的规则。前言里顶层的 ";" 会结束一条 at-rule
+ *  （@x;body {…} 是两条规则），一律拒绝。
+ */
+export function isAcceptableSingleCssRule(rule: string): boolean {
+    let start = 0
+    let end = rule.length
+    while (start < end && isCssWhitespace(rule.charCodeAt(start))) start++
+    while (end > start && isCssWhitespace(rule.charCodeAt(end - 1))) end--
+    if (start === end) return false
+    const open = scanCssComponentValues(rule, start, CSS_STOP_SEMICOLON | CSS_STOP_OPEN_BRACE | CSS_STOP_CLOSE_BRACE)
+    if (open < 0 || open >= end || rule.charCodeAt(open) !== 0x7B) return false
+    return scanCssComponentValues(rule, open + 1, CSS_STOP_CLOSE_BRACE) === end - 1
 }
 
 // CAUTION inline style 的声明门闩（与上面的规则门闩同一个思路：和 CSR 的拒绝行为对偶）。
 //  CSR 的 inline style 是经 CSSOM 逐个属性写入的（node.style[k] = v / setProperty）：值里带顶层 `;`、
 //  不配对的括号或引号、`!important` 时，浏览器拒绝整次赋值，什么都不生效；属性名不是合法标识符时
-//  同样无效果。SSR 把同样的 k / v 拼进 style="…"，`;` 就成了声明分隔符——
+//  同样无效果。SSR 与 stylesheet 规则把同样的 k / v 拼成文本，`;` 就成了声明分隔符——
 //  style={{color: userColor}} 的 userColor 可以追加任意声明（position:fixed、background:url(…)）。
 //  不合格的声明整条不输出，与 CSR「该声明不生效」一致；不做改写。
+//  值必须按浏览器的词法恰好是一条声明的值（scanCssComponentValues，#78）。顶层的 {} 块只允许出现在
+//  自定义属性里（CSS Syntax 3「consume a declaration」）：别的属性的值带顶层 {} 时整条声明无效，
+//  规则里的嵌套解析器会把它重新解析成一条嵌套规则（color: 'hover, & {position:fixed}' 让元素本身
+//  position:fixed）。"--" 本身不是自定义属性名，同样会被重新解析。
+const CSS_DECLARATION_NAME = /^[-_a-zA-Z0-9\u00A0-\uFFFF]+$/
 export function isAcceptableInlineDeclaration(name: string, value: string): boolean {
-    if (!/^[-_a-zA-Z0-9\u00A0-\uFFFF]+$/.test(name)) return false
-    const closers: string[] = []
-    for (let i = 0; i < value.length; i++) {
-        const ch = value[i]
-        if (ch === '\\') {
-            // 结尾的反斜杠会把后面拼上的 `;` 转义掉，吞并下一条声明
-            if (i === value.length - 1) return false
-            i++
-        } else if (ch === '"' || ch === "'") {
-            let j = i + 1
-            for (; j < value.length && value[j] !== ch; j++) {
-                if (value[j] === '\n') return false
-                if (value[j] === '\\') j++
-            }
-            if (j >= value.length) return false
-            i = j
-        } else if (ch === '/' && value[i + 1] === '*') {
-            const end = value.indexOf('*/', i + 2)
-            if (end === -1) return false
-            i = end + 1
-        } else if (ch === '(' || ch === '[' || ch === '{') {
-            closers.push(ch === '(' ? ')' : ch === '[' ? ']' : '}')
-        } else if (ch === ')' || ch === ']' || ch === '}') {
-            if (closers.pop() !== ch) return false
-        } else if (closers.length === 0 && (ch === ';' || ch === '!')) {
-            return false
-        }
-    }
-    return closers.length === 0
+    if (!CSS_DECLARATION_NAME.test(name)) return false
+    const isCustomProperty = name.length > 2 && name.charCodeAt(0) === 0x2D && name.charCodeAt(1) === 0x2D
+    const flags = isCustomProperty ? CSS_STOP_SEMICOLON | CSS_STOP_BANG : CSS_STOP_SEMICOLON | CSS_STOP_BANG | CSS_STOP_OPEN_BRACE
+    return scanCssComponentValues(value, 0, flags) === value.length
 }
 
 /** Filter generateStyleContent rules through the escape gate; join survivors with newlines. */
