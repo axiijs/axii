@@ -110,7 +110,7 @@ export function Portal({ container, content, destroyOnUnmount, portalKey }: Port
         }
         cancelAttachBridge = outerRoot.attached ?
             outerRoot.deferUntilAttached(portalEl, dispatchInnerAttach) :
-            outerRoot.on('attach', dispatchInnerAttach, {once: true})
+            outerRoot.onAttachForRender(dispatchInnerAttach)
     }
 
     useEffect(() => {

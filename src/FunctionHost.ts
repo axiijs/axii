@@ -257,8 +257,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             } else if (!hydrating) {
                 newPlaceholder.remove()
             }
-            // 本节点在新内容渲染到一半时已被销毁：这棵子树马上丢弃，root 的监听器也已清空，
-            //  它的错误没有归属（与组件销毁后 async effect 的 rejection 不再上报同一语义）。
+            // 本节点在新内容渲染到一半时已被销毁：这棵子树马上丢弃，它的错误没有归属，
+            //  不交给 root 的监听器（监听器在 destroy 之后保留，属于 root 之后的内容；
+            //  与组件销毁后 async effect 的 rejection 不再上报同一语义）。
             if (this.destroyedWith !== undefined) {
                 this.destroyInnerHost(this.destroyedWith)
                 return

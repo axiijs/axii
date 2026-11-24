@@ -837,7 +837,7 @@ export class ComponentHost implements Host{
             } else {
                 // CAUTION 一定要保存退订函数，组件如果在 root attach 之前被销毁，
                 //  必须退订，否则 attach 时会对已销毁的组件执行 layoutEffect/ref。
-                this.deleteLayoutEffectCallback = root.on('attach', () => this.runLayoutEffect(), {once: true})
+                this.deleteLayoutEffectCallback = root.onAttachForRender(() => this.runLayoutEffect())
             }
         }
     }
@@ -856,8 +856,9 @@ export class ComponentHost implements Host{
         const root = this.pathContext.root
         void Promise.resolve(handle).catch(error => {
             // Promise rejection 发生在同步 runWithErrorHook 之外，必须显式桥接到
-            // root error 钩子。组件已经销毁时 effect 生命周期也已结束，不能再向
-            // 已清空监听器的 root 泄漏 unhandled rejection。
+            // root error 钩子。组件已经销毁时 effect 生命周期也已结束，错误没有归属：
+            // 不交给 root 的监听器（它们在 destroy 之后保留，属于 root 之后渲染的内容），
+            // 也不泄漏 unhandled rejection。
             if (!state.active) return
             // 未注册钩子时重新 reject，保留原先的 unhandled-rejection 可观测语义。
             if (!root.dispatch('error', error)) throw error

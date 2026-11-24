@@ -32,9 +32,17 @@ export type Root = {
     attached: boolean
     render: (componentOrEl: JSX.Element|ComponentNode|Function) => Host,
     destroy: () => void,
+    // 监听器属于 root，不属于某一次渲染：root.destroy() 之后保留，root 重新 render 的内容照常派发给它们
     on: (event: string, callback: EventCallback, options?: EventOptions) => () => void,
     // 返回是否有监听器消费了该事件
     dispatch: (event: string, arg?: any) => boolean
+    /**
+     * @internal
+     * 内容在 root attach 之前渲染时登记的 attach 回调（layoutEffect / ref / Portal 的 attach 桥接）。
+     * 与 on('attach', run, {once: true}) 同一张表、按登记顺序派发，但属于这一次渲染：
+     * root.destroy() 交出 root.host 时整体移除。返回退订函数（host 在 attach 之前被销毁时调用）。
+     */
+    onAttachForRender: (run: () => void) => () => void
     /**
      * @internal
      * root 已 attach、但组件/元素此刻仍渲染在脱离文档的 fragment 里
@@ -84,11 +92,65 @@ function resumeRunningEffect(running: ReactiveEffect | undefined) {
     running.shouldCollectChild = pausedCollectChild.pop()!
 }
 
+/**
+ * 往 root 的监听器表里登记一个回调，返回退订函数。owned 是登记者自己的成员表
+ *  （每次渲染的内部 attach 回调，见 Root.onAttachForRender），触发 once / 退订时一并移除。
+ * CAUTION 模块级函数而不是 createRootInternal 里的闭包：每个 root（包括每个 Portal 的内层 root）
+ *  不为它多分配一个函数。每次登记的分配与之前的 on() 相同：once 包装 + 退订函数。
+ * CAUTION 只在触发和退订时从 owned 里删除，不做「标记已取消」：root attach 之前内容可以反复
+ *  销毁 / 重建（函数节点重算、列表增删），标记式的话 owned 会留住每一个已销毁的 host。
+ */
+function addRootCallback(
+    eventCallbacks: Map<string, Set<EventCallback>>,
+    event: string,
+    callback: EventCallback,
+    once: boolean,
+    owned: Set<EventCallback> | undefined,
+): () => void {
+    let callbacks = eventCallbacks.get(event)
+    if (!callbacks) {
+        eventCallbacks.set(event, (callbacks = new Set()))
+    }
+    // CAUTION once 的退订必须放 finally：callback 抛错时不退订的话，
+    //  下一次事件会再次触发本应只执行一次的回调（layoutEffect 重复执行）。
+    const savedCallback = once ? (arg: any) => {
+        try {
+            callback(arg)
+        } finally {
+            callbacks!.delete(savedCallback)
+            owned?.delete(savedCallback)
+        }
+    }: callback
+
+    callbacks.add(savedCallback)
+    owned?.add(savedCallback)
+    return () => {
+        callbacks!.delete(savedCallback)
+        owned?.delete(savedCallback)
+    }
+}
+
 function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment): Root {
+    // 用户监听器与每次渲染的内部 attach 回调共用这张表（派发顺序就是登记顺序）
     const eventCallbacks = new Map<string, Set<EventCallback>>()
+    // CAUTION 当前这次渲染登记在 eventCallbacks 里的内部 attach 回调（layoutEffect / ref / Portal 桥接）。
+    //  它们属于这一次渲染，不属于 root：destroy 交出 root.host 时必须从表里移除，不能等各个 host
+    //  的 destroy 各自退订——渲染到一半被销毁的树（render 的重入说明）要等渲染栈退出才销毁，
+    //  在那之前 error 监听器往同一个 root 渲染的新内容一 attach，就会执行被丢弃那棵树的
+    //  layoutEffect / ref；树的销毁中途抛错（没有 error 钩子）时，没走到的 host 永远不会退订。
+    //  惰性分配：大多数 root 在 attach 之后才渲染动态内容，或者内容里没有 layoutEffect / ref。
+    let renderAttachCallbacks: Set<EventCallback> | undefined
     let attachQueue: AttachQueueEntry[] = []
     // 第一次 render 还在调用栈上的那棵树（见 render / destroy 的重入说明）
     let renderingHost: Host|undefined
+    // CAUTION error 监听器的重入：监听器在 destroy 之后保留，「销毁 root、往同一个 root 渲染错误提示」
+    //  的监听器还没返回时，错误提示同步抛出的错误会再次交给它——它再销毁、再渲染，错误提示每次都抛错
+    //  就一直递归到栈溢出，溢出的错误还会在渲染栈的回退里被丢弃。所以本 root 正在通知 error 监听器
+    //  （errorNotifyDepth > 0）时调用了 destroy，本 root 自己的监听器在最外层这次通知结束之前不再接收
+    //  error：之后的错误按未消费处理，抛回监听器，由派发方的逐监听器 catch 交给 reportAxiiError。
+    //  通知结束后恢复，root 之后渲染的内容的错误照常交给它们。监听器没有销毁 root 时不受影响。
+    let errorNotifyDepth = 0
+    let errorListenersSilenced = false
     // Portal 场景：内层 root 由框架私有创建，用户无法在它上面注册监听，
     //  未被消费的 error 事件必须冒泡到父 root，否则 portal 内容的错误
     //  永远到不了用户的 root.on('error') 钩子（异步路径下直接变成 unhandled rejection）。
@@ -127,18 +189,23 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                 const outerRenderingHost = renderingHost
                 renderingHost = host
                 try {
-                    host.render()
-                } catch (error) {
-                    // 树已经被销毁：它马上整体丢弃，监听器也已清空，后续错误没有归属
-                    //  （与组件销毁后 async effect 的 rejection 不再上报同一语义）。
-                    //  没有被销毁时保持向上抛出（root.host 仍被占用，由调用方 destroy）。
-                    if (root.host === host) throw error
+                    try {
+                        host.render()
+                    } catch (error) {
+                        // 树已经被销毁：它马上整体丢弃，它之后抛出的错误没有归属——dispatch 不再交给
+                        //  root 的监听器（见 dispatch 的说明），未消费的错误沿渲染栈抛到这里丢弃
+                        //  （与组件销毁后 async effect 的 rejection 不再上报同一语义）。
+                        //  没有被销毁时保持向上抛出（root.host 仍被占用，由调用方 destroy）。
+                        if (root.host === host) throw error
+                    }
+                    // CAUTION 被丢弃的树在 renderingHost 仍指向它的时候销毁：它的清理函数抛出的错误
+                    //  同样不属于 root 现在的内容，不交给 root 的监听器（见 dispatch 的说明）。
+                    if (root.host !== host) {
+                        host.destroy()
+                        return host
+                    }
                 } finally {
                     renderingHost = outerRenderingHost
-                }
-                if (root.host !== host) {
-                    host.destroy()
-                    return host
                 }
                 if (frag) element.appendChild(frag)
                 // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
@@ -155,26 +222,39 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             // CAUTION 重入销毁：树的销毁会执行用户代码（清理函数），「这一行 / 这块内容消失就关掉
             //  弹层」会在销毁过程中再次调用 root.destroy()。root.host 必须在执行任何用户代码之前
             //  就交出来：否则内层调用又去销毁同一棵树，清理函数再调 destroy……直到栈溢出。
-            //  清理函数里还可能「关掉、再渲染一个提示」到同一个 root：那时 root 已经属于新内容，
-            //  外层不能再清掉它的监听器和 attach 队列。
             // CAUTION 交出 root.host 的时机是 detach 派发之后、树销毁之前：detach 监听器仍能读到
             //  root.host（与之前一致）；host 在派发之后才读，监听器里已经重入销毁过的话这里读到
             //  undefined，不会把同一棵树再销毁一次。
+            // CAUTION 用户通过 on() 注册的监听器不清空：它们属于 root，root 重新 render 的内容
+            //  照常派发给它们（error 监听器还要接住新内容的错误）。destroy 只重置每次渲染的状态。
             const running = pauseRunningEffect()
             try {
-                // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
                 root.dispatch('detach')
                 const host = root.host
                 root.host = undefined
+                // CAUTION 每次渲染的状态（attach 队列、attached 标记、内容登记的内部 attach 回调）
+                //  和 root.host 一起交出，在执行旧树的任何代码（清理函数）之前：
+                //  - 清理函数里「关掉、再渲染一个提示」到同一个 root 时，新内容登记的状态属于新内容，
+                //    不会被这里清掉；
+                //  - 渲染到一半被销毁、要等渲染栈退出才销毁的树，它已经登记的 attach 回调此刻就失效，
+                //    不会被之后渲染进来的新内容的 attach 触发；
+                //  - 树的销毁中途抛错（没有 error 钩子）时，没有走到的 host 的 attach 回调同样已经移除，
+                //    不会在下一次渲染 attach 时对已经不在的内容执行 layoutEffect / ref。
+                root.attached = false
+                attachQueue = []
+                if (renderAttachCallbacks !== undefined && renderAttachCallbacks.size) {
+                    const attachCallbacks = eventCallbacks.get('attach')!
+                    for (const callback of renderAttachCallbacks) attachCallbacks.delete(callback)
+                    renderAttachCallbacks.clear()
+                }
                 // CAUTION 还在渲染的树不在这里销毁，见 render 的重入说明
                 if (host !== renderingHost) host?.destroy()
             } finally {
                 resumeRunningEffect(running)
-            }
-            if (root.host === undefined) {
-                eventCallbacks.clear()
-                attachQueue = []
-                root.attached = false
+                // CAUTION 在旧树销毁之后才让监听器静默（见 errorListenersSilenced）：error 监听器
+                //  启动的这次销毁里，清理函数 / ref(null) 抛出的错误仍然交给监听器消费，否则
+                //  runWithErrorHook 把它们重新抛出，销毁中途停下，兄弟清理函数不执行、DOM 留在容器里。
+                if (errorNotifyDepth > 0) errorListenersSilenced = true
             }
         },
         deferUntilAttached(node: Node, run: () => void) {
@@ -216,26 +296,13 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             }
             if (hasError) throw firstError
         },
-        // ComponentHost 里面的 layoutEffect 是用这个监听 attach 事件实现的。
         on(event: string, callback: EventCallback, options?: EventOptions) {
-            let callbacks = eventCallbacks.get(event)
-            if (!callbacks) {
-                eventCallbacks.set(event, (callbacks = new Set()))
-            }
-            // CAUTION once 的退订必须放 finally：callback 抛错时不退订的话，
-            //  下一次事件会再次触发本应只执行一次的回调（layoutEffect 重复执行）。
-            const savedCallback = options?.once ? (arg: any) => {
-                try {
-                    callback(arg)
-                } finally {
-                    callbacks!.delete(savedCallback)
-                }
-            }: callback
-
-            callbacks.add(savedCallback)
-            return () => {
-                callbacks!.delete(savedCallback)
-            }
+            return addRootCallback(eventCallbacks, event, callback, !!options?.once, undefined)
+        },
+        // ComponentHost 的 layoutEffect、StaticHost 的 ref、Portal 的 attach 桥接在 root attach 之前
+        //  渲染时用这个等待 attach（见 Root.onAttachForRender 与 renderAttachCallbacks 的说明）。
+        onAttachForRender(run: () => void) {
+            return addRootCallback(eventCallbacks, 'attach', run, true, renderAttachCallbacks ??= new Set())
         },
         dispatch(event: string, arg?: any): boolean {
             // CAUTION 监听器（layoutEffect / ref 经 attach 触发，error 钩子等）是用户代码：
@@ -250,7 +317,17 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             } else if (event === 'detach') {
                 root.attached = false
             }
-            const callbacks = eventCallbacks.get(event)
+            // CAUTION 渲染到一半被销毁的树（已经不是 root.host，见 render 的重入说明）还在渲染栈上，
+            //  它之后抛出的错误不属于 root 现在的内容，不交给 root 的监听器：监听器多半已经因为这棵树
+            //  的第一个错误销毁了它、渲染了错误提示，再交给它就会为一棵已丢弃的树把错误提示销毁重建。
+            //  按未消费处理（Portal 内层 root 照常冒泡），错误沿渲染栈抛到 render 里丢弃——
+            //  与 destroy 清空全部监听器时的结果一致。只有 error 走这个判断，稳态多一次比较。
+            //  监听器自己销毁了 root、还没返回时同理，见 errorListenersSilenced 的说明。
+            const callbacks = event === 'error' && (
+                errorListenersSilenced || (renderingHost !== undefined && renderingHost !== root.host)
+            ) ?
+                undefined :
+                eventCallbacks.get(event)
             const consumed = !!callbacks?.size
             // CAUTION 监听器是注册者的代码，却跑在派发点的 effect 帧里：绑定更新抛错时，error 就在
             //  出错绑定自己的 update 里派发。不暂停追踪的话监听器读的 atom 会成为该绑定的依赖，
@@ -285,7 +362,12 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                     //  其余事件是调用方主动派发的，收集帧归属不变——Portal 内容的
                     //  layoutEffect 创建的 effect 仍由 Portal 组件收集并随它销毁。
                     if (event === 'error') {
-                        ReactiveEffect.createDetached(notify)
+                        errorNotifyDepth++
+                        try {
+                            ReactiveEffect.createDetached(notify)
+                        } finally {
+                            if (--errorNotifyDepth === 0) errorListenersSilenced = false
+                        }
                     } else {
                         notify()
                     }
