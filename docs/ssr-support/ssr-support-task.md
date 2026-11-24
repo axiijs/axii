@@ -20,7 +20,7 @@ axii 是一个**高性能、无 Virtual DOM 的增量更新前端框架库**。�
 - **热路径必须尽量零分配**：`createHost` 分发、`LightBindingEffect` 属性更新、atom 文本更新、`RxListHost` patch 是热路径。不得在这些路径上增加每实例闭包、每次调用对象分配或常驻检查。遵循源码 CAUTION：可选字段惰性分配、共享/原型函数、单元素列表行用 `CompactElementHost`。
 - **诊断仅开发期**：O(n) 或分配型逻辑（trace、range 检查、`AXII_LIST_ORDER_BROKEN` 等）必须在 `isAxiiDiagnosticsEnabled()` / `__DEV__` 之后；生产最多一次布尔检查。
 - **内存是性能的一部分**：长列表是设计中心。`retainedObjectDiagnostics.ts` 与 benchmark 仓库的泄漏断言要求清理后计数归零。
-- **data0 是响应式核心**（peerDependency `^2.16.0`）。存在兄弟 `../data0/src` 时 Vite alias 优先指向它，否则使用 npm 安装包。依赖 data0 非文档行为时，必须先用 `__tests__/data0Contract.spec.tsx`（或等效契约测试）钉住。
+- **data0 是响应式核心**（peerDependency `^2.17.0`，#88 起；本任务设计时是 `^2.16.0`）。存在兄弟 `../data0/src` 时 Vite alias 优先指向它，否则使用 npm 安装包。依赖 data0 非文档行为时，必须先用 `__tests__/data0Contract.spec.tsx`（或等效契约测试）钉住。
 - **活跃演进**：允许直接改到最优形态；不以长期兼容分叉为目标。CSR 既有行为以全量浏览器测试与 benchmark 口径为准。
 
 ## 代码职责

@@ -1,7 +1,7 @@
 # hydration 自顶向下认领 — 设计（#55）
 
-- 实现进度：PR-A（#75）、B1（#80）、B2（#84）、B3（#89）、B4（#93）、B4b（#95）、S 已合入，公开的 `hydrateRoot` 使用本文的模型，旧模型已删除；B1–S 与上文的差别分别记在 §7.6–§7.11。
-- 状态：设计稿，按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
+- 实现进度：**已完成**。PR-A（#75）、B1（#80）、B2（#84）、B3（#89）、B4（#93）、B4b（#95）、S（#96）、D（#D_PR）已合入：公开的 `hydrateRoot` 使用本文的模型，旧模型已删除，README（中英）与站点有迁移说明，「实验性」标注已去掉。B1–D 与上文的差别分别记在 §7.6–§7.12。
+- 状态：已实现（见上一行）；§0–§6 是实现前的设计稿，实现与它的差别以 §7.6–§7.12 为准。设计稿按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
 - 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）、#68（服务端 Compact 判定，排在实现 PR 之前修）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
 - 基线：origin/main `36e540c`（含 #62 / #63 / #64，#65 / #66 合入的 #50、#52，以及 #70 合入的 #51）。现状复现与原型在 `4712285` 上完成；#50 / #52 只改了原始标记的取值和复选框的勾选通道，#51 把 SSR / CSR 的属性规则收成一份，都不影响 §1 的失败机制，三者对本设计的接口见 §2.6.1、§2.6.2。§7.1 引用的行号按 `36e540c`。
@@ -43,6 +43,8 @@
 - **B1–B4：** 新模型按「核心认领协议 → 列表与数组 → 失配规则 → 其余形态与开发期检测」分四步进 main，每步门禁全绿。激活用例同时对内部入口再跑一遍，11 条在 B1、B3 对内部入口转为通过。
 - **S：** `hydrateRoot` 切到新模型，删除旧模型，11 条 `test.fails` 改为 `test`。
 - **D：** README（中英）、站点文档与迁移说明，去掉「实验性」标注。
+
+**进度：** 以上全部合入（PR-A #75、B1 #80、B2 #84、B3 #89、B4 #93、B4b #95、S #96、D #D_PR），各 PR 与本文的差别见 §7.6–§7.12。
 
 ---
 
@@ -1010,6 +1012,19 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
   | Fragment reconcile：unsupported array item type throws | mismatch「an error thrown while a function child's structure is activated aborts the activation…」（createHydrateHost 的 unknown child type 断言） |
   | Fragment reconcile：unhandledChildren slot mismatch throws；reconcileFragmentHydrateChildren 的两条「throws when …」；reconcileFlattenedFragmentHydrateChildren throws without an active cursor | 簿记与防护随函数删除（子 Host 按文档顺序预先构造、依次认领）：auditSsrHydrate「F3b…」「N2…」、hydrateTopDown「development invariants after the activation (§4.4)」；fuzz：扩展 F1i 的「Fragment 作为组件根 / 函数结构态的值 / 列表行」三种形态 |
   | hydrateRoot end-to-end claim corners（全部） | 保留；两条只在旧入口跑的抛错期望删除，见上面「用例」 |
+
+### 7.12 D 落地记录（与上文不同或上文没有写到的）
+
+- **文档：** README（中英）的 SSR 一节去掉「实验性」提示与「已知的激活局限」，新增四小节：「激活怎样认领节点」「hydration 的契约变化」（C1–C10 与 §3.1.1，ref 改写的前后对照）「失配」「开发期检测与诊断开关」。站点 `docs/docSections.ts` 的 `ssr` 一节改写 prose（渲染为单个 `<p>`，放不下表格，只写要点并指向 README），`snippets/ssr.ts` 加了用 ref 的 `Search` 组件与诊断开关。中文 README 的章节顺序改为与英文一致（「学习更多」在 SSR 之前，「设计说明 / 限制」在 SSR 之下），补上英文已有的 `on*` 规则与「style 数组」小节。
+- **与上文说法不同的地方（以代码为准）：**
+  1. **「开发期」指诊断开启。** 发布的包由 `vite.prod.config.ts` 构建（`__DEV__: false`），`isAxiiDiagnosticsEnabled()` 默认为假（`dist` 里是 `enabled ?? !1`），开发期 Proxy 与各条开发期报告只在应用调用 `configureDiagnostics({enabled: true})` 之后出现。描述是 Proxy 还是裸对象在 `beginHydration` 时定，所以要在 `hydrateRoot` 之前打开；`configureDiagnostics` 整体替换配置，`onError` 要在同一次调用里传。文档按这个写。
+  2. **报告的输出。** §4.4 写「诊断开启时输出结构化的 console 信息」。`HydrationMismatchError`、`HydrationDevReport`、`HydrationInvariantError` 都不是 `AxiiError`，`reportAxiiError` 对它们不论诊断开关都调用 `onError` 并 `console.error(error)`，没有结构化输出。这三个类不从包入口导出，文档让使用者按 `code` 区分。
+  3. **仍然抛错的情形。** 失配不再抛出；`hydrateRoot` 在 Portal 容器找不到时（`resolvePortalHydrateTarget`）、函数子节点的内容激活时抛错（§7.6「激活中止」，注册了 `root.on('error')` 也一样）仍然抛出。文档没有写成「不再抛错」。
+  4. **直接传给 `hydrateRoot` 的元素。** `hydrateRoot(root, <main/>)` 里的 JSX 在激活开始之前求值，是现成节点（§2.6.8、§7.2 的「注意」），替换服务端的对应物、不复用（`claimCorners`「a container missing `<!--root-->`…; a live root element replaces its server counterpart」）。C7 没有点名这种写法，文档把它列进「有变化的写法」，建议传组件。
+  5. **CHANGELOG。** §7.4 的 D 行写「CHANGELOG 条目交给 #61 汇总」。#61 的 PR #94 合入时已经按本文写了 #55 的条目，D 按 main 上的最终实现核对改写：PR 列表、开头关于旧服务端 HTML 的一句、Security 里 #76 的条目、#87 的迁移说明、新增与移除的导出。
+- **用例（钉住文档的说法，不改 `src/`）：** `hydrateTopDownForms.spec`「migration as documented in the README (#55 D)」两条，诊断开、关各跑一遍：README 的改写后示例（ref 拿到认领的服务端 `<input>`，点击后聚焦，不报告）；C9（ref 回调、`useLayoutEffect`、`useEffect`、`root.on('attach')` 里的 JSX 与 `createRoot().render()` 得到真实节点）。变异：`runOutsideHydration` 不退出激活上下文时两条都变红；`useEffect` 不经 `runOutsideHydration` 时 C9 那条变红。
+- **迁移面复核（§3.1.2）：** 在当前树上重跑两类搜索，README、`site/README.md`、`site/src` 里仍然没有需要迁移的写法；D 新增的示例都用 `ref`。
+- **产物大小：** CHANGELOG 不写。S 报告的增量（共享 chunk +6.3 kB，两个 `.js` 合计 +6.9 kB，gzip）是相对 `3a43c2b` 这个未发布的中间提交；发布说明的基线是 v4.8.1，相对它的变化混有 4.9.0 的全部改动，不是 #55 单独的代价。
 
 
 ---

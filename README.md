@@ -130,12 +130,10 @@ We provide progressively organized examples and explanations in the documentatio
 
 axii can string-render on the server and activate the same DOM in the browser without a Virtual DOM pass.
 
-> **`hydrateRoot` is experimental.** In the shapes listed under [Known hydration limits](#known-hydration-limits) it can activate the wrong server node: content is lost, `hydrateRoot` throws, or attributes and listeners silently land on another element. Check your pages against that list.
-
 | API | Package | Role |
 |---|---|---|
 | `renderToString(source)` | `axii/ssr` | Node-safe HTML serialization — **no DOM globals** |
-| `hydrateRoot(container, source, options?)` | `axii` | Claim existing nodes; bind events and reactive hosts (**experimental**) |
+| `hydrateRoot(container, source, options?)` | `axii` | Claim existing nodes; bind events and reactive hosts |
 
 ```jsx
 /* @jsx createElement */
@@ -178,21 +176,102 @@ hydrateRoot(root, <App />)
 - Not in scope: streaming (`renderToStream`), app-state serialization.
 - Design detail and host/marker contracts: `docs/ssr-support/`.
 
-### Known hydration limits
+### How hydration claims nodes
 
-`hydrateRoot` claims server nodes while your JSX runs: children before their parent, and each element takes the first unclaimed server element with the same tag in that order. Within one component's JSX this matches the server output — same tags at different depths, list rows, and `dangerouslySetInnerHTML` markup activate in place. It goes wrong where a child component or a function child renders **after** its parent's JSX has run, because the server writes nothing that marks where that output starts:
+`hydrateRoot` reads the server output back in the order `renderToString` wrote it. Each component, function child and list takes its own server nodes in document order, and then the marker that ends them. An element therefore never takes a node that belongs to another position, and hydration time grows linearly with the page. Matched nodes keep their identity. The markers in the server HTML are the same as before, so HTML from an older server can still be hydrated; where it differs from what the current client renders, the difference is handled like any other [mismatch](#mismatches).
 
-1. **A child component or function child placed before a same-tag element of the parent.** In `<div><Header/><main><p>…</p></main></div>` where `Header` renders a `<p>`, the `<p>` inside `<main>` takes `Header`'s `<p>`: `<main>` ends up empty and a `HydrationMismatchError` is reported. If the parent's wrapper has the same tag as an element `Header` renders (a `<div>` around a `Header` that renders `<header><div>…</div></header>`), `hydrateRoot` throws.
-2. **Function children with mixed output.** A function child that returns text followed by one that returns an element (`<h1>{() => title()}{() => <b/>}</h1>`) makes `hydrateRoot` throw; a function that returns a Fragment containing another function child ends up with its nodes in a different order than a client render.
-3. **Server and client render different structure.** A list with more or fewer rows, or a function that returns an element on one side and text on the other, is neither reported nor repaired: the page keeps the server structure and the extra or missing rows stay out of sync (server text → client element throws). Keep the data identical, as the contracts above require.
-4. **`dangerouslySetInnerHTML` markup that contains the element's own tag**, such as `<div dangerouslySetInnerHTML={'<div>…</div>'}/>`: the element claims the inner `<div>` of its markup. Usually the element and its markup are then removed and a `HydrationMismatchError` is reported; as a list row, its attributes and listeners silently land on that inner `<div>` instead. Give such an element a static `id`; an element with a static `id` only claims the server node with that `id`.
+### Hydration contract changes
 
-These limits go away when hydration claims nodes top-down by position (axiijs/axii#55); the experimental label will be removed then.
+While `hydrateRoot` runs, JSX in your components returns a **hydration description**, not a DOM node. The description never becomes a node, not even after hydration. axii claims the server node for a description when hydration reaches its position. Code that keeps a JSX result and uses it as a node has to reach the node through `ref`:
+
+```jsx
+/* @jsx createElement */
+// Before: works with createRoot().render(), fails after hydrateRoot
+function Search({}, { createElement }) {
+  const input = <input />
+  return <div>
+    {input}
+    <button onClick={() => input.focus()}>Search</button>
+  </div>
+}
+
+// After: works with both
+function Search({}, { createElement, createRef }) {
+  const input = createRef()
+  return <div>
+    <input ref={input} />
+    <button onClick={() => input.current.focus()}>Search</button>
+  </div>
+}
+```
+
+After `hydrateRoot`, the first version renders and the button responds, but `input.focus()` throws a `TypeError` when the button is clicked, which can be long after the page loaded. A `ref` receives the claimed node. Work that needs the node as soon as it is mounted belongs in the ref callback (`ref={el => …}`) or in `useLayoutEffect`.
+
+A description used as a node fails the same way with diagnostics on or off; with diagnostics on, the access is reported first where it can be detected (see [Development checks](#development-checks-and-the-diagnostics-switch)):
+
+| Use | Example | Result |
+|---|---|---|
+| Read a property | `input.value`, `el.textContent` | `undefined`; the error comes later, where the value is used |
+| Write a property | `el.className = 'x'` | `TypeError` in strict-mode code (ES modules, TypeScript output) |
+| Call a method | `input.focus()`, `el.addEventListener(…)` | `TypeError` |
+| Pass it to a DOM API | `parent.appendChild(el)`, `observer.observe(el)` | `TypeError`, never reported in advance |
+| Compare identity or type | `el === ref.current`, `el instanceof HTMLElement` | `false`, never reported |
+
+What changes:
+
+- **A JSX result used as a node** in the component body, an effect, an event handler or a timer, as in the example above. Use `ref`, and write attributes and listeners as JSX props.
+- **Checking whether a JSX result is a node**, for example `child instanceof HTMLElement` on `children`. During hydration this is `false`, so the code takes a different branch than in a client render. Don't branch on the node type, or check `isHydrationElement(child)` as well (exported from `axii`).
+- **Rows of `RxList.map` and items of plain arrays** are descriptions while hydration runs. When a row is claimed, `list.data[i]` (or `array[i]`) is replaced with the claimed node, so after hydration they hold the same nodes as after a client render. Only code that uses a row as a node inside the component body or the `map` callback needs the `ref` rewrite.
+- **JSX created during hydration but rendered only after it**, such as `const panel = <div/>` shown only by `() => open() ? panel : null`, or the rows of a list that is shown only in a closed tab. It is created like in a client render when it is first rendered, and it works, but a small description object stays behind for each such element (one per row of such a list). To avoid that, create the JSX inside the function that renders it: `() => open() ? <div/> : null`.
+- **A node created outside hydration and placed as a child** is inserted as in a client render, and the server node at its position is replaced instead of reused. Write the element as JSX to reuse the server node. This includes an element passed directly to `hydrateRoot`: in `hydrateRoot(root, <main>…</main>)` the JSX is evaluated before hydration starts. Pass a component instead, `hydrateRoot(root, <App />)`, as in the example above.
+- **`$name:_use` overrides** accept an element or a description.
+
+What stays the same:
+
+- `createRoot().render()`.
+- **JSX kept and rendered again** after it was claimed renders the claimed node, as rendering the same element again does in a client render.
+- Portal content, and when `ref` callbacks, `useLayoutEffect` and `useEffect` run.
+- **Code in your callbacks** — `ref` callbacks, `useLayoutEffect`, `useEffect`, `root.on(…)` listeners and `onError` — runs outside hydration even while `hydrateRoot` is running: JSX there returns real nodes, and `createRoot().render()` renders as usual.
+
+### Mismatches
+
+When the server HTML and the client render differ, for example because the data differs or the HTML comes from an older server, `hydrateRoot` reports each difference and repairs it where it finds it, then continues:
+
+- After the repair, the node structure (node types, tags, namespaces and order), the text and the attributes that client props write are the same as in a client render. Nodes at matching positions keep their identity. A container whose trailing `<!--root-->` is missing is repaired the same way.
+- Attributes that only the server wrote are removed from an element claimed on a repair path. An element claimed without a difference keeps them; this can happen when a difference shows up only later in the same parent. With diagnostics on, such leftovers are reported as `AXII_HYDRATION_ATTRIBUTE_RESIDUE`.
+- Each report is an error with `code: 'AXII_HYDRATION_MISMATCH'` (`name` `HydrationMismatchError`) and `expected` / `actual` strings. It goes to `configureDiagnostics({ onError })` whether diagnostics are on or off, and to `console.error`.
+- Mismatches are repaired, not thrown. `hydrateRoot` still throws when a Portal container cannot be found, and when an error is thrown while a function child's content is hydrated: that error stops hydration and is thrown from `hydrateRoot`, even if a `root.on('error')` listener is registered.
+
+### Development checks and the diagnostics switch
+
+Diagnostics are off by default in the published package. Turn them on in development before calling `hydrateRoot`; whether hydration checks descriptions is decided when it starts:
+
+```js
+import { configureDiagnostics } from 'axii'
+
+// configureDiagnostics replaces the whole configuration: pass onError in the same call.
+configureDiagnostics({
+  enabled: process.env.NODE_ENV !== 'production', // or your bundler's development flag
+  onError: (error) => reportToMonitoring(error),  // optional; called with diagnostics on or off
+})
+```
+
+With diagnostics on, each description is wrapped in a `Proxy` that reports node-style accesses, and the checks below run. Each report is an error with a `code`, passed to `onError` and to `console.error`; none of them changes the DOM.
+
+| `code` | Reported when |
+|---|---|
+| `AXII_HYDRATION_ELEMENT_ACCESS` | A description is read or written as a node (calling a method reads it first). The message names the property and, with a development JSX transform (`jsxDEV`), the file, line and column of the JSX. The same access at the same JSX position is reported once. |
+| `AXII_HYDRATION_ELEMENT_LATE_RENDER` | JSX created during hydration is rendered for the first time after it. |
+| `AXII_HYDRATION_LIVE_NODE` | A node created outside hydration replaced the server node at its position. |
+| `AXII_HYDRATION_ATTRIBUTE_RESIDUE` | An element claimed without a difference has attributes that only the server wrote. |
+| `AXII_HYDRATION_INVARIANT` | After hydration, the nodes of a component, function child or list are no longer one connected range in the document, or a hydration marker is left behind. Unmodified server output does not cause it unless the same element is rendered twice. |
+
+The checks have limits. Passing a description to a DOM API and comparing identity or type cannot be detected. A line that runs only on a user action, such as a click handler, is reported only when it runs, so go through those interactions in development as well. With diagnostics off, none of these checks run, descriptions are plain objects, and the failures are the ones in the table above.
 
 ### Design notes / limitations
 
 - **Event handlers are bound once and are not reactive.** An `on*` prop is attached with `addEventListener` when the element is created; passing an atom or a function-returning-handler will not make the binding itself reactive. If you need conditional behavior, write the condition *inside* the handler (e.g. `onClick={(e) => enabled() && doSomething(e)}`) instead of trying to swap the handler dynamically.
-- **Only `on` + an uppercase letter with a function value is an event handler.** Any other prop whose name starts with `on` in any letter case (`onclick`, `ONCLICK`, `oNclick`, `once`, `online`) is not written to the element on the client or in `renderToString` output. This follows React's rule for unknown `on*` props and applies to every element, including SVG and custom elements. Attribute names are case-insensitive, so writing such a name could create an executable inline handler, for example when spreading an untrusted object (`<div {...untrusted}/>`). In development, axii logs one warning per prop name. A bare `on` attribute, such as AMP's `on="tap:…"`, is still written.
+- **Only `on` + an uppercase letter with a function value is an event handler.** Any other prop whose name starts with `on` in any letter case (`onclick`, `ONCLICK`, `oNclick`, `once`, `online`) is not written to the element on the client or in `renderToString` output. This follows React's rule for unknown `on*` props and applies to every element, including SVG and custom elements. Attribute names are case-insensitive, so writing such a name could create an executable inline handler, for example when spreading an untrusted object (`<div {...untrusted}/>`). With diagnostics on (see [Development checks](#development-checks-and-the-diagnostics-switch)), axii logs one warning per prop name. A bare `on` attribute, such as AMP's `on="tap:…"`, is still written.
 - **`<a>`, `<title>`, `<style>` and `<script>` inside `<svg>`.** These tag names exist in both HTML and SVG. Written directly in an SVG element's JSX (not inside `<foreignObject>`, `<desc>` or `<title>`), they are SVG elements, the same way the HTML parser treats server output: the SVG parent re-creates them in the SVG namespace when it is created. A reference to such a child taken before its parent is created (`const t = <title/>; <svg>{t}</svg>`) points to the discarded HTML element, and listeners added to it directly are not carried over; use `ref`. Rendered later by a function child, a component or a list, they stay HTML elements; use `createSVGElement` there.
 
 #### Style arrays
