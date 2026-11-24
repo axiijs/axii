@@ -157,12 +157,15 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             //  就交出来：否则内层调用又去销毁同一棵树，清理函数再调 destroy……直到栈溢出。
             //  清理函数里还可能「关掉、再渲染一个提示」到同一个 root：那时 root 已经属于新内容，
             //  外层不能再清掉它的监听器和 attach 队列。
-            const host = root.host
-            root.host = undefined
+            // CAUTION 交出 root.host 的时机是 detach 派发之后、树销毁之前：detach 监听器仍能读到
+            //  root.host（与之前一致）；host 在派发之后才读，监听器里已经重入销毁过的话这里读到
+            //  undefined，不会把同一棵树再销毁一次。
             const running = pauseRunningEffect()
             try {
                 // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
                 root.dispatch('detach')
+                const host = root.host
+                root.host = undefined
                 // CAUTION 还在渲染的树不在这里销毁，见 render 的重入说明
                 if (host !== renderingHost) host?.destroy()
             } finally {

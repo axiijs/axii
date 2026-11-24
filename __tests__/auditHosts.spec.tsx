@@ -1429,6 +1429,30 @@ describe('audit follow-up: root.destroy() called again by the cleanups it runs',
         expect(el.innerHTML).toBe('')
         expect(log).toEqual(['toast layout', 'toast cleanup'])
     })
+
+    test('G3: detach listeners still see root.host; a listener that destroys the root does not tear the tree down twice', () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        const r = createRoot(el)
+        let cleanups = 0
+        function Dialog(_: any, {onCleanup}: RenderContext) {
+            onCleanup(() => { cleanups++ })
+            return <b>dialog</b>
+        }
+        const seen: unknown[] = []
+        let nested = false
+        r.on('detach', () => {
+            seen.push(r.host)
+            if (nested) return
+            nested = true
+            r.destroy()
+        })
+        const host = r.render(<Dialog/>)
+        r.destroy()
+        expect(seen[0]).toBe(host)
+        expect(cleanups).toBe(1)
+        expect(el.innerHTML).toBe('')
+        expect(r.host).toBe(undefined)
+    })
 })
 
 describe('audit follow-up: effects created by content that dispatch("attach") runs belong to the content, not the dispatcher', () => {
