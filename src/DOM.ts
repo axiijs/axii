@@ -805,9 +805,23 @@ function isSvgClassString(classString: unknown): boolean {
         classString.charCodeAt(2) === 71 // 'SVG'
 }
 
-/** 元素是不是 HTML 命名空间里 HTML / SVG 同名的元素（svgHtmlSharedElementNames），即 SVG 父元素要改建的子元素（#56）。调用方先确认是元素。 */
+/**
+ * 元素是不是 HTML 命名空间里 HTML / SVG 同名的元素（svgHtmlSharedElementNames），即 SVG 父元素要改建的子元素（#56）。调用方先确认是元素。
+ * CAUTION 同一个判定在新激活模型里的写法是 isSharedNameHtmlDescription（输入是描述，不是 DOM 元素）：改其中一个时另一个一起改。
+ */
 function isSharedNameHtmlElement(el: Element): el is ExtendedElement {
     return el.namespaceURI === XHTML_NAMESPACE && svgHtmlSharedElementNames.has(el.localName)
+}
+
+/**
+ * 新激活模型（#55）里的同一个判定（≡ isSharedNameHtmlElement）：描述是 HTML / SVG 同名的标签，且创建时不是 SVG，
+ *  即 SVG 父元素要按 SVG 认领的子描述（#56）。描述的 isSVG 与 CSR 元素的命名空间由 createElement 的同一个表达式决定
+ *  （显式 _isSVG，否则 SVG 专有标签），所以「还不是 SVG」≡ CSR 里「在 HTML 命名空间」。
+ *  父元素下的子描述（hydrateElementDescriptionAt）与数组项（adoptSvgArrayItemDescriptions）共用这一个判定。
+ *  Fragment 描述的 tag 不是字符串，不在名字表里。
+ */
+function isSharedNameHtmlDescription(desc: HydrationElement): boolean {
+    return !desc.isSVG && svgHtmlSharedElementNames.has(desc.tag as string)
 }
 
 // HTML 元素上的 attribute 名都被转成了小写：SVG 里大小写敏感、或要转成连字符的名字按 setAttribute 的 SVG 规则还原。
@@ -834,7 +848,8 @@ function svgAttributeNameOfLowercase(name: string): string {
  *  （元素 child、数组项、Fragment 的子元素：adoptSvgChild / adoptSvgArrayItems / adoptSvgFragmentChildren）改建到 SVG 命名空间：attribute 按 SVG 的写法搬过去（见 svgAttributeNameOfLowercase），子节点整体移过去，
  *  axii 写在元素上的字段（事件表、未处理的子节点 / 响应式属性 / ref / detachStyle 元数据、JSX source）原样转交，
  *  事件代理重新挂上；元数据里指向旧元素的 el 改指新元素（remapRecreatedElements）。响应式属性稍后由 StaticHost
- *  按新元素（SVG）的规则写入。激活时由 materializeHydrateDeferred 在同一个位置按 SVG 认领，服务端按 SVG 的规则写属性。
+ *  按新元素（SVG）的规则写入。激活时由 materializeHydrateDeferred 在同一个位置按 SVG 认领（新激活模型：hydrateElementDescriptionAt /
+ *  adoptSvgArrayItemDescriptions，判定是 isSharedNameHtmlDescription），服务端按 SVG 的规则写属性。
  * CAUTION 性能：判定并在 createElement 唯一的子节点循环里做（adoptSharedNameChildren），不再单独扫一遍 children：
  *  节点子元素用循环分发时已经读到的 nodeType 区分元素与 Fragment，元素先按 class string 排除 SVG 元素（isSvgClassString），
  *  SVG 元素子节点不多读任何 DOM getter；数组项只在非节点分支里、按同样的预判检查。Fragment 的子元素要走一遍它的元素子节点
@@ -1818,7 +1833,7 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     // 创建时就是 SVG 元素（≡ createElement 的 _isSVG，同一个表达式）：数组 child 的改建只在这种元素上发生（见
     //  adoptSvgArrayItemDescriptions）。不能用 desc.isSVG：被父元素改建、或作为数组项被改建的同名标签，isSVG 已经改成了 true
     const createdSVG = (rawProps ? rawProps._isSVG : undefined) ?? svgOnlyElementNames.has(tag)
-    if (parentAdoptsSvg && !desc.isSVG && svgHtmlSharedElementNames.has(tag)) desc.isSVG = true
+    if (parentAdoptsSvg && isSharedNameHtmlDescription(desc)) desc.isSVG = true
     const isSVG = desc.isSVG
     const el = claimTopDownElement(tag, isSVG, staticAttrId(rawProps)) as HTMLElement
     const children = desc.rawChildren!
@@ -1861,20 +1876,19 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     return el
 }
 
-// ≡ CSR adoptSvgChildren 的数组分支（#56）：创建时就是 SVG 的元素（不是 HTML integration point）的数组 child，其中直接是
+// ≡ CSR 的数组项改建（adoptSvgArrayItems，#56）：创建时就是 SVG 的元素（不是 HTML integration point）的数组 child，其中直接是
 //  HTML / SVG 同名标签的元素项按 SVG 认领。数组项由 StaticArrayHost 稍后认领，这里先改描述的 isSVG（认领按它决定命名空间与
 //  写属性的规则，子元素随之按 SVG 父元素的规则认领）。与 CSR 相同只看这个元素自己的 children 里的数组：Fragment 里的数组、
 //  嵌套数组、Fragment 项都不在其列；被改建成 SVG 的同名标签（<svg><a>{[…]}</a></svg>）也不改建它的数组项——CSR 的
-//  adoptSvgChildren 只在 createElement 时 _isSVG 为真的元素上执行，改建（recreateInSvgNamespace）只遍历已有的 DOM 子节点。
+//  改建判定（createElement 的 adoptSharedNameChildren）只在 _isSVG 为真的元素上打开，改建（recreateInSvgNamespace）
+//  只遍历已有的 DOM 子节点。
 function adoptSvgArrayItemDescriptions(children: any[]): void {
     for (let i = 0; i < children.length; i++) {
         const child = children[i]
         if (!Array.isArray(child)) continue
         for (let j = 0; j < child.length; j++) {
             const item = child[j]
-            if (isHydrationElement(item) && item.tag !== Fragment && !item.isSVG && svgHtmlSharedElementNames.has(item.tag as string)) {
-                item.isSVG = true
-            }
+            if (isHydrationElement(item) && isSharedNameHtmlDescription(item)) item.isSVG = true
         }
     }
 }
