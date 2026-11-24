@@ -134,6 +134,61 @@ describe('#56 SVG 父元素改建同名子元素：形状（与 #72 相同）', 
         expect([d, arr, frag].map(el => el.getAttribute('href'))).toEqual(['#two', '#two', '#two'])
         expect(d.querySelector('title')!.textContent).toBe('tip2')
     })
+
+    test('一个 SVG 父元素的所有改建共用一张改建表：同一个元素先后被两个兄弟包住时，后一个兄弟元数据里的 el 也改指新元素', async () => {
+        const cls = atom('c1')
+        const r = createRef()
+        const u = <title ref={r} className={cls}>u</title>
+        // x 先建：u 的 ref / 响应式属性提升到 x 上（el 指向 u）；y 后建，把 u 这个节点移进 y。
+        //  SVG 父元素先改建 y（连同 u），再改建 x：x 元数据里的 el 要改指 y 里那个新的 SVG <title>
+        const x = <a id="x" href="#x">{u}</a>
+        const y = <a id="y" href="#y">{u}</a>
+        const root = mount()
+        createRoot(root).render(<svg>{y}{x}</svg>)
+        const title = root.querySelector('#y title')!
+        expect({ns: ns(title), ref: r.current === title, xChildren: root.querySelector('#x')!.childNodes.length})
+            .toEqual({ns: 'svg', ref: true, xChildren: 0})
+        cls('c2')
+        await tick()
+        expect(title.getAttribute('class')).toBe('c2')
+    })
+
+    test('Fragment 里夹着文本与响应式占位符、数组里混着非元素项、props.children 传入的子元素：同名标签照样改建，其余照常渲染', async () => {
+        const tip = atom('t1')
+        function Label({}: any, {createElement}: RenderContext) { return <text id="comp">comp</text> }
+        const root = mount()
+        createRoot(root).render(<svg>
+            <>{'lead'}<title id="frag-title">f</title>{tip}<a id="frag-a" href="#fa"><text>fa</text></a>{'tail'}</>
+            {[<title id="mixed-title">m</title>, <Label/>, 'txt', 3, null, () => 'fn', <path d="M0 0"/>, <a id="mixed-a" href="#m"/>]}
+            {createElement('g', {id: 'via-props', children: [createElement('title', {id: 'props-title'}, 'p')]})}
+        </svg>)
+        expect(sharedNamespaces(root)).toEqual(['frag-title:svg', 'frag-a:svg', 'mixed-title:svg', 'mixed-a:svg', 'props-title:svg'])
+        const svg = root.querySelector('svg')!
+        expect(svg.textContent).toContain('lead')
+        expect(svg.textContent).toContain('t1')
+        expect(svg.textContent).toContain('tail')
+        expect(svg.textContent).toContain('txt3fn')
+        expect(ns(root.querySelector('#comp'))).toBe('svg')
+        tip('t2')
+        await tick()
+        expect(svg.textContent).toContain('t2')
+    })
+
+    test('原型链上没有 Symbol.toStringTag 的环境：按命名空间与 localName 判定，照样改建', () => {
+        const chain = [HTMLTitleElement.prototype, HTMLElement.prototype, Element.prototype, Node.prototype, EventTarget.prototype]
+        const saved = chain.map(proto => Object.getOwnPropertyDescriptor(proto, Symbol.toStringTag))
+        const title = document.createElement('title')
+        title.id = 'no-tag'
+        try {
+            for (const proto of chain) delete (proto as any)[Symbol.toStringTag]
+            expect((title as any)[Symbol.toStringTag]).toBe(undefined)
+            const root = mount()
+            createRoot(root).render(<svg>{title}<path d="M0 0"/></svg>)
+            expect(sharedNamespaces(root)).toEqual(['no-tag:svg'])
+        } finally {
+            chain.forEach((proto, i) => { if (saved[i]) Object.defineProperty(proto, Symbol.toStringTag, saved[i]!) })
+        }
+    })
 })
 
 /**

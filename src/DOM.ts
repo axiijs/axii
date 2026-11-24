@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 import {isAtom, RxList} from "data0";
 import {assert, each, isPlainObject} from './util'
-import {DOCUMENT_FRAGMENT_NODE, isDomNode, isElementNode, isFragmentNode, nodeTypeOf} from './nodeType'
+import {DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isDomNode, isElementNode, isFragmentNode, nodeTypeOf} from './nodeType'
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
@@ -790,9 +790,9 @@ function isSvgClassString(classString: unknown): boolean {
         classString.charCodeAt(2) === 71 // 'SVG'
 }
 
-/** 值是不是 HTML 命名空间里 HTML / SVG 同名的元素（svgHtmlSharedElementNames），即 SVG 父元素要改建的子元素（#56）。 */
-function isSharedNameHtmlElement(value: object): value is ExtendedElement {
-    return isElementNode(value) && value.namespaceURI === XHTML_NAMESPACE && svgHtmlSharedElementNames.has(value.localName)
+/** 元素是不是 HTML 命名空间里 HTML / SVG 同名的元素（svgHtmlSharedElementNames），即 SVG 父元素要改建的子元素（#56）。调用方先确认是元素。 */
+function isSharedNameHtmlElement(el: Element): el is ExtendedElement {
+    return el.namespaceURI === XHTML_NAMESPACE && svgHtmlSharedElementNames.has(el.localName)
 }
 
 // HTML 元素上的 attribute 名都被转成了小写：SVG 里大小写敏感、或要转成连字符的名字按 setAttribute 的 SVG 规则还原。
@@ -821,11 +821,14 @@ function svgAttributeNameOfLowercase(name: string): string {
  *  事件代理重新挂上；元数据里指向旧元素的 el 改指新元素（remapRecreatedElements）。响应式属性稍后由 StaticHost
  *  按新元素（SVG）的规则写入。激活时由 materializeHydrateDeferred 在同一个位置按 SVG 认领，服务端按 SVG 的规则写属性。
  * CAUTION 性能：判定并在 createElement 唯一的子节点循环里做（adoptSharedNameChildren），不再单独扫一遍 children：
- *  节点子元素用循环分发时已经读到的 nodeType 区分 Fragment，其余先按 class string 排除 SVG 元素（isSvgClassString），
+ *  节点子元素用循环分发时已经读到的 nodeType 区分元素与 Fragment，元素先按 class string 排除 SVG 元素（isSvgClassString），
  *  SVG 元素子节点不多读任何 DOM getter；数组项只在非节点分支里、按同样的预判检查。Fragment 的子元素要走一遍它的元素子节点
  *  （firstElementChild / nextElementSibling），这是 Fragment 在 SVG 父元素下的固有代价。
  *  adoptSharedNameChildren 只在 CSR 的 SVG 元素创建路径上为真：HTML 元素只多一个恒为 false 的局部布尔。
  *  改建本身（adoptSvgChild 以下）是冷路径。
+ *  一个 SVG 父元素的所有改建共用一张 旧元素 → 新元素 的表（createElement 里的 adoptedElements，按需创建）：同一个元素
+ *  被两个兄弟先后用作子元素时（const u = <title ref={r}/>; <svg>{y}{x}</svg>，x、y 都包着 u），前一个兄弟改建出的新元素
+ *  要用来改指后一个兄弟元数据里的 el，与 #72 相同。
  *  已知限制：
  *   - 改建换掉了元素：在父元素创建之前拿到的子元素引用（const t = <title/>; <svg>{t}</svg>）指向被丢弃的 HTML 元素，
  *     之前直接 addEventListener 的监听器也不会带过去（ref 在之后执行，拿到的是新元素）；
@@ -834,35 +837,40 @@ function svgAttributeNameOfLowercase(name: string): string {
  *   - 函数、组件、列表渲染出来的同名标签由 Host 稍后插入，不经过这里，仍是 HTML 元素；它们的激活结果与 CSR 不一致是
  *     子先于父认领模型的既有缺陷（#55，见 ssrHydrate.shapes.spec 的 test.fails）。要在这些位置得到 SVG 元素，用 createSVGElement。
  */
-function adoptSvgChild(el: ExtendedElement): ExtendedElement {
-    const recreated = new Map<Element, Element>()
+function adoptSvgChild(el: ExtendedElement, recreated: Map<Element, Element>): ExtendedElement {
     const svg = recreateInSvgNamespace(el, recreated)
     remapRecreatedElements(svg, recreated)
     return svg
 }
 
-// 数组项原地替换：StaticArrayHost 稍后按同一个数组渲染。CSR 的这条循环不读数组项的 nodeType，先按 class string 排除 SVG 元素
-function adoptSvgArrayItems(items: any[]): void {
+// 数组项原地替换：StaticArrayHost 稍后按同一个数组渲染。CSR 的这条循环不读数组项的 nodeType，先按 class string 排除 SVG 元素。
+// 返回（可能新建的）改建表。
+function adoptSvgArrayItems(items: any[], recreated: Map<Element, Element> | undefined): Map<Element, Element> | undefined {
     for (let i = 0; i < items.length; i++) {
         const item = items[i]
-        if (item !== null && typeof item === 'object' && !isSvgClassString(item[TO_STRING_TAG]) && isSharedNameHtmlElement(item)) {
-            items[i] = adoptSvgChild(item)
+        if (item !== null && typeof item === 'object' && !isSvgClassString(item[TO_STRING_TAG]) &&
+            isElementNode(item) && isSharedNameHtmlElement(item)) {
+            items[i] = adoptSvgChild(item, recreated ??= new Map())
         }
     }
+    return recreated
 }
 
-// Fragment 子元素的元数据已经提升到 DocumentFragment 上，在它上面改指。只走元素子节点（同名标签都是元素）
-function adoptSvgFragmentChildren(fragment: DocumentFragment): void {
-    let recreated: Map<Element, Element> | undefined
+// Fragment 子元素的元数据已经提升到 DocumentFragment 上，在它上面改指。只走元素子节点（同名标签都是元素）。
+// 返回（可能新建的）改建表。
+function adoptSvgFragmentChildren(fragment: DocumentFragment, recreated: Map<Element, Element> | undefined): Map<Element, Element> | undefined {
+    let fragmentRecreated = false
     let el = fragment.firstElementChild
     while (el) {
         const next = el.nextElementSibling
         if (!isSvgClassString((el as any)[TO_STRING_TAG]) && isSharedNameHtmlElement(el)) {
             fragment.replaceChild(recreateInSvgNamespace(el, recreated ??= new Map()), el)
+            fragmentRecreated = true
         }
         el = next
     }
-    if (recreated) remapRecreatedElements(fragment as unknown as ExtendedElement, recreated)
+    if (fragmentRecreated) remapRecreatedElements(fragment as unknown as ExtendedElement, recreated!)
+    return recreated
 }
 
 function recreateInSvgNamespace(el: ExtendedElement, recreated: Map<Element, Element>): ExtendedElement {
@@ -891,7 +899,7 @@ function recreateInSvgNamespace(el: ExtendedElement, recreated: Map<Element, Ele
     let child = el.firstChild
     while (child) {
         const next = child.nextSibling
-        svg.appendChild(!keepHtmlChildren && isSharedNameHtmlElement(child) ? recreateInSvgNamespace(child, recreated) : child)
+        svg.appendChild(!keepHtmlChildren && isElementNode(child) && isSharedNameHtmlElement(child) ? recreateInSvgNamespace(child, recreated) : child)
         child = next
     }
     const keys = Object.keys(el)
@@ -1384,6 +1392,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     let hydrateRebuilt = false
     // CSR 的 SVG 父元素（integration point 除外）在下面的子节点循环里把 HTML / SVG 同名的子元素改建到 SVG 命名空间（#56，见 adoptSvgChild）
     let adoptSharedNameChildren = false
+    let adoptedElements: Map<Element, Element> | undefined
     if (type === Fragment) {
         container = document.createDocumentFragment()
     } else if (hydrating) {
@@ -1503,10 +1512,12 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 let nodeChild: Node = child
                 // 改建必须在 append 和元数据提升之前：提升读的是新元素上转交过来的字段（#56，见 adoptSvgChild）
                 if (adoptSharedNameChildren) {
-                    if (childNodeType === DOCUMENT_FRAGMENT_NODE) {
-                        adoptSvgFragmentChildren(child)
-                    } else if (!isSvgClassString(child[TO_STRING_TAG]) && isSharedNameHtmlElement(child)) {
-                        children[index] = nodeChild = adoptSvgChild(child)
+                    if (childNodeType === ELEMENT_NODE) {
+                        if (!isSvgClassString(child[TO_STRING_TAG]) && isSharedNameHtmlElement(child)) {
+                            children[index] = nodeChild = adoptSvgChild(child, adoptedElements ??= new Map())
+                        }
+                    } else if (childNodeType === DOCUMENT_FRAGMENT_NODE) {
+                        adoptedElements = adoptSvgFragmentChildren(child, adoptedElements)
                     }
                 }
                 // Fragment: leave deferred stubs for rematerialize under fragment/portal root.
@@ -1563,7 +1574,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     childElement.detachStyledChildren = undefined
                 }
             } else {
-                if (adoptSharedNameChildren && Array.isArray(child)) adoptSvgArrayItems(child)
+                if (adoptSharedNameChildren && Array.isArray(child)) adoptedElements = adoptSvgArrayItems(child, adoptedElements)
                 // 函数/atom child 大概率渲染为文本，直接用 Text 节点当占位符
                 let placeholder: UnhandledPlaceholder
                 if (hydrating && type === Fragment) {
