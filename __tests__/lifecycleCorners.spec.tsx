@@ -183,6 +183,25 @@ describe('#58-2: errors thrown after their content was destroyed are reported, n
         expect(rootEl.innerHTML).toBe('')
     })
 
+    // 被丢弃的树在销毁时抛出不经过 dispatch 的错误（DOM 区间被用户代码搬乱）：同样报告，不从 root.render 抛出
+    test('render: a teardown error of the discarded tree that bypasses dispatch', () => {
+        const root = createRoot(rootEl)
+        function Moved(_: any, {useEffect}: RenderContext) {
+            const element = <b>moved</b> as HTMLElement
+            // 把自己的元素搬到 root 占位符后面：区间 [元素, 占位符] 断开
+            useEffect(() => { element.parentNode!.appendChild(element) })
+            return element
+        }
+        function App(_: any, {useEffect}: RenderContext) {
+            useEffect(() => { throw new Error('app effect failed') })
+            return <Moved/>
+        }
+        root.on('error', () => { root.destroy() })
+        expect(() => root.render(<App/>)).not.toThrow()
+        expect(reported).toHaveLength(1)
+        expect(rootEl.innerHTML).toBe('')
+    })
+
     // FunctionHost：函数节点重算时 source 自己同步销毁了本节点再抛错（root 上没有 error 监听器）
     test('FunctionHost: a source that destroys its own node and then throws', async () => {
         const root = createRoot(rootEl)
