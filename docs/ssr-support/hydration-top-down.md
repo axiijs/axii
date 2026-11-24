@@ -127,7 +127,7 @@ export function isHydrationElement(v: unknown): v is HydrationElement   // 判�
 - **何时产生：** 新模型激活期间，对字符串标签与 `Fragment` 调用 `createElement` 和 `createSVGElement` 时。组件仍然返回 `ComponentNode`，不变。
 - **不碰 DOM：** 不创建元素，不认领，不应用 props，不提升元数据。`unhandledChildren`、`unhandledAttr`、`refHandles`、`detachStyledChildren` 都由消费它的 Host 在认领时按 CSR 的同一规则建立（§2.4）。
 - **字段预置：** 全部字段在构造器里预置，然后 `Object.preventExtensions`。这样形状单态，用户写入未知属性在严格模式下抛错（§3.4）。只在激活路径上分配。
-- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChildren`。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 `adoptSvgChildren` 的数组分支：SVG 元素自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`；Fragment 里的数组、嵌套数组、Fragment 项不在其列，CSR 同样不进入）。
+- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChildren`。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 `adoptSvgChildren` 的数组分支：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 处理（B3 之前报告并抛出）。
 - **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
 - **两种对象：** 开发期返回包着描述的 Proxy，生产返回描述本身（§3.4）。用哪一种在 `beginHydration` 时按 `isAxiiDiagnosticsEnabled()` 定一次，同一次激活内不变。
 - **消费后瘦身：** 被认领或新建后，`rawProps` 和 `rawChildren` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。瘦身不会把描述变成节点：被闭包捕获的描述永远是描述（§3.1.1）。
@@ -846,6 +846,8 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **atom 数组项的空值：** B2 实现时服务端对 atom 数组项按 Text-ph 写（`emitTextPh`，空值多一个 `axii:0`），CSR 是 Comment-ph 的 AtomHost，激活在未改动的服务端输出上失配。B2 起初让 `AtomHost.hydrate` 在 `'array item'` 上认领这个哨兵；合并 main 时 #82（#83）已在服务端改为 Comment-ph（空值不写节点），这个例外随之去掉，`AtomHost.hydrate` 对所有 Comment slot 一视同仁。旧服务端写出的 HTML 在这里多一个 `axii:0`，由 B3 的规则报告并清扫。
 - **SVG 的数组 child：** 见 §2.2「isSVG」。
 - **稀疏数组：** `StaticArrayHost.hydrate` 与 `render` 的 `forEach` 一样跳过空位（服务端为空位多写的标记见 §11）。
+- **写回的边界：** 冻结的数组（`Object.freeze([...])`）不写回，CSR 照常渲染它，写回在严格模式下会 TypeError，项留在描述壳上。RxListHost 在全部行认领之后按 `data` 现在的内容写回，只写已认领的描述（行的组件在激活中改动列表时不会写错位置或写入 `null`）。
+- **独立审查后的修正：** 数组项的 SVG 改建只发生在创建时就是 SVG 的元素上（§2.2）；开发期不变量的遍历不用展开参数（行数超过参数个数上限时 RangeError）；以上两条与冻结数组、组件返回空 atom 作为数组项各有一条用例。
 - **同一个描述作为 Host 的 source 第二次出现**（`[s, s]`、同一个描述作为两行）：`hydrateSource` 在读 `rawChildren` 之前显式抛 B4「待实现」（`throwConsumedDescription` 收到 `hydrationElement.ts`，认领步骤与 Host 共用）。
 - **开发期不变量：** 遍历行与项，Compact 行按元素检查（§4.4）。
 - **用例：** 去掉 62 处 `pendingTopDown('B2')`。其中 `ssrHydrate.mismatch` 的 4 条（trailing junk after RxList、三条 Comment-ph 文本漂移）用的是故意改动过的服务端 HTML，B2 之后它们报告失配并抛出，改标 B3。关掉标记跑内部入口那一遍：B3 标记的用例只因报告失配而失败，B4 标记的用例只因 B4「待实现」而失败。

@@ -269,7 +269,8 @@ export class StaticArrayHost implements Host{
      *    其余共享一个 hostPath 节点。
      * 先构造全部子 Host，再按文档顺序认领（≡ render：forEach 构造，再逐个 render），组件类型 id 的分配顺序与 CSR 相同；
  * 与 forEach 一样跳过稀疏数组的空位。
-     * 项是描述时，认领之后把 source[index] 写回为认领到的节点（§3.3；Fragment 项是那个空的 DocumentFragment）。
+     * 项是描述时，认领之后把 source[index] 写回为认领到的节点（§3.3；Fragment 项是那个空的 DocumentFragment）；
+ * 冻结的数组不写回（CSR 照常渲染它）。
      */
     hydrate(slot: HydrationSlot): void {
         const source = this.source
@@ -292,6 +293,8 @@ export class StaticArrayHost implements Host{
             this.childHosts.push(newHost)
             if (index === 0) this.firstChild = newHost
         }
+        // 冻结的数组（Object.freeze([...])）CSR 照常渲染；写回在严格模式下会 TypeError，这种数组不写回，项留在描述壳上
+        const writeBack = !Object.isFrozen(source)
         let next = 0
         for (let index = 0; index < length; index++) {
             if (!(index in source)) continue
@@ -304,7 +307,7 @@ export class StaticArrayHost implements Host{
                 if (index === 0) this.firstChild = node
             } else {
                 this.childHosts[next++].hydrate!(ARRAY_ITEM_SLOT)
-                if (isHydrationElement(item) && source[index] === item) source[index] = item.node
+                if (writeBack && isHydrationElement(item) && source[index] === item) source[index] = item.node
             }
         }
         this.placeholder = claimTopDownComment(slot)

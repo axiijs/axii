@@ -74,6 +74,10 @@ function assertTopDownContainerClean(container: ParentNode, host: Host): void {
  *  3. 容器里没有残留的 axii:t / axii:/t / axii:0 标记。
  * 违反时报告 AXII_HYDRATION_INVARIANT（HydrationInvariantError），不抛出。
  */
+function pushAll(into: Host[], hosts: Host[]): void {
+    for (let i = 0; i < hosts.length; i++) into.push(hosts[i])
+}
+
 function checkTopDownInvariants(container: ParentNode, rootHost: Host): void {
     const pending: Host[] = [rootHost]
     while (pending.length) {
@@ -105,11 +109,12 @@ function checkTopDownInvariants(container: ParentNode, rootHost: Host): void {
         //  RxListHost 的行（hosts），StaticArrayHost 的项（childHosts）
         const inner = (host as {innerHost?: Host | null}).innerHost
         if (inner) pending.push(inner)
+        // CAUTION 逐个 push，不用展开参数：长列表的行数可以超过函数参数个数的上限（RangeError，同 RxListHost.spliceHosts）
         const hosts = (host as {reactiveHosts?: Host | Host[]}).reactiveHosts
-        if (Array.isArray(hosts)) pending.push(...hosts)
+        if (Array.isArray(hosts)) pushAll(pending, hosts)
         else if (hosts) pending.push(hosts)
-        if (host instanceof RxListHost) pending.push(...host.hosts!)
-        else if (host instanceof StaticArrayHost) pending.push(...host.childHosts)
+        if (host instanceof RxListHost) pushAll(pending, host.hosts!)
+        else if (host instanceof StaticArrayHost) pushAll(pending, host.childHosts)
     }
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_COMMENT)
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {

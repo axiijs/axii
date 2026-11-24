@@ -579,8 +579,10 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             const a = atom('')
             const b = atom('y')
             const list = new RxList([1])
+            // 组件返回 atom：数组项的 placeholder 由组件与它的 AtomHost 共享
+            function C({}: any, {createElement}: RenderContext) { return a }
             function App({}: any, {createElement}: RenderContext) {
-                return <div><p>{[a, 'x', b, '']}</p><ul>{list.map(() => [a, <i>i</i>])}</ul></div>
+                return <div><p>{[a, 'x', b, '']}</p><ul>{list.map(() => [a, <i>i</i>])}</ul><p>{[<C/>, b]}</p></div>
             }
             return {App, a, b}
         }
@@ -596,6 +598,63 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         for (const s of [c, h]) { s.a('A'); s.b('') }
         await tick()
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+    })
+
+    test('an array under an element that only became SVG keeps HTML items like CSR: the parser\'s SVG <title> is reported, not claimed silently', () => {
+        // CSR 的 adoptSvgChildren 只在创建时就是 SVG 的元素上改建数组项；被父元素改建、或作为数组项被改建的 <a> 不改建它的数组项，
+        //  其中的 <title> 是 HTML 元素，解析器却按 SVG 解析。激活与 CSR 一致按 HTML 认领，在认领处报告失配（B3 修复）
+        const ns = (root: Element) => Array.from(root.querySelectorAll('title')).map(n => n.namespaceURI === 'http://www.w3.org/2000/svg' ? 'svg' : 'html')
+        const shapes = [
+            function App({}: any, {createElement}: RenderContext) { return <svg><a>{[<title>t</title>]}</a></svg> },
+            function App({}: any, {createElement}: RenderContext) { return <svg>{[<a>{[<title>t</title>]}</a>]}</svg> },
+        ]
+        for (const App of shapes) {
+            reports = []
+            const csrEl = mount()
+            createRoot(csrEl).render(createElement(App, null))
+            expect(ns(csrEl)).toEqual(['html'])
+            const hyd = ssrInto(createElement(App, null))
+            let thrown: unknown
+            try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
+            expect(thrown).toBeInstanceOf(HydrationMismatchError)
+            expect(reports.length).toBe(1)
+        }
+        // 对照：创建时就是 SVG 的元素（<g>）改建它的数组项，激活 ≡ CSR、不报告
+        reports = []
+        function Control({}: any, {createElement}: RenderContext) { return <svg><g>{[<title>t</title>]}</g></svg> }
+        const csrEl = mount()
+        createRoot(csrEl).render(createElement(Control, null))
+        const hyd = ssrInto(createElement(Control, null))
+        hydrateRootTopDown(hyd, createElement(Control, null))
+        expect({ns: ns(hyd), dom: kids(hyd), reports}).toEqual({ns: ['svg'], dom: kids(csrEl), reports: []})
+    })
+
+    test('a frozen array hydrates ≡ CSR: its items are not written back (that would throw in strict mode)', () => {
+        let frozen: any[] = []
+        function App({}: any, {createElement}: RenderContext) {
+            frozen = Object.freeze([<b>x</b>, 'y', <i>z</i>]) as any[]
+            return <p>{frozen}</p>
+        }
+        const csrEl = mount()
+        createRoot(csrEl).render(createElement(App, null))
+        const hyd = ssrInto(createElement(App, null))
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        // 已知：冻结的数组里留着认领过的描述壳（不能写回）
+        expect(isHydrationElement(frozen[0])).toBe(true)
+    })
+
+    test('development invariants on a list / array longer than the argument-count limit: no RangeError (diagnostics on)', () => {
+        const N = 150000
+        const make = () => {
+            const list = new RxList(Array.from({length: N}, (_, i) => i))
+            return function App({}: any, {createElement}: RenderContext) {
+                return <div>{list.map(() => <i/>)}{Array.from({length: N}, () => <b/>)}</div>
+            }
+        }
+        const hyd = ssrInto(createElement(make(), null))
+        hydrateRootTopDown(hyd, createElement(make(), null))
+        expect({rows: hyd.querySelectorAll('i').length + hyd.querySelectorAll('b').length, reports}).toEqual({rows: 2 * N, reports: []})
     })
 
     test('the same JSX element twice as array items / list rows throws TopDownPendingError (C6, B4) instead of a TypeError', () => {

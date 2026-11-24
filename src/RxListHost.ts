@@ -310,10 +310,12 @@ export class RxListHost implements Host{
                 hosts.push(createHydrateHost(row, RX_LIST_ITEM_SLOT, childContext))
             }
         }
-        for (let i = 0; i < hosts.length; i++) {
+        for (let i = 0; i < hosts.length; i++) hosts[i].hydrate!(RX_LIST_ITEM_SLOT)
+        // 全部行认领之后写回：按 data 现在的内容逐项写，行的组件在激活中改动了列表（位置移动）也不会写错位置；
+        //  没有被认领的描述（node 为 null）不写
+        for (let i = 0; i < data.length; i++) {
             const row = data[i]
-            hosts[i].hydrate!(RX_LIST_ITEM_SLOT)
-            if (isHydrationElement(row) && data[i] === row) data[i] = row.node
+            if (isHydrationElement(row) && row.node !== null) data[i] = row.node
         }
         this.placeholder = claimTopDownComment(slot)
         this.createRenderComputed(true)

@@ -1768,6 +1768,9 @@ export function hydrateElementDescription(desc: HydrationElement, innerHosts: To
 function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined, parentAdoptsSvg: boolean): HTMLElement | SVGElement {
     const tag = desc.tag as string
     const rawProps = desc.rawProps
+    // 创建时就是 SVG 元素（≡ createElement 的 _isSVG，同一个表达式）：数组 child 的改建只在这种元素上发生（见
+    //  adoptSvgArrayItemDescriptions）。不能用 desc.isSVG：被父元素改建、或作为数组项被改建的同名标签，isSVG 已经改成了 true
+    const createdSVG = (rawProps ? rawProps._isSVG : undefined) ?? svgOnlyElementNames.has(tag)
     if (parentAdoptsSvg && !desc.isSVG && svgHtmlSharedElementNames.has(tag)) desc.isSVG = true
     const isSVG = desc.isSVG
     const el = claimTopDownElement(tag, isSVG, staticAttrId(rawProps)) as HTMLElement
@@ -1790,7 +1793,7 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
             if (text !== '') claimTopDownText(text)
         } else if (childrenLength) {
             const childAdoptsSvg = isSVG && !isSvgHtmlIntegrationPoint(tag)
-            if (childAdoptsSvg) adoptSvgArrayItemDescriptions(children)
+            if (childAdoptsSvg && createdSVG) adoptSvgArrayItemDescriptions(children)
             const lifted = hydrateDescriptionChildren(children, innerHosts, childAdoptsSvg, debugSource)
             if (lifted !== undefined) {
                 unhandledAttr = lifted.unhandledAttr
@@ -1811,10 +1814,11 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     return el
 }
 
-// ≡ CSR adoptSvgChildren 的数组分支（#56）：SVG 元素（不是 HTML integration point）的数组 child，其中直接是 HTML / SVG
-//  同名标签的元素项按 SVG 认领。数组项由 StaticArrayHost 稍后认领，这里先改描述的 isSVG（认领按它决定命名空间与写属性的
-//  规则，子元素随之按 SVG 父元素的规则认领）。与 CSR 相同只看 SVG 元素自己的 children 里的数组：Fragment 里的数组、
-//  嵌套数组、Fragment 项都不在其列（CSR 的 adoptSvgChildren 也不进入它们）。
+// ≡ CSR adoptSvgChildren 的数组分支（#56）：创建时就是 SVG 的元素（不是 HTML integration point）的数组 child，其中直接是
+//  HTML / SVG 同名标签的元素项按 SVG 认领。数组项由 StaticArrayHost 稍后认领，这里先改描述的 isSVG（认领按它决定命名空间与
+//  写属性的规则，子元素随之按 SVG 父元素的规则认领）。与 CSR 相同只看这个元素自己的 children 里的数组：Fragment 里的数组、
+//  嵌套数组、Fragment 项都不在其列；被改建成 SVG 的同名标签（<svg><a>{[…]}</a></svg>）也不改建它的数组项——CSR 的
+//  adoptSvgChildren 只在 createElement 时 _isSVG 为真的元素上执行，改建（recreateInSvgNamespace）只遍历已有的 DOM 子节点。
 function adoptSvgArrayItemDescriptions(children: any[]): void {
     for (let i = 0; i < children.length; i++) {
         const child = children[i]
