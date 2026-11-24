@@ -1,6 +1,6 @@
 import { insertBefore, restoreSelectValueAfterRemoval, resumeSelectReplay, suspendSelectReplay} from "./DOM";
 import {PathContext, Host} from "./Host";
-import {createHost} from "./createHost";
+import {createHost, createHydrateHost} from "./createHost";
 import {removeNodesBetween} from "./util";
 import {createLinkedNode} from "./LinkedList";
 import {isAxiiRetainedObjectDiagnosticsEnabled, trackHostCreated, trackHostDestroyed} from "./retainedObjectDiagnostics.js";
@@ -17,6 +17,8 @@ import type {UnhandledChildInfo} from "./DOM";
 import {RxList} from "data0";
 import {isDomNode, isElementNode, isFragmentNode, isTextNode} from "./nodeType";
 import {ReusableHost} from "./ComponentHost";
+import {ARRAY_ITEM_SLOT, HydrationSlot, isHydrationElement, throwTopDownPending} from "./hydrationElement";
+import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText} from "./hydrationCursor";
 
 /** Previous-host boundary comments (not part of this StaticArray content). */
 function isArrayRegionBoundaryComment(data: string): boolean {
@@ -255,6 +257,55 @@ export class StaticArrayHost implements Host{
             /* v8 ignore next 3 */
         } else {
             throw new Error('should never rerender')
+        }
+    }
+    /**
+     * #55 新模型（设计 §2.5 StaticArrayHost 行、§3.3）：从游标处逐项认领服务端节点，然后认领自己的 slot。
+     * 项的分类、子 Host 的 context / position 与 render 逐项相同（CAUTION 改其中一处两处一起改）：
+     *  - 字符串 / 数字 / bigint 是 DirectNodes：认领文本单元，空串认领 `<!--axii:0-->`（插入 Text('')；
+     *    服务端 ssr.serializeStaticArrayItemContent 对空串写哨兵），没有 `<!--array item-->`；
+     *  - 现成的 Text（激活之外创建的节点，§2.6.8）在 render 里也是 DirectNodes，新模型在 B4 落地，之前显式抛错；
+     *  - 其余项 createHydrateHost(项, 'array item')：函数（含 atom）不克隆 pathContext、以 position 传位置，
+     *    其余共享一个 hostPath 节点。
+     * 先构造全部子 Host，再按文档顺序认领（≡ render：forEach 构造，再逐个 render），组件类型 id 的分配顺序与 CSR 相同。
+     * 项是描述时，认领之后把 source[index] 写回为认领到的节点（§3.3；Fragment 项是那个空的 DocumentFragment）。
+     */
+    hydrate(slot: HydrationSlot): void {
+        const source = this.source
+        const length = source.length
+        let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
+        for (let index = 0; index < length; index++) {
+            const item = source[index]
+            const itemType = typeof item
+            if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') continue
+            if (isTextNode(item)) throwTopDownPending('a DOM node created outside hydration used as an array item', 'B4')
+            const newHost = itemType === 'function' ?
+                createHydrateHost(item, ARRAY_ITEM_SLOT, this.pathContext, {
+                    owner: this,
+                    elementPath: this.pathContext.elementPath,
+                }) :
+                createHydrateHost(item, ARRAY_ITEM_SLOT, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
+            this.childHosts.push(newHost)
+            if (index === 0) this.firstChild = newHost
+        }
+        let next = 0
+        for (let index = 0; index < length; index++) {
+            const item = source[index]
+            const itemType = typeof item
+            if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') {
+                const text = item.toString()
+                const node = text === '' ? claimTopDownEmptyTextPlaceholder() : claimTopDownText(text)
+                ;(this.directNodes ??= []).push(node)
+                if (index === 0) this.firstChild = node
+            } else {
+                this.childHosts[next++].hydrate!(ARRAY_ITEM_SLOT)
+                if (isHydrationElement(item) && source[index] === item) source[index] = item.node
+            }
+        }
+        this.placeholder = claimTopDownComment(slot)
+        // ≡ render：子 host 登记的 layoutEffect / ref 在自己的区间完成之后执行
+        if (this.placeholder.isConnected) {
+            this.pathContext.root.flushAttachQueue()
         }
     }
     destroy(parentHandle?: boolean) {

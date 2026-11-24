@@ -60,7 +60,7 @@ import {
     tryClaimElement,
     unclaimHydrateElement,
 } from "./hydration";
-import {HydrationElement, isHydrationElement, TEXT_SLOT, throwTopDownPending, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
+import {HydrationElement, isHydrationElement, TEXT_SLOT, throwConsumedDescription, throwTopDownPending, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
     claimTopDownElement,
     claimTopDownEmptyTextPlaceholder,
@@ -1762,12 +1762,6 @@ export function hydrateElementDescription(desc: HydrationElement, innerHosts: To
         hydrateElementDescriptionAt(desc, innerHosts, false)
 }
 
-// 同一个描述在一次激活里第二次出现（const s = <span/>; <div>{s}{s}</div>，或激活中存下的 JSX 再次渲染，C6）：
-//  CSR 第二次插入时把节点挪走，服务端写两份；描述已经瘦身，「已有 node 就当作那个元素」的分支在 B4 落地，之前显式抛错。
-function throwConsumedDescription(): never {
-    throwTopDownPending('the same JSX element rendered more than once (C6)', 'B4')
-}
-
 // parentAdoptsSvg：父元素是 SVG 元素且不是 HTML integration point。HTML / SVG 同名的标签（a / title / style / script）
 //  作为它的静态子元素（含 Fragment 展开的）时按 SVG 认领与应用属性，≡ CSR 里 SVG 父元素的改建（adoptSvgChildren，#56）。
 //  Host 稍后渲染的内容不经过这里（parentAdoptsSvg 为 false），与 CSR 相同仍是 HTML 元素。
@@ -1796,6 +1790,7 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
             if (text !== '') claimTopDownText(text)
         } else if (childrenLength) {
             const childAdoptsSvg = isSVG && !isSvgHtmlIntegrationPoint(tag)
+            if (childAdoptsSvg) adoptSvgArrayItemDescriptions(children)
             const lifted = hydrateDescriptionChildren(children, innerHosts, childAdoptsSvg, debugSource)
             if (lifted !== undefined) {
                 unhandledAttr = lifted.unhandledAttr
@@ -1814,6 +1809,23 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     desc.rawProps = undefined
     desc.rawChildren = undefined
     return el
+}
+
+// ≡ CSR adoptSvgChildren 的数组分支（#56）：SVG 元素（不是 HTML integration point）的数组 child，其中直接是 HTML / SVG
+//  同名标签的元素项按 SVG 认领。数组项由 StaticArrayHost 稍后认领，这里先改描述的 isSVG（认领按它决定命名空间与写属性的
+//  规则，子元素随之按 SVG 父元素的规则认领）。与 CSR 相同只看 SVG 元素自己的 children 里的数组：Fragment 里的数组、
+//  嵌套数组、Fragment 项都不在其列（CSR 的 adoptSvgChildren 也不进入它们）。
+function adoptSvgArrayItemDescriptions(children: any[]): void {
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i]
+        if (!Array.isArray(child)) continue
+        for (let j = 0; j < child.length; j++) {
+            const item = child[j]
+            if (isHydrationElement(item) && item.tag !== Fragment && !item.isSVG && svgHtmlSharedElementNames.has(item.tag as string)) {
+                item.isSVG = true
+            }
+        }
+    }
 }
 
 // Fragment 描述：在同一层消费子节点（没有 fragment start；作为 Host 的 source 时由 StaticHost 先认领它）。

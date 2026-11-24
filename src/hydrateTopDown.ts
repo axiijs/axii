@@ -13,14 +13,16 @@
  *  3. 根 Host 由 createHydrateHost(source, 'root') 创建，hydrate('root') 按文档顺序逐个读回服务端节点，最后认领 <!--root-->；
  *  4. 容器上剩下的只能是 STYLE / SCRIPT / LINK；迁移服务端样式之后，激活区间之外不能再有节点；
  *  5. 诊断开启时检查开发期不变量（§4.4）。
- * 失配报告 HydrationMismatchError 并抛出（修复在 B3）；还没有实现的形态（列表、数组在 B2；Portal、reusable、lazy、
- * 现成节点在 B4）显式抛出 TopDownPendingError。
+ * 失配报告 HydrationMismatchError 并抛出（修复在 B3）；还没有实现的形态（Portal、reusable、lazy、现成节点在 B4）
+ * 显式抛出 TopDownPendingError。
  */
 import {beginTopDownHydration, endTopDownHydration, HydrationInvariantError, isCommentData, reportHydrationMismatch, summarizeChild} from "./hydration"
 import {createRootInternal} from "./render"
 import type {Root} from "./render"
 import {enterTopDownContainer, finishTopDownContainer, leaveTopDownContainer} from "./hydrationCursor"
-import {migrateSsrStyleTags} from "./StaticHost"
+import {CompactElementHost, migrateSsrStyleTags} from "./StaticHost"
+import {RxListHost} from "./RxListHost"
+import {StaticArrayHost} from "./StaticArrayHost"
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
 import type {Host} from "./Host"
 import {isHydrationSlot} from "./hydrationElement"
@@ -76,28 +78,38 @@ function checkTopDownInvariants(container: ParentNode, rootHost: Host): void {
     const pending: Host[] = [rootHost]
     while (pending.length) {
         const host = pending.pop()!
-        const placeholder = host.placeholder as unknown
-        if (isHydrationSlot(placeholder)) {
-            reportAxiiError(new HydrationInvariantError(`${host.constructor.name}.placeholder is still the slot "${placeholder}"`))
-            continue
-        }
-        const start = host.element as ChildNode
-        const end = host.placeholder as ChildNode
-        if (!end.isConnected) {
-            reportAxiiError(new HydrationInvariantError(`${host.constructor.name}.placeholder is not in the document`))
-        } else if (start !== end) {
-            try {
-                assertRangeReachable({ownerHost: host, start, end, boundaryKind: 'range', operation: 'render'})
-            } catch (cause) {
-                reportAxiiError(new HydrationInvariantError(`${host.constructor.name} range [element … placeholder] is not reachable`, cause))
+        if (host instanceof CompactElementHost) {
+            // Compact 行没有自己的 placeholder（共享的 COMPACT_SHARED_PLACEHOLDER 不在文档里），区间就是行元素本身
+            if (!(host.element as ChildNode).isConnected) {
+                reportAxiiError(new HydrationInvariantError('CompactElementHost.element is not in the document'))
+            }
+        } else {
+            const placeholder = host.placeholder as unknown
+            if (isHydrationSlot(placeholder)) {
+                reportAxiiError(new HydrationInvariantError(`${host.constructor.name}.placeholder is still the slot "${placeholder}"`))
+                continue
+            }
+            const start = host.element as ChildNode
+            const end = host.placeholder as ChildNode
+            if (!end.isConnected) {
+                reportAxiiError(new HydrationInvariantError(`${host.constructor.name}.placeholder is not in the document`))
+            } else if (start !== end) {
+                try {
+                    assertRangeReachable({ownerHost: host, start, end, boundaryKind: 'range', operation: 'render'})
+                } catch (cause) {
+                    reportAxiiError(new HydrationInvariantError(`${host.constructor.name} range [element … placeholder] is not reachable`, cause))
+                }
             }
         }
-        // 内层 Host：ComponentHost / FunctionHost 的 innerHost，StaticHost 的 reactiveHosts（单个或数组）
+        // 内层 Host：ComponentHost / FunctionHost 的 innerHost，StaticHost 的 reactiveHosts（单个或数组），
+        //  RxListHost 的行（hosts），StaticArrayHost 的项（childHosts）
         const inner = (host as {innerHost?: Host | null}).innerHost
         if (inner) pending.push(inner)
         const hosts = (host as {reactiveHosts?: Host | Host[]}).reactiveHosts
         if (Array.isArray(hosts)) pending.push(...hosts)
         else if (hosts) pending.push(hosts)
+        if (host instanceof RxListHost) pending.push(...host.hosts!)
+        else if (host instanceof StaticArrayHost) pending.push(...host.childHosts)
     }
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_COMMENT)
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {

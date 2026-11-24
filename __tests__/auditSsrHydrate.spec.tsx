@@ -29,6 +29,12 @@ import {
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {
+    disableAxiiRetainedObjectDiagnostics,
+    enableAxiiRetainedObjectDiagnostics,
+    getAxiiRetainedObjectDiagnosticsSnapshot,
+    resetAxiiRetainedObjectDiagnostics,
+} from '../src/retainedObjectDiagnostics'
 import {hydrate, pendingTopDown, TOP_DOWN_PASS} from './helpers/hydrate'
 
 let reports: string[]
@@ -215,7 +221,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
-    test.skipIf(pendingTopDown('B2'))('F1d hydration time must not grow cubically with the number of sibling rows', () => {
+    test('F1d hydration time must not grow cubically with the number of sibling rows', () => {
         const hydrateMs = (n: number) => {
             const make = () => {
                 const list = new RxList(Array.from({length: n}, (_, i) => i))
@@ -231,15 +237,20 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
         // best of 3: scheduling noise (other browser processes, GC) only ever adds time
         const best = (n: number) => Math.min(hydrateMs(n), hydrateMs(n), hydrateMs(n))
         best(50) // warm up
-        const small = best(150)
-        const large = best(600)
+        // Internal entry (#55 B2): 150 / 600 rows hydrate in ~0.1–0.4 ms, at the 0.1 ms timer resolution, so the ratio says
+        //  nothing there; 3000 / 12000 rows (~1.4 / ~6 ms) keep the same 4x step measurable.
+        const [smallN, largeN] = TOP_DOWN_PASS ? [3000, 12000] : [150, 600]
+        const small = best(smallN)
+        const large = best(largeN)
         const growth = large / small
         // eslint-disable-next-line no-console
-        console.log(`[F1d] n=150 hydrate=${small.toFixed(1)}ms | n=600 hydrate=${large.toFixed(1)}ms | growth x${growth.toFixed(1)}`)
+        console.log(`[F1d] n=${smallN} hydrate=${small.toFixed(1)}ms | n=${largeN} hydrate=${large.toFixed(1)}ms | growth x${growth.toFixed(1)}`)
         // 4x rows: linear → ~4x, quadratic → ~16x, cubic → ~64x. The bound sits at the geometric mean of
         // quadratic and cubic: a factor 2 of timing noise either way still classifies correctly
         // (a 2x rows step only left 4 vs 5 between quadratic and the bound).
-        expect(growth).toBeLessThan(32)
+        // Internal entry (#55 B2): top-down claiming visits every server node once, so the bound is the geometric mean
+        // of linear and quadratic (8) — the same factor 2 of noise margin, one class lower.
+        expect(growth).toBeLessThan(TOP_DOWN_PASS ? 8 : 32)
     })
 })
 
@@ -318,7 +329,7 @@ describe('F1 regression: static trees hydrate in place (deterministic fuzz)', ()
         return function App({}: any, {createElement: h}: RenderContext) { return render(spec, h) }
     }
 
-    test.skipIf(pendingTopDown('B2'))('F1i 300 generated trees: DOM ≡ CSR, no report, server nodes kept, listeners at their own position', () => {
+    test('F1i 300 generated trees: DOM ≡ CSR, no report, server nodes kept, listeners at their own position', () => {
         for (let seed = 1; seed <= 300; seed++) {
             const spec = generate(seed)
             const log: string[] = []
@@ -347,6 +358,205 @@ describe('F1 regression: static trees hydrate in place (deterministic fuzz)', ()
             expect(actual).toEqual(expected) // `seed` in the diff: rerun generate(seed) to replay
             document.body.innerHTML = ''
         }
+    })
+})
+
+// #55 B2 (design §7.2 "F1i", §2.4.1): the F1i generator without its exclusions — child components, function children
+// (text and structure), Fragments (as element child, component root, function value, list row, array item), static arrays,
+// RxList rows of every kind (Compact and non-Compact elements, Fragment, function, atom, primitive, null, array, nested
+// list, component), atom / string / number / bigint / boolean / null children and raw markup that contains the raw element's
+// own tag. Every tree: DOM ≡ CSR, no report, every server element kept, each listener at its own position, and the Host
+// kinds the activation creates equal the kinds a CSR render creates, kind by kind (§2.4.1: createHydrateHost and
+// createHost must not diverge; CompactElementHost included). Over the 300 trees each landed kind appears on both sides.
+// Not generated (not landed yet, or a known server defect): reusable(), live DOM nodes, Portal, lazy (B4); the same JSX
+// element twice (C6, B4); a function child whose value is another function or an RxList (ssr.serializeStructureResult
+// falls back to the element-child writer: a Text-ph for the function, #82; an extra <!--unhandledChild--> after the rows —
+// pinned in hydrateTopDown.spec「pre-existing server / CSR disagreement」).
+// Internal entry only until #55 S replaces the generator above with this one (the old model does not support these shapes).
+describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): every landed Host kind hydrates in place', () => {
+    const TAGS = ['div', 'span', 'b', 'em', 'section']
+    const OPACITY_0 = {opacity: 0}
+    // the Host kinds landed on the internal entry (§2.4.1; ReusableHost / NodeHost land in B4)
+    const LANDED_KINDS = ['StaticHost', 'PrimitiveHost', 'StaticArrayHost', 'EmptyHost', 'RxListHost', 'ComponentHost',
+        'AtomHost', 'FunctionHost', 'CompactElementHost']
+    type Gen =
+        | {k: 'el', tag: string, key: string, id?: string, raw?: string, detach?: boolean, kids: Gen[]}
+        | {k: 'frag', kids: Gen[]}
+        | {k: 'text', v: string | number | bigint}
+        | {k: 'bool', v: boolean}
+        | {k: 'nil', v: null | undefined}
+        | {k: 'atom', v: string}
+        | {k: 'fn', body: Gen}
+        | {k: 'arr', items: Gen[]}
+        | {k: 'list', rows: Gen[]}
+        | {k: 'comp', body: Gen}
+
+    function mulberry32(seed: number) {
+        let a = seed >>> 0
+        return () => {
+            a = (a + 0x6D2B79F5) >>> 0
+            let t = a
+            t = Math.imul(t ^ (t >>> 15), t | 1)
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+        }
+    }
+    function generate(seed: number): Gen {
+        const rnd = mulberry32(seed)
+        const pick = <T,>(xs: T[]) => xs[Math.floor(rnd() * xs.length)]
+        let n = 0
+        // raw markup built from the same tags, the raw element's own tag included (F1j)
+        const rawHtml = (depth: number): string => {
+            const tag = pick(TAGS)
+            return `<${tag}>${depth < 2 && rnd() < 0.5 ? rawHtml(depth + 1) : `r${n++}`}</${tag}>`
+        }
+        const text = (): Gen => {
+            const r = rnd()
+            return {k: 'text', v: r < 0.1 ? '' : r < 0.2 ? n++ : r < 0.27 ? BigInt(n++) : `t${n++}`}
+        }
+        const element = (depth: number, tag = pick(TAGS)): Gen => {
+            const spec: Gen = {k: 'el', tag, key: `k${n++}`, kids: []}
+            if (rnd() < 0.2) spec.id = `i${spec.key}`
+            if (rnd() < 0.15) spec.detach = true
+            if (depth > 0 && rnd() < 0.12) {
+                spec.raw = rawHtml(0)
+                return spec
+            }
+            const count = depth >= 4 ? 0 : Math.floor(rnd() * 4)
+            for (let i = 0; i < count; i++) spec.kids.push(child(depth + 1))
+            return spec
+        }
+        const many = (depth: number, max: number, of: (depth: number) => Gen) =>
+            Array.from({length: Math.floor(rnd() * (max + 1))}, () => of(depth))
+        // a child of an element / Fragment
+        const child = (depth: number): Gen => {
+            if (depth >= 5) return rnd() < 0.5 ? text() : {k: 'atom', v: rnd() < 0.2 ? '' : `a${n++}`}
+            const r = rnd()
+            if (r < 0.28) return element(depth)
+            if (r < 0.38) return text()
+            if (r < 0.45) return {k: 'atom', v: rnd() < 0.2 ? '' : `a${n++}`}
+            if (r < 0.55) return {k: 'fn', body: source(depth + 1, true)}
+            if (r < 0.65) return {k: 'comp', body: source(depth + 1, false)}
+            if (r < 0.73) return {k: 'list', rows: many(depth + 1, 3, d => source(d, false))}
+            if (r < 0.81) return {k: 'arr', items: many(depth + 1, 3, d => source(d, false))}
+            if (r < 0.88) return {k: 'frag', kids: many(depth + 1, 3, child)}
+            if (r < 0.95) return {k: 'bool', v: rnd() < 0.5}
+            return {k: 'nil', v: rnd() < 0.5 ? null : undefined}
+        }
+        // the source of a Host: a function's value, a component's result, a list row, an array item.
+        // functionValue: a function's own value is never a function (#82) nor an RxList (the same server defect)
+        const source = (depth: number, functionValue: boolean): Gen => {
+            if (depth >= 5) return rnd() < 0.5 ? text() : element(depth)
+            const r = rnd()
+            if (r < 0.3) return element(depth)
+            if (r < 0.4) return {k: 'frag', kids: many(depth + 1, 3, child)}
+            if (r < 0.5) return text()
+            if (r < 0.57) return {k: 'atom', v: rnd() < 0.2 ? '' : `a${n++}`}
+            if (r < 0.66) return functionValue ? element(depth) : {k: 'fn', body: source(depth + 1, true)}
+            if (r < 0.75) return {k: 'comp', body: source(depth + 1, false)}
+            if (r < 0.82) return functionValue ? element(depth) : {k: 'list', rows: many(depth + 1, 3, d => source(d, false))}
+            if (r < 0.89) return {k: 'arr', items: many(depth + 1, 3, d => source(d, false))}
+            if (r < 0.95) return {k: 'bool', v: rnd() < 0.5}
+            return {k: 'nil', v: rnd() < 0.5 ? null : undefined}
+        }
+        return element(0, 'div')
+    }
+
+    function appOf(spec: Gen, log: string[]) {
+        // createElement / Fragment come from the render context (the server passes its own)
+        type Ctx = {h: RenderContext['createElement'], F: RenderContext['Fragment']}
+        function render(g: Gen, c: Ctx): any {
+            const {h, F} = c
+            switch (g.k) {
+                case 'el': {
+                    const props: any = {
+                        'data-k': g.key,
+                        onClick: (e: Event) => { if (e.target === e.currentTarget) log.push(g.key) },
+                    }
+                    if (g.id) props.id = g.id
+                    if (g.detach) props.detachStyle = OPACITY_0
+                    if (g.raw !== undefined) props.dangerouslySetInnerHTML = Number(g.key.slice(1)) % 2 ? {__html: g.raw} : g.raw
+                    // kids are evaluated before h(g.tag): the same order as JSX arguments
+                    return h(g.tag, props, ...g.kids.map(k => render(k, c)))
+                }
+                case 'frag': return h(F, null, ...g.kids.map(k => render(k, c)))
+                case 'text': case 'bool': case 'nil': return g.v
+                case 'atom': return atom(g.v)
+                case 'fn': return () => render(g.body, c)
+                case 'arr': return g.items.map(item => render(item, c))
+                case 'list': return new RxList(g.rows.map((_, i) => i)).map(i => render(g.rows[i], c))
+                case 'comp': {
+                    const Comp = function Comp({}: any, {createElement: h, Fragment: F}: RenderContext) { return render(g.body, {h, F}) }
+                    return h(Comp, null)
+                }
+            }
+        }
+        return function App({}: any, {createElement: h, Fragment: F}: RenderContext) { return render(spec, {h, F}) }
+    }
+
+    function countShapes(g: Gen, into: {[k: string]: number}) {
+        into[g.k] = (into[g.k] ?? 0) + 1
+        if (g.k === 'el' && g.raw !== undefined) into.raw = (into.raw ?? 0) + 1
+        const nested = g.k === 'el' || g.k === 'frag' ? g.kids : g.k === 'arr' ? g.items : g.k === 'list' ? g.rows
+            : g.k === 'fn' || g.k === 'comp' ? [g.body] : []
+        nested.forEach(c => countShapes(c, into))
+    }
+
+    test('F1i extended: 300 generated trees — DOM ≡ CSR, no report, server nodes kept, listeners at their own position, Host kinds ≡ CSR', () => {
+        const shapes: {[k: string]: number} = {}
+        const totals = {csr: {} as {[k: string]: number}, hydrate: {} as {[k: string]: number}}
+        const addTo = (into: {[k: string]: number}, counts: {[k: string]: number}) => {
+            for (const k in counts) into[k] = (into[k] ?? 0) + counts[k]
+        }
+        // diagnostics on: the development invariants (§4.4) run after every activation and must not report
+        configureDiagnostics({enabled: true, onError: (e: unknown) => { reports.push((e as any)?.message ?? String(e)) }})
+        try {
+            for (let seed = 1; seed <= 300; seed++) {
+                const spec = generate(seed)
+                countShapes(spec, shapes)
+                enableAxiiRetainedObjectDiagnostics({reset: true})
+                const csrDom = kids(csr(appOf(spec, [])))
+                const csrKinds = getAxiiRetainedObjectDiagnosticsSnapshot().hosts.createdByType
+                disableAxiiRetainedObjectDiagnostics()
+                const log: string[] = []
+                const hyd = ssrInto(appOf(spec, log))
+                const nodesBefore = Array.from(hyd.querySelectorAll('*'))
+                const keyed = Array.from(hyd.querySelectorAll('[data-k]')) as HTMLElement[]
+                const keysBefore = keyed.map(el => el.getAttribute('data-k'))
+                reports.length = 0
+                enableAxiiRetainedObjectDiagnostics({reset: true})
+                hydrate(hyd, createElement(appOf(spec, log), null as any))
+                const hydrateKinds = getAxiiRetainedObjectDiagnosticsSnapshot().hosts.createdByType
+                disableAxiiRetainedObjectDiagnostics()
+                const nodesAfter = Array.from(hyd.querySelectorAll('*'))
+                const clicked = keyed.map(el => { log.length = 0; el.click(); return log.join(',') })
+                addTo(totals.csr, csrKinds)
+                addTo(totals.hydrate, hydrateKinds)
+                expect({
+                    seed,
+                    dom: kids(hyd),
+                    reports: reports.slice(),
+                    serverNodesKept: nodesAfter.length === nodesBefore.length && nodesAfter.every((el, i) => el === nodesBefore[i]),
+                    clicked,
+                    kinds: hydrateKinds,
+                }).toEqual({
+                    seed,
+                    dom: csrDom,
+                    reports: [],
+                    serverNodesKept: true,
+                    clicked: keysBefore,
+                    kinds: csrKinds,
+                }) // `seed` in the diff: rerun generate(seed) to replay
+                document.body.innerHTML = ''
+            }
+        } finally {
+            disableAxiiRetainedObjectDiagnostics()
+            resetAxiiRetainedObjectDiagnostics()
+        }
+        // eslint-disable-next-line no-console
+        console.log(`[F1i extended] shapes ${JSON.stringify(shapes)} | host kinds (CSR = hydrate) ${JSON.stringify(totals.hydrate)}`)
+        // §2.4.1 coverage: every landed kind is created on both sides somewhere in the 300 trees
+        expect(LANDED_KINDS.filter(k => !(totals.csr[k] > 0 && totals.hydrate[k] > 0))).toEqual([])
     })
 })
 
@@ -388,7 +598,7 @@ describe('F2 regression: text ownership in other containers and across hydration
     function ArrayApp({}: any, {createElement}: RenderContext) {
         return <p>{['Hello', false, 'World', true]}</p>
     }
-    test.skipIf(pendingTopDown('B2'))('F2c Fragment root and array (DirectNodes) siblings keep their text', () => {
+    test('F2c Fragment root and array (DirectNodes) siblings keep their text', () => {
         for (const App of [FragmentApp, ArrayApp]) {
             const hyd = ssrInto(App)
             hydrate(hyd, createElement(App, null as any))
@@ -431,7 +641,7 @@ describe('F2 regression: text ownership in other containers and across hydration
 
 // Found while writing the F2 regression: array children with null / boolean items.
 describe('N1 array child with null / boolean items (list.map(i => cond ? <li/> : null))', () => {
-    test.skipIf(pendingTopDown('B2'))('N1a element-child array: hydrates, equals CSR, no report', () => {
+    test('N1a element-child array: hydrates, equals CSR, no report', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <ul>{[1, 2, 3, 4].map(i => i % 2 ? <li>{i}</li> : null)}{[false, 'x', undefined, true]}</ul>
         }
@@ -442,7 +652,7 @@ describe('N1 array child with null / boolean items (list.map(i => cond ? <li/> :
             .toEqual({dom: kids(csr(App)), reports: [], sameLi: true})
     })
 
-    test.skipIf(pendingTopDown('B2'))('N1b the same arrays under a Fragment root', () => {
+    test('N1b the same arrays under a Fragment root', () => {
         function App({}: any, {createElement, Fragment}: RenderContext) {
             return <Fragment>{[1, 2, 3].map(i => i % 2 ? <b>{i}</b> : null)}{['x', false]}</Fragment>
         }
@@ -570,7 +780,7 @@ describe('F5 SSR wraps bare rows in <tbody>; hydration removes that tbody', () =
         expect({cells: hyd.querySelectorAll('td').length, reports}).toEqual({cells: 1, reports: []})
     })
 
-    test.skipIf(pendingTopDown('B2'))('F5b <table>{list.map(row)}</table>: rows survive and the list stays live', () => {
+    test('F5b <table>{list.map(row)}</table>: rows survive and the list stays live', () => {
         const make = () => {
             const list = new RxList([1, 2])
             function App({}: any, {createElement}: RenderContext) {
@@ -599,7 +809,7 @@ describe('F5 regression: implied vs authored tbody', () => {
             .toEqual({sameTd: true, text: '1', reports: []})
     })
 
-    test.skipIf(pendingTopDown('B2'))('F5d authored <thead>/<tbody> are claimed as themselves; a conditional row function stays live', async () => {
+    test('F5d authored <thead>/<tbody> are claimed as themselves; a conditional row function stays live', async () => {
         const make = () => {
             const more = atom(false)
             const list = new RxList([1])

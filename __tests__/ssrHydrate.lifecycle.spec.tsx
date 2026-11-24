@@ -746,7 +746,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         expect(portalEl.querySelectorAll('span').length).toBe(3)
     })
 
-    test.skipIf(pendingTopDown('B2'))('main-tree nested Fragment + Array SSR hydrate + updates', () => {
+    test('main-tree nested Fragment + Array SSR hydrate + updates', () => {
         const t = atom('a')
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F, null,
@@ -781,7 +781,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         expect(before.textContent).toBe('c2')
     })
 
-    test.skipIf(pendingTopDown('B2'))('main-tree nested Fragment + RxList SSR hydrate + push', () => {
+    test('main-tree nested Fragment + RxList SSR hydrate + push', () => {
         const list = new RxList(['a', 'b'])
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F, null,
