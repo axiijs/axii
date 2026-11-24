@@ -1468,3 +1468,57 @@ describe('style entry order: no stylesheet per inline value', () => {
         expect(last.style.top).toBe(`${3 * 10000 + N - 1}px`)
     })
 })
+
+// 同一个声明，行内（CSSOM 逐个属性赋值）与 stylesheet 规则（文本拼接）必须得到同样的结果：
+//  属性名按 el.style 的认法（cssFloat、小写厂商前缀），值过同一道门（顶层 `;` / `!important` /
+//  不配对的括号引号整条不生效，而不是追加声明或让整条规则被拒）。
+describe('stylesheet declarations behave like inline declarations', () => {
+    const corpus: [string, Record<string, any>][] = [
+        ['cssFloat', {cssFloat: 'left', width: 10}],
+        ['lower-case vendor prefix', {display: '-webkit-box', webkitLineClamp: 2, webkitBoxOrient: 'vertical', overflow: 'hidden'}],
+        ['upper-case vendor prefix', {display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden'}],
+        ['custom property', {'--x': '7px', width: 'var(--x)'}],
+        ['a value that appends a declaration', {color: 'rgb(1, 2, 3); position: fixed; background-color: rgb(0, 0, 255)'}],
+        ['!important', {color: 'rgb(1, 2, 3) !important'}],
+        ['a brace does not take the other declarations with it', {color: 'rgb(1, 2, 3)', fontFamily: 'a}b', marginTop: 3}],
+        ['quoted and parenthesised separators are fine', {fontFamily: '"a;b", serif', backgroundImage: 'url("data:image/png;base64,AAAA")', color: 'rgb(1, 2, 3)'}],
+    ]
+    for (const [name, declarations] of corpus) {
+        test(name, () => {
+            root.render(<div>
+                <div id="inline" style={declarations}>x</div>
+                <div id="sheet" style={{...declarations, '&:hover': {outlineColor: 'rgb(255, 0, 0)'}}}>x</div>
+            </div>)
+            const inline = getComputedStyle(rootEl.querySelector('#inline')!)
+            const sheet = getComputedStyle(rootEl.querySelector('#sheet')!)
+            const diffs: string[] = []
+            for (let i = 0; i < inline.length; i++) {
+                const property = inline[i]
+                if (inline.getPropertyValue(property) !== sheet.getPropertyValue(property)) {
+                    diffs.push(`${property}: inline=${inline.getPropertyValue(property)} sheet=${sheet.getPropertyValue(property)}`)
+                }
+            }
+            expect(diffs).toEqual([])
+        })
+    }
+
+    // CSSOM 在值的末尾自动补齐未闭合的括号（行内 url(a.png 有效）；规则文本里它会吞掉后面的声明，
+    //  所以 stylesheet / SSR 整条丢弃它（更严格），但同一条目里的其他声明不受影响。
+    test('an unbalanced parenthesis is dropped alone', () => {
+        root.render(<div id="t" style={{color: 'rgb(1, 2, 3)', backgroundImage: 'url(a.png', marginTop: 3, '&:hover': {opacity: 0.8}}}>x</div>)
+        const computed = getComputedStyle(rootEl.querySelector('#t')!)
+        expect([computed.color, computed.marginTop, computed.backgroundImage]).toEqual(['rgb(1, 2, 3)', '3px', 'none'])
+    })
+
+    test('an injected declaration in a nested rule or in keyframes is dropped too', () => {
+        root.render(<div id="t" className="on" style={{
+            '&.on': {color: 'rgb(1, 2, 3); position: fixed'},
+            '@keyframes': {from: {opacity: '0; position: fixed'}, to: {opacity: 1}},
+            animation: '@self 10s linear paused; position: fixed',
+        }}>x</div>)
+        const computed = getComputedStyle(rootEl.querySelector('#t')!)
+        expect(computed.position).toBe('static')
+        expect(computed.color).toBe('rgb(0, 0, 0)')
+        expect(computed.animationName).toBe('none')
+    })
+})

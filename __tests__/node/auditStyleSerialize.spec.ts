@@ -95,6 +95,43 @@ describe('audit: style serialization without a DOM', () => {
         expect(nestedOnly.html).toMatch(/ style="color:blue"/)
     })
 
+    test('stylesheet and SSR declarations pass the same gate as inline declarations', () => {
+        const rules = generateStyleContent('.x', {
+            color: 'red;position:fixed',
+            width: '1px !important',
+            fontFamily: 'a}b',
+            backgroundImage: 'url("data:image/png;base64,AA")',
+            marginTop: 3,
+            '&:hover': {color: 'blue}body{display:none'},
+            '@keyframes': {from: {opacity: '0;position:fixed'}},
+            animation: '@self 1s;position:fixed',
+        }).join('\n')
+        expect(rules).not.toContain('position')
+        expect(rules).not.toContain('important')
+        expect(rules).not.toContain('a}b')
+        expect(rules).not.toContain('display:none')
+        expect(rules).not.toContain('animation:')
+        expect(rules).toContain('background-image:url("data:image/png;base64,AA");')
+        expect(rules).toContain('margin-top:3px;')
+
+        const {html, styles} = renderToString(createElement('div', {style: {color: 'red;position:fixed', '&:hover': {opacity: 1}}}))
+        expect(styles).not.toContain('position')
+        expect(html).not.toContain('position')
+    })
+
+    test('property names follow what el.style accepts: cssFloat and lower-case vendor prefixes', () => {
+        const sheet = generateStyleContent('.x', {cssFloat: 'left', webkitLineClamp: 2, WebkitBoxOrient: 'vertical', mozAppearance: 'none', '--a-B': '1'}).join('\n')
+        expect(sheet).toContain('float:left;')
+        expect(sheet).toContain('-webkit-line-clamp:2;')
+        expect(sheet).toContain('-webkit-box-orient:vertical;')
+        expect(sheet).toContain('-moz-appearance:none;')
+        expect(sheet).toContain('--a-B:1;')
+        expect(sheet).not.toContain('css-float')
+        const inline = (style: any) => /style="([^"]*)"/.exec(renderToString(createElement('div', {style})).html)?.[1]
+        expect(inline({cssFloat: 'left', webkitLineClamp: 2})).toBe('float:left;-webkit-line-clamp:2')
+        expect(inline([{cssFloat: 'left'}, () => ({webkitLineClamp: 2})])).toBe('float:left;-webkit-line-clamp:2')
+    })
+
     test('the auto unit set through the public entry reaches SSR inline styles and rules', async () => {
         (globalThis as any).__DEV__ = true
         const framework = await import('../../src/index.js')

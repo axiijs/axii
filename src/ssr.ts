@@ -723,10 +723,8 @@ function serializeAttrs(
                 const sv = (styleVal as any)[sk]
                 if (sv == null || sv === false || sv === '') continue
                 const cssVal = stringifyCssValue(sk, sv)
-                if (!cssVal || !isAcceptableInlineDeclaration(sk, cssVal)) continue
-                const cssKey = (sk[0] === '-' && sk[1] === '-')
-                    ? sk
-                    : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
+                const cssKey = cssPropertyName(sk)
+                if (!cssVal || !isAcceptableInlineDeclaration(cssKey, cssVal)) continue
                 parts.push(`${cssKey}:${cssVal}`)
             }
             inlineStyle = parts.join(';')

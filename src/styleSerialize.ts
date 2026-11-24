@@ -201,19 +201,46 @@ export function stringifyCssValue(k: string, v: any, state?: StylePreparationSta
     return (typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v) : String(v)
 }
 
-/** style 对象的 key → CSS 属性名（stylesheet 规则与 SSR 行内样式共用）。 */
+/**
+ * style 对象的 key → CSS 属性名（stylesheet 规则与 SSR 行内样式共用）。
+ *
+ * CAUTION 必须接受 el.style 接受的同一批 key，否则同一个 key 行内有效、一进 stylesheet / SSR 就失效
+ *  （行内是 el.style[key] = v，由 CSSOM 认名字）：
+ *  - cssFloat 是 float 的 CSSOM 名字（float 曾是保留字），朴素的驼峰转换得到非法的 css-float；
+ *  - 小写开头的厂商前缀（webkitLineClamp / mozXxx / msXxx）要补上前导 '-'：-webkit-line-clamp。
+ *    大写开头（WebkitLineClamp）经驼峰转换本来就得到 -webkit-line-clamp。
+ */
 export function cssPropertyName(key: string): string {
-    return (key[0] === '-' && key[1] === '-')
-        ? key
-        : key.replace(/([A-Z])/g, '-$1').toLowerCase()
+    if (key[0] === '-' && key[1] === '-') return key
+    if (key === 'cssFloat') return 'float'
+    const name = key.replace(/([A-Z])/g, '-$1').toLowerCase()
+    return VENDOR_PREFIXED_KEY.test(key) ? `-${name}` : name
 }
+const VENDOR_PREFIXED_KEY = /^(webkit|moz|ms)[A-Z]/
 
-function stringifyDeclaration(key: string, value: any, state?: StylePreparationState): string {
-    return `${cssPropertyName(key)}:${stringifyCssValue(key, value, state)};`
+// 一条声明写进规则的文本，不写出时为 undefined。stylesheet 规则（prepareStyleNode / keyframes）与
+//  sheetDeclaredKeys 共用：
+//  - null / undefined / boolean 不写（条件写法的「没有」）；空值（'' / [null]）写出来是 `prop:;`，
+//    浏览器整条丢弃，等同没写；
+//  - CAUTION 值必须过 isAcceptableInlineDeclaration（与 SSR 行内样式同一道门）：行内样式经 CSSOM
+//    逐个属性赋值，值里带顶层 `;` / `!important` / 不配对的括号或引号时整次赋值被拒绝。规则文本是
+//    字符串拼接，同样的值在这里会追加任意声明（color: 'red;position:fixed' 让元素 position:fixed）、
+//    或用 `}` 让整条规则被拒、同一条目里的其他声明一起丢失。不合格的声明单独丢弃，与行内一致。
+function declarationOf(key: string, value: any, state?: StylePreparationState): string | undefined {
+    if (value === null || value === undefined || typeof value === 'boolean') return undefined
+    const css = stringifyCssValue(key, value, state)
+    if (css === '') return undefined
+    const name = cssPropertyName(key)
+    return isAcceptableInlineDeclaration(name, css) ? `${name}:${css};` : undefined
 }
 
 export function stringifyStyleObject(styleObject: StyleObject, state?: StylePreparationState): string {
-    return Object.entries(styleObject).map(([key, value]) => stringifyDeclaration(key, value, state)).join('\n')
+    const declarations: string[] = []
+    for (const key in styleObject) {
+        const declaration = declarationOf(key, styleObject[key], state)
+        if (declaration !== undefined) declarations.push(declaration)
+    }
+    return declarations.join('\n')
 }
 
 export function stringifyKeyFrameObject(keyframeObject: StyleObject, state?: StylePreparationState): string {
@@ -251,8 +278,9 @@ export function splitStyleObject(styleObject: StyleObject): {simpleStyles: Style
  * 没有则 undefined。CSR（StyleManager.update）与 SSR 共用：两边据此让排在它前面的行内声明
  * 「让位」（见 StyleManager.update 的 CAUTION）。
  *
- * 过滤规则必须与 prepareStyleNode 完全一致（同一个 declarationValueOf）：规则里没有写出的
- *  声明（null / boolean / 空值）不能让位，否则前面的行内值被删掉、后面又没有值接手。
+ * 过滤规则必须与 prepareStyleNode 完全一致（同一个 declarationOf）：规则里没有写出的
+ *  声明（null / boolean / 空值 / 被声明门闩拒绝的值）不能让位，否则前面的行内值被删掉、
+ *  后面又没有值接手。
  *  animation 简写写在紧随主规则的那条规则里，同样算作顶层声明。
  * CAUTION 只在「前面确实有行内声明」时才调用（罕见路径）：值会被再求值一次。
  */
@@ -263,7 +291,7 @@ export function sheetDeclaredKeys(styleObject: StyleObject): string[] | undefine
         if (key === '@keyframes') continue
         if (key === 'animation') {
             if (prepareAnimation(value) !== undefined) (keys ??= []).push(key)
-        } else if (!isNestedStyleObject(key, value) && declarationValueOf(key, value) !== undefined) {
+        } else if (!isNestedStyleObject(key, value) && declarationOf(key, value) !== undefined) {
             (keys ??= []).push(key)
         }
     }
@@ -356,7 +384,8 @@ function prepareKeyframes(value: any, state?: StylePreparationState): string | u
 function prepareAnimation(value: any, state?: StylePreparationState): string | undefined {
     const animation = resolveCssValue(value, state)
     if (!animation) return undefined
-    if (!Array.isArray(animation)) return String(animation)
+    // 与其他声明同一道门（见 declarationOf）：animation 的值同样拼进规则文本
+    if (!Array.isArray(animation)) return acceptedAnimation(String(animation))
     // CAUTION 条件项（cond && 'spin 1s' / cond ? '…' : null）的 falsy 结果必须过滤掉，与
     //  stringifyCssValue 的逗号列表分支一致（F36）：null/undefined 经 join 留下悬空逗号
     //  （"a 1s, "），整条 animation 声明非法、被浏览器静默丢弃。全部是 falsy 时等同没写。
@@ -366,24 +395,16 @@ function prepareAnimation(value: any, state?: StylePreparationState): string | u
         if (resolved === undefined || resolved === null || typeof resolved === 'boolean' || resolved === '') continue
         parts.push(String(resolved))
     }
-    return parts.length ? parts.join(', ') : undefined
+    return parts.length ? acceptedAnimation(parts.join(', ')) : undefined
+}
+
+function acceptedAnimation(text: string): string | undefined {
+    return isAcceptableInlineDeclaration('animation', text) ? text : undefined
 }
 
 // animation 简写会重置的分项属性（animation-delay / animationPlayState / animation-timeline …）
 function isAnimationLonghand(key: string): boolean {
     return key.charCodeAt(0) === 97 && /^animation[A-Z-]/.test(key)
-}
-
-function isDeclarationValue(value: any): boolean {
-    return value !== null && value !== undefined && typeof value !== 'boolean'
-}
-
-// 一条顶层/嵌套声明最终写进规则的值；不写出时为 undefined（prepareStyleNode 与 sheetDeclaredKeys 共用）。
-//  空值（'' / [null] 这类）写出来是 `prop:;`，浏览器整条丢弃，等同没写。
-function declarationValueOf(key: string, value: any, state?: StylePreparationState): string | undefined {
-    if (!isDeclarationValue(value)) return undefined
-    const css = stringifyCssValue(key, value, state)
-    return css === '' ? undefined : css
 }
 
 function prepareStyleNode(styleObject: StyleObject, state: StylePreparationState): PreparedStyleNode {
@@ -409,9 +430,8 @@ function prepareStyleNode(styleObject: StyleObject, state: StylePreparationState
             const nested = node.nested ??= []
             nested.push({scope: selectors ?? key, node: prepareStyleNode(value, state)})
         } else {
-            const css = declarationValueOf(key, value, state)
-            if (css === undefined) continue
-            const declaration = `${cssPropertyName(key)}:${css};`
+            const declaration = declarationOf(key, value, state)
+            if (declaration === undefined) continue
             declarations.push(declaration)
             if (animationTail && isAnimationLonghand(key)) animationTail.push(declaration)
         }
@@ -471,9 +491,9 @@ export function generateInlineAnimationContent(
         for (const key in styleObject) {
             if (key === 'animation') {
                 afterAnimation = true
-            } else if (afterAnimation && isAnimationLonghand(key) && isDeclarationValue(styleObject[key]) &&
-                !isNestedStyleObject(key, styleObject[key])) {
-                (animationTail ??= []).push(stringifyDeclaration(key, styleObject[key]))
+            } else if (afterAnimation && isAnimationLonghand(key) && !isNestedStyleObject(key, styleObject[key])) {
+                const declaration = declarationOf(key, styleObject[key])
+                if (declaration !== undefined) (animationTail ??= []).push(declaration)
             }
         }
     }
