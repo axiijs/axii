@@ -2,15 +2,13 @@
 /**
  * #85：稀疏数组的空位（`[a, , b]`、`new Array(n)` 部分赋值、对稀疏数组 `.map` 的结果）。
  *  CSR 的 StaticArrayHost.render 用 forEach：空位不建 Host、不产生任何节点。服务端 serializeStaticArray 曾经用 for…of，
- *  为每个空位写一个 EmptyHost（<!--empty--><!--array item-->）：内部入口与 CSR 一样跳过空位，在认领处报告失配并抛出；
- *  旧入口的数组认领（DOM.ts 元素 child、hydration.ts Fragment child）按 EmptyHost 认领空位——元素 child 的数组激活后
- *  DOM 里多两个注释、多一个 Host，组件根 / 函数值 / 列表行上的数组抛错。
- *  修复：服务端与两个入口的数组认领都与 forEach 一样跳过空位。显式的 undefined / null 不是空位，两端都是 EmptyHost。
+ *  为每个空位写一个 EmptyHost（<!--empty--><!--array item-->），激活在未改动的服务端输出上失配（当时的两种认领模型都是）。
+ *  修复：服务端与激活的数组认领都与 forEach 一样跳过空位。显式的 undefined / null 不是空位，两端都是 EmptyHost。
  *
  * Oracles：
  *  - 服务端 HTML 逐字（每个位置的写法）；
  *  - 解析后的服务端 HTML ≡ CSR；
- *  - 激活（经 helpers/hydrate，旧入口与内部入口两遍）：不报告、不抛错、服务端元素原地保留（没有重建）、
+ *  - 激活（经 helpers/hydrate，激活期间诊断开、关两遍）：不报告、不抛错、服务端元素原地保留（没有重建）、
  *    不留下 axii:* 标记、DOM ≡ CSR；
  *  - 之后的更新（数组项里的 atom / 函数、函数值换掉数组、列表行的增删移动）每一步都 ≡ CSR。
  *
@@ -23,7 +21,7 @@ import {createElement, createRoot, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 /* eslint-disable no-sparse-arrays */
 
@@ -171,9 +169,8 @@ describe('#85 hydration ≡ CSR: a sparse static array in every position', () =>
         ['Fragment child (element child)', (txt, holes) => ({createElement, Fragment}) => <div><Fragment>{'h'}{items(createElement, txt, holes)}</Fragment><p>q</p></div>],
         ['function value', (txt, holes) => ({createElement}) => <div>{() => items(createElement, txt, holes)}<i>tail</i></div>],
     ]
-    // 旧入口在组件根 / 函数值上的数组（StaticArrayHost.render 自己从游标认领的那条路径）遇到显式的 undefined / null
-    //  本来就抛错（与空位无关：稠密的 ['a', undefined, <b/>, 'z'] 在 #85 之前的代码上同样抛错），这两格只在内部入口跑
-    const legacyUnsupported = (p: string, holes: Holes) => holes === 'mixed' && (p === 'component root' || p === 'function value')
+    // 组件根 / 函数值上含显式 undefined / null 的数组（'mixed'）：旧模型（#55 S 删除）的数组认领在这里抛错，与空位无关
+    //  （稠密的 ['a', undefined, <b/>, 'z'] 同样抛错），这两格曾经只在内部入口跑；#85 交接给 #55 S 的第一种形态
     const cases = positions.flatMap(([p, body]) => HOLES.map(holes => [p, holes, body] as const))
     const name = '%s, %s holes: parse ≡ CSR, in place, no report, no marker left, item updates ≡ CSR'
     const run = async (_p: string, holes: Holes, body: typeof positions[number][1]) => {
@@ -183,8 +180,7 @@ describe('#85 hydration ≡ CSR: a sparse static array in every position', () =>
             return {source: () => createElement(App, null), updates: [() => txt('u'), () => txt(''), () => txt('v')]}
         })
     }
-    test.each(cases.filter(([p, holes]) => !legacyUnsupported(p, holes)))(name, run)
-    test.skipIf(!TOP_DOWN_PASS).each(cases.filter(([p, holes]) => legacyUnsupported(p, holes)))(name, run)
+    test.each(cases)(name, run)
 
     test('function value: arrays with and without a hole at index 0 replace each other ≡ CSR', async () => {
         await check(() => {
@@ -242,8 +238,9 @@ describe('#85 hydration ≡ CSR: a sparse static array in every position', () =>
     })
 })
 
-// 嵌套数组的旧入口认领本来就不支持（与空位无关：['a', ['b', <i/>], 'd'] 在 #85 之前的代码上同样抛错），只在内部入口这一遍跑
-describe.skipIf(!TOP_DOWN_PASS)('#85 hydration ≡ CSR: nested sparse arrays (internal entry)', () => {
+// 嵌套数组：旧模型（#55 S 删除）的数组认领不支持（与空位无关：['a', ['b', <i/>], 'd'] 同样抛错），这组曾经只在内部入口跑；
+//  #85 交接给 #55 S 的第二种形态
+describe('#85 hydration ≡ CSR: nested sparse arrays', () => {
     test('holes on both levels', async () => {
         await check(() => {
             const txt = atom('t')
@@ -252,6 +249,43 @@ describe.skipIf(!TOP_DOWN_PASS)('#85 hydration ≡ CSR: nested sparse arrays (in
             }
             return {source: () => createElement(App, null), updates: [() => txt('u')]}
         })
+    })
+})
+
+// #85 交接的第三种形态（#55 S 的追加验收）：函数值返回数组时，项内的更新只更新那一项——外层函数不重跑，元素不重建（≡ CSR）。
+//  check() 只在更新之后比较 DOM 字符串，看不出重建，这里另外比较外层函数的运行次数与元素身份。稠密数组同样。
+describe('#85 hand-off: a function value returning an array keeps its elements when an item updates', () => {
+    test.each([
+        ['dense', (txt: any, createElement: any) => ['a', <b>{txt}</b>, () => txt(), <i>{() => txt()}</i>]],
+        ['sparse', (txt: any, createElement: any) => ['a', , <b>{txt}</b>, , () => txt(), <i>{() => txt()}</i>]],
+    ] as const)('%s: item updates do not re-run the outer function, elements keep their identity', async (_n, arr) => {
+        const make = () => {
+            const txt = atom('t')
+            const runs = {n: 0}
+            function App({}: any, {createElement}: RenderContext) {
+                return <div>{() => { runs.n++; return arr(txt, createElement) }}<i>tail</i></div>
+            }
+            return {txt, runs, source: () => createElement(App, null)}
+        }
+        const html = renderToString(make().source()).html
+        const c = make()
+        const client = mount()
+        createRoot(client).render(c.source())
+        const h = make()
+        const hyd = mount()
+        hyd.innerHTML = html
+        const parsed = elementsOf(hyd)
+        hydrate(hyd, h.source())
+        expect({dom: kids(hyd), runs: h.runs.n, same: sameNodes(elementsOf(hyd), parsed), reports})
+            .toEqual({dom: kids(client), runs: c.runs.n, same: true, reports: []})
+        for (const v of ['u', '', 'v']) {
+            c.txt(v)
+            h.txt(v)
+            await tick()
+            expect({value: v, dom: kids(hyd), runs: h.runs.n, same: sameNodes(elementsOf(hyd), parsed)})
+                .toEqual({value: v, dom: kids(client), runs: c.runs.n, same: true})
+        }
+        expect(reports).toEqual([])
     })
 })
 

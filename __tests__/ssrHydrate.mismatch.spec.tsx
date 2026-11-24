@@ -208,7 +208,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    // --- k22-audit: tryClaimElement must not steal same-tag siblings when cursor unit is wrong tag ---
+    // --- k22-audit: an element claim must not steal same-tag siblings when the cursor unit is a wrong tag (R1) ---
 
     test('wrong-tag child with id: must not steal next same-tag sibling; orphan removed', () => {
         const errors: unknown[] = []
@@ -791,7 +791,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
             enabled: true,
             onError: (e) => { errors.push(e) },
         })
-        // RxList atom row → Comment-ph; claimTextBeforeCommentPlaceholder(expected) must report+rebuild
+        // RxList atom row → Comment-ph; the row's text unit drifted: it must report + rebuild (R2)
         const items = new RxList([atom('A')])
         function App({}: any, {createElement}: RenderContext) {
             return <div id="d">{items.map(i => i)}</div>

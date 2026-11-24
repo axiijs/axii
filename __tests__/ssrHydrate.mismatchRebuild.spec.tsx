@@ -18,7 +18,7 @@ import {atom} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
-import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 type ProbeWindow = Window & {__axiiI73Probe?: string[]}
 const probeWindow = window as ProbeWindow
@@ -357,11 +357,10 @@ describe('#73 known limit: reactive attributes of a rebuilt element', () => {
     // createElement of the tree has returned. CSR binds them before that host inserts its root, so a rebuilt
     // <script type={atom}> is already typed when it is connected. On a mismatch the rebuilt element is inserted at
     // the end of its createElement — static props and children applied, reactive ones not yet — so its script still
-    // runs as JavaScript. Deferring the insertion until the owning host has bound the attributes belongs to the
-    // top-down claim model (#55, hydration-top-down.md §4.2 R1). Kept executable as test.fails: it flips once fixed.
-    // 内部入口那一遍（#55 B3）：失配新建的元素在所属 StaticHost 绑定响应式属性之后才插入，这条是普通 test；
-    //  旧入口那一遍仍是 test.fails，#55 S 切换 hydrateRoot 时改成 test。
-    ;(TOP_DOWN_PASS ? test : test.fails)('a rebuilt <script> with a reactive data type does not run, like CSR (#55)', () => {
+    // runs as JavaScript under the children-first claim model. The top-down claim model (#55, hydration-top-down.md
+    // §4.2 R1, B3) inserts a rebuilt element only after its owning StaticHost has bound the reactive attributes;
+    // since #55 S hydrateRoot uses it and this case passes (it was test.fails before).
+    test('a rebuilt <script> with a reactive data type does not run, like CSR (#55)', () => {
         const type = atom('application/json')
         function App({}: any, {createElement}: RenderContext) {
             return (

@@ -1,20 +1,21 @@
 /** @jsx createElement */
 /**
- * #55 B3：新激活模型的失配规则 R1–R5（设计 docs/ssr-support/hydration-top-down.md §4），经内部入口 hydrateRootTopDown。
+ * #55 B3：激活的失配规则 R1–R5（设计 docs/ssr-support/hydration-top-down.md §4），经 hydrateRoot（B3 时是不导出的内部入口，
+ * #55 S 起是公开入口）。
  * 失配不再中止激活：每条偏离都报告 HydrationMismatchError（交给 onError），在游标处按 R1–R5 修复，结果的节点结构、文本、
  * 客户端 props 写下的属性与 CSR 相同（§4.1）。这里覆盖只属于新模型的部分：
  *  - R1 新建的元素按 CSR 的语义建好（子元素、动态 child、ref、响应式属性都在），在所属 StaticHost 绑定响应式属性之后
  *    才插入（#73，B3 追加项 1、2）；
  *  - §4.1 属性的边界：近似认领、同一父节点失配之后的认领先清掉服务端独有的属性，干净认领不清理（D4）；
  *  - R2–R5 的黑盒形态；B2 交接的旧服务端 HTML（#82 / #85 之前）与其余形态；修复后的列表销毁、计数归零。
- * 既有的失配用例（ssrHydrate.mismatch / mismatchRebuild、auditSsrHydrate F4a–F4d）经 helpers/hydrate 在内部入口上再跑一遍；
+ * 既有的失配用例（ssrHydrate.mismatch / mismatchRebuild、auditSsrHydrate F4a–F4d）经 helpers/hydrate 跑（诊断开、关两遍）；
  * 游标规则的白盒用例在 hydrationCursor.spec.tsx，漂移 fuzz 在 auditSsrHydrate（扩展后的 F1i 生成器）。
  */
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {atom, RxList} from 'data0'
 import {configureDiagnostics, createElement, createRoot, type RenderContext} from '@framework'
 import {renderToString} from '../src/ssr.js'
-import {hydrateRootTopDown} from '../src/hydrateTopDown'
+import {hydrateRoot} from '../src/hydrateRoot'
 import {HydrationMismatchError} from '../src/hydration'
 import {
     disableAxiiRetainedObjectDiagnostics,
@@ -101,7 +102,7 @@ describe('R1: an element rebuilt on a mismatch is built like CSR (§4.2 R1, B3 a
         expect(html).toContain('<span><b>')
         const hyd = parse(html.replace('<span>', '<em>').replace('</span>', '</em>'))
         const after = hyd.querySelector('p')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches(), others: others(), after: hyd.querySelector('p') === after})
             .toEqual({dom: kids(csrOf(App)), mismatches: 1, others: [], after: true})
     })
@@ -134,7 +135,7 @@ describe('R1: an element rebuilt on a mismatch is built like CSR (§4.2 R1, B3 a
         const hyd = parse(html.replace('<section', '<article').replace('</section>', '</article>'))
         const p = hyd.querySelector('p')
         const h = make()
-        const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+        const root = hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), mismatches: mismatches(), others: others(), p: hyd.querySelector('p') === p})
             .toEqual({dom: kids(csrEl), mismatches: 1, others: [], p: true})
         expect(h.refs).toEqual([hyd.querySelector('section')])
@@ -180,7 +181,7 @@ describe('R1: an element rebuilt on a mismatch is built like CSR (§4.2 R1, B3 a
         hyd.querySelectorAll(swap).forEach(el => el.replaceWith(document.createElement('template')))
         document.body.appendChild(hyd)
         connectedWith.length = 0
-        hydrateRootTopDown(hyd, createElement(makeApp(atom('1')), null))
+        hydrateRoot(hyd, createElement(makeApp(atom('1')), null))
         expect({connectedWith, dom: kids(hyd), mismatches: mismatches(), others: others()})
             .toEqual({connectedWith: ['1'], dom: kids(csrEl), mismatches: 1, others: []})
     })
@@ -193,7 +194,7 @@ describe('R1: an element rebuilt on a mismatch is built like CSR (§4.2 R1, B3 a
         expect(html).toContain('<g data-k="g">')
         const hyd = parse(html.replace('<g data-k="g">', '<rect data-k="g">').replace('</g>', '</rect>'))
         const path = hyd.querySelector('path')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches(), others: others(), path: hyd.querySelector('path') === path})
             .toEqual({dom: kids(csrOf(App)), mismatches: 1, others: [], path: true})
         expect(hyd.querySelector('g')!.namespaceURI).toBe(SVG_NS)
@@ -209,7 +210,7 @@ describe('§4.1 attribute boundary: claims on the mismatch path clear server-onl
         expect(html).toContain('<span id="a" title="t">')
         const hyd = parse(html.replace('<span id="a" title="t">', '<span id="z" title="old" data-junk="1">'))
         const span = hyd.querySelector('span')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches(), span: hyd.querySelector('span') === span})
             .toEqual({dom: kids(csrOf(App)), mismatches: 1, span: true})
     })
@@ -222,7 +223,7 @@ describe('§4.1 attribute boundary: claims on the mismatch path clear server-onl
         expect(html).toContain('<span id="b">')
         const hyd = parse(html.replace('<span id="b">', '<span id="x" data-junk="1">j</span><span id="b" data-junk="2">'))
         const b = hyd.querySelector('#b')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches(), b: hyd.querySelector('#b') === b})
             .toEqual({dom: kids(csrOf(App)), mismatches: 1, b: true})
     })
@@ -237,7 +238,7 @@ describe('§4.1 attribute boundary: claims on the mismatch path clear server-onl
         const [first, second] = Array.from(hyd.querySelectorAll('i'))
         first.setAttribute('data-junk', '1')
         second.setAttribute('data-junk', '2')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         const csrEl = csrOf(App)
         // 第二个 <p> 里的 <i> 是干净认领：服务端独有的属性留下（D4），它所在的父节点没有失配
         csrEl.querySelector('p > i')!.setAttribute('data-junk', '2')
@@ -251,7 +252,7 @@ describe('§4.1 attribute boundary: claims on the mismatch path clear server-onl
             return <div><i>x</i></div>
         }
         const hyd = parse(htmlOf(App).replace('<i>', '<i data-junk="1">'))
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({junk: hyd.querySelector('i')!.getAttribute('data-junk'), reports: reports.map(e => (e as {code?: string}).code)})
             .toEqual({junk: '1', reports: ['AXII_HYDRATION_ATTRIBUTE_RESIDUE']})
     })
@@ -263,7 +264,7 @@ describe('§4.1 attribute boundary: claims on the mismatch path clear server-onl
         const html = htmlOf(App)
         expect(html).toContain('<p id="a"><b>new</b></p>')
         const hyd = parse(html.replace('<p id="a"><b>new</b></p>', '<p id="z"><b>old</b></p>'))
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches()}).toEqual({dom: kids(csrOf(App)), mismatches: 1})
     })
 })
@@ -277,7 +278,7 @@ describe('R2–R5 black-box shapes', () => {
         const div = hyd.querySelector('div')!
         commentIn(div, 'unhandledChild')!.remove()
         const [b, p] = [hyd.querySelector('b'), hyd.querySelector('p')]
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches(), kept: [hyd.querySelector('b') === b, hyd.querySelector('p') === p]})
             .toEqual({dom: kids(csrOf(App)), mismatches: 1, kept: [true, true]})
     })
@@ -290,7 +291,7 @@ describe('R2–R5 black-box shapes', () => {
         junk.textContent = 'junk'
         div.insertBefore(junk, slot)
         div.insertBefore(document.createTextNode('junk'), slot)
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches(), slot: commentIn(div, 'unhandledChild') === slot})
             .toEqual({dom: kids(csrOf(App)), mismatches: 1, slot: true})
     })
@@ -301,7 +302,7 @@ describe('R2–R5 black-box shapes', () => {
         expect(html).toContain('<!--computed node--><!--axii:0--><p>')
         const hyd = parse(html.replace('<!--computed node--><!--axii:0-->', '<!--computed node-->'))
         const p = hyd.querySelector('p')
-        hydrateRootTopDown(hyd, createElement(Fn, null))
+        hydrateRoot(hyd, createElement(Fn, null))
         expect({dom: kids(hyd), mismatches: mismatches(), p: hyd.querySelector('p') === p}).toEqual({dom: kids(csrOf(Fn)), mismatches: 1, p: true})
     })
 
@@ -315,8 +316,29 @@ describe('R2–R5 black-box shapes', () => {
         }
         junk(hyd.querySelector('p')!)
         junk(hyd.querySelector('div')!)
-        hydrateRootTopDown(hyd, createElement(Two, null))
+        hydrateRoot(hyd, createElement(Two, null))
         expect({dom: kids(hyd), mismatches: mismatches(), others: others()}).toEqual({dom: kids(csrOf(Two)), mismatches: 2, others: []})
+    })
+
+    // #55 S：旧模型的「host-structure markers ahead guard」（D10：游标前方还有 Host 结构标记时不清扫）随旧模型删除——
+    //  父元素结束时它的子 Host 都已消费完自己的区域，剩下的一定是多余节点（设计 §2.8、§8）
+    test('R5 with Hosts in the parent: junk after the last Host slot is removed and reported once; the Hosts stay bound', async () => {
+        const t = atom('a')
+        const make = () => function Hosts({}: any, {createElement}: RenderContext) {
+            return <div>{() => t()}<Comp/>{t}<p>x</p></div>
+        }
+        const hyd = parse(htmlOf(make()))
+        const div = hyd.querySelector('div')!
+        div.append(document.createComment('unhandledChild'), document.createElement('i'), 'junk')
+        const p = hyd.querySelector('p')
+        hydrateRoot(hyd, createElement(make(), null))
+        expect({dom: kids(hyd), mismatches: mismatches(), p: hyd.querySelector('p') === p})
+            .toEqual({dom: kids(csrOf(make())), mismatches: 1, p: true})
+        t('b')
+        await new Promise(r => setTimeout(r, 0))
+        const client = csrOf(make())
+        expect(kids(hyd)).toBe(kids(client))
+        expect(hyd.querySelector('div')!.textContent).toBe('bcbx')
     })
 
     test('R2 in a character-data parent: a unit that is not a prefix of the server text replaces it; later units are inserted', () => {
@@ -325,7 +347,7 @@ describe('R2–R5 black-box shapes', () => {
         }
         const hyd = parse(htmlOf(make('A', 'B')))
         expect(hyd.querySelector('textarea')!.value).toBe('AB')
-        hydrateRootTopDown(hyd, createElement(make('X', 'B'), null))
+        hydrateRoot(hyd, createElement(make('X', 'B'), null))
         expect({dom: kids(hyd), value: hyd.querySelector('textarea')!.value, reported: mismatches() > 0})
             .toEqual({dom: kids(csrOf(make('X', 'B'))), value: 'XB', reported: true})
     })
@@ -345,7 +367,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
         expect(html).toContain('<p><!--array item-->')
         const hyd = parse(html.replace('<p><!--array item-->', '<p><!--axii:0--><!--array item-->'))
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reported: mismatches() > 0, markers: hyd.innerHTML.includes('axii:'), others: others()})
             .toEqual({dom: kids(csrEl), reported: true, markers: false, others: []})
         for (const s of [c, h]) s.a('A')
@@ -367,7 +389,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
         const hyd = parse(html.replace('<!--computed node-->', '<!--unhandledChild--><!--computed node-->'))
         const rows = Array.from(hyd.querySelectorAll('li'))
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reported: mismatches() > 0, rows: Array.from(hyd.querySelectorAll('li')).every((li, i) => li === rows[i])})
             .toEqual({dom: kids(csrEl), reported: true, rows: true})
         for (const s of [c, h]) s.list.push(3)
@@ -383,7 +405,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
         expect(html).toContain('<!--empty--><!--array item-->')
         const hyd = parse(html)
         const i = hyd.querySelector('i')
-        hydrateRootTopDown(hyd, createElement(Sparse, null))
+        hydrateRoot(hyd, createElement(Sparse, null))
         expect({dom: kids(hyd), reported: mismatches() > 0, others: others(), i: hyd.querySelector('i') === i})
             .toEqual({dom: kids(csrOf(Sparse)), reported: true, others: [], i: true})
     })
@@ -413,7 +435,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
                 if (junk) html = html.replace('</li>', '</li><em>junk</em>').replace('</b>', '</b><em>junk</em>')
                 const hyd = parse(html)
                 const h = make(client)
-                const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+                const root = hydrateRoot(hyd, createElement(h.App, null))
                 expect({dom: kids(hyd), reported: mismatches() > 0, others: others()}).toEqual({dom: kids(csrEl), reported: true, others: []})
                 for (const s of [c, h]) { s.label('y'); s.compact.push(9); s.frag.splice(0, 1) }
                 await tick()
@@ -447,7 +469,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
                 }
             }
             const hyd = parse(htmlOf(make(false)))
-            const root = hydrateRootTopDown(hyd, createElement(make(true), null))
+            const root = hydrateRoot(hyd, createElement(make(true), null))
             expect({fallback: kids(hyd), others: others()}).toEqual({fallback: '<p>"fallback"</p><!--root-->', others: []})
             root.destroy()
             const after = getAxiiRetainedObjectDiagnosticsSnapshot()
@@ -473,7 +495,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
             return <div>ok</div>
         }
         const hyd = parse(htmlOf(make(false)))
-        const root = hydrateRootTopDown(hyd, createElement(make(true), null))
+        const root = hydrateRoot(hyd, createElement(make(true), null))
         expect({dom: kids(hyd), others: others()}).toEqual({dom: '<!--empty--><!--root-->', others: []})
         root.destroy()
         expect(kids(hyd)).toBe('')
@@ -494,7 +516,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
         const csrEl = mount()
         createRoot(csrEl).render(createElement(c.App, null))
         const hyd = parse(htmlOf(make().App))
-        hydrateRootTopDown(hyd, createElement(make().App, null))
+        hydrateRoot(hyd, createElement(make().App, null))
         await tick()
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
     })
@@ -511,7 +533,7 @@ describe('B2 hand-off: server HTML written before #82 / #85, and the other shape
         const server = renderToString(createElement(make([1, 3]).App, null))
         const hyd = parse(`<style data-axii-ssr>${server.styles}</style>${server.html}`)
         const h = make([1, 2, 3])
-        const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+        const root = hydrateRoot(hyd, createElement(h.App, null))
         const zOf = () => Array.from(hyd.querySelectorAll('li')).map(li => getComputedStyle(li).zIndex)
         expect({z: zOf(), reported: mismatches() > 0, others: others()}).toEqual({z: ['1', '2', '3'], reported: true, others: []})
         h.list.push(4)
@@ -535,11 +557,11 @@ describe('independent review findings (B3)', () => {
             }
         }
         const hyd = parse(htmlOf(make(false)))
-        expect(() => hydrateRootTopDown(hyd, createElement(make(true), null))).toThrow('unknown child type')
+        expect(() => hydrateRoot(hyd, createElement(make(true), null))).toThrow('unknown child type')
         expect(caught).toEqual([])
         // 激活的状态已恢复：下一次激活从自己的容器开始
         const again = parse(htmlOf(make(false)))
-        hydrateRootTopDown(again, createElement(make(false), null))
+        hydrateRoot(again, createElement(make(false), null))
         expect(kids(again)).toBe(kids(csrOf(make(false))))
     })
 
@@ -553,7 +575,7 @@ describe('independent review findings (B3)', () => {
         const hyd = parse(htmlOf(make()))
         hyd.querySelector('option[value="b"]')!.remove()
         const select = hyd.querySelector('select')
-        hydrateRootTopDown(hyd, createElement(make(), null))
+        hydrateRoot(hyd, createElement(make(), null))
         const csrEl = csrOf(make())
         expect({value: (hyd.querySelector('select') as HTMLSelectElement).value, same: hyd.querySelector('select') === select, dom: kids(hyd), reported: mismatches() > 0})
             .toEqual({value: (csrEl.querySelector('select') as HTMLSelectElement).value, same: true, dom: kids(csrEl), reported: true})
@@ -568,7 +590,7 @@ describe('independent review findings (B3)', () => {
             </div>
         }
         const hyd = parse(htmlOf(make('server')))
-        hydrateRootTopDown(hyd, createElement(make('client'), null))
+        hydrateRoot(hyd, createElement(make('client'), null))
         expect({dom: kids(hyd), reported: mismatches() > 0}).toEqual({dom: kids(csrOf(make('client'))), reported: true})
         expect(hyd.querySelector('pre code')!.className).toBe('hl')
     })
@@ -577,7 +599,7 @@ describe('independent review findings (B3)', () => {
         function App({}: any, {createElement}: RenderContext) { return <main><input/><p>x</p></main> }
         const hyd = parse(`\n    ${htmlOf(App)}\n  `)
         const [main, input] = [hyd.querySelector('main'), hyd.querySelector('input')]
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), kept: [hyd.querySelector('main') === main, hyd.querySelector('input') === input], reported: mismatches() > 0})
             .toEqual({dom: kids(csrOf(App)), kept: [true, true], reported: true})
     })
@@ -595,7 +617,7 @@ describe('independent review findings (B3)', () => {
             made.push(createElement('b', null))
             if (list.data.length < 3) list.push(3)
         }})
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({rows: Array.from(hyd.querySelectorAll('li')).map(li => li.textContent), made: made.every(n => n instanceof HTMLElement), others: others()})
             .toEqual({rows: ['1', '2', '3'], made: true, others: []})
     })
@@ -606,7 +628,7 @@ describe('independent review findings (B3)', () => {
         const span = hyd.querySelector('span')!
         span.id = 'z'
         span.querySelector('i')!.setAttribute('data-junk', '1')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), mismatches: mismatches()}).toEqual({dom: kids(csrOf(App)), mismatches: 1})
     })
 })

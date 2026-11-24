@@ -2,9 +2,10 @@
  * #55 B1：激活期间的延迟描述 HydrationElement（src/hydrationElement.ts，设计 docs/ssr-support/hydration-top-down.md §2.2）。
  */
 import {describe, expect, test} from 'vitest'
-import {createElement, createSVGElement, Fragment} from '@framework'
+import {createElement, createSVGElement, Fragment, hydrateRoot, isHydrationElement as publicIsHydrationElement} from '@framework'
 import {HYDRATION_ELEMENT_FIELDS, HydrationElement, isHydrationElement} from '../src/hydrationElement'
-import {beginTopDownHydration, endTopDownHydration} from '../src/hydration'
+import {beginHydration, endHydration} from '../src/hydration'
+import {renderToString} from '../src/ssr.js'
 
 describe('HydrationElement preset fields', () => {
     // 预置字段名不得出现在任何元素接口上：用户读 el.<名字> 会拿到描述的内部数据，开发期的读探测（B4）又跳过预置字段，
@@ -38,7 +39,7 @@ describe('HydrationElement preset fields', () => {
 describe('createElement during a top-down activation returns descriptions', () => {
     test('string tags and Fragment give descriptions (no DOM); components still give ComponentNode', () => {
         function Comp() { return null }
-        const saved = beginTopDownHydration()
+        const saved = beginHydration()
         let el: any, frag: any, svg: any, svgOnly: any, comp: any
         try {
             el = createElement('div', {id: 'a'}, 'x', createElement('b', null))
@@ -47,7 +48,7 @@ describe('createElement during a top-down activation returns descriptions', () =
             svgOnly = createElement('circle', null)
             comp = createElement(Comp, {p: 1})
         } finally {
-            endTopDownHydration(saved)
+            endHydration(saved)
         }
         expect(isHydrationElement(el)).toBe(true)
         expect({tag: el.tag, rawProps: el.rawProps, isSVG: el.isSVG, node: el.node}).toEqual({tag: 'div', rawProps: {id: 'a'}, isSVG: false, node: null})
@@ -60,5 +61,23 @@ describe('createElement during a top-down activation returns descriptions', () =
         expect(comp.type).toBe(Comp)
         // 激活之外照常是元素
         expect(createElement('div', null) instanceof HTMLDivElement).toBe(true)
+    })
+
+    // 设计 C4（#55 S）：isHydrationElement 从包的入口导出，判断 JSX 结果是描述还是节点时用它
+    test('isHydrationElement is exported from the package entry: true for JSX evaluated during hydrateRoot, false for a CSR element', () => {
+        let captured: unknown
+        function App({}: any, ctx: any) {
+            captured = ctx.createElement('b', null, 'x')
+            return captured
+        }
+        const el = document.createElement('div')
+        document.body.appendChild(el)
+        el.innerHTML = renderToString(createElement(App as any, null)).html
+        const root = hydrateRoot(el, createElement(App as any, null))
+        expect(publicIsHydrationElement).toBe(isHydrationElement)
+        expect({captured: publicIsHydrationElement(captured), csr: publicIsHydrationElement(createElement('b', null))})
+            .toEqual({captured: true, csr: false})
+        root.destroy()
+        el.remove()
     })
 })

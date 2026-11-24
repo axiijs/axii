@@ -5,9 +5,7 @@ import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed
 import {LightBindingEffect} from "./LightBindingEffect.js";
 import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 import type {HostPosition} from "./createHost";
-import {isHydrating} from "./hydration";
-import {claimTextBeforeCommentPlaceholder} from "./hydration";
-import {isCommentNode, isTextNode} from "./nodeType";
+import {isTextNode} from "./nodeType";
 import {HydrationSlot, TEXT_SLOT} from "./hydrationElement";
 import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
 
@@ -96,18 +94,6 @@ export class AtomHost extends LightBindingEffect implements Host{
 
     render(): void {
         trackLightBindingCreated(this, 'AtomTextBinding')
-        // Hydrate Comment-ph：认领 placeholder 前已有 Text（含 axii:t 包边），或插入空 Text
-        // §3.7 / D12: pass client snapshot so value drift reports + rebuilds (not silent run() fix)
-        if (isHydrating() && isCommentNode(this.placeholder) && this.element === this.placeholder) {
-            Notifier.instance.pauseTracking()
-            let expected: string
-            try {
-                expected = stringValue(this.source())
-            } finally {
-                Notifier.instance.resetTracking()
-            }
-            this.element = claimTextBeforeCommentPlaceholder(this.placeholder, expected)
-        }
         this.run()
     }
     // #55 新模型（§2.5）：按当前值认领文本单元，再像 render 一样建立绑定。

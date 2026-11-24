@@ -65,7 +65,7 @@ export const svgOnlyElementNames = new Set([
  * CAUTION 服务端写出的 <svg><title>…</title></svg> 解析后一定是 SVG 的 title，客户端只看标签名的话建出来的是 HTML 元素：
  *  CSR 里 <title> 不是图形的提示、<a> 里的图形整个不渲染；激活时每个都报告失配并重建。客户端 JSX 先求值子节点，
  *  子元素创建时不知道父元素，所以由 SVG 父元素在 createElement 里把这些子元素改建到 SVG 命名空间（DOM.adoptSvgChild），
- *  激活时在父元素的游标下按 SVG 认领（DOM.materializeHydrateDeferred），服务端按 SVG 的规则写属性（ssr.serializeSsrElement）。
+ *  激活时在父元素下按 SVG 认领（DOM.hydrateElementDescriptionAt），服务端按 SVG 的规则写属性（ssr.serializeSsrElement）。
  *  三处都只用这一张表。
  */
 export const svgHtmlSharedElementNames = new Set(['a', 'script', 'style', 'title'])
@@ -87,7 +87,7 @@ export const RCDATA_TAGS = new Set(['textarea', 'title'])
 /**
  * @internal
  * table 的分区元素（小写名）。服务端决定要不要为 table 的内容补 <tbody>（ssr.serializeTableContent）、
- * 激活时判定隐含 tbody（hydration.impliedTableBody）用同一张表。
+ * 激活时判定隐含 tbody（DOM.resolveTopDownChildParent）用同一张表。
  */
 export const tableSectionElementNames = new Set(['tbody', 'thead', 'tfoot', 'caption', 'colgroup'])
 export const RAWTEXT_TAGS = new Set(['style', 'script', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript'])

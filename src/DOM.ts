@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
-import {isAtom, RxList} from "data0";
+import {isAtom} from "data0";
 import {assert, each, isPlainObject} from './util'
-import {DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isDomNode, isElementNode, isFragmentNode, nodeTypeOf} from './nodeType'
+import {DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isDomNode, isElementNode, nodeTypeOf} from './nodeType'
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
@@ -39,42 +39,12 @@ import {
     textareaContentProp,
 } from './markupNames'
 import {
-    advanceCursorUntilComment,
-    advanceCursorUntilRxListHostPlaceholder,
-    advancePastNode,
-    claimAtomTextPlaceholder,
-    claimCommentAtCursor,
-    claimDirectNodeText,
-    claimFunctionTextPlaceholder,
-    claimTextUnit,
-    createElementForHydrateMismatch,
     createHydrateMismatchElementNode,
-    createHydrateDeferredElement,
-    enterElementChildCursor,
-    exitElementChildCursor,
-    getChildCursor,
-    insertHydrateMismatchElement,
-    isElementChildCursorActive,
-    isHydrateDeferredElement,
-    isHydrateOnMainRoot,
-    isClaimStoppedAtSvgCounterpart,
-    getHydrationMode,
-    HYDRATION_MODE_LEGACY,
-    HYDRATION_MODE_TOP_DOWN,
     isHydrating,
-    isTopDownDevProxy,
-    markHydrateReclaimPayload,
-    peekAxii0,
-    peekHydrateDeferredPayload,
-    reconcileFlattenedFragmentHydrateChildren,
-    resolveHydrateChildParent,
+    isHydrationDevProxy,
     rememberHydrateRollingStyleBase,
     runOutsideHydration,
     staticAttrId,
-    takeHydrateDeferredPayload,
-    takeHydrateReclaimPayload,
-    tryClaimElement,
-    unclaimHydrateElement,
 } from "./hydration";
 import {createHydrationElementDevProxy, HydrationElement, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
@@ -792,20 +762,6 @@ const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
 const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml'
 const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink'
 
-/**
- * Rematerialize a main-root deferred stub with claiming enabled.
- * svgParent：stub 是一个 SVG 元素（不是 HTML integration point）的静态子元素。HTML / SVG 同名的标签按 SVG 认领与创建，
- *  ≡ CSR 里 SVG 父元素对同一个子元素做的改建（adoptSvgChild，#56）。
- */
-export function materializeHydrateDeferred(el: Element, svgParent = false): Node {
-    const payload = takeHydrateDeferredPayload(el)
-    let rawProps = payload.rawProps
-    if (svgParent && svgHtmlSharedElementNames.has(payload.type) && rawProps?._isSVG !== true) {
-        rawProps = {...rawProps, _isSVG: true}
-    }
-    return createElement(payload.type, rawProps, ...payload.rawChildren) as Node
-}
-
 const TO_STRING_TAG = Symbol.toStringTag
 
 /**
@@ -869,8 +825,8 @@ function svgAttributeNameOfLowercase(name: string): string {
  *  （元素 child、数组项、Fragment 的子元素：adoptSvgChild / adoptSvgArrayItems / adoptSvgFragmentChildren）改建到 SVG 命名空间：attribute 按 SVG 的写法搬过去（见 svgAttributeNameOfLowercase），子节点整体移过去，
  *  axii 写在元素上的字段（事件表、未处理的子节点 / 响应式属性 / ref / detachStyle 元数据、JSX source）原样转交，
  *  事件代理重新挂上；元数据里指向旧元素的 el 改指新元素（remapRecreatedElements）。响应式属性稍后由 StaticHost
- *  按新元素（SVG）的规则写入。激活时由 materializeHydrateDeferred 在同一个位置按 SVG 认领（新激活模型：hydrateElementDescriptionAt /
- *  adoptSvgArrayItemDescriptions，判定是 isSharedNameHtmlDescription），服务端按 SVG 的规则写属性。
+ *  按新元素（SVG）的规则写入。激活时在同一个位置按 SVG 认领（hydrateElementDescriptionAt / adoptSvgArrayItemDescriptions，
+ *  判定是 isSharedNameHtmlDescription），服务端按 SVG 的规则写属性。
  * CAUTION 性能：判定并在 createElement 唯一的子节点循环里做（adoptSharedNameChildren），不再单独扫一遍 children：
  *  节点子元素用循环分发时已经读到的 nodeType 区分元素与 Fragment，元素先按 class string 排除 SVG 元素（isSvgClassString），
  *  SVG 元素子节点不多读任何 DOM getter；数组项只在非节点分支里、按同样的预判检查。Fragment 的子元素要走一遍它的元素子节点
@@ -975,234 +931,7 @@ function remapRecreatedElements(holder: ExtendedElement, recreated: Map<Element,
 }
 
 /**
- * Eager Portal HTML content may have already claimed under the main hydrate root
- * (arg eval before pushHydrateRoot). Convert to a deferred stub so hydratePortalContent
- * rematerializes against options.portals (§3.3.d / portal-static-content-hydrate).
- */
-export function ensureHydrateDeferredPortalContent(content: any): any {
-    if (!isHydrating() || content == null || typeof content === 'function') return content
-    if (typeof content === 'object' && typeof (content as any).type === 'function') return content
-
-    // Deferred stub (no claim under main): still walk rawChildren — nested Fragment may
-    // hold Elements that claimed main siblings (element portal + nested F; k19-audit D2).
-    if (isHydrateDeferredElement(content)) {
-        const payload = peekHydrateDeferredPayload(content as Element)
-        if (payload?.rawChildren?.length) {
-            for (let i = 0; i < payload.rawChildren.length; i++) {
-                payload.rawChildren[i] = ensureHydrateDeferredPortalContent(payload.rawChildren[i])
-            }
-        }
-        return content
-    }
-
-    // Array / Fragment children may hold Elements claimed under main — recurse first.
-    if (Array.isArray(content)) {
-        for (let i = 0; i < content.length; i++) {
-            content[i] = ensureHydrateDeferredPortalContent(content[i])
-        }
-        return content
-    }
-    if (isFragmentNode(content)) {
-        const fragKids = (content as any).__axiiFragmentHydrateChildren as any[] | undefined
-        if (fragKids?.length) {
-            for (let i = 0; i < fragKids.length; i++) {
-                fragKids[i] = ensureHydrateDeferredPortalContent(fragKids[i])
-            }
-        }
-        // createElement(Fragment) may have lifted unhandledChildren from wrongly claimed
-        // main-tree Nodes (atom Text placeholders). Drop them — rematerialize under the
-        // portal root recreates host metadata against options.portals.
-        // DocumentFragment carries the same axii metadata bag as ExtendedElement (see createElement).
-        const fragExt = content as unknown as ExtendedElement
-        fragExt.unhandledChildren = undefined
-        fragExt.unhandledAttr = undefined
-        fragExt.refHandles = undefined
-        fragExt.detachStyledChildren = undefined
-        return content
-    }
-
-    if (!isElementNode(content)) return content
-
-    const el = content as Element
-    const payload = takeHydrateReclaimPayload(el)
-    if (!payload) {
-        // Claimed without reclaim mark (e.g. empty element) — still must not keep main claim.
-        // Must be unreachable for non-empty kids (shouldMarkHydrateReclaim covers Array /
-        // ComponentNode / RxList / text / Node); silent [] would drop portal children.
-        unclaimHydrateElement(el)
-        const tag = el.tagName.toLowerCase()
-        return createHydrateDeferredElement(tag, null, [])
-    }
-    // Drop metadata from the wrongly claimed main-tree node; hosts are not created yet.
-    const ext = el as ExtendedElement
-    ext.unhandledChildren = undefined
-    ext.unhandledAttr = undefined
-    ext.refHandles = undefined
-    ext.detachStyledChildren = undefined
-    unclaimHydrateElement(el)
-    const kids = payload.rawChildren.map((c: any) => ensureHydrateDeferredPortalContent(c))
-    return createHydrateDeferredElement(payload.type, payload.rawProps, kids)
-}
-
-/**
- * Replace deferred stubs in Fragment hydrate child lists and lift their
- * unhandledChildren onto the Fragment (createElement skipped claim under main root).
- *
- * Portal roots: ensureHydrateDeferredPortalContent clears Fragment unhandledChildren
- * (main-tree false lift). After rematerialize under the portal claim root we must
- * restore the same unhandledChildren shape createElement(Fragment) would have built —
- * Array / ComponentNode / RxList / function / boolean slots, plus lifts from
- * rematerialized Elements and nested DocumentFragments (reconcile walks nested kids
- * against the outer Fragment's unhandled list; nested DF is not its own StaticHost).
- *
- * Idempotent: hydratePortalContent / createHost / StaticHost.render may each call this.
- * Structural slots use hasUnhandledFor(child); nested DF must NOT push-then-lift onto
- * the nested first (cleared after lift → 2nd pass duplicates detached placeholders).
- */
-export function rematerializeDeferredFragmentChildren(frag: DocumentFragment, svgParent = false): void {
-    const children = (frag as any).__axiiFragmentHydrateChildren as any[] | undefined
-    if (!children?.length) return
-
-    // Same metadata bag as createElement(Fragment) attaches via `as ExtendedElement`.
-    const fragEl = frag as unknown as ExtendedElement
-    let fragUnhandled = fragEl.unhandledChildren
-    let fragUnhandledAttr = fragEl.unhandledAttr
-    let fragRefs = fragEl.refHandles
-    let fragDetach = fragEl.detachStyledChildren
-
-    const hasUnhandledFor = (child: any): boolean => {
-        if (!fragUnhandled) return false
-        for (let k = 0; k < fragUnhandled.length; k++) {
-            if (fragUnhandled[k].child === child) return true
-        }
-        return false
-    }
-
-    const pushStructuralUnhandled = (child: any, path: number[]) => {
-        if (hasUnhandledFor(child)) return
-        const placeholder: UnhandledPlaceholder = typeof child === 'function'
-            ? document.createTextNode('')
-            : document.createComment('unhandledChild')
-        const info: UnhandledChildInfo = {placeholder, child, path}
-        if (fragUnhandled) fragUnhandled.push(info)
-        else fragUnhandled = [info]
-    }
-
-    const prependPath = (path: number[], target: {path: number[]}[]) => {
-        for (const u of target) {
-            for (let p = path.length - 1; p >= 0; p--) u.path.unshift(path[p])
-        }
-    }
-
-    const liftChildMeta = (el: ExtendedElement, path: number[]) => {
-        const childUnhandled = el.unhandledChildren
-        if (childUnhandled?.length) {
-            prependPath(path, childUnhandled)
-            if (fragUnhandled) fragUnhandled.push(...childUnhandled)
-            else fragUnhandled = childUnhandled
-            el.unhandledChildren = undefined
-        }
-        const childAttr = el.unhandledAttr
-        if (childAttr?.length) {
-            prependPath(path, childAttr)
-            if (fragUnhandledAttr) fragUnhandledAttr.push(...childAttr)
-            else fragUnhandledAttr = childAttr
-            el.unhandledAttr = undefined
-        }
-        const childRefs = el.refHandles
-        if (childRefs?.length) {
-            prependPath(path, childRefs)
-            if (fragRefs) fragRefs.push(...childRefs)
-            else fragRefs = childRefs
-            el.refHandles = undefined
-        }
-        const childDetach = el.detachStyledChildren
-        if (childDetach?.length) {
-            prependPath(path, childDetach)
-            if (fragDetach) fragDetach.push(...childDetach)
-            else fragDetach = childDetach
-            el.detachStyledChildren = undefined
-        }
-    }
-
-    /** Materialize deferred / nested structure onto THIS frag (never push onto nested DF). */
-    const processKids = (kids: any[], pathPrefix: number[]) => {
-        for (let i = 0; i < kids.length; i++) {
-            const c = kids[i]
-            const path = pathPrefix.length ? pathPrefix.concat(i) : [i]
-            if (isHydrateDeferredElement(c)) {
-                const el = materializeHydrateDeferred(c as Element, svgParent) as ExtendedElement
-                kids[i] = el
-                liftChildMeta(el, path)
-            } else if (isFragmentNode(c)) {
-                const nestedKids = (c as any).__axiiFragmentHydrateChildren as any[] | undefined
-                if (nestedKids?.length) {
-                    processKids(nestedKids, path)
-                }
-                // Leftover meta on nested DF (should be empty after processKids)
-                liftChildMeta(c as unknown as ExtendedElement, path)
-            } else if (Array.isArray(c)) {
-                for (let j = 0; j < c.length; j++) {
-                    if (isHydrateDeferredElement(c[j])) {
-                        // Item Element keeps its own unhandledChildren for StaticArrayHost.
-                        c[j] = materializeHydrateDeferred(c[j] as Element)
-                    } else if (isFragmentNode(c[j])) {
-                        rematerializeDeferredFragmentChildren(c[j])
-                    }
-                }
-                pushStructuralUnhandled(c, path)
-            } else if (c instanceof RxList) {
-                pushStructuralUnhandled(c, path)
-            } else if (typeof c === 'function') {
-                pushStructuralUnhandled(c, path)
-            } else if (typeof c === 'boolean') {
-                pushStructuralUnhandled(c, path)
-            } else if (c != null && typeof c === 'object' && typeof (c as any).type === 'function') {
-                pushStructuralUnhandled(c, path)
-            } else if (isElementNode(c)) {
-                liftChildMeta(c as ExtendedElement, path)
-            }
-        }
-    }
-
-    processKids(children, [])
-
-    if (fragUnhandled) fragEl.unhandledChildren = fragUnhandled
-    if (fragUnhandledAttr) fragEl.unhandledAttr = fragUnhandledAttr
-    if (fragRefs) fragEl.refHandles = fragRefs
-    if (fragDetach) fragEl.detachStyledChildren = fragDetach
-}
-
-/**
- * Eager Portal HTML content is evaluated as createElement args under the main hydrate
- * root before pushHydrateRoot. Those claims store a reclaim payload; createPortal / Portal
- * convert them to deferred stubs via ensureHydrateDeferredPortalContent (§3.3.d).
- *
- * Must cover every child kind that can appear under an eager Portal root element —
- * text/function/Node **and** Array / ComponentNode / RxList / DocumentFragment — so
- * reclaim→deferred preserves rawChildren (k17-audit D1).
- */
-function shouldMarkHydrateReclaim(children: any[]): boolean {
-    if (!isHydrateOnMainRoot()) return false
-    for (let i = 0; i < children.length; i++) {
-        const c = children[i]
-        if (c == null || typeof c === 'boolean') continue
-        if (isHydrateDeferredElement(c)) continue
-        const t = typeof c
-        if (t === 'string' || t === 'number' || t === 'bigint' || t === 'function') return true
-        if (Array.isArray(c) || c instanceof RxList) return true
-        if (isDomNode(c)) return true
-        // ComponentNode (and other host descriptors with a callable type)
-        if (typeof c === 'object' && typeof (c as any).type === 'function') return true
-    }
-    return false
-}
-
-/**
- * 元数据路径的拼接规则（#55 PR-A）：createElement（CSR 与旧模型激活分支同在其中）用它，
- * 新激活模型的认领步骤（#55 B1）也用它。
- * CAUTION 旧模型专用的 rematerializeDeferredFragmentChildren 另有一份（prependPath / liftChildMeta：
- *  多级前缀、不继承 source、项没有 source 字段），随旧模型在 #55 S 删除；过渡期不要再新增第三份。
+ * 元数据路径的拼接规则（#55 PR-A）：CSR 的 createElement 与激活的认领步骤（#55 B1）共用，只有这一份。
  *
  * 子元素的元数据（unhandledChildren / unhandledAttr / refHandles / detachStyledChildren）提升到
  * 父元素时，在每一项的 path 前面加上 index。index 是子元素在父元素 JSX children 数组里的下标
@@ -1235,7 +964,8 @@ function liftElementMetadata<T extends {path: number[], source?: AxiiSource}>(
     return entries
 }
 
-// 下面四个是 applyElementProps 的冷路径，单独成函数只为让 applyElementProps 本身保持可内联（见它的 CAUTION）。
+// 下面几个是「应用 props」的冷路径（createElement 里的 CSR 那一份与 applyElementProps 共用，见 applyElementProps 的 CAUTION「两份」），
+//  单独成函数是为了让 createElement 的函数体保持小。
 // CAUTION 项对象的字面量各只有这一处（字段顺序决定隐藏类），不要在别处另写同类字面量。
 function warnInnerHTMLWithChildren() {
     /* eslint-disable no-console */
@@ -1296,8 +1026,9 @@ function applyDeferredFormProps(
 }
 
 /**
- * 「应用 props」（#55 PR-A；CSR 与激活共用，只有这一份）：children 处理完之后应用元素的 props，
- * value / checked 延后到其余 prop 之后，再把元数据挂到元素上。
+ * 「应用 props」（#55 PR-A）：children 处理完之后应用元素的 props，value / checked 延后到其余 prop 之后，
+ * 再把元数据挂到元素上。激活的认领步骤（hydrateElementContent）、Fragment 描述与描述的物化用它。
+ * CAUTION CSR 的 createElement 在自己的函数体里有同一段循环（#55 S 拆回去的，见下面「两份」）：改这里的规则时那里一起改。
  *
  * - 在 children 之后：select 的 value 依赖 option 已经就位（select / option 的语义）。
  * - value / checked 延后，及 __axiiInputHasCheckedProp__（#52）：见函数体与 applyDeferredFormProps 的 CAUTION。
@@ -1310,16 +1041,16 @@ function applyDeferredFormProps(
  * 子元素提升上来的四类元数据由调用方传入（局部变量，不分配收集对象），在这里与自己的合并后一次性挂上。
  * 没有 rawProps 时也要调用：元数据与 __axiiSource 照样要挂。
  *
- * CAUTION 热路径（每个元素一次）：它是从 createElement 里搬出来的，不内联时每个元素多一次 10 个参数的调用。
- *  - 字节码必须低于 TurboFan 的 max_inlined_bytecode_size（460）。整段搬出时是 616，
- *    --trace-turbo-inlining 报「Cannot consider applyElementProps for inlining (reason: 5)」，
- *    同页 A/B 纯 createElement 慢约 1.5%。所以冷路径（I66 警告、自己的 ref / detachStyle / unhandledAttr 项、
- *    value / checked 的延后应用）都在上面的独立函数里，这里只留每个 key 都要走的判断（现在约 370）。
- *  - 即使低于 460 也不保证一直内联：createElement 去优化（例如大 GC 后的「weak objects」）后重新优化时，
- *    如果这个函数已经有自己的优化代码，TurboFan 把它已内联的字节码一并计入累计预算
- *    （「existing opt code's inlined bytecode size」，再乘 1.2），超过 920 就不再内联。
- *  往这里加逻辑之前，先用 --print-bytecode --print-bytecode-filter=applyElementProps 看字节码长度，
- *  并按 docs/ssr-support/hydration-top-down.md §5.3 的同页 A/B/A′ 复测。
+ * CAUTION 两份（#55 S）：PR-A 把这段从 createElement 里搬出来、CSR 与激活共用一份，CSR 的 createElement 因此每个元素调用一次
+ *  这个函数。同页 A/B/A′（§5.3，生产构建）实测纯 createElement 慢 1.1–1.8%，配对比值的 95% 区间不含 1；把同一段循环写回
+ *  createElement 的函数体之后回到 A/A 噪声以内（#55 S，设计 §7.11）。机制没有确认：单一负载的 --trace-turbo-inlining 里
+ *  两种写法内联进 createElement 的小函数相同（调用的写法另外内联了这个函数，字节码约 370）；PR-A 观察到大 GC 去优化后
+ *  重新优化时它可能不再内联（已有优化代码时按它内联过的字节码 × 1.2 计预算），基准页里多种负载交替时是否如此没有验证。
+ *  所以 CSR 走 createElement 里的那一份，这里是激活那一份。两份逐行相同，只差 claimed（CSR 恒为 false）；
+ *  冷路径（I66 警告、自己的 ref / detachStyle / unhandledAttr 项、value / checked 的延后应用）与属性写入规则
+ *  （createElement.isValidAttribute、setAttribute）只有一份，两边都调用它们。
+ *  两份的一致由 elementMetadata.spec（CSR 的元数据规则）、hydrateTopDown.spec「metadata collected by the claim step ≡
+ *  CSR createElement」与激活的 ≡ CSR 用例（auditSsrCsrAttributeParity、F1i）共同钉住。
  */
 function applyElementProps(
     container: HTMLElement | DocumentFragment | SVGElement,
@@ -1397,8 +1128,7 @@ function applyElementProps(
     if (detachStyledChildren) containerElement.detachStyledChildren = detachStyledChildren
 }
 
-// 下面两个是激活时认领元素的元素级处理（#55 B1 收成函数）：旧模型（createElement 的激活分支）与新模型
-//  （hydrateElementDescription）共用，只有这一份。
+// 下面两个是激活时认领元素的元素级处理（#55 B1 收成函数），由认领步骤（hydrateElementDescription）调用，只有这一份。
 
 /**
  * CAUTION textarea 的 value 在 HTML 里只能写成子文本（§3.6.2 TA 通道），CSR 则是纯 IDL 赋值、没有子节点。
@@ -1454,10 +1184,6 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             delete props.__source
             delete props.__self
         }
-        // Portal content={<el/>} / createPortal(el): el may have claimed under main — defer.
-        if (isHydrating() && (type as any).__axiiPortal && props.content != null) {
-            props = {...props, content: ensureHydrateDeferredPortalContent(props.content)}
-        }
         return {type, props, children, __axiiSource: debugSource} as ComponentNode
     }
 
@@ -1472,58 +1198,21 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     //  元素升级只发生在创建时刻，事后 setAttribute('is') 不会触发升级——元素静默缺少
     //  自定义行为。attribute 本身仍由下面的 props 循环写上（序列化/CSS 选择器语义）。
     //  热路径成本：仅在 rawProps 存在时多一次属性读。
-    // CAUTION 激活模式只在这里读一次（#55 §7.3）。新模型（内部入口）激活时返回延迟描述，不碰 DOM：
-    //  元素由消费它的 Host 在自己的位置认领（hydrateElementDescription）。CSR 稳态比原来多一次整数比较，
-    //  旧模型的 hydrating 由同一次读得出。不要把这个判定挪进 applyElementProps（见它的 CAUTION）。
-    const hydrationMode = getHydrationMode()
-    // Children list early: hydrate claim rejects EmptyHost false-positives for eager Portal
-    // content evaluated under the main tree (§3.3.d).
+    // CAUTION 激活状态只在这里读一次（#55 §5.1）。激活时返回延迟描述，不碰 DOM：元素由消费它的 Host 在自己的位置认领
+    //  （hydrateElementDescription）。CSR 的函数体里没有任何激活分支。
     const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || EMPTY_CHILDREN)
-    if (hydrationMode === HYDRATION_MODE_TOP_DOWN) {
+    if (isHydrating()) {
         const desc = new HydrationElement(type as string | typeof Fragment, rawProps, children, _isSVG)
         // 诊断开启时（激活开始时定一次）返回开发期 Proxy：被当作节点读写时报告（§3.4）
-        return (isTopDownDevProxy() ? createHydrationElementDevProxy(desc) : desc) as unknown as HTMLElement
+        return (isHydrationDevProxy() ? createHydrationElementDevProxy(desc) : desc) as unknown as HTMLElement
     }
-    // Hydrate（旧模型）：认领已有元素（§3.1）
-    const hydrating = hydrationMode === HYDRATION_MODE_LEGACY
 
     let container: HTMLElement | DocumentFragment | SVGElement
-    // 激活时元素是认领来的（服务端节点）还是失配后就地新建的
-    let hydrateClaimed = false
-    // 失配后新建：脱离文档建好，props 应用完再插到游标处（#73，见 createElementForHydrateMismatch）
-    let hydrateRebuilt = false
     // CSR 的 SVG 父元素（integration point 除外）在下面的子节点循环里把 HTML / SVG 同名的子元素改建到 SVG 命名空间（#56，见 adoptSvgChild）
     let adoptSharedNameChildren = false
     let adoptedElements: Map<Element, Element> | undefined
     if (type === Fragment) {
         container = document.createDocumentFragment()
-    } else if (hydrating) {
-        const claimed = tryClaimElement(type as string, rawProps, children, _isSVG)
-        if (!claimed) {
-            // Element-child cursor: §3.7 claim-miss → local CSR rebuild (wrong tag / no candidate).
-            // No parent cursor: Portal content under main root — defer until hydratePortalContent.
-            // List/array setChildCursor alone must not rebuild (would delete row placeholders).
-            if (isElementChildCursorActive()) {
-                container = createElementForHydrateMismatch(
-                    type as string,
-                    _isSVG,
-                    rawProps && typeof rawProps.is === 'string' ? rawProps.is : undefined,
-                ) as HTMLElement
-                hydrateRebuilt = true
-            } else if (!getChildCursor().parent || isClaimStoppedAtSvgCounterpart()) {
-                // HTML / SVG 同名的标签遇到了它的 SVG 对应物：交给 SVG 父元素按 SVG 认领（#56，见 isClaimStoppedAtSvgCounterpart）
-                return createHydrateDeferredElement(type as string, rawProps, children)
-            } else {
-                throw new Error(`[axii] hydrate mismatch: no unmatched <${type as string}> to claim`)
-            }
-        } else {
-            // Portal content args claim under main before createPortal wraps them — mark reclaim.
-            if (shouldMarkHydrateReclaim(children)) {
-                markHydrateReclaimPayload(claimed, type as string, rawProps, children)
-            }
-            hydrateClaimed = true
-            container = claimed as HTMLElement
-        }
     } else if (_isSVG) {
         container = document.createElementNS(SVG_NAMESPACE, type as string) as SVGElement
         adoptSharedNameChildren = children.length !== 0 && !isSvgHtmlIntegrationPoint(type as string)
@@ -1543,15 +1232,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     //  在单选语义的 select 里插入时会互相顶掉，只剩最后一个被选中。静态真值在这里预应用；
     //  响应式 multiple（函数/atom）由 setAttribute 的 multiple 分支在翻转时重放存值。
     //  下面的 props 循环会再次应用 multiple，重复设置同值无害。
-    // Hydrate：认领来的元素已带属性，跳过预应用（避免覆盖 SSR 结果）；仍登记响应式 attr。
-    //  失配后新建的元素与 CSR 相同，要预应用：它的 option 在下面的 children 处理中逐个新建、插入（#73）。
-    if (!hydrateClaimed && type === 'select' && rawProps?.multiple && typeof rawProps.multiple !== 'function') {
+    if (type === 'select' && rawProps?.multiple && typeof rawProps.multiple !== 'function') {
         setAttribute(container as ExtendedElement, 'multiple', rawProps.multiple, _isSVG)
-    }
-
-    if (hydrating && type !== Fragment) {
-        if (type === 'textarea') clearHydratedTextareaValueText(container as Element, rawProps)
-        enterElementChildCursor(resolveHydrateChildParent(container as Element, children))
     }
 
     // Process children in a single pass
@@ -1561,16 +1243,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     const childrenLength = children.length
     const firstChildType = childrenLength === 1 ? typeof children[0] : undefined
     if (type !== Fragment && childrenLength === 1 && (firstChildType === 'string' || firstChildType === 'number' || firstChildType === 'bigint')) {
-        if (hydrating) {
-            const text = children[0].toString()
-            if (text !== '') {
-                // ElementChildText 单 child 非空：认领（可能带 axii:t）
-                claimTextUnit(text)
-            }
-            // 单 child 空串：CSR 0 节点，无哨兵（EE0）
-        } else {
-            (container as HTMLElement).textContent = children[0].toString()
-        }
+        (container as HTMLElement).textContent = children[0].toString()
     } else if (childrenLength) {
         // CAUTION container 此时还没有插入文档，直接 append 不会触发布局，无需中转 fragment
         for (let index = 0; index < childrenLength; index++) {
@@ -1580,28 +1253,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             const childType = typeof child
             let childNodeType: number | undefined
             if (childType === 'string' || childType === 'number' || childType === 'bigint') {
-                if (hydrating) {
-                    // Fragment: never claim via parent cursor — content belongs to
-                    // StaticHost(DocumentFragment) (claimFragmentStartBefore + strip axii:t).
-                    // Eager Fragment/array args may also run before enterElementChildCursor
-                    // (no cursor → same leave-for-StaticHost semantics).
-                    // Under active StaticArray/RxList cursor, claiming here would look past
-                    // <!--array item--> / <!--rx list item--> instead of fragment content.
-                    if (type === Fragment || !getChildCursor().parent) {
-                        continue
-                    }
-                    const text = child.toString()
-                    if (text === '') {
-                        if (peekAxii0()) {
-                            // 兄弟间空：插入 Text 留在元素子节点（非 Host）
-                            claimAtomTextPlaceholder('')
-                        }
-                    } else {
-                        claimTextUnit(text)
-                    }
-                } else {
-                    container.appendChild(document.createTextNode(child.toString()))
-                }
+                container.appendChild(document.createTextNode(child.toString()))
             } else if ((childNodeType = nodeTypeOf(child)) !== undefined) { // Covers Element (HTML / SVG / MathML), DocumentFragment, Text, Comment
                 // CAUTION 按 nodeType 判断（见 nodeType.ts）：JSX child 可以是另一个 realm（同源 iframe）的节点，
                 //  instanceof Node 恒为 false，会落进下面「函数 / 其他值」的分支，多出一个占位注释（#58）。
@@ -1616,35 +1268,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                         adoptedElements = adoptSvgFragmentChildren(child, adoptedElements)
                     }
                 }
-                // Fragment: leave deferred stubs for rematerialize under fragment/portal root.
-                // Non-Fragment: rematerialize now (parent cursor / claim-allowed is active).
-                if (hydrating && isHydrateDeferredElement(nodeChild) && type !== Fragment) {
-                    nodeChild = materializeHydrateDeferred(nodeChild as Element, _isSVG && !isSvgHtmlIntegrationPoint(type as string))
-                    children[index] = nodeChild
-                }
-                if (hydrating) {
-                    // Fragment Node children: claim during rematerializeDeferredFragmentChildren
-                    // (not via parent list/array cursor).
-                    if (type !== Fragment) {
-                        if (isFragmentNode(nodeChild)) {
-                            // Element-child Fragment: SSR flatten (no fragment start).
-                            rematerializeDeferredFragmentChildren(nodeChild, _isSVG && !isSvgHtmlIntegrationPoint(type as string))
-                            reconcileFlattenedFragmentHydrateChildren(nodeChild)
-                        } else {
-                            advancePastNode(nodeChild)
-                        }
-                    }
-                } else {
-                    container.appendChild(nodeChild)
-                }
-
-                // Deferred Fragment children have no metadata until rematerialize.
-                if (hydrating && type === Fragment && isHydrateDeferredElement(child)) {
-                    continue
-                }
+                container.appendChild(nodeChild)
 
                 // Handle extended element properties：提升子元素的元数据，路径规则见 liftElementMetadata
-                // CAUTION 新激活模型的认领步骤（hydrateDescriptionChildren）有同样的一段提升，改这里时那里一起改（#55 B1）
+                // CAUTION 激活的认领步骤（hydrateDescriptionChildren）有同样的一段提升，改这里时那里一起改（#55 B1）
                 const childElement = nodeChild as ExtendedElement
                 // 动态节点自身没有 JSX source 时，继承最近的父元素 source。
                 // CAUTION 只在真的提升 children / attr 元数据时才读 __axiiSource：每个节点子元素都读一次的话，
@@ -1673,116 +1300,10 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             } else {
                 if (adoptSharedNameChildren && Array.isArray(child)) adoptedElements = adoptSvgArrayItems(child, adoptedElements)
                 // 函数/atom child 大概率渲染为文本，直接用 Text 节点当占位符
-                let placeholder: UnhandledPlaceholder
-                if (hydrating && type === Fragment) {
-                    // Defer cursor claims to StaticHost after claimFragmentStartBefore
-                    // (parent list/array cursor — or no cursor — is the wrong region).
-                    placeholder = typeof child === 'function'
-                        ? document.createTextNode('')
-                        : document.createComment('unhandledChild')
-                } else if (hydrating && typeof child === 'function') {
-                    // Text-ph：atom 按快照认领；普通函数按 FTS/H1（§3.2.4）认领尾锚
-                    if (isAtom(child)) {
-                        const snapshot = child()
-                        const text = (snapshot === undefined || snapshot === null || typeof snapshot === 'boolean')
-                            ? ''
-                            : String((snapshot as any)?.toString ? (snapshot as any).toString() : snapshot)
-                        placeholder = claimAtomTextPlaceholder(text)
-                    } else {
-                        placeholder = claimFunctionTextPlaceholder(child)
-                    }
-                } else if (hydrating && Array.isArray(child)) {
-                    // StaticArrayHost DirectNodes / items — claim texts then <!--unhandledChild-->
-                    const hydrateDirectNodes: Text[] = []
-                    for (let itemIndex = 0; itemIndex < child.length; itemIndex++) {
-                        // ≡ StaticArrayHost.render 的 forEach：稀疏数组的空位没有 Host、服务端不写任何节点（#85）；
-                        //  显式的 undefined 不是空位（EmptyHost，<!--empty--><!--array item-->）
-                        if (!(itemIndex in child)) continue
-                        const item = child[itemIndex]
-                        const it = typeof item
-                        if (it === 'string' || it === 'number' || it === 'bigint') {
-                            hydrateDirectNodes.push(claimDirectNodeText())
-                        } else if (typeof item === 'function') {
-                            // FCS array item: skip content+computed (claimed by FunctionHost), then array item
-                            advanceCursorUntilComment('array item')
-                            const itemPh = claimCommentAtCursor('array item')
-                            ;((child as any).__axiiHydrateItemHosts ||= []).push({
-                                placeholder: itemPh,
-                                child: item,
-                                path: [index],
-                                source: debugSource,
-                            } as UnhandledChildInfo)
-                        } else if (isDomNode(item)) {
-                            // Element items: rematerialize main-root deferred stubs, then advance.
-                            // DocumentFragment: content is under parent (fragment start…), not on the DF
-                            let nodeItem: Node = item
-                            if (isHydrateDeferredElement(nodeItem)) {
-                                nodeItem = materializeHydrateDeferred(nodeItem as Element, _isSVG && !isSvgHtmlIntegrationPoint(type as string))
-                                child[itemIndex] = nodeItem
-                            }
-                            if (isFragmentNode(nodeItem)) {
-                                rematerializeDeferredFragmentChildren(nodeItem)
-                                advanceCursorUntilComment('array item')
-                            } else {
-                                advancePastNode(nodeItem)
-                            }
-                            const itemPh = claimCommentAtCursor('array item')
-                            ;((child as any).__axiiHydrateItemHosts ||= []).push({
-                                placeholder: itemPh,
-                                child: nodeItem,
-                                path: [index],
-                                source: debugSource,
-                            } as UnhandledChildInfo)
-                        } else if (item instanceof RxList) {
-                            const cursor = getChildCursor()
-                            ;(item as any).__axiiHydrateListParent = cursor.parent
-                            ;(item as any).__axiiHydrateListStart = cursor.index
-                            advanceCursorUntilComment('array item')
-                            const itemPh = claimCommentAtCursor('array item')
-                            ;((child as any).__axiiHydrateItemHosts ||= []).push({
-                                placeholder: itemPh,
-                                child: item,
-                                path: [index],
-                                source: debugSource,
-                            } as UnhandledChildInfo)
-                        } else if (item == null || typeof item === 'boolean' || typeof item === 'object') {
-                            // ComponentNode / nested Array — content already in DOM before <!--array item-->
-                            // CAUTION null/undefined（EmptyHost：<!--empty--><!--array item-->）和 boolean
-                            //  （PrimitiveHost 空文本：只有 <!--array item-->）也是「内容在前、array item 在后」，
-                            //  SSR 与 StaticArrayHost 自己的认领路径都支持。`list.map(i => cond ? <li/> : null)`、
-                            //  `[cond && <b/>, 'x']` 是最常见的数组写法，这里漏掉会让整个 hydrateRoot 抛错。
-                            advanceCursorUntilComment('array item')
-                            const itemPh = claimCommentAtCursor('array item')
-                            ;((child as any).__axiiHydrateItemHosts ||= []).push({
-                                placeholder: itemPh,
-                                child: item,
-                                path: [index],
-                                source: debugSource,
-                            } as UnhandledChildInfo)
-                        } else {
-                            throw new Error('[axii] hydrate array item type not supported in M-02')
-                        }
-                    }
-                    ;(child as any).__axiiHydrateDirectNodes = hydrateDirectNodes
-                    placeholder = claimCommentAtCursor('unhandledChild')
-                } else if (hydrating && child instanceof RxList) {
-                    // RxListHost: save cursor at list content start, then claim list placeholder
-                    // (skip inner <!--unhandledChild--> from Fragment boolean / PrimitiveHost)
-                    const cursor = getChildCursor()
-                    ;(child as any).__axiiHydrateListParent = cursor.parent
-                    ;(child as any).__axiiHydrateListStart = cursor.index
-                    advanceCursorUntilRxListHostPlaceholder()
-                    placeholder = claimCommentAtCursor('unhandledChild')
-                } else if (hydrating) {
-                    // ComponentNode / other object children — content already serialized before <!--unhandledChild-->
-                    advanceCursorUntilComment('unhandledChild')
-                    placeholder = claimCommentAtCursor('unhandledChild')
-                } else {
-                    placeholder = typeof child === 'function' ?
-                        document.createTextNode('') :
-                        document.createComment('unhandledChild')
-                    container.appendChild(placeholder)
-                }
+                const placeholder: UnhandledPlaceholder = typeof child === 'function' ?
+                    document.createTextNode('') :
+                    document.createComment('unhandledChild')
+                container.appendChild(placeholder)
                 const info: UnhandledChildInfo = {placeholder, child, path: [index], source: debugSource}
                 if (unhandledChildren) {
                     unhandledChildren.push(info)
@@ -1793,26 +1314,56 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         }
     }
 
-    // Fragment hydrate: StaticHost reconciles placeholders inside [fragment start, placeholder)
-    if (hydrating && type === Fragment && childrenLength) {
-        ;(container as any).__axiiFragmentHydrateChildren = children
+    // Process props after children for proper Select/Option behavior
+    // CAUTION 「应用 props」的 CSR 那一份：与 applyElementProps 逐行相同（规则与说明见它；claimed 在 CSR 恒为 false）。
+    //  写在 createElement 的函数体里而不调用 applyElementProps：调用的写法纯 createElement 实测慢 1.1–1.8%（见 applyElementProps
+    //  的 CAUTION「两份」，#55 S 同页 A/B/A′）。改这里的规则时 applyElementProps 一起改。
+    if (rawProps) {
+        // 开发期警告（I66）：dangerouslySetInnerHTML 与 children 并存时 innerHTML 覆盖 children，见 applyElementProps
+        if (childrenLength && isAxiiDiagnosticsEnabled() && rawProps.dangerouslySetInnerHTML !== undefined) {
+            warnInnerHTMLWithChildren()
+        }
+        // 1：有 value，2：有 checked（value / checked 延后到其余 prop 之后，见 applyElementProps）
+        let deferredFormProps = 0
+        for (const key in rawProps) {
+            // __source/__self 是开发期元数据，绝不能作为普通 attr 落到 DOM 上
+            if (key === '_isSVG' || key === 'children' || key === 'key' || key === '__source' || key === '__self') continue
+            if (key === 'value') {
+                deferredFormProps |= 1
+                continue
+            }
+            if (key === 'checked') {
+                deferredFormProps |= 2
+                continue
+            }
+            const value = rawProps[key]
+            if (key === 'ref') {
+                if (value) refHandles = prependOwnRef(refHandles, value, container)
+                continue
+            }
+            if (key === 'detachStyle') {
+                if (value) detachStyledChildren = appendOwnDetachStyle(detachStyledChildren, value, container)
+                continue
+            }
+            if (!createElement.isValidAttribute(key, value)) {
+                unhandledAttr = appendOwnUnhandledAttr(unhandledAttr, container, key, value, debugSource)
+            } else {
+                setAttribute(container as ExtendedElement, key, value, _isSVG)
+            }
+        }
+        if (deferredFormProps) {
+            unhandledAttr = applyDeferredFormProps(container, rawProps, _isSVG, debugSource, unhandledAttr, deferredFormProps)
+        }
     }
 
-    if (hydrating && type !== Fragment) {
-        // CAUTION dangerouslySetInnerHTML 的内容由服务端原样写出，客户端 children 里没有对应单元。
-        //  按「尾部孤儿」清理的话会报一条假的失配并把这段标记删掉；而下面的 props 循环在激活时
-        //  又跳过 innerHTML 赋值（保留服务端节点），结果元素永久为空。
-        //  「内容是原始标记」按解包后的值判定（#50）：{__html: null} 与 null 一样不是原始标记。
-        exitElementChildCursor(!!rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null)
-        reclaimSsrStyleClasses(container as Element)
-    }
+    // Attach metadata to container only if necessary（写入顺序固定，见 applyElementProps）
+    const containerElement = container as ExtendedElement
+    if (debugSource) containerElement.__axiiSource = debugSource
+    if (unhandledChildren) containerElement.unhandledChildren = unhandledChildren
+    if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
+    if (refHandles) containerElement.refHandles = refHandles
+    if (detachStyledChildren) containerElement.detachStyledChildren = detachStyledChildren
 
-    // Process props after children for proper Select/Option behavior（见 applyElementProps）
-    applyElementProps(container, rawProps, _isSVG, hydrateClaimed, childrenLength, debugSource,
-        unhandledChildren, unhandledAttr, refHandles, detachStyledChildren)
-
-    // 失配后新建的元素此时子节点和 props 都已应用，才插入文档（#73）。游标已由 exitElementChildCursor 恢复到父节点。
-    if (hydrateRebuilt) insertHydrateMismatchElement(container as Element)
     return container as (HTMLElement | DocumentFragment | SVGElement)
 }
 
@@ -1833,8 +1384,8 @@ export type TopDownInnerHosts = {hosts: Host[], next: number}
  * 调用方是 StaticHost.hydrate；Fragment 的 `fragment start` 由它先认领。设计 §2.6.1、§4：
  *  1. 按位置认领元素（标签、命名空间、静态 id；hydrationCursor.claimTopDownElement 按 R1 处理失配）。没有可认领的元素时
  *     按 CSR 新建（R1），子节点在「新建的层」里消费；近似认领（§4.1）先清空服务端写下的属性；
- *  2. data-axii-ssr 样式类（reclaimSsrStyleClasses，与旧模型共用）；
- *  3. 有 value / defaultValue 的 textarea 清空子文本（clearHydratedTextareaValueText，与旧模型共用）；
+ *  2. data-axii-ssr 样式类（reclaimSsrStyleClasses）；
+ *  3. 有 value / defaultValue 的 textarea 清空子文本（clearHydratedTextareaValueText）；
  *  4. table 的隐含 tbody：游标下沉到 tbody（resolveTopDownChildParent）；
  *  5. 按文档顺序消费子节点：静态文本、子描述（递归）、动态 child（取出预先构造的 Host，hydrate(slot)）；
  *     内容是原始标记（dangerouslySetInnerHTML）的元素不进入，内容整体不透明（§2.6.2，F1j）；
@@ -1907,7 +1458,7 @@ function hydrateElementContent(desc: HydrationElement, el: HTMLElement | SVGElem
     let unhandledAttr: UnhandledAttrInfo[] | undefined
     let refHandles: RefHandleInfo[] | undefined
     let detachStyledChildren: DetachStyledInfo[] | undefined
-    // 「内容是原始标记」与旧模型同一判定（#50：按解包后的值，{__html: null} 不是原始标记）。原始元素不进入：
+    // 「内容是原始标记」按 #50 的唯一判定（innerHTMLOf：按解包后的值，{__html: null} 不是原始标记）。原始元素不进入：
     //  它的 JSX children 在 CSR 里被 innerHTML 覆盖（开发期警告 I66），服务端也只写原始标记，这里不消费它们
     //  （StaticHost.hydrate 也不为它们构造 Host）。新建、近似认领的原始元素由下面的 applyElementProps 写入客户端的标记；
     //  干净认领的保留服务端的节点，记下来：这次激活有失配时由入口在结束时核对内容（hydrationCursor.verifyTopDownRawElements）。
@@ -2076,8 +1627,8 @@ type TopDownLiftedMetadata = {
  *  函数（含 atom）用 TEXT_SLOT，其余用 'unhandledChild'。收集跳过的描述在这里也不取子 Host：已认领的（第二次出现）、
  *  被外层另一次遍历收集过的（只认领元素，内容留给那次遍历），见 hydrationCursor.ts「同一个描述的多次放置」。
  * CAUTION 提升的写法与 createElement 循环里那一段相同（liftElementMetadata；ref / detachStyle 的项不继承 source）。
- *  CSR 的那一段没有收进共用函数：那个循环是 CSR 热路径，共用函数要返回三个累加值，只能分配或者借模块状态，
- *  而旧模型的 materializeHydrateDeferred 会在循环中途重入 createElement。改其中一处时两处一起改。
+ *  CSR 的那一段没有收进共用函数：那个循环是 CSR 热路径，共用函数要返回三个累加值，只能分配或者借模块状态。
+ *  改其中一处时两处一起改。
  *  unhandledChildren 在新模型里不提升：子 Host 由 StaticHost 预先构造（见 hydrateElementDescription）。
  */
 function hydrateDescriptionChildren(
@@ -2317,7 +1868,7 @@ function materializeHydrationElement(desc: HydrationElement): HTMLElement | SVGE
 }
 
 /**
- * CAUTION table 的隐含 tbody（§2.6.7，旧模型 hydration.impliedTableBody 的新模型版本）：服务端给直接写出裸 <tr>、
+ * CAUTION table 的隐含 tbody（§2.6.7）：服务端给直接写出裸 <tr>、
  *  没有写出分区元素的 table 补一层 <tbody>（ssr.serializeTableContent），客户端的 children 里没有这一层。
  *  判定两头都看：客户端 children 里没有显式的分区元素描述（markupNames.tableSectionElementNames，与服务端同一张表；
  *  Fragment 在 table 这一层展开，服务端也把其中的分区元素算作 table 层，所以进入 Fragment 描述），

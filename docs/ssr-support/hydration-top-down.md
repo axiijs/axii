@@ -1,6 +1,6 @@
 # hydration 自顶向下认领 — 设计（#55）
 
-- 实现进度：PR-A（#75）、B1（#80）、B2（#84）、B3（#89）、B4（#93）、B4b（#95）已合入；B1–B4b 与上文的差别分别记在 §7.6、§7.7、§7.8、§7.9、§7.10。
+- 实现进度：PR-A（#75）、B1（#80）、B2（#84）、B3（#89）、B4（#93）、B4b（#95）、S 已合入，公开的 `hydrateRoot` 使用本文的模型，旧模型已删除；B1–S 与上文的差别分别记在 §7.6–§7.11。
 - 状态：设计稿，按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
 - 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）、#68（服务端 Compact 判定，排在实现 PR 之前修）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
@@ -233,7 +233,7 @@ interface Host {
 
 元数据的路径（`path`）与 CSR `createElement` 提升时的规则相同，样式 id 依赖这些路径，必须逐位一致。PR-A 把路径的拼接规则收成一个函数，CSR 与激活共用。
 
-「应用 props」同样只有一份：PR-A 把 `createElement` 里「props 在 children 之后、`value` / `checked` 延后」的那段抽成函数，CSR 与认领步骤共用。这样下面三处已合入的规则在激活路径上自动一致，不另写一遍：
+「应用 props」的规则只有一份：PR-A 把 `createElement` 里「props 在 children 之后、`value` / `checked` 延后」的那段抽成函数，CSR 与认领步骤共用。这样下面三处已合入的规则在激活路径上自动一致，不另写一遍。（S 为了 CSR 的性能把这段循环写回了 `createElement` 的函数体，`applyElementProps` 留给认领步骤；两份逐行相同，冷路径与属性写入规则仍只有一份，见 §7.11。）
 - #52：元素同时带 `value` 与 `checked` 时记下 `__axiiInputHasCheckedProp__`；
 - #50：`dangerouslySetInnerHTML` 经 `innerHTMLOf` 解包，`{__html}` 形式走静态路径。
 - #51：客户端的属性写入仍在 `DOM.setAttribute`，写入规则与别名表在 `markupNames`，由客户端与服务端共用（服务端另有只供它用的 `htmlPropertyTypes`）。认领步骤照旧经 `setAttribute` 写静态 props，自动一致；`<textarea>` 的 `defaultValue` 见上面第 3 步。
@@ -945,6 +945,73 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
   - 内存：`HydrationElement` 多一个整数字段（只存编号 / 时刻，不引用 Host，壳不多保留对象），每个描述对象多一个字段槽位；对象数不变（C10 的量化仍是每行 +1 个壳）。
 - **用例：** `hydrateTopDownForms.spec`「a description placed before its static occurrence in an outer static tree (#55 B4b)」共 7 条：10 种位置 × 2 种描述 × 诊断开关两遍，DOM、Host / 绑定按种类的创建计数（§2.4.1）、更新后的 DOM 都 ≡ CSR，没有失配、没有开发期不变量，激活的根销毁后计数归零；现成节点（含放置顺序）、激活中按 CSR 渲染的代码先放置、Fragment、放置顺序（7 种）、失配（Host 处新建 / 近似认领、静态位置是别的标签）、跨两次激活各一条。在 `9cc988f` 上 7 条全红，在 B4b 第一版上覆盖审查反例的 4 条红；变异 14 处里 13 处各自让至少一条变红，剩下的一处（正常认领不记时刻）按上面第 3 条的说明不影响结果。
 
+### 7.11 S 落地记录（与上文不同或上文没有写到的）
+
+- **入口：** `hydrateRoot` 在 `src/hydrateRoot.ts`（内部入口 `src/hydrateTopDown.ts` 改名，函数改名为 `hydrateRoot`），`src/index.ts` 从这里导出；`render.ts` 只剩激活容器 `hydrateContainerTopDown`（入口与 Portal 共用）。`isHydrationElement` 按 C4 从 `src/index.ts` 导出。
+- **激活状态：** `hydrationMode` 退回布尔量 `hydrating`，`isAnyHydrating()` 改名回 `isHydrating()`；`beginTopDownHydration` / `endTopDownHydration` 改名为 `beginHydration` / `endHydration`（旧模型的同名函数已删除），`isTopDownDevProxy` 改名为 `isHydrationDevProxy`。`runOutsideHydration` 只保存、恢复激活状态与滚动样式基名（游标在 `hydrationCursor.ts` 里按栈保存）。`hydrationCursor.ts`、`StaticHost` 等处的 `TopDown` 前缀不改名。
+- **删除：** §2.8 的全部代码；§7.1 表里旧模型专用的调用点（含表写成之后才有的 `ReusableHost` 构造器里的模式读取，现在读 `isHydrating()`）；按模式分流处的旧分支（`createElement`、`FunctionHost` 的文本态与结构态、`Portal`）；`createElement` 循环里的激活分支与组件分支的 Portal 预处理；`hydratePortalContent`、`ReusableHost.render` 的旧激活分支、`RxListHost.hydrateRowsFromCursor`、`StaticArrayHost` 的两个区间查找函数；`createRootInternal` 的 `hydratePlaceholder` 参数。`findRootComment` 随之删除（§8 原写「保留」：S 之后 `src/` 里没有调用方，缺 `<!--root-->` 的容器按 R3 插入并报告，B4 起已是这样）。
+- **CSR 路径（§5.1「新模型」一列）：** `createElement` 开头读一次 `isHydrating()`，为真时返回描述，CSR 的函数体里没有激活分支；`createHost`、`RxListHost.createChildHost` / `render`、`StaticArrayHost` / `EmptyHost` / `PrimitiveHost` / `AtomHost` / `StaticHost` / `ReusableHost` 的 `render` 都不读激活状态；`FunctionHost` 在文本快速返回之后读一次（首次运行分流）。§5.1 表里 `ComponentHost.render`「0 次全局读取」没有落实：§7.1 的三处共用语义照旧保留（`useEffect` 退出激活上下文、`root.dispatch`、滚动样式 id 回收），`ComponentHost` 每个 `useEffect` 读一次，`reusable()` 构造时读一次，次数与 S 之前相同。`createChildHost` 的 Compact 快速路径只剩判定与构造，非 Compact 行仍经 `createCommentRowHost`（B4 的拆分保留）。
+- **用例：**
+  - 11 条 `test.fails` 改为 `test`（断言正文不改），去掉吞掉意外错误的 `hydrateKnownDefect` 守卫；`shapes`「shared-name tags rendered later…」、`mismatchRebuild`「a rebuilt `<script>` with a reactive data type…」同样改为 `test`。
+  - #85 交接的三种形态在公开入口上运行：`sparseArrays` 的组件根 / 函数值 × 含显式 `undefined` / `null` 的数组（原来只在内部入口跑）、嵌套数组（同上），以及新增的「函数值返回数组时项内更新不让外层函数重跑、元素身份保留」（稠密、稀疏各一条；旧入口上外层函数多跑一次、元素被重建）。
+  - `vitest.config.ts`：`default` 项目排除调用激活的 22 个 spec 文件，它们只在 `hydrate-diag-on` / `hydrate-diag-off` 两个项目里跑（激活期间诊断开、关）；`helpers/hydrate` 去掉入口切换与 `TOP_DOWN_PASS`，保留 `configureDiagnostics` 的记录。
+  - `auditSsrHydrate`：扩展后的 F1i 生成器取代原来的生成器（断言是原来的超集：DOM ≡ CSR、无报告、服务端元素保留、监听器在自己的位置，另加 Host 种类逐树相等与现成节点）；F1d 只按自顶向下的规模与上界（3000 / 12000 行，上界 8）判定。文件头注释、F1 / F3 的 describe 标题与 #54 留下的「已知局限」注释同步更新。
+  - 只在旧入口那一遍跑的两条期望（`<!--root-->` 前面是元素时抛错、缺 `<!--root-->` 时抛错）随旧入口删除，对应的 R2 / R3 用例（B3 / B4 加的）照常运行。
+  - `ssrCompactRow`「list as component root, row descendant has detachStyle」原来因为旧模型抛错而不激活，现在照常激活（B2 的验收形态）。
+- **性能（§5.3 的方法，硬性验收）：** 生产构建，同页四份：A = PR-A 之前的 `3a43c2b`、A′ = A 的逐字节副本、B = S、M = `b151954`；每份构建各一份负载模块，30 轮预热 + 60 轮随机交替，每次计时 ≥ 155 ms，load1 约 4–6。负载：`createElementStatic`、`createElementStaticNoInput`（PR-A 的 3000 行表格行）、`createElementSmall`（3000 × 4 个元素）、`renderStatic`（1000 行表格行）、`rxListCompact`（`<li>` 行 push 1000 再 splice 500）、`rxListNonCompact`（字符串行 push 3000 再 splice 1500）。
+  - 只删除旧模型、`createElement` 仍调用 `applyElementProps` 时：`createElementStaticNoInput` B/A 1.013（95% 区间 1.0065–1.0219）、`createElementSmall` 1.012、`renderStatic` 1.012，A′/A 都在 1% 以内，不满足判定。B 与 M 相当（B/M 0.99–1.01）：这是 PR-A 的残余，删除旧模型本身没有让它回落。
+  - 实验构建把同一段循环写回 `createElement` 的函数体之后，四组 B/A 为 0.995–1.005，回到噪声以内；未改的 B 同一轮为 1.007–1.018。所以差别来自「`createElement` 每个元素调用一次 `applyElementProps`」这个写法。机制没有确认：单一负载的 `--trace-turbo-inlining` 里，两种写法内联进 `createElement` 的小函数相同（调用的写法另外内联了 `applyElementProps`，字节码约 370，它先有自己的优化代码），没有看到别的函数因此不内联；PR-A 观察到的「大 GC 去优化后重新优化时不再内联」在基准页多种负载交替时是否发生没有验证。
+  - 终版（循环写回 `createElement`，`applyElementProps` 留给认领步骤）：B/A 依次为 0.9931、0.9914、0.9911、1.0000、1.0081、1.0012（A′/A 1.0030、0.9909、0.9923、0.9930、1.0052、1.0021），全部满足；相对 `b151954` 的 B/M 为 0.986、0.981、0.980、0.998、1.001、0.999。合入树上的复测见 PR。
+- **产物（`npm run build`，字节 / gzip -9）：** 共享 chunk `.js` 179198 / 50198（`3a43c2b`）→ 225790 / 63658（`b151954`）→ 191237 / 56469（S）；`.cjs` 125280 / 37687 → 152761 / 46126 → 128118 / 40251；`axii.js` 24784 / 7887 → 24917 / 7938 → 26511 / 8561（`hydrateRoot` 模块与不变量检查进了入口），`axii.cjs` 19016 / 5876 → 19198 / 5926 → 20709 / 6511；`ssr.*` 与 `b151954` 相同。过渡期增加的部分大半回落；相对 `3a43c2b` 仍多约 6.9 kB（gzip，.js 两个文件合计），是自顶向下认领、R1–R5 修复、开发期 Proxy 与开发期报告这些现在可达的代码。
+- **开发期不变量（S 的追加验收）：** 用一个临时的控制台标记跑全量用例，`AXII_HYDRATION_INVARIANT` 共报告 20 次，全部在故意破坏不变量或同一个元素渲染两次（误用）的用例里：`hydrateTopDown`「a host range broken during the activation…」（2）、「development invariants (§4.4) walk list rows and array items…」（4）、「the same JSX element twice as array items / list rows」（1，`[s, s]`）；`hydrateTopDownForms`「the development invariants (§4.4) run for every portal container…」（1，注入的 `axii:0`）、「a live element (§2.6.8)…」的放置顺序那一段（4）与「placement order follows CSR…」（8）。未改动的服务端输出、没有误用的用例里为 0。
+- **门禁：** 浏览器 121 个文件 / 2569 条全过、0 跳过（`default` 77 / 1235，`hydrate-diag-on`、`hydrate-diag-off` 各 22 / 667），node 8 / 187，build 通过，`rxListFuzz` 2 / 2。S 之前是 143 个文件（3271 通过、107 跳过）：旧入口那一遍的 22 个文件与跳过的用例都随旧入口删除。
+- **`claimCorners` 白盒用例的对应（D3）：** 下表左列是删除的用例（`b151954` 上 `ssrHydrate.claimCorners.spec.tsx` 的 9 组 48 条），右列是替换它的有名字的用例。「cursor」指 `hydrationCursor.spec.tsx`，「mismatch」指 `hydrateTopDownMismatch.spec.tsx`，「claimCorners」指本文件留下的「hydrateRoot end-to-end claim corners」一组。行为变化（旧模型抛错 → 报告并修复）在右列注明。
+
+  | 删除的用例 | 替换 |
+  |---|---|
+  | claimTextUnit：eof without expected throws | cursor「a structure Comment or eof where text is expected: a new Text is inserted…」（抛错 → R2） |
+  | claimTextUnit：axii:t open without a Text node… / pair missing close marker… / vs axii:0 sentinel… / vs Element… | cursor「a malformed wrapper, an element or an axii:0 where text is expected: that one unit is replaced」 |
+  | claimTextUnit：vs ProcessingInstruction reports a nodeType summary | cursor「a ProcessingInstruction where text is expected is replaced like any other unit…」（S 新增） |
+  | claimTextUnit：unexpected Comment without expected throws | cursor「a structure Comment or eof where text is expected…」（抛错 → R2，Comment 不被消费） |
+  | claimTextUnit：bare (unwrapped) non-empty Text is claimed with identity kept | cursor「a bare Text (wrapper omitted, §3.2.1 A2) is claimed as is」；claimCorners「bare unwrapped SSR text is claimed with identity kept」 |
+  | advanceCursorUntilComment throws when the target comment is not ahead | cursor「no such Comment ahead: a new one is inserted and nothing is consumed」（抛错 → R3） |
+  | claimCommentAtCursor throws on wrong comment data | cursor「otherwise the first Comment with that data ahead in the same parent is claimed…」与「no such Comment ahead…」（抛错 → R3） |
+  | claimComputedNodeBefore throws without a preceding computed comment | mismatch「R3: a missing Host slot is inserted at the cursor without consuming the next sibling」（抛错 → R3） |
+  | claimFragmentStartBefore skips a computed node and walks back past content | 不再向后搜索：auditSsrHydrate「F3b function → Fragment → function: node order must equal CSR」 |
+  | claimFragmentStartBefore throws when no fragment start exists to the left | cursor「no such Comment ahead…」（抛错 → R3） |
+  | claimEmptyHostCommentBefore throws when empty comment is missing | mismatch「R3: a missing Host slot is inserted…」（抛错 → R3） |
+  | claimEmptyHostComment scans the root: before-root and mid-container forms | 不再扫描根：hydrateTopDown「root sources」的 `null`、`component → null` 两格 |
+  | claimTextBeforeCommentPlaceholder：malformed axii:t pair before placeholder throws | cursor「a malformed wrapper…」（抛错 → R2） |
+  | claimTextBeforeCommentPlaceholder：non-empty expected with no preceding text… | cursor「a structure Comment or eof where text is expected…」；claimCorners「Comment-ph drift: SSR text missing…」 |
+  | claimTextBeforeCommentPlaceholder：Element directly before placeholder throws | claimCorners「root atom: an Element before `<!--root-->` is replaced by the Text and reported (R2)」（抛错 → R2） |
+  | stripAxiiTextBoundariesBetween | auditSsrHydrate「N2 Fragment with an element that has its own dynamic child, followed by a dynamic sibling」；fuzz：扩展 F1i 的 `frag` 作为元素 child、子节点含 `text` / `atom` |
+  | element claim：same-tag wrong-id with exact id ahead… (D8) | cursor「same tag, wrong id: the same-tag element with that id ahead is claimed…(D8)」 |
+  | element claim：same-tag wrong-id with no exact ahead… (D2/D9) | cursor「same tag, wrong id, none ahead: claimed as attribute drift (D2 / D9)」 |
+  | element claim：same-tag empty-id defers claiming (EmptyHost / Portal layout shell) | 没有对应情形（§8）：lifecycle「M-05 portal-static-content hydrate (k16-audit locks)」的「same-tag sibling after portal…」「empty same-tag sibling after portal…」 |
+  | element claim：wrong tag at cursor carrying wantId returns null | cursor「a different tag that carries the expected id is that role…(D4)」 |
+  | element claim：non-element at cursor with wantId: junk skipped… (D6) | cursor「a different tag or a text unit with a client static id…(D6)」 |
+  | element claim：non-element at cursor with wantId and no exact ahead returns null | cursor「without a client static id nothing ahead is taken: that one unit is replaced (D5)…」与「a structure Comment or eof: the element is to be rebuilt in front of it…」 |
+  | element claim：same-tag without id rejected when children do not fit | 没有对应情形（§8）：lifecycle「array-only eager portal + same-tag after must not claim main」 |
+  | deep-walk：array-child DirectNodes layout fits via trailing unhandledChild | claimCorners「component-root element with array child claims DirectNodes layout」 |
+  | deep-walk：bare `<!--empty-->` layout root rejected for array children | lifecycle「array-only eager portal + same-tag after must not claim main」 |
+  | deep-walk：non-Portal ComponentNode-only children rejected on a leading `<!--empty-->` root | lifecycle「ComponentNode-only eager portal child + same-tag after must not claim main」 |
+  | deep-walk：exact id behind a different-tag blocker only: deep walk defers | cursor「a different tag or a text unit with a client static id…(D6)」 |
+  | deep-walk：Portal-only ComponentNode children accepted on a `<!--empty-->` layout root | lifecycle「ComponentNode portal content still hydrates」 |
+  | createElementForHydrateMismatch without an element cursor throws | mismatch「the element children evaluated with its JSX are kept: `<span><b>x</b><i>y</i></span>`」（R1 新建） |
+  | createElementForHydrateMismatch SVG branch creates a namespaced element | mismatch「an element rebuilt under `<svg>` is created in the SVG namespace with its children, like CSR」 |
+  | claimElement returns the claimed element on success | cursor「a client static id must match; no static id claims any same-tag element」 |
+  | claimElement throws when no unmatched same-tag element exists | cursor「a structure Comment or eof: the element is to be rebuilt in front of it; nothing is consumed」（抛错 → R1） |
+  | findRootComment throws when the container lacks `<!--root-->` | claimCorners「a container missing `<!--root-->`: the comment is inserted and reported (R3)…」（抛错 → R3） |
+  | trailing cleanup：host-structure markers ahead guard | mismatch「R5 with Hosts in the parent: junk after the last Host slot is removed and reported once…」（S 新增；防护删除） |
+  | trailing cleanup：cleanup skips claimed elements, comments and processing instructions; removes junk | cursor「leftover nodes at the end of an element are removed and reported once for that parent」与 ProcessingInstruction 那条（R5 删除全部剩余节点） |
+  | Fragment reconcile：empty-string child claims the axii:0 sentinel | hydrateTopDown「root sources」的「component → Fragment」（Fragment 里的 `''`）；fuzz：扩展 F1i 的 `frag` 子节点含空 `text` |
+  | Fragment reconcile：toString-less atom snapshot stringifies via JSON | claimCorners「an atom whose value has no toString (Object.create(null)) in a Fragment…」（S 新增） |
+  | Fragment reconcile：array child with DocumentFragment / RxList / ComponentNode item（3 条） | auditSsrHydrate「N1b the same arrays under a Fragment root」；fuzz：扩展 F1i 的 `frag` 子节点里的 `arr`，项是 `frag` / `list` / `comp` |
+  | Fragment reconcile：unsupported array item type throws | mismatch「an error thrown while a function child's structure is activated aborts the activation…」（createHydrateHost 的 unknown child type 断言） |
+  | Fragment reconcile：unhandledChildren slot mismatch throws；reconcileFragmentHydrateChildren 的两条「throws when …」；reconcileFlattenedFragmentHydrateChildren throws without an active cursor | 簿记与防护随函数删除（子 Host 按文档顺序预先构造、依次认领）：auditSsrHydrate「F3b…」「N2…」、hydrateTopDown「development invariants after the activation (§4.4)」；fuzz：扩展 F1i 的「Fragment 作为组件根 / 函数结构态的值 / 列表行」三种形态 |
+  | hydrateRoot end-to-end claim corners（全部） | 保留；两条只在旧入口跑的抛错期望删除，见上面「用例」 |
+
+
 ---
 
 ## 8. 既有用例的预期变化（逐条）
@@ -958,6 +1025,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - 替换用例随新模型的代码进来：文本单元在 B1，R1–R5 在 B3。
 - 旧用例在 S 删除。
 - S 的报告逐条列出「删除的用例 → 有名字的替换用例或黑盒用例」（D3）。凡是写「由 fuzz 覆盖」的，必须指出是生成器里的哪种形态，下表已按这个要求写。
+- S 落地时的逐条对应见 §7.11（与下表的差别：`findRootComment` 也删除了；新增三条对应用例）。
 
 | describe | 用例 | 处理 |
 |---|---|---|

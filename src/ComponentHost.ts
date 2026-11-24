@@ -37,7 +37,7 @@ import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
-import {getHydrationMode, HYDRATION_MODE_TOP_DOWN, isAnyHydrating, isHydrating, runOutsideHydration} from "./hydration";
+import {isHydrating, runOutsideHydration} from "./hydration";
 import {HydrationSlot, isHydrationElement, isHydrationSlot, REUSABLE_SLOT} from "./hydrationElement";
 import {claimTopDownComment} from "./hydrationCursor";
 import {getComponentTypeId, componentTypeIds} from "./styleSerialize";
@@ -841,7 +841,7 @@ export class ComponentHost implements Host{
             //  已渲染好的树永远挂不上容器）；未注册时保持向上抛出的行为。
             // CAUTION useEffect 回调是用户代码，不参与激活时的节点认领（见 runOutsideHydration）；
             //  它在组件 render 里同步执行，hydrateRoot 期间必须先退出激活上下文。稳态只多一次布尔读。
-            const handle = isAnyHydrating() ?
+            const handle = isHydrating() ?
                 runOutsideHydration(() => this.runWithErrorHook(effect)) :
                 this.runWithErrorHook(effect)
             if (typeof handle === 'function') {
@@ -1089,7 +1089,7 @@ export class ReusableHost implements Host{
         // #55 新模型激活中（§2.6.9）：reusable() 在组件函数体里调用，innerHost 按激活的分派在同一时刻构造（构造顺序与 CSR 相同：
         //  组件类型 id、种类计数），placeholder 是 'reusable' slot，由 hydrate 认领。激活中没有被放进树、之后才由 CSR 第一次渲染的，
         //  render 按 CSR 重建 innerHost（见 render）。reusable() 不在热路径上，构造时多一次模式读取。
-        this.innerHost = getHydrationMode() === HYDRATION_MODE_TOP_DOWN ?
+        this.innerHost = isHydrating() ?
             createHydrateHost(source, REUSABLE_SLOT, pathContext) :
             createHost(source, innerPlaceholder, pathContext)
     }
@@ -1111,13 +1111,6 @@ export class ReusableHost implements Host{
     }
     rendered = false
     render() {
-        if (isHydrating() || (this as any).__axiiHydrating) {
-            ;(this as any).__axiiHydrating = false
-            // Placeholders already claimed; content in place — only run innerHost once.
-            this.innerHost.render()
-            this.rendered = true
-            return
-        }
         // 第一次渲染
         if (!this.rendered) {
             // #55：激活中构造（innerHost 的 placeholder 还是 slot）、激活中没有被放进树的：按 CSR 重建 innerHost。

@@ -1,8 +1,8 @@
 /** @jsx createElement */
 /**
- * #55 B1：新激活模型（自顶向下认领）经内部入口 hydrateRootTopDown 的行为，设计 docs/ssr-support/hydration-top-down.md。
- * 激活相关的既有用例经 __tests__/helpers/hydrate.ts 在内部入口上再跑一遍（vitest.config.ts 的 top-down 项目）；
- * 这里补它们没有覆盖、只属于新模型的契约：元数据与 CSR 逐项相同（§2.6.1）、子 Host 的构造顺序（§2.4）、
+ * #55 B1：自顶向下认领的激活（hydrateRoot）的行为，设计 docs/ssr-support/hydration-top-down.md。B1–B4 期间经不导出的
+ * 内部入口落地，#55 S 起它就是公开的 hydrateRoot。激活相关的既有用例经 __tests__/helpers/hydrate.ts 跑两遍（诊断开、关）；
+ * 这里补它们没有覆盖、只属于这个认领模型的契约：元数据与 CSR 逐项相同（§2.6.1）、子 Host 的构造顺序（§2.4）、
  * 认领元素的转交字段（§3.2 B1 行）、激活中止不被 error 监听器吞掉、根的各种 source、开发期不变量（§4.4）、
  * B4 之前显式抛错的形态（§7.2）现在 ≡ CSR。
  */
@@ -17,7 +17,7 @@ import {
     type RenderContext,
 } from '@framework'
 import {renderToString} from '../src/ssr.js'
-import {hydrateRootTopDown} from '../src/hydrateTopDown'
+import {hydrateRoot} from '../src/hydrateRoot'
 import {HydrationMismatchError} from '../src/hydration'
 import {isHydrationElement} from '../src/hydrationElement'
 import {componentTypeIds} from '../src/styleSerialize'
@@ -108,7 +108,7 @@ describe('metadata collected by the claim step ≡ CSR createElement (§2.6.1)',
         csrRoot.render(createElement(c.App, null))
         const hyd = ssrInto(createElement(make().App, null))
         const h = make()
-        const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+        const root = hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
 
         const describeHost = (staticHost: any, container: Node) => ({
@@ -154,7 +154,7 @@ describe('metadata collected by the claim step ≡ CSR createElement (§2.6.1)',
         const hyd = ssrInto(createElement(make().App, null))
         const before = Array.from(hyd.querySelectorAll('button'))
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         const after = Array.from(hyd.querySelectorAll('button'))
         expect(after).toEqual(before)
         after[1].click()
@@ -184,7 +184,7 @@ describe('server forms that are easy to misread (review findings)', () => {
         createRoot(csrEl).render(createElement(c.App, null))
         const hyd = ssrInto(createElement(make().App, null))
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         expect(hyd.childNodes.length).toBe(csrEl.childNodes.length)
         expect(hyd.firstChild!.childNodes.length).toBe(csrEl.firstChild!.childNodes.length)
@@ -206,7 +206,7 @@ describe('server forms that are easy to misread (review findings)', () => {
         const hyd = ssrInto(createElement(make().App, null))
         const title = hyd.querySelector('title')!.firstChild
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         expect(Array.from(hyd.querySelector('title')!.childNodes).map(n => n.nodeType))
             .toEqual(Array.from(csrEl.querySelector('title')!.childNodes).map(n => n.nodeType))
@@ -225,7 +225,7 @@ describe('server forms that are easy to misread (review findings)', () => {
             return <div><Bad/>{'tail'}</div>
         }
         const hyd = ssrInto(createElement(make(false), null))
-        const root = hydrateRootTopDown(hyd, createElement(make(true), null))
+        const root = hydrateRoot(hyd, createElement(make(true), null))
         // 被丢弃的激活树（B3 起不中止）按 R3 修复完自己的失配：出错的组件渲染为空（<!--empty--> 插入），它的 slot 之前的服务端
         //  <b> 删除。只有这两条认领处的报告，没有容器清扫等后续报告，也没有别的错误
         expect(reports.map(e => (e as Error).message)).toEqual([
@@ -249,7 +249,7 @@ describe('server forms that are easy to misread (review findings)', () => {
         const hyd = mount()
         hyd.innerHTML = '<div><span>s</span><span>s</span></div><!--root-->'
         const first = hyd.querySelector('span')!
-        hydrateRootTopDown(hyd, createElement(make(), null))
+        hydrateRoot(hyd, createElement(make(), null))
         expect({dom: kids(hyd), first: hyd.querySelector('span') === first, reports}).toEqual({dom: kids(csr), first: true, reports: []})
     })
 })
@@ -268,7 +268,7 @@ describe('§3.2 B1 call points: $name:_use and $name:_eventTarget', () => {
         const hyd = ssrInto(createElement(make().App, null))
         const section = hyd.querySelector('section')
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         expect(hyd.querySelector('section')).toBe(section)
         for (const s of [c, h]) s.n(2)
@@ -287,7 +287,7 @@ describe('§3.2 B1 call points: $name:_use and $name:_eventTarget', () => {
         }
         const hyd = ssrInto(createElement(make().App, null))
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         h.forward(new MouseEvent('click'))
         expect(h.log).toEqual(['clicked'])
         expect(reports).toEqual([])
@@ -306,7 +306,7 @@ describe('component boundary and construction order (§2.4)', () => {
         }
         const hyd = ssrInto(createElement(makeTypes().App, null))
         const t = makeTypes()
-        hydrateRootTopDown(hyd, createElement(t.App, null))
+        hydrateRoot(hyd, createElement(t.App, null))
         const id = (f: Function) => componentTypeIds.get(f)!
         // CSR：App 的静态子树先构造 First、Second，First 渲染时才构造 Leaf
         expect([id(t.App) < id(t.First), id(t.First) < id(t.Second), id(t.Second) < id(t.Leaf)]).toEqual([true, true, true])
@@ -326,7 +326,7 @@ describe('component boundary and construction order (§2.4)', () => {
         createRoot(csrEl).render(createElement(c.App, null))
         const hyd = ssrInto(createElement(make().App, null))
         const h = make()
-        const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+        const root = hydrateRoot(hyd, createElement(h.App, null))
         const outer = (root.host as any).innerHost.reactiveHosts[0]
         expect(outer.placeholder).toBe(outer.innerHost.placeholder)
         expect(outer.placeholder).toBe(outer.innerHost.innerHost.placeholder)
@@ -360,7 +360,7 @@ describe('element claim details (§2.6.1, §2.6.7)', () => {
         const hyd = ssrInto(createElement(make().App, null))
         const serverNodes = Array.from(hyd.querySelectorAll('*'))
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         expect(Array.from(hyd.querySelectorAll('*'))).toEqual(serverNodes)
         const ns = (el: Element) => el.namespaceURI!.split('/').pop()
@@ -377,7 +377,7 @@ describe('element claim details (§2.6.1, §2.6.7)', () => {
         const csrRoot = createRoot(csrEl)
         csrRoot.render(createElement(C, null))
         const hyd = ssrInto(createElement(C, null))
-        const root = hydrateRootTopDown(hyd, createElement(C, null))
+        const root = hydrateRoot(hyd, createElement(C, null))
         const csrHost = (csrRoot.host as any).innerHost
         const host = (root.host as any).innerHost
         expect(host.source).toBeInstanceOf(DocumentFragment)
@@ -421,7 +421,7 @@ describe('root sources (§2.5 「根」)', () => {
         hyd.innerHTML = renderToString(make().source()).html
         const serverNodes = Array.from(hyd.querySelectorAll('*'))
         const h = make()
-        const root = hydrateRootTopDown(hyd, h.source())
+        const root = hydrateRoot(hyd, h.source())
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         expect(Array.from(hyd.querySelectorAll('*')).filter(e => !serverNodes.includes(e))).toEqual([])
         if (c.update) {
@@ -447,7 +447,7 @@ describe('mismatches do not abort the activation (B3: §4.2); other errors still
             return <div><p>{() => text}</p></div>
         }
         const hyd = ssrInto(createElement(make('server'), null))
-        hydrateRootTopDown(hyd, createElement(make('client'), null))
+        hydrateRoot(hyd, createElement(make('client'), null))
         expect(reports.length).toBe(1)
         expect(reports[0]).toBeInstanceOf(HydrationMismatchError)
         expect({dom: kids(hyd), caught}).toEqual({dom: '<div><p>"client"</p></div><!--root-->', caught: []})
@@ -456,11 +456,11 @@ describe('mismatches do not abort the activation (B3: §4.2); other errors still
     test('the activation state is restored after an abort (an error nobody handles): CSR and the next activation work', () => {
         function Throws(): any { throw new Error('render failed') }
         const hyd = ssrInto('server')
-        expect(() => hydrateRootTopDown(hyd, createElement(Throws, null))).toThrow('render failed')
+        expect(() => hydrateRoot(hyd, createElement(Throws, null))).toThrow('render failed')
         const el = createElement('div', null) as HTMLElement
         expect(el instanceof HTMLDivElement).toBe(true)
         const again = ssrInto('ok')
-        hydrateRootTopDown(again, 'ok')
+        hydrateRoot(again, 'ok')
         expect(kids(again)).toBe('"ok"<!--root-->')
     })
 })
@@ -492,7 +492,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             const hyd = ssrInto(createElement(makeRows(kind, asRoot).App, null))
             const before = Array.from(hyd.querySelectorAll('li'))
             const h = makeRows(kind, asRoot)
-            const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+            const root = hydrateRoot(hyd, createElement(h.App, null))
             expect({dom: kids(hyd), reports, kept: Array.from(hyd.querySelectorAll('li')).every((li, i) => li === before[i])})
                 .toEqual({dom: kids(csrEl), reports: [], kept: true})
             const findList = (host: any): any => !host ? undefined
@@ -539,7 +539,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         const lis = Array.from(hyd.querySelectorAll('ul')).map(ul => Array.from(ul.querySelectorAll(':scope > li')))
         const b = hyd.querySelector('p > b')
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect(reports).toEqual([])
         expect(kindsOf(h.got)).toEqual(kindsOf(c.got))
         // 写回的就是认领到的服务端节点
@@ -570,7 +570,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         }
         const hyd = ssrInto(createElement(makeTypes().App, null))
         const t = makeTypes()
-        hydrateRootTopDown(hyd, createElement(t.App, null))
+        hydrateRoot(hyd, createElement(t.App, null))
         const id = (f: Function) => componentTypeIds.get(f)!
         expect({rows: id(t.RowComp) < id(t.RowLeaf), items: id(t.ItemComp) < id(t.ItemLeaf), reports})
             .toEqual({rows: true, items: true, reports: []})
@@ -595,7 +595,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         // 空值的 Comment-ph 文本单元服务端不写任何节点（#82 之前曾写 axii:0），激活在 placeholder 前插入 Text('')
         expect(hyd.innerHTML).not.toContain('<!--axii:0--><!--array item-->')
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), reports, markers: hyd.innerHTML.includes('axii:')}).toEqual({dom: kids(csrEl), reports: [], markers: false})
         for (const s of [c, h]) { s.a('A'); s.b('') }
         await tick()
@@ -616,7 +616,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             createRoot(csrEl).render(createElement(App, null))
             expect(ns(csrEl)).toEqual(['html'])
             const hyd = ssrInto(createElement(App, null))
-            hydrateRootTopDown(hyd, createElement(App, null))
+            hydrateRoot(hyd, createElement(App, null))
             expect({ns: ns(hyd), dom: kids(hyd), reports: reports.length, mismatch: reports[0] instanceof HydrationMismatchError})
                 .toEqual({ns: ['html'], dom: kids(csrEl), reports: 1, mismatch: true})
         }
@@ -626,7 +626,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         const csrEl = mount()
         createRoot(csrEl).render(createElement(Control, null))
         const hyd = ssrInto(createElement(Control, null))
-        hydrateRootTopDown(hyd, createElement(Control, null))
+        hydrateRoot(hyd, createElement(Control, null))
         expect({ns: ns(hyd), dom: kids(hyd), reports}).toEqual({ns: ['svg'], dom: kids(csrEl), reports: []})
     })
 
@@ -639,7 +639,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         const csrEl = mount()
         createRoot(csrEl).render(createElement(App, null))
         const hyd = ssrInto(createElement(App, null))
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         // 已知：冻结的数组里留着认领过的描述壳（不能写回）
         expect(isHydrationElement(frozen[0])).toBe(true)
@@ -654,7 +654,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             }
         }
         const hyd = ssrInto(createElement(make(), null))
-        hydrateRootTopDown(hyd, createElement(make(), null))
+        hydrateRoot(hyd, createElement(make(), null))
         expect({rows: hyd.querySelectorAll('i').length + hyd.querySelectorAll('b').length, reports}).toEqual({rows: 2 * N, reports: []})
     })
 
@@ -673,7 +673,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             const hyd = mount()
             // 服务端写两份；CSR 第二次插入把同一个节点挪走
             hyd.innerHTML = renderToString(createElement(make(), null)).html
-            hydrateRootTopDown(hyd, createElement(make(), null))
+            hydrateRoot(hyd, createElement(make(), null))
             // 同一个元素渲染两次是误用：CSR 里第一个 Host 的区间也随之断开（它的元素被第二次插入挪走），CSR 不检查；
             //  激活的开发期不变量（§4.4）把这个与 CSR 相同的状态报告出来，没有失配
             expect({dom: kids(hyd), mismatches: reports.filter(e => e instanceof HydrationMismatchError)}).toEqual({dom: kids(csr), mismatches: []})
@@ -690,7 +690,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         }
         const hyd = ssrInto(createElement(App, null))
         const rows = Array.from(hyd.querySelectorAll('li'))
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         show(false)
         show(true)
         expect({dom: kids(hyd), same: Array.from(hyd.querySelectorAll('li')).every((li, i) => li === rows[i]), reports})
@@ -702,7 +702,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             reports = []
             const el = mount()
             el.innerHTML = renderToString(createElement(App, null)).html
-            hydrateRootTopDown(el, createElement(App, null))
+            hydrateRoot(el, createElement(App, null))
             return reports.map((e: any) => `${e.code}: ${String(e.message).replace(/^\[axii\] hydration invariant broken: | \(AXII_HYDRATION_INVARIANT\)$/g, '')}`)
         }
         const removeNext = (el: Element | null) => { if (el) el.nextSibling?.remove() }
@@ -741,7 +741,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
                 </div>
             }
             const hyd = ssrInto(createElement(App, null))
-            const root = hydrateRootTopDown(hyd, createElement(App, null))
+            const root = hydrateRoot(hyd, createElement(App, null))
             expect(reports).toEqual([])
             const mid = getAxiiRetainedObjectDiagnosticsSnapshot()
             expect([mid.hosts.activeByType.RxListHost, mid.hosts.activeByType.CompactElementHost, mid.hosts.activeByType.StaticArrayHost])
@@ -785,7 +785,7 @@ describe('the shapes that were explicit throws until #55 B4 now hydrate ≡ CSR 
             hyd.innerHTML = ssr.html
             if (ssr.portals['td-portal']) hydPortal.innerHTML = ssr.portals['td-portal'].html
         }
-        const root = hydrateRootTopDown(hyd, createElement(make(), null))
+        const root = hydrateRoot(hyd, createElement(make(), null))
         expect({dom: kids(hyd), portal: kids(hydPortal), mismatches: reports.filter(e => e instanceof HydrationMismatchError)})
             .toEqual({dom: kids(csr), portal: csrPortalDom, mismatches: []})
         root.destroy()
@@ -793,7 +793,7 @@ describe('the shapes that were explicit throws until #55 B4 now hydrate ≡ CSR 
 })
 
 describe('retained objects (§5.2)', () => {
-    test('hydrate + destroy through the internal entry returns host / binding / style counters to zero (B1 kinds)', async () => {
+    test('hydrate + destroy returns host / binding / style counters to zero (B1 kinds)', async () => {
         enableAxiiRetainedObjectDiagnostics({reset: true})
         try {
             const label = atom('x')
@@ -817,7 +817,7 @@ describe('retained objects (§5.2)', () => {
             const {html, styles} = renderToString(createElement(App, null))
             const hyd = mount()
             hyd.innerHTML = styles ? `<style data-axii-ssr>${styles}</style>${html}` : html
-            const root = hydrateRootTopDown(hyd, createElement(App, null))
+            const root = hydrateRoot(hyd, createElement(App, null))
             expect(reports).toEqual([])
             const mid = getAxiiRetainedObjectDiagnosticsSnapshot()
             expect(mid.hosts.totalActive).toBeGreaterThan(0)
@@ -851,7 +851,7 @@ describe('server / CSR agreement found in B1 (fixed in #82)', () => {
             const csrEl = mount()
             createRoot(csrEl).render(createElement(App, null))
             const hyd = ssrInto(createElement(App, null))
-            hydrateRootTopDown(hyd, createElement(App, null))
+            hydrateRoot(hyd, createElement(App, null))
             expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         }
     })
@@ -873,7 +873,7 @@ describe('server / CSR agreement found in B2 (fixed in #82)', () => {
         createRoot(csrEl).render(createElement(c.App, null))
         const hyd = ssrInto(createElement(make().App, null))
         const h = make()
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         for (const s of [c, h]) s.list.push(3)
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
     })
@@ -889,7 +889,7 @@ describe('a hole in a sparse static array (server / CSR disagreement, fixed in #
         createRoot(csrEl).render(createElement(App, null))
         const hyd = ssrInto(createElement(App, null))
         expect(hyd.innerHTML).not.toContain('<!--empty-->')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
     })
 
@@ -901,7 +901,7 @@ describe('a hole in a sparse static array (server / CSR disagreement, fixed in #
         const hyd = mount()
         hyd.innerHTML = '<p><!--axii:t-->a<!--axii:/t--><!--empty--><!--array item--><!--axii:t-->b<!--axii:/t--><!--unhandledChild--></p><!--root-->'
         expect(hyd.innerHTML).toContain('<!--empty--><!--array item-->')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         const csrEl = mount()
         createRoot(csrEl).render(createElement(App, null))
         expect({dom: kids(hyd), reported: reports.length > 0, all: reports.every(e => e instanceof HydrationMismatchError)})
@@ -917,7 +917,7 @@ describe('development invariants after the activation (§4.4)', () => {
         const html = renderToString(createElement(make(), null)).html
         const hyd = mount()
         hyd.innerHTML = html
-        hydrateRootTopDown(hyd, createElement(make(), null))
+        hydrateRoot(hyd, createElement(make(), null))
         expect(reports).toEqual([])
 
         // ref 在激活结束前（attach 派发时）执行；拿掉元素后面组件的 placeholder，组件与它的 StaticHost 的区间断开
@@ -930,7 +930,7 @@ describe('development invariants after the activation (§4.4)', () => {
             configureDiagnostics({enabled, onError: (e: unknown) => { reports.push(e) }})
             const el = mount()
             el.innerHTML = renderToString(createElement(Broken, null)).html
-            hydrateRootTopDown(el, createElement(Broken, null))
+            hydrateRoot(el, createElement(Broken, null))
             const codes = reports.map((e: any) => e.code)
             if (enabled) {
                 expect(codes.length).toBeGreaterThan(0)

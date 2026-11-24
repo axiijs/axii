@@ -3,7 +3,7 @@
  * 文本单元（axii:t 包边 / 裸 Text / axii:0）、字符数据父节点、结构 Comment、元素与 id、容器层、元素末尾的清扫，
  * 以及失配规则 R1–R5（B3）：每条偏离都报告 HydrationMismatchError（交给 onError，不抛出），然后在游标处修复。
  * B1 / B2 的「报告并抛出」用例在 B3 换成了这里各条规则的用例（§7.2「白盒用例」）。
- * 旧模型游标的白盒用例在 ssrHydrate.claimCorners.spec.tsx，#55 S 删除时按设计 §8 逐条对应。
+ * 旧模型（子先于父认领）游标的白盒用例曾在 ssrHydrate.claimCorners.spec.tsx，#55 S 随旧模型删除，逐条对应见设计 §7.11。
  */
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {configureDiagnostics} from '@framework'
@@ -123,6 +123,24 @@ describe('text units (R2)', () => {
                 'Text("z") → Comment("axii:0")',
                 'Text("w") → Comment("axii:/t")',
             ],
+        })
+    })
+
+    // #55 S：旧模型白盒用例「expected text vs ProcessingInstruction reports a nodeType summary」与
+    //  「cleanup skips … processing instructions」的对应（summarizeChild 的 nodeType 分支）
+    test('a ProcessingInstruction where text is expected is replaced like any other unit, one left at the end is removed; reports name its nodeType', () => {
+        const host = document.createElement('div')
+        const p = document.createElement('p')
+        p.append(document.createProcessingInstruction('pi', 'a'), document.createProcessingInstruction('pi', 'b'))
+        host.appendChild(p)
+        depth = enterTopDownContainer(host)
+        claimTopDownElement('p', false, null)
+        enterTopDownElement(p, false)
+        claimTopDownText('t')
+        exitTopDownElement()
+        expect({nodes: nodes(p), mismatches: mismatches()}).toEqual({
+            nodes: ['"t"'],
+            mismatches: ['Text("t") → nodeType=7', 'end of element children → nodeType=7'],
         })
     })
 

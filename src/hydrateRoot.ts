@@ -1,23 +1,20 @@
 /**
- * @internal
- * #55 新激活模型（自顶向下认领）的内部入口。设计：docs/ssr-support/hydration-top-down.md §7。
+ * hydrateRoot：激活（hydration）的入口。设计：docs/ssr-support/hydration-top-down.md（#55）。
  *
- * CAUTION 这个模块不从 src/index.ts、ssr.ts 导出，src/ 里也没有别的模块导入它，只有用例导入
- *  （__tests__/helpers/hydrate.ts）。构建时它被 tree-shaking 去掉，它用到的 beginTopDownHydration 也一起去掉：
- *  公开产物里没有任何代码把激活模式置为「新」，公开的 hydrateRoot 在 #55 S 之前一直走旧模型（§7.1 第 4 点）。
- *  每个实现 PR 的验收都检查 dist 里找不到本模块独有的字符串（下面的报错文本）。
- *
- * 过程（§2.1、§2.5「根」）：
- *  1. 模式置为「新」：激活期间的 createElement 返回描述（HydrationElement）；记下 options.portals（Portal 按 key 找容器）；
+ * 激活是 ssr.ts serialize 的逆过程（自顶向下认领）：激活期间 createElement 返回延迟描述（HydrationElement），各 Host 在自己的
+ * 位置按文档顺序从游标处读回服务端节点，先消费自己的内容、再认领自己的 placeholder（§2.1、§2.4）。
+ * 过程（§2.5「根」）：
+ *  1. 进入激活状态：激活期间的 createElement 返回描述；记下 options.portals（Portal 按 key 找容器）；
  *  2. 根容器按 render.hydrateContainerTopDown 激活（游标、根 Host、容器层的 R5、原始标记核对、样式迁移、D13），
  *     Portal 在自己的位置对它的容器走同一个过程（§2.6.5）；
  *  3. 诊断开启时对每个激活完的容器检查开发期不变量（§4.4）。
- * 失配（B3）：报告 HydrationMismatchError（交给 onError），按 R1–R5 在游标处修复，不中止（hydrationCursor.ts）。
+ * 失配：报告 HydrationMismatchError（交给 onError），按 R1–R5 在游标处修复，不中止（hydrationCursor.ts，§4）。
  * 剩下的中止只有渲染错误（§7.8）。
  */
-import {beginTopDownHydration, endTopDownHydration, HydrationInvariantError, isCommentData} from "./hydration"
+import {beginHydration, endHydration, HydrationInvariantError, isCommentData} from "./hydration"
 import {hydrateContainerTopDown} from "./render"
 import type {Root} from "./render"
+import type {ComponentNode} from "./types"
 import {enterTopDownActivation, getTopDownContainers, leaveTopDownActivation} from "./hydrationCursor"
 import {CompactElementHost} from "./StaticHost"
 import {RxListHost} from "./RxListHost"
@@ -26,12 +23,18 @@ import {assertRangeReachable, isAxiiDiagnosticsEnabled, reportAxiiError} from ".
 import type {Host} from "./Host"
 import {clearTopDownAbort, isHydrationSlot} from "./hydrationElement"
 
-export function hydrateRootTopDown(
+/**
+ * Activate a server-rendered DOM tree in place: claim the existing nodes top-down, in document order; do not rebuild.
+ * Container children must include `renderToString` output ending with `<!--root-->`.
+ * During hydration JSX evaluates to deferred descriptions, not DOM nodes (see `isHydrationElement`); use `ref` to reach nodes.
+ * @category Basic
+ */
+export function hydrateRoot(
     container: HTMLElement,
-    source: any,
+    source: JSX.Element|ComponentNode|Function|null|undefined,
     options?: { portals?: Record<string, HTMLElement> },
 ): Root {
-    const saved = beginTopDownHydration()
+    const saved = beginHydration()
     const activation = enterTopDownActivation(options?.portals)
     try {
         // 根容器与各 Portal 容器（§2.6.5）走同一个过程：render.hydrateContainerTopDown
@@ -48,7 +51,7 @@ export function hydrateRootTopDown(
     } finally {
         clearTopDownAbort()
         leaveTopDownActivation(activation)
-        endTopDownHydration(saved)
+        endHydration(saved)
     }
 }
 

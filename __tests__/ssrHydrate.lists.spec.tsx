@@ -489,10 +489,10 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    // --- Fragment createElement under active list/array cursor (audit k7) ---
-    // Root cause: hydrate Fragment createElement claims text via parent cursor when
-    // StaticArrayHost/RxListHost left the region cursor active; intended path is leave
-    // content for StaticHost(DocumentFragment) + claimFragmentStartBefore(placeholder).
+    // --- Fragment content under a list / array (audit k7) ---
+    // Children-first claim model (removed in #55 S): Fragment createElement claimed text via the parent cursor while
+    // StaticArrayHost / RxListHost left the region cursor active. Since #55 S the Fragment's StaticHost claims
+    // <!--fragment start--> and its content in document order.
 
     test('G3-A Component→Fragment item: hydrate ≡ CSR (fragment under array cursor)', () => {
         function Child({}, {createElement, Fragment: F}: RenderContext) {
@@ -603,9 +603,9 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    // --- Fragment dynamic children under cursor / without cursor (audit k8) ---
-    // k8 only skipped static text + Node advancePastNode for Fragment; atom / function /
-    // array children still call claim* via parent cursor (or throw with no cursor).
+    // --- Fragment dynamic children under a list / array (audit k8) ---
+    // Children-first claim model (removed in #55 S): atom / function / array children of a Fragment claimed via the
+    // parent cursor (or threw with no cursor). Black-box locks since then.
 
     test('G3-C Component→Fragment with atom child: hydrate ≡ CSR', () => {
         const a = atom('hello')

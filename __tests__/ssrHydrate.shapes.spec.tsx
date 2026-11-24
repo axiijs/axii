@@ -15,7 +15,7 @@ import {createElement, createRoot, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -252,17 +252,14 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(client), reports: []})
     }
     test.each(iconsRenderedLater.slice(0, 1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
-    // 内部入口那一遍：列表行与数组项的激活在 #55 B2
     test.each(iconsRenderedLater.slice(1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
 
     // Known limit (documented at DOM.adoptSvgChild): tags a function / list renders later are inserted by a Host,
-    // CSR keeps them HTML while the parser makes them SVG. Hydration should then report and rebuild them ≡ CSR
-    // (design hydration-top-down.md §2.6.7). The children-first claim model does not (identical on 3ea5b96, before #56):
-    // the function leaves the server SVG <title> next to a new empty HTML one, the list row keeps the SVG <a>.
-    // Kept executable as test.fails; it flips once hydration claims top-down (#55). A throw from hydrateRoot is not
-    // this defect: it is logged and the body returns normally, so test.fails reports it instead of swallowing it.
-    // 内部入口那一遍（#55 §7.2）：新模型在认领处看到命名空间不符，按 R1 报告并重建（B3 起通过，是普通 test）
-    ;(TOP_DOWN_PASS ? test : test.fails)('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
+    // CSR keeps them HTML while the parser makes them SVG. Hydration reports and rebuilds them ≡ CSR
+    // (design hydration-top-down.md §2.6.7): the top-down claim model sees the namespace differ where it claims and
+    // applies R1. The children-first claim model did not (the function left the server SVG <title> next to a new empty
+    // HTML one, the list row kept the SVG <a>); this case was test.fails until #55 S switched hydrateRoot.
+    test('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
         const make = () => {
             const tip = atom('d1')
             const rows = new RxList(['r1'])
@@ -274,17 +271,7 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
             }
             return {App, tip, rows}
         }
-        let result: ReturnType<typeof setup<ReturnType<typeof make>>>
-        try {
-            result = setup(make)
-        } catch (e) {
-            // 内部入口那一遍是普通 test：任何错误都直接让用例失败，不经守卫
-            if (TOP_DOWN_PASS) throw e
-            // eslint-disable-next-line no-console
-            console.error('[known-defect case] unexpected error, not the documented failure:', e)
-            return
-        }
-        const {ssrError, hyd, client, c, h} = result
+        const {ssrError, hyd, client, c, h} = setup(make)
         expect({ssrError, dom: kids(hyd)}).toEqual({ssrError: undefined, dom: kids(client)})
         for (const s of [c, h]) { s.tip('d2'); s.rows.push('r2') }
         await tick()

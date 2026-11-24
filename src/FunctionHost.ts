@@ -6,13 +6,7 @@ import {createLinkedNode} from "./LinkedList";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {DeferredBindingEffect} from "./LightBindingEffect.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
-import {
-    claimComputedNodeBefore,
-    claimTextBeforeCommentPlaceholder,
-    getHydrationMode,
-    HYDRATION_MODE_LEGACY,
-    HYDRATION_MODE_TOP_DOWN,
-} from "./hydration";
+import {isHydrating} from "./hydration";
 import {isTextNode} from "./nodeType";
 import {COMPUTED_NODE_SLOT, HydrationSlot, TEXT_SLOT, isHydrationSlot, markTopDownAbort} from "./hydrationElement";
 import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
@@ -215,18 +209,13 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             //  下面的 insertBefore 会 TypeError（见 destroyInnerHost 之后结构路径的同一检查）。
             if (this.destroyedWith !== undefined) return
             // 按 nodeType 判断：激活时认领到的占位符可能来自另一个 realm（见 nodeType.ts）
-            // CAUTION 激活模式在文本快速返回之后才读（#55 §7.1）：文本更新的热路径上没有这次读取
-            const mode = isTextNode(this.placeholder) ? undefined : getHydrationMode()
-            if (mode === undefined) {
+            // CAUTION 激活状态在文本快速返回之后才读（#55 §7.1）：文本更新的热路径上没有这次读取
+            if (isTextNode(this.placeholder)) {
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
                 ;(this.placeholder as Text).nodeValue = text
                 this.textNode = this.placeholder as Text
-            } else if (mode === HYDRATION_MODE_LEGACY) {
-                // Comment-ph（G4-F / H3）：认领 placeholder 前 Text（含 axii:t），或插入空 Text
-                // §3.7 / D12: pass expected so drift reports + rebuilds (aligned with Text-ph)
-                this.textNode = claimTextBeforeCommentPlaceholder(this.placeholder as Comment, text)
-            } else if (mode === HYDRATION_MODE_TOP_DOWN && isHydrationSlot(this.placeholder)) {
-                // #55 新模型的首次运行（文本态）：TEXT_SLOT 认领文本单元（空：axii:0），这个 Text 同时是 placeholder；
+            } else if (isHydrating() && isHydrationSlot(this.placeholder)) {
+                // #55 激活中的首次运行（文本态）：TEXT_SLOT 认领文本单元（空：axii:0），这个 Text 同时是 placeholder；
                 //  Comment slot 认领文本单元（空：插入 Text('')），然后认领 slot（§2.5 FunctionHost 行）
                 const slot = this.placeholder as HydrationSlot
                 if (slot === TEXT_SLOT) {
@@ -261,21 +250,14 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         // 旧内容（innerHost）的清理函数同步销毁了本节点：占位符可能已被摘掉，不能再在它前面
         //  建新内容（insertBefore 会 TypeError；就算没被摘掉，新内容也没有人销毁）。
         if (this.destroyedWith !== undefined) return
-        // Hydrate FTS/FCS：认领已有 <!--computed node-->，禁止新建（§3.2.4 FS2 / §3.2.5）
-        const mode = getHydrationMode()
-        // #55 新模型的首次运行（结构态）：内容与 <!--computed node--> 由内层 Host 从游标处消费，之后再认领自己的 slot
-        const topDownSlot = mode === HYDRATION_MODE_TOP_DOWN && isHydrationSlot(this.placeholder) ?
+        // #55 激活中的首次运行（结构态）：内容与 <!--computed node--> 由内层 Host 从游标处消费，之后再认领自己的 slot
+        const topDownSlot = isHydrating() && isHydrationSlot(this.placeholder) ?
             this.placeholder as HydrationSlot :
             undefined
-        const hydrating = mode === HYDRATION_MODE_LEGACY
         let newPlaceholder: Comment | undefined
         if (topDownSlot === undefined) {
-            newPlaceholder = hydrating
-                ? claimComputedNodeBefore(this.placeholder)
-                : document.createComment('computed node')
-            if (!hydrating) {
-                insertBefore(newPlaceholder, this.placeholder)
-            }
+            newPlaceholder = document.createComment('computed node')
+            insertBefore(newPlaceholder, this.placeholder)
         }
         // CAUTION 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
         //  否则内层的响应式内容变化会导致整个函数节点重算。
@@ -300,7 +282,7 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             if (host) {
                 // render 中途抛错：部分渲染的子树交给下一次重建/销毁做尽力清理
                 this.innerHost = host
-            } else if (!hydrating && newPlaceholder !== undefined) {
+            } else if (newPlaceholder !== undefined) {
                 newPlaceholder.remove()
             }
             // #55 新模型的激活中：「渲染为空」接不上游标（服务端节点没有被消费，自己的 slot 也还没认领），向上抛出、中止激活。
