@@ -151,6 +151,14 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
     //  通知结束后恢复，root 之后渲染的内容的错误照常交给它们。监听器没有销毁 root 时不受影响。
     let errorNotifyDepth = 0
     let errorListenersSilenced = false
+    // CAUTION 重入的 destroy 不重复派发 detach（#58）：树的销毁会执行用户代码（清理函数、detach 监听器），
+    //  「这块内容消失就关掉弹层」会在销毁过程中再次调用 root.destroy()。同一次销毁只派发一次 detach——
+    //  detach 监听器里无条件调用 destroy 的话，重复派发就是无界递归。destroying 在最外层那次 destroy
+    //  执行期间为 true；detachDispatched 表示 root 当前的内容已经派发过 detach。销毁过程中清理函数又往
+    //  这个 root 渲染了新内容时，render 把它清掉：新内容被销毁时照常派发自己的 detach。
+    //  两个布尔量在每个 root 上，destroy / render 每次调用不分配。
+    let destroying = false
+    let detachDispatched = false
     // Portal 场景：内层 root 由框架私有创建，用户无法在它上面注册监听，
     //  未被消费的 error 事件必须冒泡到父 root，否则 portal 内容的错误
     //  永远到不了用户的 root.on('error') 钩子（异步路径下直接变成 unhandled rejection）。
@@ -171,6 +179,8 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
             // CAUTION render 不可重入，否则会往容器里追加多棵树
             assert(!root.host, 'root can only render once, destroy the root before rendering again')
+            // 新内容还没有派发过 detach（见 destroying 的说明）
+            detachDispatched = false
             const running = pauseRunningEffect()
             try {
                 const placeholder = hydratePlaceholder ?? document.createComment('root')
@@ -234,9 +244,16 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             //  undefined，不会把同一棵树再销毁一次。
             // CAUTION 用户通过 on() 注册的监听器不清空：它们属于 root，root 重新 render 的内容
             //  照常派发给它们（error 监听器还要接住新内容的错误）。destroy 只重置每次渲染的状态。
+            // CAUTION 重入（清理函数 / detach 监听器里再调用）时，当前内容已经派发过 detach 就不再派发，
+            //  见 destroying 的说明。其余步骤照常：内层调用仍然交出、销毁它此刻能拿到的 root.host。
+            const reentrant = destroying
+            destroying = true
             const running = pauseRunningEffect()
             try {
-                root.dispatch('detach')
+                if (!reentrant || !detachDispatched) {
+                    detachDispatched = true
+                    root.dispatch('detach')
+                }
                 const host = root.host
                 root.host = undefined
                 // CAUTION 每次渲染的状态（attach 队列、attached 标记、内容登记的内部 attach 回调）
@@ -257,6 +274,8 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                 // CAUTION 还在渲染的树不在这里销毁，见 render 的重入说明
                 if (host !== renderingHost) host?.destroy()
             } finally {
+                // 最外层那次结束（包括没有 error 钩子时清理函数抛错中途结束）：之后的 destroy 不再是重入
+                if (!reentrant) destroying = detachDispatched = false
                 resumeRunningEffect(running)
                 // CAUTION 在旧树销毁之后才让监听器静默（见 errorListenersSilenced）：error 监听器
                 //  启动的这次销毁里，清理函数 / ref(null) 抛出的错误仍然交给监听器消费，否则
