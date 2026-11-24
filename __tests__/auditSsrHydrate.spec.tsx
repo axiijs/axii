@@ -72,6 +72,28 @@ function ssrInto(App: any): HTMLElement {
 }
 const tick = () => new Promise(r => setTimeout(r, 0))
 
+/**
+ * test.fails only checks that the body throws, so an unrelated error in hydrateRoot (a regression
+ * elsewhere, a typo) would silently count as "the known defect". Every known-defect case below calls
+ * hydrateRoot through this guard:
+ *  - `reason` given (F3a, F4d): the defect IS a throw; only an error whose message matches is rethrown;
+ *  - no `reason`: the defect shows up as a failed assertion, so hydrateRoot must not throw at all.
+ * Any other error is logged and the body returns normally — test.fails then reports the case as
+ * failing instead of swallowing the error. Once the defect is fixed the body passes and test.fails
+ * fails as before (flip the case to `test`).
+ */
+function hydrateKnownDefect(container: HTMLElement, source: any, reason?: RegExp): boolean {
+    try {
+        hydrateRoot(container, source)
+        return true
+    } catch (e) {
+        if (reason && reason.test(String((e as Error)?.message))) throw e
+        // eslint-disable-next-line no-console
+        console.error('[known-defect case] unexpected error, not the documented failure:', e)
+        return false
+    }
+}
+
 // ───────────────────────── Finding 1: element claim order ─────────────────────────
 describe('F1 tryClaimElement claims the deepest same-tag element of the whole root', () => {
     test.fails('F1a same tag at two depths: hydrated DOM must equal CSR and report nothing', () => {
@@ -79,7 +101,7 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
             return <div><span>a</span><p><span>b</span></p></div>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
@@ -91,7 +113,7 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
             return <div><Header/><main><p>hello</p></main></div>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
         expect(kids(hyd)).toBe(kids(csr(App)))
     })
 
@@ -104,7 +126,7 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
             </div>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
         ;(hyd.querySelectorAll('button')[0] as HTMLButtonElement).click()
         expect(log).toEqual(['A'])
     })
@@ -114,12 +136,12 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
             return <div><div id="raw" dangerouslySetInnerHTML={'<p><em>raw</em></p>'}/><em>sibling</em></div>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
     test('F1d hydration time must not grow cubically with the number of sibling rows', () => {
-        const time = (n: number) => {
+        const hydrateMs = (n: number) => {
             const make = () => {
                 const list = new RxList(Array.from({length: n}, (_, i) => i))
                 return function App({}: any, {createElement}: RenderContext) {
@@ -129,22 +151,20 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
             const hyd = ssrInto(make())
             const t0 = performance.now()
             hydrateRoot(hyd, createElement(make(), null as any))
-            const hydrateMs = performance.now() - t0
-            const el = mount()
-            const t1 = performance.now()
-            createRoot(el).render(createElement(make(), null as any))
-            const csrMs = performance.now() - t1
-            return {hydrateMs, csrMs}
+            return performance.now() - t0
         }
-        time(50) // warm up
-        const small = time(200)
-        const large = time(400)
-        const growth = large.hydrateMs / small.hydrateMs
+        // best of 3: scheduling noise (other browser processes, GC) only ever adds time
+        const best = (n: number) => Math.min(hydrateMs(n), hydrateMs(n), hydrateMs(n))
+        best(50) // warm up
+        const small = best(150)
+        const large = best(600)
+        const growth = large / small
         // eslint-disable-next-line no-console
-        console.log(`[F1d] n=200 hydrate=${small.hydrateMs.toFixed(1)}ms csr=${small.csrMs.toFixed(1)}ms | `
-            + `n=400 hydrate=${large.hydrateMs.toFixed(1)}ms csr=${large.csrMs.toFixed(1)}ms | growth x${growth.toFixed(1)}`)
-        // 2x rows: linear → ~2x, quadratic → ~4x, cubic → ~8x
-        expect(growth).toBeLessThan(5)
+        console.log(`[F1d] n=150 hydrate=${small.toFixed(1)}ms | n=600 hydrate=${large.toFixed(1)}ms | growth x${growth.toFixed(1)}`)
+        // 4x rows: linear → ~4x, quadratic → ~16x, cubic → ~64x. The bound sits at the geometric mean of
+        // quadratic and cubic: a factor 2 of timing noise either way still classifies correctly
+        // (a 2x rows step only left 4 vs 5 between quadratic and the bound).
+        expect(growth).toBeLessThan(32)
     })
 })
 
@@ -300,7 +320,7 @@ describe('F3 claimFunctionTextPlaceholder takes the first computed+axii:0 pair i
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any)) // throws: expected text unit
+        if (!hydrateKnownDefect(hyd, createElement(h.App, null as any), /hydrate mismatch: expected text unit/)) return
         h.title('t2')
         await tick()
         expect(hyd.textContent).toBe('t2badge')
@@ -311,7 +331,7 @@ describe('F3 claimFunctionTextPlaceholder takes the first computed+axii:0 pair i
             return <div>{() => <Fragment>{() => <b>x</b>}</Fragment>}</div>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
         expect(kids(hyd)).toBe(kids(csr(App)))
     })
 })
@@ -326,14 +346,14 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
     }
     test.fails('F4a client list has one more row than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2]))
-        hydrateRoot(hyd, createElement(listApp([1, 2, 3]), null as any))
+        if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2, 3]), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(listApp([1, 2, 3])))})
     })
 
     test.fails('F4b client list has one row fewer than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2, 3]))
-        hydrateRoot(hyd, createElement(listApp([1, 2]), null as any))
+        if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2]), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(listApp([1, 2])))})
     })
@@ -343,14 +363,15 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
     }
     test.fails('F4c server rendered an element, client function returns text', () => {
         const hyd = ssrInto(fnApp(true))
-        hydrateRoot(hyd, createElement(fnApp(false), null as any))
+        if (!hydrateKnownDefect(hyd, createElement(fnApp(false), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(fnApp(false)))})
     })
 
     test.fails('F4d server rendered text, client function returns an element', () => {
         const hyd = ssrInto(fnApp(false))
-        hydrateRoot(hyd, createElement(fnApp(true), null as any)) // throws instead of rebuilding
+        // throws instead of rebuilding
+        if (!hydrateKnownDefect(hyd, createElement(fnApp(true), null as any), /expected <!--computed node--> before FunctionHost placeholder/)) return
         expect(kids(hyd)).toBe(kids(csr(fnApp(true))))
     })
 })
@@ -696,6 +717,36 @@ describe('X extra confirmed defects', () => {
             same: true,
             islandSame: true,
             dom: kids(csr(App)),
+            reports: [],
+        })
+    })
+
+    // X2b's nested hydrateRoot used to end the outer hydration as a side effect, which let the layout
+    // effect / ref part pass on the unfixed code too. Same check without the nested hydration.
+    test('X2c layout effects and refs (via the attach dispatch) render fresh roots, not claims', () => {
+        const made: {[k: string]: string} = {}
+        function Child({}: any, {createElement, useLayoutEffect}: RenderContext) {
+            useLayoutEffect(() => {
+                const tip = mount()
+                createRoot(tip).render(<span>tip</span>)
+                made.layout = tip.innerHTML
+            })
+            return <p ref={() => {
+                const tip = mount()
+                createRoot(tip).render(<em>ref</em>)
+                made.ref = tip.innerHTML
+            }}>child</p>
+        }
+        function App({}: any, {createElement}: RenderContext) {
+            return <div><Child/><span>s</span><em>e</em></div>
+        }
+        const hyd = ssrInto(App)
+        const before = Array.from(hyd.querySelectorAll('*'))
+        hydrateRoot(hyd, createElement(App, null as any))
+        const after = Array.from(hyd.querySelectorAll('*'))
+        expect({made, same: after.length === before.length && after.every((n, i) => n === before[i]), reports}).toEqual({
+            made: {layout: '<span>tip</span><!--root-->', ref: '<em>ref</em><!--root-->'},
+            same: true,
             reports: [],
         })
     })
