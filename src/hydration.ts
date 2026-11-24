@@ -3,9 +3,9 @@
  * Active only while hydrateRoot runs; CSR steady-state pays at most a boolean read.
  */
 
-import {isAtom, RxList} from "data0"
+import {isAtom, Notifier, RxList} from "data0"
 import {reportAxiiError} from "./diagnostics"
-import {RAWTEXT_TAGS, RCDATA_TAGS} from "./markupNames"
+import {RAWTEXT_TAGS, RCDATA_TAGS, svgHtmlSharedElementNames, tableSectionElementNames} from "./markupNames"
 import {isDomNode, isElementNode, isFragmentNode} from "./nodeType"
 
 const claimedElements = new WeakSet<Element>()
@@ -377,10 +377,10 @@ function hasDirectComment(el: Element, data: string): boolean {
 //  而客户端 createElement('table', null, <tr/>…) 的 children 里没有这一层。
 //  不认这一层的话，table 的子游标在 table.childNodes 上找不到任何行和 placeholder，
 //  随后 tbody 连同里面已经认领的行被当成「尾部孤儿」整体删掉——激活后表格是空的。
-//  判定两头都看：客户端 children 里没有显式的表格分区元素（与 tableNeedsTbodyWrap 的第一段
-//  同一组标签），且 DOM 里 table 唯一的子节点是 TBODY。组件子节点自己返回 <tbody> 时，
-//  table 下还有它的 <!--unhandledChild-->，不满足「唯一子节点」，不会被误判。
-const TABLE_SECTION_TAGS = new Set(['TBODY', 'THEAD', 'TFOOT', 'CAPTION', 'COLGROUP'])
+//  判定两头都看：客户端 children 里没有显式的表格分区元素（markupNames.tableSectionElementNames，
+//  服务端决定是否补 tbody 用同一张表），且 DOM 里 table 唯一的子节点是 TBODY。组件、函数、列表子节点
+//  渲染出 <tbody> 时，table 下还有它们的 placeholder 注释，不满足「唯一子节点」，不会被误判；
+//  服务端也不再为它们补 tbody（#56，ssr.serializeTableContent 按写出的直接子元素决定）。
 
 function impliedTableBody(el: Element, children: any[] | undefined): Element | null {
     if (el.tagName !== 'TABLE') return null
@@ -392,7 +392,7 @@ function impliedTableBody(el: Element, children: any[] | undefined): Element | n
     if (children) {
         for (const c of children) {
             // deferred stub 也是带 tagName 的真实元素
-            if (isElementNode(c) && TABLE_SECTION_TAGS.has(c.tagName)) return null
+            if (isElementNode(c) && tableSectionElementNames.has(c.localName)) return null
         }
     }
     return only as Element
@@ -484,8 +484,18 @@ function isClaimBlockingSibling(sib: Element, wantUpper: string, wantId: string 
     const tag = sib.tagName
     if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'LINK') return false
     if (claimedElements.has(sib)) return false
-    if (tag !== wantUpper) return true
+    if (tag !== wantUpper) return !isSvgSharedNameElementTag(tag)
     return wantId != null && sib.id !== wantId
+}
+
+// CAUTION SVG 里与 HTML 同名的元素（title / a / style / script，见 svgHtmlSharedElementNames）不算「挡路的未认领兄弟」（#56）。
+//  普通 JSX 的 <title> 先于父元素求值时按 HTML 认领，找不到候选就留成 deferred stub，到 SVG 父元素的游标下再按 SVG 认领
+//  （DOM.materializeHydrateDeferred）——子先于父的认领阶段它一定还没被认领。算作挡路的话，同一个父元素里排在它后面的兄弟
+//  一律认领不到自己，转而拿走后面别的子树里的同标签元素：并排的两个图标 <svg><title/><path/></svg> 里，第一个图标的
+//  path 拿走第二个的。createSVGElement('title') 在这一阶段直接认领、从不挡路，两种写法的认领顺序因此一致。
+//  SVG 元素的 tagName 保留原始大小写（小写），HTML 元素是大写，所以按 tagName 查表只会命中非 HTML 命名空间的元素。
+function isSvgSharedNameElementTag(tag: string): boolean {
+    return svgHtmlSharedElementNames.has(tag)
 }
 
 /** Same-tag wrong-id earlier sibling only (D8/D9) — not different-tag (D4/D6). */
@@ -546,7 +556,7 @@ function hasConflictingUnclaimedSibling(el: Element, wantUpper: string): boolean
         const tag = sib.tagName
         if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'LINK') continue
         if (claimedElements.has(sib)) continue
-        if (tag !== wantUpper) return true
+        if (tag !== wantUpper && !isSvgSharedNameElementTag(tag)) return true
     }
     return false
 }
@@ -686,12 +696,25 @@ function tryClaimElementAtCursor(
  *   §3.7 mismatch; setAttribute reapplies the client id (no orphan + empty deferred).
  *   No-cursor wrongIdMiss is suppressed when a different-tag unclaimed sibling exists (D7).
  */
+// 最近一次 tryClaimElement 是否因为遇到同名的 SVG 对应物而停下（见 tryClaimElement 的 svgCounterpart）
+let claimStoppedAtSvgCounterpart = false
+
+/**
+ * 最近一次 tryClaimElement 返回 null 是因为后序里先遇到了同名的 SVG 对应物（#56）：调用方必须把元素留成 deferred stub，
+ * 交给 SVG 父元素在自己的游标下按 SVG 认领，而不是按「没有候选」抛错——组件在列表行里渲染 <svg><title/>…</svg> 时，
+ * 列表的游标还在，按没有候选处理会让整个 hydrateRoot 抛错（createSVGElement('title') 的同一写法能激活）。
+ */
+export function isClaimStoppedAtSvgCounterpart(): boolean {
+    return claimStoppedAtSvgCounterpart
+}
+
 export function tryClaimElement(
     tagName: string,
     props?: any,
     children?: any[],
     isSVG?: boolean,
 ): Element | null {
+    claimStoppedAtSvgCounterpart = false
     const root = hydrateRootEl
     if (!root) throw new Error('[axii] hydrate claimElement without active hydration')
     // CAUTION Element.tagName 只有 HTML 元素才是大写；SVG 元素保持原始大小写（'svg'、'clipPath'）。
@@ -699,6 +722,14 @@ export function tryClaimElement(
     //  下面所有 `el.tagName === upper` 的比较都以这个值为准；大小写本身也把 HTML / SVG 的
     //  同名标签（a / script / style / title）区分开了。
     const upper = isSVG ? tagName : tagName.toUpperCase()
+    // CAUTION HTML / SVG 同名的标签按 HTML 认领时（普通 JSX，见 svgHtmlSharedElementNames，#56），后序里遇到的第一个同名
+    //  SVG 元素就是它的对应物：服务端在 SVG 父元素下写出的同名元素，解析器放进了 SVG 命名空间。在这里停下、不认领，
+    //  留成 deferred stub，由 SVG 父元素在自己的游标下按 SVG 认领（DOM.materializeHydrateDeferred），与 CSR 里 SVG 父元素的
+    //  改建一致。函数 / 组件 / 列表稍后渲染的同名元素在 CSR 里是 HTML 元素，它们的激活结果与 CSR 不一致是子先于父认领模型的
+    //  既有缺陷（#55，见 ssrHydrate.shapes.spec 的 test.fails），这里只保证它们不越过对应物去拿别处的元素。
+    //  不停下的话会越过它，拿走后面别处的 HTML 元素：<svg><a>…</a></svg><nav><a href="/">…</a></nav> 里 svg 的 <a>
+    //  拿走 nav 的 <a>。
+    const svgCounterpart = !isSVG && svgHtmlSharedElementNames.has(tagName) ? tagName : null
     const wantId = staticAttrId(props)
 
     // Cursor-first only inside enterElementChildCursor (element children), not list/array
@@ -744,7 +775,10 @@ export function tryClaimElement(
             const found = walkChildren(el)
             if (found) return found
         }
-        if (claimedElements.has(el) || el.tagName !== upper) return null
+        if (claimedElements.has(el)) return null
+        // 同名的 SVG 对应物：停止遍历，返回给调用方后不认领（见 svgCounterpart）
+        if (el.tagName === svgCounterpart) return el
+        if (el.tagName !== upper) return null
         if (wantId != null && el.id !== wantId) {
             // Attribute drift candidate — used only if no exact id match exists.
             // Skip when a different-tag unclaimed sibling exists (role swap — D7):
@@ -768,6 +802,11 @@ export function tryClaimElement(
     }
 
     const best = walkChildren(root)
+
+    if (best !== null && best.tagName === svgCounterpart) {
+        claimStoppedAtSvgCounterpart = true
+        return null
+    }
 
     if (best) {
         claimedElements.add(best)
@@ -1205,14 +1244,45 @@ export function advanceCursorUntilRxListHostPlaceholder(): void {
     advanceCursorUntilComment('unhandledChild')
 }
 
+// CAUTION 字符数据父节点里的函数子节点（#56）：服务端把它的当前值与其余文本单元首尾相接写成一段（ssr.characterDataFunctionText），
+//  中间没有任何标记，认领时只能按长度切（见 isCharacterDataParent）。函数单元的长度就是它的当前值，所以在这里求一次值：
+//  不求值的话只能把游标处余下的整段都给它，后面的文本单元（<title>Inbox ({n}) - {site}</title> 的 ") - "）全部失配重建；
+//  值为空时服务端什么都没写，还会把下一个单元的文本当成自己的。
+//  这次求值只为得到长度：暂停依赖追踪（不让外层的组件渲染订阅它读到的 atom），onCleanup 登记的清理函数随即执行；
+//  随后 FunctionHost 照常求值、写入并绑定为响应式。只在激活、且父节点是字符数据父节点时发生。
+//  抛错或得到结构（服务端对结构会抛错，不会走到这里）时返回 undefined，按原来的方式认领，错误留给 FunctionHost 照常处理。
+function characterDataFunctionText(source: Function): string | undefined {
+    let cleanups: (() => any)[] | undefined
+    let result: any
+    Notifier.instance.pauseTracking()
+    try {
+        result = source.length === 0
+            ? (source as () => any)()
+            : source({onCleanup: (cleanup: () => any) => { (cleanups ||= []).push(cleanup) }})
+    } catch {
+        return undefined
+    } finally {
+        Notifier.instance.resetTracking()
+        if (cleanups) for (const cleanup of cleanups) cleanup()
+    }
+    const type = typeof result
+    if (result == null || type === 'boolean') return ''
+    return (type === 'string' || type === 'number' || type === 'bigint') ? String(result) : undefined
+}
+
 /**
  * Scan from cursor for FTS pattern: … <!--computed node--> <!--axii:0-->
  * Advances cursor to the axii:0, claims it as FunctionHost Text placeholder.
  * Content + computed stay for FunctionHost / claimElement / claimComputedNode.
  */
-export function claimFunctionTextPlaceholder(): Text {
+export function claimFunctionTextPlaceholder(source?: Function): Text {
     const parent = childCursorParent
     if (!parent) throw new Error('[axii] hydrate claimFunctionTextPlaceholder without cursor')
+
+    if (source !== undefined && isCharacterDataParent(parent)) {
+        const text = characterDataFunctionText(source)
+        if (text !== undefined) return text === '' ? claimEmptyTextPh() : claimTextUnit(text)
+    }
 
     const children = parent.childNodes
     // Look ahead for computed + axii:0 (FTS structure)
@@ -1485,7 +1555,7 @@ function walkFragmentHydrateChildren(
                     : String((snapshot as any)?.toString ? (snapshot as any).toString() : JSON.stringify(snapshot))
                 assignPlaceholder(claimAtomTextPlaceholder(text), path)
             } else {
-                assignPlaceholder(claimFunctionTextPlaceholder(), path)
+                assignPlaceholder(claimFunctionTextPlaceholder(child), path)
             }
         } else if (Array.isArray(child)) {
             // Same as createElement array hydrate, with cursor already in the fragment region.

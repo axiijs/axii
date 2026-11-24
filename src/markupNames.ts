@@ -39,8 +39,8 @@ export function svgAttributeName(name: string): string {
 
 // JSX evaluates children before their parent, so the runtime cannot infer an SVG namespace
 // from ancestry the way a VDOM renderer can. Create tags that only exist in SVG in the
-// correct namespace immediately. Ambiguous HTML/SVG tags (a/script/style/title) deliberately
-// stay on the HTML path; inside SVG they should use the explicit createSVGElement factory.
+// correct namespace immediately. Tags that exist in both HTML and SVG (svgHtmlSharedElementNames)
+// are created on the HTML path and moved into the SVG namespace by their SVG parent (#56).
 // CAUTION 这个判断必须在 createElement 内部做（而不是只在 jsx/jsxs/jsxDEV runtime 路由）：
 //  classic pragma（/* @jsx createElement */）和组件 renderContext 的 createElement 都不经过
 //  runtime factory，只在 runtime 路由的话这两条链路里 <svg> 会被创建成 HTMLUnknownElement，
@@ -58,10 +58,38 @@ export const svgOnlyElementNames = new Set([
     'use', 'view',
 ])
 
+/**
+ * @internal
+ * HTML 与 SVG 里都有的元素名（#56）。命名空间由父元素决定，与 HTML 解析器在外来内容（foreign content）里的规则相同：
+ *  父元素是 SVG 元素、且不是 HTML integration point（isSvgHtmlIntegrationPoint）时是 SVG 元素，否则是 HTML 元素。
+ * CAUTION 服务端写出的 <svg><title>…</title></svg> 解析后一定是 SVG 的 title，客户端只看标签名的话建出来的是 HTML 元素：
+ *  CSR 里 <title> 不是图形的提示、<a> 里的图形整个不渲染；激活时每个都报告失配并重建。客户端 JSX 先求值子节点，
+ *  子元素创建时不知道父元素，所以由 SVG 父元素在 createElement 里把这些子元素改建到 SVG 命名空间（DOM.adoptSvgChildren），
+ *  激活时在父元素的游标下按 SVG 认领（DOM.materializeHydrateDeferred），服务端按 SVG 的规则写属性（ssr.serializeSsrElement）。
+ *  三处都只用这一张表。
+ */
+export const svgHtmlSharedElementNames = new Set(['a', 'script', 'style', 'title'])
+
+/**
+ * @internal
+ * SVG 里的 HTML integration point：子内容回到 HTML（解析器 tree construction 的规则）。
+ *  接受 JSX 标签名（foreignObject）与小写形式（服务端按小写比较），不分配字符串。
+ */
+export function isSvgHtmlIntegrationPoint(name: string): boolean {
+    return name === 'foreignObject' || name === 'foreignobject' || name === 'desc' || name === 'title'
+}
+
 // CAUTION 这两类元素的子内容是字符数据，注释语法在里面不产生 Comment（§3.2.1 F11）：
 //  SSR 不能在其中写 axii:* 标记，多个文本单元只能首尾相接成一段；激活时按同一张表反过来拆。
 //  noscript 一律按 RAWTEXT（保守归类，见 §3.2.1 父节点分类）。
 export const RCDATA_TAGS = new Set(['textarea', 'title'])
+
+/**
+ * @internal
+ * table 的分区元素（小写名）。服务端决定要不要为 table 的内容补 <tbody>（ssr.serializeTableContent）、
+ * 激活时判定隐含 tbody（hydration.impliedTableBody）用同一张表。
+ */
+export const tableSectionElementNames = new Set(['tbody', 'thead', 'tfoot', 'caption', 'colgroup'])
 export const RAWTEXT_TAGS = new Set(['style', 'script', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript'])
 
 // ARIA 反射属性（ariaLabel / ariaExpanded ...）：第 5 个字符是大写字母。
