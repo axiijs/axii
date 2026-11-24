@@ -1,7 +1,7 @@
 # hydration 自顶向下认领 — 设计（#55）
 
-- 状态：设计稿，待审阅。本文只定方案，不含实现。
-- 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
+- 状态：设计稿，按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
+- 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）、#68（服务端 Compact 判定，排在实现 PR 之前修）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
 - 基线：origin/main `9d2a93c`（含 #62 / #63 / #64，以及 #65 / #66 合入的 #50、#52）。现状复现与原型在 `4712285` 上完成；#50 / #52 只改了原始标记的取值和复选框的勾选通道，不影响 §1 的失败机制，二者对本设计的接口见 §2.6.1、§2.6.2。
 
@@ -24,20 +24,24 @@
 - 每个服务端节点只访问一次，激活是线性的。
 - 失配由「游标处期望什么、实际是什么」的局部规则处理。在「位置对齐」的不变量之下，任何重同步选择得到的节点结构、文本和客户端写下的属性都等于 CSR 结果，选择只影响能复用多少节点（§4.1；服务端独有属性的边界也在 §4.1）。F4a–F4d 因此可以报告并修复；逐条走查过的现有失配用例，其节点复用断言预计全部保留（§4.5）。
 
-**代价（契约变化）。** 激活期间 JSX 的返回值不是 DOM 节点：
+**代价（契约变化）。** 激活期间 JSX 的返回值不是 DOM 节点，而且**这个值之后也不会变成节点**：
 - 在组件函数体里拿 JSX 结果当节点用（调方法、写属性、测量）会失败，迁移方式是改用 `ref`。
+- 被闭包捕获的描述在激活结束后仍是描述。事件处理器里的 `input.focus()` 要到用户操作时才抛 TypeError，读属性在生产环境静默得到 `undefined`；描述不转发到真实节点。生命周期与每种操作的表现见 §3.1.1。
 - `RxList.map` 与普通数组里的行在激活期间是描述，由 Host 认领后**写回**为真实节点，激活完成后与 CSR 一致。
-- 开发期用 Proxy 报告误用；生产环境下，调用方法会抛 TypeError，在严格模式下写属性也会抛 TypeError。
+- 开发期用 Proxy 在访问时报告误用（带 JSX 位置）；生产环境下，调用方法、把描述当节点传给 DOM API 会抛 TypeError，在严格模式下写属性也会抛 TypeError。
+- `README`（中英）与 `site/` 的示例里没有这种写法（§3.1.2）。
 
-**零开销。** 非激活的 `createElement` 只剩函数开头一次布尔读，比现在少：组件分支的那次读取和循环里约 10 处 `hydrating &&` 都去掉了。
+**零开销。** 切换完成后，非激活的 `createElement` 只剩函数开头一次全局读，比现在少：组件分支的那次读取和循环里约 10 处 `hydrating &&` 都去掉了。
 - `createHost`、`RxListHost.createChildHost`、`AtomHost`、`StaticHost` 等的 CSR 路径去掉现有的 `isHydrating()` 读取。
 - Host 不新增字段，还去掉了现在挂在 Host、数组、`RxList`、`DocumentFragment` 上的激活用临时字段。
 - 原型测量（同页 A/B，带 A/A 对照）的差异在 A/A 噪声与计时分辨率以内（§5.3）。
+- 切换之前的过渡期，`createElement` 的 CSR 路径多一次整数比较，其余热路径不变（§7.3）。
 
-**实现拆分：**
-- **PR-A：** 把激活路径与 CSR 路径分开，不改行为。
-- **PR-B：** 切换到延迟描述与自顶向下认领。切换是原子的，11 条 `test.fails` 全部转为 `test`。
-- **PR-C：** 加入漂移 fuzz，并去掉「实验性」标注。
+**实现拆分（§7）：** 新模型先经一个**不导出的内部入口**分步落地，公开的 `hydrateRoot` 在此期间仍走旧模型；最后一个 PR 切换 `hydrateRoot` 并删除旧模型。
+- **PR-A：** 「应用 props」与元数据路径规则各收成一个函数（CSR 与新模型共用），钉住 data0 写回契约。不改行为。
+- **B1–B4：** 新模型按「核心认领协议 → 列表与数组 → 失配规则 → 其余形态与开发期检测」分四步进 main，每步门禁全绿。激活用例同时对内部入口再跑一遍，11 条在 B1、B3 对内部入口转为通过。
+- **S：** `hydrateRoot` 切到新模型，删除旧模型，11 条 `test.fails` 改为 `test`。
+- **D：** README（中英）、站点文档与迁移说明，去掉「实验性」标注。
 
 ---
 
@@ -84,7 +88,7 @@
 | 后序第一个合格候选是正确的基础，只要能跳过还没渲染的 Host 区域 | 在静态树内成立。新模型不再搜索：文档顺序的消费就是逐个按位置认领，不存在「跳过」的问题 |
 | 原始标记没有任何服务端标记，F1j 只能靠按位置认领 | 属实。新模型先按位置认领原始元素本身，再把它的内容整体视为不透明，F1j 按构造就是对的 |
 | 无游标认领从根遍历，整体二次复杂度；自顶向下可以线性 | 属实。原型中每个服务端节点恰好访问 1 次（2400 行列表：9603 个节点、9603 步） |
-| F1i 生成器可以扩展成验收 fuzz | 属实。原型生成器去掉了对组件、函数子节点、Fragment、含自身标签的原始标记的排除，300 棵全部通过（§10）；PR-B / PR-C 直接采用 |
+| F1i 生成器可以扩展成验收 fuzz | 属实。原型生成器去掉了对组件、函数子节点、Fragment、含自身标签的原始标记的排除，300 棵全部通过（§10）；B2 采用，B3 在它上面加漂移注入 |
 
 ---
 
@@ -109,8 +113,8 @@
 export class HydrationElement {
     tag: string | typeof Fragment     // 不叫 type：Fragment 是函数，叫 type 会被 createHost 的
                                       //  ComponentNode 判定（typeof source.type === 'function'）误认
-    props: AttributesArg | null       // rawProps，原样（as / AOP 已由 ComponentHost 处理完）
-    children: any[]                   // rawChildren，原样；嵌套的描述、atom、函数、组件、RxList……
+    rawProps: AttributesArg | null    // 原样（as / AOP 已由 ComponentHost 处理完）
+    rawChildren: any[]                // 原样；嵌套的描述、atom、函数、组件、RxList……
     isSVG: boolean                    // 与 CSR 同一规则：_isSVG ?? svgOnlyElementNames.has(tag)
     node: Element | DocumentFragment | null       // 认领或新建后的真实节点
     listenerBoundArgs: any[] | undefined          // ComponentHost 写入，认领时转交给 node
@@ -118,10 +122,12 @@ export class HydrationElement {
 export function isHydrationElement(v: unknown): v is HydrationElement   // 判定只在这里定义
 ```
 
-- **何时产生：** 激活期间（`isHydrating()`），对字符串标签与 `Fragment` 调用 `createElement` 和 `createSVGElement` 时。组件仍然返回 `ComponentNode`，不变。
+- **何时产生：** 新模型激活期间，对字符串标签与 `Fragment` 调用 `createElement` 和 `createSVGElement` 时。组件仍然返回 `ComponentNode`，不变。
 - **不碰 DOM：** 不创建元素，不认领，不应用 props，不提升元数据。`unhandledChildren`、`unhandledAttr`、`refHandles`、`detachStyledChildren` 都由消费它的 Host 在认领时按 CSR 的同一规则建立（§2.4）。
 - **字段预置：** 全部字段在构造器里预置，然后 `Object.preventExtensions`。这样形状单态，用户写入未知属性在严格模式下抛错（§3.4）。只在激活路径上分配。
-- **消费后瘦身：** 被认领或新建后，`props` 和 `children` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。
+- **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
+- **两种对象：** 开发期返回包着描述的 Proxy，生产返回描述本身（§3.4）。用哪一种在 `beginHydration` 时按 `isAxiiDiagnosticsEnabled()` 定一次，同一次激活内不变。
+- **消费后瘦身：** 被认领或新建后，`rawProps` 和 `rawChildren` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。瘦身不会把描述变成节点：被闭包捕获的描述永远是描述（§3.1.1）。
 - **事后渲染：** 激活结束后，CSR 路径还可能遇到描述（例如在激活期间存下的 JSX，之后由函数子节点再次渲染）。`createHost` 在分派链**末尾**（所有常见类型之后、`assert(false)` 之前）判定描述：
   - 已有 `node` 就当作那个元素，与 CSR 重复渲染同一个元素对象的语义相同，元数据已被消费；
   - 否则按 CSR 物化（重放 `createElement`）。
@@ -151,13 +157,21 @@ interface Host {
 //  | 'reusable' | 'root'
 ```
 
-- **谁创建 Host：** 激活期间由 `createHydrateHost(source, slot, context)` 创建，它是只在激活路径使用的分派函数，类型判定顺序与 `createHost` 相同。构造时传入的 placeholder 就是 slot 常量，它不是 DOM 节点：在认领之前误用 placeholder 会立刻 TypeError，问题不会被静默放过。CSR 的 `createHost` 保留 `placeholder instanceof Comment | Text` 断言，不受影响。
+- **谁创建 Host：** 激活期间由 `createHydrateHost(source, slot, context)` 创建，它是只在激活路径使用的分派函数，类型判定顺序与 `createHost` 相同。构造时传入的 placeholder 就是 slot 常量，它不是 DOM 节点：在认领之前误用 placeholder 会立刻 TypeError，问题不会被静默放过。CSR 的 `createHost` 保留 `placeholder instanceof Comment | Text` 断言，不受影响。`createHydrateHost` 与 `createHost` 是同一条分派链的两份，防止分叉的办法见 §2.4.1。
 - **组件边界：** `ComponentHost.hydrate(slot)` 调用组件函数，用 `createHydrateHost(node, slot)` 创建 `innerHost`，然后 `innerHost.hydrate(slot)`。完成后 `this.placeholder = innerHost.placeholder`。组件与它的 innerHost 共享 placeholder，这是现有语义，组件嵌套组件也一样，所以不新增标记。
 - **父级只做一件事：** 对每个动态 child，按 child 的种类选 slot，创建 Host，调用 `hydrate(slot)`。返回时游标已经在该 child 区域之后。父级从不搜索 placeholder。
 - **构造顺序与 CSR 相同：** `StaticHost.hydrate` 先按文档顺序构造整棵描述子树里的全部子 Host（≡ `collectInnerHost`，构造只需要 source 与 slot 常量），再走认领遍历、逐个 `hydrate`。`ComponentHost` 的构造器会分配组件类型 id（`getComponentTypeId`），首次出现的组件类型因此按与 CSR 相同的顺序拿到 id，样式类名里的类型 id 与 CSR 一致。
 - **effect 型 Host：** `FunctionHost`、`RxListHost` 第一次运行发生在 `hydrate()` 里：
   - `FunctionHost` 的 effect 回调在首次运行时读一次 `isHydrating()` 来分流，放在 `if (this.textNode)` 文本更新快速返回**之后**，文本更新热路径上没有新增检查；
   - `RxListHost` 的 computed 首次运行只建立追踪，与现在的 `hydrateSkipInitial` 相同。
+
+#### 2.4.1 `createHydrateHost` 与 `createHost` 不分叉
+
+`createHost` 是热路径，为了「判定只定义一处」把它改成先算种类、再按种类分派，会给每次调用加一层间接，本设计不这样做。两份分派链并存，靠下面三件事保持一致：
+
+1. **同一张种类表：** `createHydrateHost` 写在 `createHost.ts` 里紧挨 `createHost` 的位置，两者用同一个 `HOST_TYPE_NAMES` 下标登记 `trackHostCreated`，两处各有一条 CAUTION 注释指向对方。新增一种 source，必须同时改两处和这张表。
+2. **逐棵树的种类计数相等（验收）：** 扩展后的 F1i 生成器（B2）对每棵树开启 `retainedObjectDiagnostics`，分别记下 CSR 渲染与激活创建的 `createdByType`，断言两份计数逐类相等。`createdByType` 已经按 Host 类型计数，其中 `CompactElementHost` 由 `RxListHost.createChildHost` 单独登记，也在比较范围内。任何一种 source 在两条链上落到不同的 Host，计数就不相等。
+3. **覆盖每一种 source（验收）：** 300 棵树合计，`HOST_TYPE_NAMES` 的每一项和 `CompactElementHost` 在两边都至少出现一次。以后有人往 `createHost` 加了新的 Host 类型而生成器没有跟上，这条就失败。生成器按 `createHost` 的分派顺序逐类产生 source：函数、atom、元素描述、Fragment 描述、字符串 / 数字 / boolean / bigint、数组、`null` / `undefined`、`RxList`、`reusable()`、组件、现成的 `Comment` / `Text`。其中现成节点只可能是客户端内容（§2.6.8），这种树断言 DOM ≡ CSR，并且恰好得到一条 `AXII_HYDRATION_LIVE_NODE` 提示。`reusable()` 与现成节点在 B4 落地，所以 B2、B3 的这条验收只要求已落地的种类，B4 起要求全部（§7.4）。
 
 ### 2.5 各种单元的消费规则（与 `createElement` 的 child 规则和 `createHost` 的分派一一对应）
 
@@ -192,6 +206,7 @@ interface Host {
 | RxListHost | 逐行：按 Compact 判定（§2.6.4）直接认领元素，否则 `createHydrateHost(行, 'rx list item')`；嵌套 RxList 消费内层各行后认领 `rx list item`。然后认领 slot |
 | ComponentHost | 调用组件；`createHydrateHost(结果, 同一个 slot)` |
 | ReusableHost | innerHost 以 `'reusable'` 认领，然后认领外层 slot |
+| NodeHost（source 是现成的 `Comment` / `Text`） | 服务端不可能产出客户端的现成节点，按 §2.6.8 当作仅客户端的内容：把 source 插在游标处，然后按 R3 认领 slot（服务端在 slot 前为它写下的内容由 R3 删除） |
 | 根 | `createHydrateHost(source, 'root')`；结束时游标必须到达容器末尾（之后的 `STYLE` / `SCRIPT` / `LINK` 交给迁移和清扫） |
 
 ### 2.6 特殊形态
@@ -211,7 +226,7 @@ interface Host {
    - 响应式属性、ref、`detachStyle` 按 CSR 的路径规则记入所属 StaticHost 的收集表；
 7. 把 `listenerBoundArgs` 从描述转交给元素，然后写 `desc.node`。
 
-元数据的路径（`path`）与 CSR `createElement` 提升时的规则相同，样式 id 依赖这些路径，必须逐位一致。PR-B 把路径的拼接规则收成一个函数，CSR 与激活共用。
+元数据的路径（`path`）与 CSR `createElement` 提升时的规则相同，样式 id 依赖这些路径，必须逐位一致。PR-A 把路径的拼接规则收成一个函数，CSR 与激活共用。
 
 「应用 props」同样只有一份：PR-A 把 `createElement` 里「props 在 children 之后、`value` / `checked` 延后」的那段抽成函数，CSR 与认领步骤共用。这样下面两处已合入的规则在激活路径上自动一致，不另写一遍：
 - #52：元素同时带 `value` 与 `checked` 时记下 `__axiiInputHasCheckedProp__`；
@@ -236,7 +251,7 @@ interface Host {
 
 **Compact 判定定义在一处：** 行是元素描述（不是 Fragment），并且它的**静态子树**（不进入 Host child）里没有任何 `detachStyle`。这等价于 CSR 里 `createElement` 提升后 `detachStyledChildren` 为空。
 
-**服务端必须共用这个判定。** 现在 `ssr.ts` `serializeRxListRow` 只看行元素自己的 `detachStyle`。后代元素带 `detachStyle` 时，服务端少写一个 `<!--rx list item-->`，CSR 和服务端已经不一致（§11，范围外，已复现）。
+**服务端、激活共用这个判定。** 现在 `ssr.ts` `serializeRxListRow` 只看行元素自己的 `detachStyle`，后代元素带 `detachStyle` 时服务端少写一个 `<!--rx list item-->`。#68 已按维护者的决定把这个判定收到一个 Node 安全的模块里，由 `ssr.ts` 与 `RxListHost` 共用，排在实现 PR 之前修。B2 的激活路径直接用 #68 落地的判定，不另写一份。
 
 认领后行的写回见 §3.3。
 
@@ -336,7 +351,7 @@ interface Host {
 - **差异：** 只在「祖先元素的响应式属性绑定」与「后代子 Host 的渲染」之间的先后。子 Host 的**构造**顺序与 CSR 相同（§2.4），组件类型 id 的分配顺序不变；滚动样式 id 在激活时从服务端写出的类上回收（`getHydrateRollingStyleBase` / `reclaimRollingStyleId`），不按调用顺序分配。
   - 服务端已经把响应式属性的当前值写进了 HTML（X3），所以子组件的 `useEffect` 在 DOM 上读到的值与 CSR 相同。
   - 能观察到的只有 effect 的创建先后，最终 DOM 与更新结果不受影响。
-  - 这一条是按源码推断的，没有在原型里验证；PR-B 以 `ssrStyles`、`styleContent*`、`ssrHydrate.lifecycle` 的全量用例确认。
+  - 这一条是按源码推断的，没有在原型里验证。调用 `hydrateRoot` 的 15 个 spec 文件（含 `ssrStyles`、`styleContent*`、`ssrHydrate.lifecycle`）从 B1 起对内部入口再跑一遍（§7.2），B4 结束时全部通过，这就是对它的确认。
 - **不变：** ref 的挂载、`useLayoutEffect` 的 attach 时机，以及 `useEffect` 在激活上下文之外执行，都不变（`ssrHydrate.lifecycle.spec.tsx` 覆盖）。select / option 的「props 在 children 之后」不变。
 
 ---
@@ -347,7 +362,7 @@ interface Host {
 
 | # | 写法 | 新模型下 | 迁移 |
 |---|---|---|---|
-| C1 | 组件函数体里持有 JSX 结果并调用 DOM 方法：`const input = <input/>; input.addEventListener(…)`、`.focus()`、`.appendChild()` | 激活期间是 `HydrationElement`，没有这些方法：生产环境 TypeError，开发期报告 | 改用 `ref`（`ref={el => …}` 或 `createRef`），在 ref 回调或 `useLayoutEffect` 里操作节点；事件用 JSX 的 `on*` props |
+| C1 | 组件函数体里持有 JSX 结果并调用 DOM 方法：`const input = <input/>; input.addEventListener(…)`、`.focus()`、`.appendChild()` | 是 `HydrationElement`，没有这些方法：生产环境 TypeError，开发期报告。这个值被闭包捕获时，激活结束后仍是描述（§3.1.1） | 改用 `ref`（`ref={el => …}` 或 `createRef`），在 ref 回调或 `useLayoutEffect` 里操作节点；事件用 JSX 的 `on*` props |
 | C2 | 写属性：`el.className = 'x'`、`el.dataset.k = …`、`el.style.color = …` | 描述不可扩展：严格模式（ES module、TS 编译的 class）下 TypeError；非严格模式静默丢失；开发期报告 | 写成 JSX props 或响应式 atom |
 | C3 | 读属性 / 测量：`el.textContent`、`el.getBoundingClientRect()` | 读到 `undefined` 或 TypeError；开发期报告 | ref + `useLayoutEffect` |
 | C4 | `instanceof HTMLElement` 判断 JSX 结果（如检查 children 的形态） | 激活期间为 `false`，分支与 CSR 不同；运行时无法检测 | 不要按节点类型检查 JSX 结果；需要时用 `isHydrationElement`（导出）同时判断 |
@@ -358,24 +373,103 @@ interface Host {
 | C9 | Portal content、ref 时机、`useEffect` / `useLayoutEffect`、在用户回调里 `createElement` / `createRoot().render()` | 不变（用户回调里仍然退出激活上下文，得到真实节点） | 无 |
 | C10 | 激活期间建好、但激活中**没有被渲染**的 JSX，激活结束后才第一次渲染。例如组件体里 `const rows = items.map(i => <li/>)` 只在关着的标签页里用，或 `const panel = <div/>` 只在 `() => open() ? panel : null` 的真分支里用 | 它们是没被消费的描述。之后经 CSR 路径渲染时，在 `createHost` 链尾的描述分支里按 CSR 物化，功能与 CSR 相同；但 DOM 形状多一个结构 Comment（作为元素 child 时多 `<!--unhandledChild-->`，作为列表行时按非 Compact 行多 `<!--rx list item-->`，作为数组项时多 `<!--array item-->`）。列表和数组里留下的是瘦身后的描述壳，每项一个小对象。开发期报告 `AXII_HYDRATION_ELEMENT_LATE_RENDER` | 把 JSX 的创建放进真正渲染它的函数子节点里（`() => open() ? <div/> : null`），激活之后才创建的 JSX 都是真实节点 |
 
-所有变化只发生在 `hydrateRoot` 期间；`createRoot().render()` 的 CSR 语义完全不变。
+描述只在 `hydrateRoot` 期间**创建**。被闭包、数据结构或模块变量持有的描述，在激活结束后仍是描述，它的影响可以晚到任何时候才出现（§3.1.1）。`createRoot().render()` 的 CSR 语义完全不变。
+
+#### 3.1.1 被捕获的描述：生命周期与表现
+
+这是本次契约变化里最容易到线上才暴露的形态。例如：
+
+```tsx
+function Search({}, {createElement}: RenderContext) {
+    const input = <input/>                       // 激活期间：描述
+    return <div>
+        {input}
+        <button onClick={() => input.focus()}>搜索</button>   // 用户点击时才执行
+    </div>
+}
+```
+
+CSR 下 `input` 是元素，这段代码正常；新模型激活时 `input` 是描述，`{input}` 能被正常认领并渲染，按钮也能点，但点击时 `input.focus()` 抛 TypeError。
+
+**生命周期。**
+1. 激活期间的 `createElement` 创建描述，`node` 为 `null`。
+2. 所属 Host 消费到它的位置时认领服务端节点（或失配时新建），写入 `node`，瘦身为只剩 `node` 的小壳。
+3. 框架释放自己对它的全部引用：`StaticHost.source` 换成元素，列表和数组写回节点（§3.3）。
+4. 用户代码还持有它时，它就以这个小壳的形态一直存在，**永远不会变成节点**。激活中没有被渲染的描述（C10）停在第 1 步，直到激活之后第一次被渲染、按 CSR 物化时才写入 `node`；它本身同样仍是描述。
+
+**各阶段的表现。** 同一个被捕获的描述，在哪个阶段被当作节点用，决定问题什么时候出现：
+
+| 阶段 | 描述此时的状态 | 问题出现的时间 |
+|---|---|---|
+| 组件函数体（返回 JSX 之前） | 未认领，`node` 为 `null` | 激活期间，同步出现 |
+| `useEffect`（组件的内层 Host 认领完之后同步执行，见 `ComponentHost.render` 先 `innerHost.render()` 再跑 effects） | 已认领，`node` 已写入，但仍是描述 | 激活期间，同步出现；未注册 `root.on('error')` 时 TypeError 会使 `hydrateRoot` 抛出 |
+| ref 回调 / `useLayoutEffect` | 已认领；ref 回调拿到的参数是真实节点，只有闭包里另外捕获的描述有问题 | 激活期间（容器已在文档中，attach 在 `hydrateRoot` 返回前同步派发） |
+| 激活之后的事件处理器、定时器、异步 effect、订阅回调 | 已认领的小壳 | **用户操作或异步回调执行时**，可能只在线上出现 |
+| 激活中从未渲染（C10） | 未认领，`node` 为 `null` | 同上 |
+
+**各种操作的表现。** 开发期（诊断开启）与生产只差「是否先报告」：
+
+| 操作 | 例子 | 生产 | 开发期 |
+|---|---|---|---|
+| 读元素属性 | `input.value`、`el.textContent`、`if (box.checked)` | **静默**得到 `undefined`；后续的 `.trim()` 之类再抛 TypeError | 先报告 `AXII_HYDRATION_ELEMENT_ACCESS`（属性名、JSX 位置、迁移提示），再得到 `undefined` |
+| 写属性 | `el.className = 'x'`、`el.dataset.k = …` | 严格模式（ES module、TS 编译产物）TypeError；非严格脚本**静默**丢失 | 先报告，再与生产相同（§3.4） |
+| 调方法 | `input.focus()`、`el.addEventListener(…)` | TypeError：`… is not a function` | 先报告，再 TypeError |
+| 当作节点传给 DOM API | `parent.appendChild(el)`、`observer.observe(el)`、`getComputedStyle(el)`、`a.contains(el)` | TypeError：参数不是 `Node` / `Element` | 同生产。DOM API 检查的是对象的内部槽，不经过 Proxy 的 get，开发期无法先报告 |
+| 比较身份、判断类型 | `el === ref.current`、`set.has(el)`、`el instanceof HTMLElement` | **静默**得到 `false` | 同生产。框架自己的分派链也用 `instanceof` 判断描述，不能在这里报告 |
+
+生产环境里静默的只有三种：读属性、非严格模式写属性、身份与类型比较。前两种在开发期都会被报告。第三种开发期也检测不到，只能靠文档与迁移说明（§3.1.2、PR D）。
+
+**不转发到 `node`。** 考虑过让认领后的描述把属性和方法转发到 `node`，不采用：
+- **认领之前没有可转发的对象：** 组件函数体里、C10 的描述 `node` 都是 `null`，转发救不了这两种。
+- **转发只能救一半：** DOM API 的参数检查看内部槽，`appendChild(el)`、`observer.observe(el)` 照样 TypeError；`el === ref.current`、`instanceof` 照样是 `false`。`el.focus()` 能用而 `observer.observe(el)` 不能用，失败与否取决于调用写法，比统一失败更难排查。
+- **生产也要 Proxy：** 转发必须拦截任意属性名，生产环境也得为每个元素分配 Proxy，框架读描述字段时都要经过 trap，激活变慢；DOM 方法以 Proxy 为 `this` 会抛 Illegal invocation，转发方法还要每次访问分配一个绑定函数，`el.focus !== el.focus`。
+- **只在开发期转发更糟：** 开发期能用、生产 TypeError，问题只会在线上出现。
+
+所以描述在两种环境里行为一致：不是节点，任何节点用法都失败；开发期在失败之前先报告并给出 JSX 位置。
+
+**仍有的风险与缓解。** 用户操作才触发的那一行在开发期也要真的被执行才会报告，单靠开发期测试不能保证覆盖。缓解：
+- 迁移说明（PR D）把「在组件函数体里把 JSX 结果存进变量，再在回调里当节点用」列为第一条要改的写法，并给出 ref 写法；
+- `hydrateRoot` 在 PR D 之前保持「实验性」标注。
+
+TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值（真实节点，契约不变），把它改成不透明类型会让 CSR 用户的合法代码编译失败，本设计不改类型。
+
+#### 3.1.2 迁移面：README 与 `site/` 示例
+
+在 `README.md`、`README-zh_CN.md`、`site/README.md` 与 `site/src` 的 40 个 `.ts` / `.tsx` 文件（`docs/snippets` 14 个、`examples` 12 个、`docs/docSections.ts`、页面与组件 13 个），共 43 个文件里搜索了下面几类写法：
+- JSX 结果赋给变量：`(const|let|var) x(: T)? = (<Tag`，用脚本跨行匹配，再查该变量是否有成员访问或被当作参数；
+- JSX 或 `createElement(…)` 的结果直接传给 DOM API：`appendChild(<…`、`insertBefore`、`observe(`；
+- 对 JSX 结果做 `instanceof` 判断或 `as HTML*Element` 断言；
+- 在回调里对节点调用方法：`.focus(`、`getBoundingClientRect`、`addEventListener`、`.style.`、`.classList`、`.textContent`、`dispatchEvent` 等。
+
+**结果：0 处需要迁移。**
+- 示例里所有对节点的访问都经由 `ref` 或事件对象：
+  - `site/src/docs/snippets/form.ts:15` 的 `ref={(el) => …}`；
+  - `site/src/docs/snippets/rxdom-state.ts:23` 与 `RxDOMSizeExample`、`RxDOMRectExample`、`RxDOMScrollPositionExample` 的 `ref={x.ref}`；
+  - `ComputedExample`（3 处）、`RxListExample`、`FormExample`、`AtomTwoWay` 的 `e.target as HTMLInputElement`。
+- 最接近的写法是 `README.md:101` / `README-zh_CN.md:95` 的 `{items.map(item => <li>{item}</li>)}`：行直接作为 JSX child 渲染，没有被当作节点用，属于 C5，激活后写回为节点，不受影响。
+- `site/src/examples/PortalExample.tsx:19` 的 `document.body.appendChild(portalRoot)` 操作的是 `document.createElement('div')` 的结果，不是 JSX。
+- 调用 `hydrateRoot` 的 15 个 spec 文件里同样没有这种写法（同一个脚本只命中一处泛型参数 `<T>`，是误报）。
+
+**搜不到的形态：** 把 JSX 放进对象或数组字面量再取出（`const refs = {input: <input/>}`）、写到 `this.x` 或外部模块变量、由 helper 函数返回后在别处使用。这些需要读调用链，脚本给不出结论；它们在示例里也没有出现。
+
+**对 PR D 的影响：** 不需要改写任何现有示例。文档工作是新增「hydration 的契约变化」一节（README 中英各一节、站点 `ssr` 一节）：C1–C10 与 §3.1.1，给出一个 ref 改写的前后对照，并说明开发期报告的格式。
 
 ### 3.2 框架内部把 JSX 结果当节点用的地方（修一类）
 
-PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。完成前 grep `createElement(` 的返回值在 `src/` 里的所有用法，补齐遗漏的。
+下列调用点在新模型下都会拿到描述，判定统一用 `isHydrationElement`。组件路径上的几处在 B1 改（核心协议要用到），其余在 B4 改；B4 完成前 grep `createElement(` 的返回值在 `src/` 里的所有用法，补齐遗漏的。表中的改动都是**在旧判定之后追加**，CSR 下旧判定先命中，不增加 CSR 路径上的检查。
 
-| 位置 | 现在 | 新模型 |
-|---|---|---|
-| `ComponentHost.createHTMLOrSVGElement` | `node.listenerBoundArgs = …` 写在返回值上 | 写在描述的预置字段上，认领时转交 |
-| 同上，`$name:_use` | `use instanceof Element` | `use instanceof Element \|\| isHydrationElement(use)` |
-| 同上，`$name:_eventTarget` | 闭包捕获 `node` 并 `dispatchEvent(node, …)` | 派发时取 `desc.node ?? node` |
-| `reusable()` / `ReusableHost` 构造 | `createHost(source)` 在调用时执行 | 命中 `createHost` 末尾的描述分支；激活期间不物化（§2.6.9） |
-| `impliedTableBody` | `c instanceof Element && TABLE_SECTION_TAGS.has(c.tagName)` | 看描述的 `tag` |
-| `RxListHost.createChildHost` 的 Compact 判定 | `item instanceof HTMLElement && !detachStyledChildren` | 激活路径用 §2.6.4 的唯一判定；CSR 路径不变。激活中渲染过的行已写回为节点；只有 C10 的情形（激活中没渲染过）会以描述进入 CSR 路径，落到非 Compact 分支 |
-| `StaticArrayHost` 的元素项判定 | `instanceof HTMLElement / DocumentFragment` | 激活路径看描述；CSR 路径不变 |
-| `createHost` 的 ComponentNode 判定 | `typeof source?.type === 'function'` | 描述没有 `type` 字段（§2.2），不会命中；描述分支放在链尾 |
-| `DOM.ts` `createElement` 组件分支的 Portal 预处理 | `isHydrating() && type.__axiiPortal` | 删除（§2.6.5） |
-| `Form.tsx` 等内置组件 | 需逐一检查是否在渲染期把 JSX 结果当节点用 | 有则改为 ref |
+| 位置 | 现在 | 新模型 | PR |
+|---|---|---|---|
+| `ComponentHost.createHTMLOrSVGElement` | `node.listenerBoundArgs = …` 写在返回值上 | 写在描述的预置字段上，认领时转交 | B1 |
+| 同上，`$name:_use` | `use instanceof Element` | `use instanceof Element \|\| isHydrationElement(use)` | B1 |
+| 同上，`$name:_eventTarget` | 闭包捕获 `node` 并 `dispatchEvent(node, …)` | 派发时取 `isHydrationElement(node) ? node.node : node` | B1 |
+| `reusable()` / `ReusableHost` 构造 | `createHost(source)` 在调用时执行 | 命中 `createHost` 末尾的描述分支；激活期间不物化（§2.6.9） | B4 |
+| `impliedTableBody` | `c instanceof Element && TABLE_SECTION_TAGS.has(c.tagName)` | 认领步骤里看描述的 `tag`，表格分区标签集合共用 | B1 |
+| `RxListHost.createChildHost` 的 Compact 判定 | `item instanceof HTMLElement && !detachStyledChildren` | 激活路径（`RxListHost.hydrate`）用 #68 落地的唯一判定；CSR 路径不变。激活中渲染过的行已写回为节点；只有 C10 的情形（激活中没渲染过）会以描述进入 CSR 路径，落到非 Compact 分支 | B2 |
+| `StaticArrayHost` 的元素项判定 | `instanceof HTMLElement / DocumentFragment` | 激活路径看描述；CSR 路径不变 | B2 |
+| `createHost` 的 ComponentNode 判定 | `typeof source?.type === 'function'` | 描述没有 `type` 字段（§2.2），不会命中；描述分支放在链尾 | B4 |
+| `DOM.ts` `createElement` 组件分支的 Portal 预处理 | `isHydrating() && type.__axiiPortal` | 旧模型专用，过渡期不动，S 删除（§2.6.5） | S |
+| `Form.tsx` 等内置组件 | 需逐一检查是否在渲染期把 JSX 结果当节点用 | 有则改为 ref | B4 |
 
 ### 3.3 RxList 与数组：认领后写回
 
@@ -395,19 +489,39 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 
 ### 3.4 误用的检测
 
-- **开发期（`isAxiiDiagnosticsEnabled()`）：** 激活期间的 `createElement` 返回 `Proxy(desc)`。
-  - **读：** 属性名是字符串、属于 DOM 的元素接口（`key in HTMLElement.prototype || key in SVGElement.prototype`）、不属于 `Object.prototype`、也不是 §2.2 的预置字段时，报告 `AXII_HYDRATION_ELEMENT_ACCESS`，内容包括属性名、JSX source（开发期有 `__source`）和迁移提示（「激活期间 JSX 返回的是描述，用 ref 拿节点」）。
-  - **写：** 预置字段以外的任何写入都报告。
-  - 按「是不是 DOM 接口的名字」判定，而不是维护允许名单：框架内部和语言本身对任意对象的探测都不会误报，例如 `createHost` 读 `source.type` 与 `__axiiSource`、Promise 解析读 `then`、`JSON.stringify` 读 `toJSON`、测试读 `constructor`，以及 symbol。
-  - 方法调用照常抛 TypeError，报告先于 TypeError 出现。
-  - Proxy 只在开发期分配。
+- **对象种类：** 激活开始时（`beginHydration`）按 `isAxiiDiagnosticsEnabled()` 定一次：开启时 `createElement` 返回 `Proxy(desc)`，关闭时返回 `desc` 本身。同一次激活内不变。Proxy 只在开发期分配。
+- **开发期 Proxy 的 trap：** 每个 trap 先判断要不要报告，然后把操作原样交给目标（`Reflect.get` / `Reflect.set`），所以开发期与生产的行为相同，只多一条报告。
+  - **读：** 满足下面全部条件时报告 `AXII_HYDRATION_ELEMENT_ACCESS`：
+    - 属性名是字符串，不是 §2.2 的预置字段，不属于 `Object.prototype`；
+    - 属性名属于**这个标签**的元素接口：取 `document.createElement(tag)`（SVG 用 `createElementNS`）的原型，按命名空间和标签缓存；
+    - 属性名不在框架探测名表里。这张表目前只有 `type`：`createHost` 用 `typeof source?.type === 'function'` 判定 ComponentNode，C10 的描述走到 `createHost` 时会读它，而 `type` 又是 `<input>`、`<button>` 的元素接口名。代价是开发期不报告用户读 `el.type`，这次读的结果仍是 `undefined`。
+
+    报告内容包括属性名、JSX source（开发期有 `__source`）和迁移提示（「激活期间 JSX 返回的是描述，用 ref 拿节点」），同一个 JSX 位置和属性名只报告一次。
+  - **为什么必须按标签：** 第一版草稿的规则是 `key in HTMLElement.prototype || key in SVGElement.prototype`。在 chromium 上核对过，`value`、`checked`、`href`、`type`、`src`、`disabled`、`selectionStart` 都不在这两个原型上，只在 `HTMLInputElement`、`HTMLAnchorElement` 等具体接口上，旧规则会漏报最常见的读法。`focus`、`textContent`、`dataset`、`style`、`getBoundingClientRect` 在两种规则下都能报告。
+  - **语言与框架的探测不误报：** Promise 解析读 `then`、`JSON.stringify` 读 `toJSON`、测试读 `constructor`、`createHost` 读 `__axiiSource`，以及 symbol，都不是元素接口名。
+  - **写：** 预置字段以外的任何写入都报告，然后 `Reflect.set` 到同一个不可扩展的目标并返回它的结果。目标拒绝写入时 trap 返回 `false`，严格模式下调用方得到与生产相同的 TypeError，非严格模式下同样静默丢失。框架代码都是 ES module，属于严格模式：框架内部要是往描述上写了预置字段以外的名字，开发期与生产都会抛错，不会出现「开发期只报告、生产才抛错」。
+  - **调方法：** 读到 `undefined`（先报告），调用时 TypeError。
 - **生产：**
   - 调方法抛 TypeError；
-  - 严格模式下写未知属性抛 TypeError（`preventExtensions`）；
+  - 严格模式下写未知属性抛 TypeError（`preventExtensions`），非严格模式静默丢失；
   - 读属性静默得到 `undefined`。
-  
-  文档写明这一点。
-- **文档：** README（中英）与站点 SSR 一节写明 C1–C9，并给出 ref 迁移示例（PR-C）。
+
+  各阶段、各操作的完整表现见 §3.1.1。
+- **用例环境与两遍验收：**
+  - **现状：** `vitest.config.ts` 定义了 `__DEV__: true`，`isAxiiDiagnosticsEnabled()` 在没有显式配置 `enabled` 时跟随 `__DEV__`，所以用例里诊断**默认开启**。但各文件的配置不同：
+    - `auditSsrHydrate.spec.tsx`（含 11 条与 F1i）在顶层 `beforeEach` 里 `configureDiagnostics({enabled: false, …})`，走的是**生产**的裸对象；
+    - `ssrHydrate.attrs-components / lifecycle / lists / smoke` 不配置，走 Proxy；
+    - `ssrHydrate.mismatch` 有 31 处显式 `enabled: true`，走 Proxy；
+    - 其余 8 个调用 `hydrateRoot` 的文件（`ssrStyles`、`styleContent*` 等），调用 `hydrateRoot` 的用例都在默认配置下运行，走 Proxy。`auditStylesFormsState`、`auditSsrCsrAttributeParity` 里的 `enabled: false` 只出现在不调用 `hydrateRoot` 的诊断用例里。
+
+    所以现在的全量门禁不是「只覆盖 Proxy」，而是两组文件各只覆盖一种对象。
+  - **验收（B4 起，S 之后保留）：** 调用 `hydrateRoot` 的 15 个 spec 文件在诊断开启、关闭下各跑一遍，两遍都全部通过。
+    - **机制：** 测试辅助函数包住激活入口：调用期间把 `enabled` 设为这一遍的值，`onError` 等其余配置照旧，返回后恢复。描述的种类在 `beginHydration` 时定，所以这样就决定了这一遍拿到 Proxy 还是裸对象。文件里不经过激活的诊断断言不受影响，例如 `auditStylesFormsState` 的「the warning is diagnostics-only」。`configureDiagnostics` 只能整体替换配置，没有读取接口，所以这些文件的 `configureDiagnostics` 也改从测试辅助模块导入，由它记下最近一次配置以便恢复。
+    - **怎样跑两遍：** 用 Vitest 3.2 的 `test.projects` 在 `vitest.config.ts` 里加一个只含这 15 个文件的项目，用 `define` 给出「这一遍」的常量。`npx vitest run` 一次跑完两遍，不新增门禁命令。
+    - **为什么可行：** `reportAxiiError` 无论 `enabled` 与否都调用 `onError`（`diagnostics.ts` 的 CAUTION），`HydrationMismatchError` 的收集不受开关影响。
+    - **例外：** 只在开发期出现的报告（`AXII_HYDRATION_ELEMENT_ACCESS` / `_LATE_RENDER` / `_LIVE_NODE` / `_ATTRIBUTE_RESIDUE` / `AXII_HYDRATION_INVARIANT`），断言按这一遍区分。
+    - 不改 `src/`，不加运行时开关。过渡期（B1–B4）这个辅助函数同时决定调用旧入口还是内部入口（§7.2）。
+- **文档：** README（中英）与站点 SSR 一节写明 C1–C10 与 §3.1.1，并给出 ref 迁移示例（PR D，范围见 §3.1.2）。
 
 ---
 
@@ -426,7 +540,7 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 - **失配路径上的认领清掉独有属性：** R1 的近似认领（id 漂移、向前查找后认领），以及同一父节点里已经报告过失配之后的认领，都是在应用 props **之前**就知道「这次认领可能跨了角色」的情形。这时先清空该元素的全部属性（先读走 `data-axii-ssr` 样式类），再按客户端 props 应用，结果与 CSR 新建相同。只在失配路径上发生，匹配路径零成本。
 - **干净认领不清理：** 失配在稍后才暴露的情形里，独有属性可能残留。例如客户端 `[span a, span b]`、服务端只有 `[span b′]`：`span a` 干净地认领了 `b′`，`span b` 到末尾才失配。
 - **开发期报告：** 诊断开启时，每次认领比较服务端属性名与客户端 props 会写的属性名，报告独有属性（`AXII_HYDRATION_ATTRIBUTE_RESIDUE`），残留不会静默。
-- PR-C 漂移 fuzz 的判定与这条边界一致（§7）。
+- B3 漂移 fuzz 的判定与这条边界一致（§7.4）。
 
 现在最危险的形态（监听器绑到另一个位置的元素上、内容被挪进别的元素）在新模型下不可能出现：不存在跨位置的认领。
 
@@ -452,7 +566,7 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 
 - **属性：** R1 的近似认领，以及父节点已报告失配之后的认领，先清空属性再应用 props（§4.1「属性的边界」）。
 - **R1–R3 的向前查找只在同一个父节点内**，最坏是 O(该父节点剩余节点数)，而且只在失配时发生。
-- **可选的重同步启发式：** 例如 F4c 里跳过服务端结构态函数的 `…computed node, axii:0` 以保住后面兄弟的 identity。按 §4.1 它们不影响正确性，但必须进入漂移 fuzz（PR-C）后才能加。本设计不要求。
+- **可选的重同步启发式：** 例如 F4c 里跳过服务端结构态函数的 `…computed node, axii:0` 以保住后面兄弟的 identity。按 §4.1 它们不影响正确性，但必须在漂移 fuzz（B3）落地之后才能加。本设计不要求。
 
 ### 4.3 F4a–F4d 走查
 
@@ -513,6 +627,7 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 | `ComponentHost.render` | 每个 `useEffect` 1 次 | `render()` 与 `hydrate()` 共用一个带布尔参数的私有方法；0 次全局读取 |
 | `LightBindingEffect` 属性更新 | 0 | 0 |
 
+- **上表的「新模型」一列是 S 合入后的状态。** 过渡期（B1–B4）旧模型的检查都还在，另外 `createElement` 多一次整数比较，逐个 PR 的 CSR 代价见 §7.3。
 - **Host 不新增字段。** 原型方法 `hydrate` 不占实例空间。`__axiiHydrated`、`__axiiHydrating` 等挂在实例上的临时字段一并删除，减少了隐藏类分叉。
 - **元素不新增字段。** 描述是独立对象，不挂在元素上。
 
@@ -523,11 +638,12 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
   - `StaticHost.source` 换成认领的元素；
   - 列表和数组写回（§3.3）。
 - 激活完成后的常驻对象与 CSR 渲染同一棵树相同。
-- 验收：`retainedObjectDiagnostics` 的「hydrate + destroy 后所有计数归零」照旧；PR-B 新增一条，确认激活 N 行列表后 `list.data` 里没有描述。
+- 验收：`retainedObjectDiagnostics` 的「hydrate + destroy 后所有计数归零」照旧；B2 新增一条，确认激活 N 行列表后 `list.data` 里没有描述。
+- **C10 的量化（D2，B4 验收）：** 激活中没有渲染过的列表（标签页、折叠区），之后第一次渲染时每行都是非 Compact 行，外加一个描述壳。B4 用 `retainedObjectDiagnostics` 对同一个 N 行列表比较两种情形：CSR 首次渲染，与「激活中建好、激活后才渲染」。给出每行多保留的对象数，按类型列出：Host（`StaticHost` 取代 `CompactElementHost`）、placeholder Comment、描述壳。数字写回本文。数字不可接受时，再考虑在 `createChildHost` 的非 Compact 分支上加一次描述判定，那是 CSR 列表新行路径上的一次常驻检查。
 
 ### 5.3 测量方法与原型数据
 
-**测量方法（PR-A、PR-B 的验收都用它）：**
+**测量方法（PR-A、B1、S 的验收都用它，见 §7.3）：**
 1. **构建：** 生产构建 `npm run build`，三份放在同一页面：A 是 origin/main，A′ 是 A 的逐字节副本（A/A 对照），B 是改动后的构建。
 2. **预热：** 每份 30 轮。
 3. **轮次：** 每轮随机打乱 A、A′、B 的顺序，至少 60 轮。
@@ -556,56 +672,144 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
   - 未配对中位数：A′/A 为 0.96–1.015，B/A 为 0.96–1.06；
   - 配对 B/A 为 1.007–1.008，恰好是一个计时刻度（0.1 ms / 13.3 ms ≈ 0.75%）；
   - `render` 一组每轮只有约 2 ms，分辨率约 5%，基本没有区分力。
-- **结论：** 在这台高负载机器上，低于约 1% 的差别分辨不出来，原型数据只能说明「没有可见回归」。PR-A / PR-B 必须按上面的方法（单次 ≥ 100 ms、低负载）重测，作为验收。
+- **结论：** 在这台高负载机器上，低于约 1% 的差别分辨不出来，原型数据只能说明「没有可见回归」。PR-A、B1、S 必须按上面的方法（单次 ≥ 100 ms、低负载）重测，作为验收。
 
 ---
 
 ## 6. 11 条 `test.fails` 的映射
 
-| 用例 | 现在的失败机制（§1.2） | 新模型下为什么通过 | 转为通过的 PR |
-|---|---|---|---|
-| F1b | 父级的 `<p>` 先于子组件认领，按后序拿走子组件的 `<p>` | App 的 `<div>` 先认领；`<Header/>` 在自己的位置渲染、消费 `<header>…</header>`，再认领 `unhandledChild`；然后 `<main>` 认领 main，`<p>` 认领 main 里的 `<p>` | PR-B |
-| F1f | 同上，组件输出比后面兄弟里的同标签元素浅 | 同上；不存在跨位置认领，也不会 `insertBefore` 挪动节点 | PR-B |
-| F1g | 同上，函数子节点 | FunctionHost 在自己的位置求值，消费 `<p>f</p>`，再认领 `computed node`、`axii:0` | PR-B |
-| F1h | 同上，抛错 | 同 F1b | PR-B |
-| F1j | 原始元素认领自己时搜到自己标记里的同标签节点 | 原始元素在游标处按位置认领，内容不透明（§2.6.2） | PR-B |
-| F3a | 文本态函数向前搜索，拿到结构态函数的锚点 | 每个函数先消费自己的内容，再在游标处认领自己的锚点；不向前搜索 | PR-B |
-| F3b | 外层函数拿到内层函数的锚点 | 内层的内容与锚点先被消费；外层在内层之后认领自己的 `computed node` 与 `axii:0` | PR-B |
-| F4a | 多出的客户端行静默缺失 | R1：插入新行并报告（§4.3） | PR-B |
-| F4b | 多出的服务端行静默留下 | R3：向前找到列表锚点，删除多余行并报告 | PR-B |
-| F4c | 文本插在 FTS 尾部，服务端元素静默留下 | R2 + R1 + R5：替换、插入、清扫并报告 | PR-B |
-| F4d | 抛错 | R1 + R3 + R4：新建 `<b>`、插入 `computed node` 和 `Text('')`，并报告 | PR-B |
+两列 PR 的含义（§7）：「内部入口上通过」是这条用例对不导出的内部入口那一遍（§7.2）开始通过的 PR；「`test.fails` → `test`」是公开的 `hydrateRoot` 切到新模型、把它改成 `test` 的 PR。
 
-**为什么都在 PR-B：** 一旦 `createElement` 返回描述，每个 Host 都必须消费描述，每种「期望的单元」也都必须有失配处理。否则失配时只能抛错，比现在更糟。所以切换、认领协议和 R1–R5 是同一个原子变更，见 §7。
+| 用例 | 现在的失败机制（§1.2） | 新模型下为什么通过 | 内部入口上通过 | `test.fails` → `test` |
+|---|---|---|---|---|
+| F1b | 父级的 `<p>` 先于子组件认领，按后序拿走子组件的 `<p>` | App 的 `<div>` 先认领；`<Header/>` 在自己的位置渲染、消费 `<header>…</header>`，再认领 `unhandledChild`；然后 `<main>` 认领 main，`<p>` 认领 main 里的 `<p>` | B1 | S |
+| F1f | 同上，组件输出比后面兄弟里的同标签元素浅 | 同上；不存在跨位置认领，也不会 `insertBefore` 挪动节点 | B1 | S |
+| F1g | 同上，函数子节点 | FunctionHost 在自己的位置求值，消费 `<p>f</p>`，再认领 `computed node`、`axii:0` | B1 | S |
+| F1h | 同上，抛错 | 同 F1b | B1 | S |
+| F1j | 原始元素认领自己时搜到自己标记里的同标签节点 | 原始元素在游标处按位置认领，内容不透明（§2.6.2） | B1 | S |
+| F3a | 文本态函数向前搜索，拿到结构态函数的锚点 | 每个函数先消费自己的内容，再在游标处认领自己的锚点；不向前搜索 | B1 | S |
+| F3b | 外层函数拿到内层函数的锚点 | 内层的内容与锚点先被消费；外层在内层之后认领自己的 `computed node` 与 `axii:0` | B1 | S |
+| F4a | 多出的客户端行静默缺失 | R1：插入新行并报告（§4.3） | B3 | S |
+| F4b | 多出的服务端行静默留下 | R3：向前找到列表锚点，删除多余行并报告 | B3 | S |
+| F4c | 文本插在 FTS 尾部，服务端元素静默留下 | R2 + R1 + R5：替换、插入、清扫并报告 | B3 | S |
+| F4d | 抛错 | R1 + R3 + R4：新建 `<b>`、插入 `computed node` 和 `Text('')`，并报告 | B3 | S |
 
-**`hydrateKnownDefect` 的连带：** `test.fails` 的守卫要求失败形态是「断言失败」，或者是「抛出匹配 reason 的错误」。PR-B 完成后这 11 条都会通过，按约定把 `test.fails` 改为 `test`，断言正文不改。
+**为什么分在 B1 和 B3：** F1b–F3b 只要求匹配路径上的认领协议，B1 就够。F4a–F4d 是失配用例，要等 B3 的 R1–R5。B1、B2 的内部入口遇到失配会报告 `HydrationMismatchError` 并抛出，不做修复；内部入口不公开，这样做没有影响。F4a、F4b 还用到列表，B2 之后才具备条件。
+
+**`hydrateKnownDefect` 的连带：** `test.fails` 的守卫要求失败形态是「断言失败」，或者是「抛出匹配 reason 的错误」。这个守卫只用在旧入口那一遍。内部入口那一遍里，这 11 条是普通的 `test`，在上表「内部入口上通过」的 PR 之前标为待实现（§7.2）。S 删除旧入口那一遍，把 `test.fails` 改为 `test`，断言正文不改。
 
 ---
 
 ## 7. 实现 PR 拆分
 
-| PR | 内容 | 转为通过 | 验收 |
+第一版把切换、认领协议和 R1–R5 放进一个原子的 PR-B。理由是：`createElement` 一旦返回描述，所有消费它的地方都必须同时改。这个前提只对**公开的** `hydrateRoot` 成立。如果新模型只在一个不导出的内部入口下启用，`createElement` 只在这个入口激活时返回描述，消费描述的各个 Host 就可以分几次实现。必须原子的只剩「把 `hydrateRoot` 切过去」这一步。本节按这个思路重新评估并改写拆分。
+
+### 7.1 评估：新模型经内部入口分步落地
+
+**结论：可行。** 依据是读 `DOM.ts` 的 `createElement`、`hydration.ts`、`render.ts` 和各 Host 的激活路径得到的下面五点。
+
+**1. 新模型的代码是新增的，不改旧模型的代码。**
+- 描述、新游标、认领步骤、`createHydrateHost`、各 Host 的 `hydrate(slot)` 原型方法、R1–R5 都是新的函数和方法。
+- 旧模型的激活逻辑都在 `createElement` 的循环和各 Host 的 `render()` 里，由 `isHydrating()` 守卫。
+- 新模型激活期间不调用任何 Host 的 `render()`：
+  - Host 由 `createHydrateHost` 创建，由父级调用 `hydrate(slot)`；
+  - 失配新建在 `runOutsideHydration` 里按 CSR 渲染，此时模式为「无」；
+  - 激活结束后的更新走 CSR。
+- 所以只要新模型激活时 `isHydrating()` 为假，旧分支一条都走不到，也不用改。
+
+**2. 状态：一个模式变量。** `hydration.ts` 的布尔量 `hydrating` 换成 `hydrationMode`，取值为「无 / 旧 / 新」：
+- `isHydrating()` 继续表示「旧模型激活中」，旧模型的调用点一行不改；
+- 新增 `isAnyHydrating()`，表示「任一模型激活中」；
+- `runOutsideHydration` 保存并恢复两个模型的状态，执行回调期间把模式置为「无」；
+- S 删除旧模型后，`hydrationMode` 退回布尔量，`isAnyHydrating()` 改名回 `isHydrating()`。
+
+**3. 现有 20 个 `isHydrating()` 调用点（`hydration.ts` 之外）逐个归类：**
+
+| 类别 | 调用点 | 过渡期 | S 之后 |
 |---|---|---|---|
-| **PR-A：激活路径与 CSR 路径分离（不改行为）** | 各 Host 新增 `hydrate()`，把现有的 `if (isHydrating())` 分支从 `render()` 搬进去，父级在激活时调用 `hydrate()`。认领仍用现在的模型。下标游标换成节点指针游标。`data0Contract.spec.tsx` 加入 §3.3 的写回契约。元数据路径拼接规则与「应用 props」各收成一个函数（§2.6.1） | 无（`test.fails` 不变） | 三道门禁全绿；`rxListFuzz`；§5.3 的 A/B/A′ 测量（预期 ≤ 噪声或略快）；`retainedObjectDiagnostics` 归零用例 |
-| **PR-B：切换到延迟描述与自顶向下认领（原子）** | `HydrationElement` 与唯一判定；`createHydrateHost`；所有 Host 的 `hydrate(slot)` 按 §2.5 消费；§2.6 的各种特殊形态；R1–R5；§3.3 写回；§3.4 的开发期 Proxy 与生产 `preventExtensions`；§3.2 的内部调用点；删除 §2.8 的代码；`ssr.ts` 的 Compact 判定改用共享谓词（若 §11 的范围外问题尚未单独修复，在此一并处理）；`claimCorners` 白盒用例迁移（§8）；F1i 生成器去掉排除项（组件、函数子节点、Fragment、F1j 写法，采用原型生成器） | F1b、F1f、F1g、F1h、F1j、F3a、F3b、F4a、F4b、F4c、F4d | 三道门禁全绿；`rxListFuzz`；扩展后的 F1i（300 棵，DOM ≡ CSR、无报告、服务端节点全部保留、监听器在自己的位置）；`ssrHydrate.*` 全部原断言；F1d 增长倍数接近 4 倍（线性）；§5.3 测量；开发期不变量（§4.4）在全量用例下不报告 |
-| **PR-C：漂移 fuzz 与文档收尾** | 漂移 fuzz：在 F1i 生成的树上随机注入行增减、元素 ↔ 文本、标签替换、插入杂节点、删除标记、文本篡改，断言：节点结构、文本、CSR 元素上每个属性的值都与 CSR 相同；至少一条报告；从不静默。服务端独有的属性只允许出现在已有报告的树里（§4.1「属性的边界」）；README（中英）、站点 SSR 一节、`ssr-support.md` 去掉「实验性」标注与已知局限，加入 §3.1 迁移说明；CHANGELOG 条目交给 #61 汇总 | （无新的 `test.fails`） | 门禁全绿；漂移 fuzz 300 棵 × 多种注入；文档检查脚本（`check-doc-coverage`、`check-exports`） |
+| 旧模型专用（13 处） | `DOM.ts`：`ensureHydrateDeferredPortalContent`（:805）、组件分支的 Portal 预处理（:1039）；`createHost.ts`：`EmptyHost.render`（:26）、`PrimitiveHost.render`（:58）、元素分支两处（:154、:156）；`AtomHost.render`（:97）；`StaticArrayHost`（:71）；`RxListHost` 三处（:107、:118、:242）；`StaticHost.render`（:1011）；`ReusableHost.render`（`ComponentHost.ts:1079`） | 不动。新模型激活时 `isHydrating()` 为假，这些分支都不会被走到 | 随旧模型删除 |
+| 两个模型共用的语义（3 处） | `ComponentHost.ts:817`（`useEffect` 退出激活上下文）、`render.ts:311`（`root.dispatch` 退出激活上下文）、`StaticHost.ts:361`（滚动样式 id 从服务端类回收） | 改为 `isAnyHydrating()`。仍是一次全局读加一次比较，成本不变 | 保留，名字改回 `isHydrating()` |
+| 需要按模式分流（4 处） | `DOM.ts:1057` `createElement` 开头；`FunctionHost.ts` effect 回调里文本快速返回之后的两处：Comment-ph 文本（:201）与结构路径（:232）；`Portal.tsx:90` | `createElement`：读一次模式，为「新」时返回描述（7.3）。`FunctionHost`：effect 回调在 `if (this.textNode)` 快速返回之后读一次模式，按「旧 / 新 / 无」三路分流，新模型的首次运行在这里认领；文本更新的快速路径不受影响。`Portal`：B4 加新模型分支，之前在新模型下显式抛错 | 只剩新模型的分支 |
 
-**为什么 PR-B 不能再拆：** 只要激活期间 `createElement` 返回的不是节点，所有消费它的地方就都必须同时改：
-- 静态元素、组件、函数、Fragment、列表行、数组项、Portal content、reusable；
-- 每一种期望的单元都需要失配处理。
+只有 `createElement` 那一处在热路径上，代价见 7.3。
 
-缩小 PR-B 的办法是把一切不改行为的准备放进 PR-A：游标、`hydrate()` 方法的骨架、路径规则和契约钉。
+**4. 公开入口走不到新模型。**
+- 内部入口放在自己的模块里，`src/index.ts` 与 `ssr.ts` 都不导出它，`src/` 里也没有别的地方导入它。
+- 构建时它会被 tree-shaking 去掉，公开产物里没有任何代码把模式置为「新」。留在产物里的新模型代码（描述类、Host 的 `hydrate` 原型方法、`createHydrateHost`、R1–R5）都执行不到。
+- 这一点不靠推断，作为每个 B PR 的验收来检查：`npm run build` 后，`dist/axii.js` 与 `dist/axii.cjs` 里找不到内部入口独有的字符串（例如它自己的报错文本；构建会改写标识符，但保留字符串字面量）。每个 PR 同时报告产物大小的变化。
+
+**5. 不是 §9 否决的运行时开关。**
+- 使用者无法选择模型：内部入口不导出，产物里也没有它。
+- 旧模型在 S 删除。两套模型只在 B1 到 S 之间同在 main 上，并且只有旧模型可达。
+- 第一个实现 PR（B1）就在真实 Host 上落地认领协议：`StaticHost`、`ComponentHost` 与 innerHost 共享 placeholder、`FunctionHost`、`AtomHost`。§9 列出的最大风险因此最先得到验证。所有用例的根都是组件，B1 必须包含这几种 Host。
+
+### 7.2 测试怎样先对内部入口跑
+
+- **激活入口的辅助函数：** 调用 `hydrateRoot` 的 15 个 spec 文件（共 208 处调用）在 B1 改为调用测试辅助函数 `hydrate(container, source, options?)`。替换是机械的。辅助函数按「这一遍」调用 `hydrateRoot` 或内部入口；B4 起还按这一遍设置诊断开关（§3.4）。
+- **两遍：** `vitest.config.ts` 用 Vitest 3.2 的 `test.projects`：
+  - 现有项目照旧跑全部用例，走 `hydrateRoot`（旧模型）；
+  - 新增一个只含这 15 个文件的项目，用 `define` 指定走内部入口。
+
+  `npx vitest run` 一次跑完，三道门禁的命令不变。
+- **待实现标记：** 内部入口那一遍里，用到尚未实现的形态的用例，用一个辅助函数 `pendingTopDown('B2')` 标出：这一遍跳过，旧入口那一遍照常运行。
+  - 未实现的形态在内部入口下显式抛错（「top-down entry: <kind> not implemented yet」），不回退到旧模型，也不静默。
+  - 每个 PR 的验收写明内部入口那一遍「通过 / 待实现」的用例数，以及它去掉了哪些标记。
+  - B4 要求标记数为 0。
+- **11 条：** 旧入口那一遍仍是 `test.fails` 加 `hydrateKnownDefect` 守卫；内部入口那一遍是普通 `test`，在 §6「内部入口上通过」的 PR 之前标为待实现。
+- **F1i：**
+  - 现有的 F1i 生成器含列表行，在内部入口那一遍从 B2 起运行；
+  - 扩展后的生成器（去掉对组件、函数子节点、Fragment、含自身标签的原始标记的排除）在 B2 加入，S 之前只在内部入口那一遍运行，因为旧模型不支持它新增的形态；
+  - S 用扩展后的生成器取代现有的，只扩大覆盖，不放宽断言。
+- **白盒用例：**
+  - `ssrHydrate.claimCorners.spec.tsx` 直接调用旧模型的内部函数，只在旧入口那一遍运行；
+  - 其中「hydrateRoot end-to-end claim corners」一组改用辅助函数，两遍都跑；
+  - 新游标 API 的白盒用例随代码进来（B1：文本单元、`axii:0`、字符数据父节点；B3：R1–R5）；
+  - 旧的白盒用例留到 S 删除，S 的报告逐条给出对应关系（§8，D3）。
+
+### 7.3 逐个 PR 的 CSR 代价
+
+| PR | CSR 热路径上的变化 | 测量 |
+|---|---|---|
+| PR-A | `createElement` 的「应用 props」与元数据路径拼接改为调用共用函数，做的事不变 | §5.3 的 A/B/A′，`createElement` 与 `render` 两组负载 |
+| B1 | `createElement` 开头：现在读一次 `hydrating`；改为读一次 `hydrationMode`，多一次整数比较（为「新」时返回描述），之后的 `hydrating` 由同一次读得出。其余热路径不变：共用语义的 3 处成本不变；`FunctionHost` 在文本快速返回之后仍是一次读；§3.2 的 `_use` / `_eventTarget` 追加在旧判定之后 | §5.3 的 A/B/A′，`createElement` 负载 |
+| B2 | 无。新增的是 `RxListHost.hydrate` / `StaticArrayHost.hydrate`，`createChildHost` 不动 | 不需要；照常跑 `rxListFuzz` |
+| B3 | 无 | 不需要 |
+| B4 | `createHost` 链尾的描述分支：常见类型在它之前就返回，到不了；`Portal` 渲染多一次比较，不在热路径上 | 不需要 |
+| S | 去掉旧模型的全部检查，得到 §5.1「新模型」一列 | §5.3 的 A/B/A′，三组负载，基线是 PR-A 之前的 main |
+
+### 7.4 PR 列表
+
+| PR | 内容 | 内部入口上转为通过 | 验收 |
+|---|---|---|---|
+| **PR-A：共用函数与契约（不改行为）** | 把 `createElement` 里「props 在 children 之后、`value` / `checked` 延后」的应用 props 与元数据路径拼接各收成一个函数（§2.6.1）。CSR 与旧模型的激活分支同在 `createElement` 里，都改用这两个函数；B1 的认领步骤再复用。`data0Contract.spec.tsx` 加入 §3.3 的写回契约。不碰任何旧模型专用的代码 | 无 | 三道门禁全绿；A/B/A′（7.3）；新契约用例 |
+| **B1：核心认领协议（匹配路径）** | `hydrationMode` 与 7.1 的三类调用点处理；`HydrationElement`、`isHydrationElement`、预置字段名用例（§2.2）；`createElement` 的新模型分支；节点指针游标（只给新模型用）；认领元素的步骤（§2.6.1，含原始标记、textarea、隐含 tbody、字符数据父节点、SVG）；`createHydrateHost`；根、`StaticHost`（元素与 Fragment）、`ComponentHost`、`FunctionHost`、`AtomHost`、`PrimitiveHost`、`EmptyHost` 的 `hydrate(slot)`；§3.2 里标为 B1 的调用点；开发期不变量（§4.4）；内部入口；7.2 的辅助函数与内部入口那一遍；新游标的白盒用例。失配时报告并抛出；列表、数组、Portal、`reusable`、`lazy`、现成节点显式抛错 | F1b、F1f、F1g、F1h、F1j、F3a、F3b | 三道门禁全绿（旧入口那一遍不变，11 条仍按预期失败）；内部入口那一遍全绿，列出通过 / 待实现数；A/B/A′；产物检查（7.1 第 4 点）与产物大小 |
+| **B2：列表与数组** | `RxListHost.hydrate`：Compact 用 #68 的判定，含嵌套 RxList 与写回；`StaticArrayHost.hydrate`：DirectNodes 与写回；扩展后的 F1i 生成器与 §2.4.1 的种类计数比较（已落地的种类） | 无新的 `test.fails`；现有 F1i、`ssrHydrate.lists` 在内部入口那一遍通过 | 三道门禁全绿；`rxListFuzz`；扩展后的 F1i（300 棵：DOM ≡ CSR、无报告、服务端节点全部保留、监听器在自己的位置）；种类计数逐树相等；F1d 增长倍数接近 4 倍（线性，内部入口）；激活后 `list.data` 里没有描述（§5.2）；产物检查 |
+| **B3：失配规则** | R1–R5（§4.2）；属性的边界（§4.1）；失配新建的元数据并入所属 StaticHost；R1–R5 的白盒用例；漂移 fuzz：在扩展后的 F1i 树上随机注入行增减、元素 ↔ 文本、标签替换、插入杂节点、删除标记、文本篡改，断言节点结构、文本、客户端 props 写下的属性与 CSR 相同，至少一条报告，从不静默，服务端独有属性只出现在已有报告的树里 | F4a、F4b、F4c、F4d；`ssrHydrate.mismatch` 在内部入口那一遍通过，§4.5 的断言保持 | 三道门禁全绿；漂移 fuzz 300 棵 × 多种注入；产物检查 |
+| **B4：其余形态与开发期检测** | Portal / `createPortal`（新游标栈）；`reusable()` 与 `createHost` 链尾的描述分支（C6、C10）；`lazy`；现成节点与 NodeHost（§2.6.8）；§3.2 里标为 B4 的调用点（含 `Form.tsx`）；开发期 Proxy 与各条开发期报告（§3.4）；诊断开、关两遍（§3.4）；C10 的量化（§5.2） | 剩下的待实现标记全部去掉 | 三道门禁全绿；内部入口那一遍 15 个文件、待实现 0、诊断开关两遍都全绿；种类计数要求覆盖全部种类（§2.4.1）；C10 每行多保留的对象数写回 §5.2；内部入口激活加销毁后 `retainedObjectDiagnostics` 计数归零；产物检查 |
+| **S：切换** | `hydrateRoot` 改用新模型（内部入口的实现就是它）；删除旧模型：§2.8 的代码、7.1 表里旧模型专用的 13 处、按模式分流处的旧分支与 `createElement` 循环里的旧分支、旧的 `hydratePortalContent`；`hydrationMode` 退回布尔量；删除旧入口那一遍与辅助函数里的入口切换（保留诊断开关两遍）；11 条 `test.fails` 改为 `test`；删除旧的 `claimCorners` 白盒用例并逐条给出对应（§8）；更新 `auditSsrHydrate` 的文件头注释、F1 的 describe 标题与 #54 留下的「已知局限」注释；`ssr-support.md` §3.1 / §3.7 的正文 | 11 条在公开的 `hydrateRoot` 上通过 | 三道门禁全绿（含诊断开关两遍）；`rxListFuzz`；A/B/A′（基线为 PR-A 之前的 main）；开发期不变量在全量用例下不报告；除接线外没有新逻辑，diff 以删除为主 |
+| **D：文档** | README（中英）、站点 `ssr` 一节：新增「hydration 的契约变化」，内容是 C1–C10、§3.1.1 与 ref 改写的前后对照（范围见 §3.1.2）；去掉「实验性」标注与 #54 的已知局限；CHANGELOG 条目交给 #61 汇总 | — | 站点检查脚本（`check-doc-coverage`、`check-exports`）；门禁全绿 |
+
+每个 PR 都单独满足「门禁全绿、可以合入 main」。哪一个中途停下，main 上留下的都是一份完整、不可达、有用例覆盖的新模型子集，不是一条合不进去的分支。
+
+### 7.5 发布
+
+- 建议在 B1 合入到 D 合入之间不发版。
+- 必须发版时：公开行为不变（7.1 第 4 点），只是包体积变大；数字见各 PR 报告的产物大小。
+- S 与 D 之间发版，会发出改了契约却没有迁移说明的版本，所以 D 应紧跟 S 合入。
 
 ---
 
 ## 8. 既有用例的预期变化（逐条）
 
 **`__tests__/auditSsrHydrate.spec.tsx`：**
-- 11 条 `test.fails` 改为 `test`，断言正文不改。
-- 文件头注释、F1 的 describe 标题与 #54 留下的「已知局限」注释同步更新。
-- F1i 生成器去掉对组件、函数子节点、Fragment、含自身标签的原始标记的排除，覆盖面扩大，不放宽任何断言。
+- S：11 条 `test.fails` 改为 `test`，断言正文不改。
+- S：文件头注释、F1 的 describe 标题与 #54 留下的「已知局限」注释同步更新。
+- B2 加入、S 取代现有生成器：F1i 生成器去掉对组件、函数子节点、Fragment、含自身标签的原始标记的排除，覆盖面扩大，不放宽任何断言（§7.2）。
 
-**`__tests__/ssrHydrate.claimCorners.spec.tsx`（白盒，直接调用 `src/hydration.ts` 的内部函数）。** 以下用例针对的函数在新模型中删除，由同一行为在新游标 API 上的用例替换。PR-B 在报告里逐条列出新旧对应：
+**`__tests__/ssrHydrate.claimCorners.spec.tsx`（白盒，直接调用 `src/hydration.ts` 的内部函数）。** 以下用例针对的函数在新模型中删除，由同一行为在新游标 API 上的用例替换。
+- 替换用例随新模型的代码进来：文本单元在 B1，R1–R5 在 B3。
+- 旧用例在 S 删除。
+- S 的报告逐条列出「删除的用例 → 有名字的替换用例或黑盒用例」（D3）。凡是写「由 fuzz 覆盖」的，必须指出是生成器里的哪种形态，下表已按这个要求写。
 
 | describe | 用例 | 处理 |
 |---|---|---|
@@ -613,7 +817,7 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 | `cursor comment claiming corners` | `advanceCursorUntilComment` 抛错、`claimComputedNodeBefore` 抛错、`claimFragmentStartBefore` 两条、`claimEmptyHostCommentBefore` 抛错、`claimEmptyHostComment` 扫描根 | 函数删除；以 R3（结构 Comment 认领、向前查找、插入）的用例替换 |
 | | `claimCommentAtCursor` 抛错 | 改为 R3 的「找不到 → 插入并报告」。**这是行为变化：现在抛错，新模型报告并修复**，与 §3.7「生产不整页失败」一致 |
 | `claimTextBeforeCommentPlaceholder corners` | 3 条 | 函数删除（Comment-ph 在游标处认领文本）；以 Comment-ph 的游标用例替换。其中「元素紧挨在 placeholder 前面时抛错」变为 R2 的替换并报告 |
-| `stripAxiiTextBoundariesBetween` | 1 条 | 函数删除；Fragment 内容在同一遍消费中去掉包边，由 N2 系列与 fuzz 覆盖 |
+| `stripAxiiTextBoundariesBetween` | 1 条 | 函数删除；Fragment 内容在同一遍消费中去掉包边。黑盒：N2 系列（`auditSsrHydrate`「N2 Fragment with an element that has its own dynamic child, followed by a dynamic sibling」）；fuzz：扩展后 F1i 生成器的「Fragment 描述作为元素 child，子节点含静态文本与 atom」形态 |
 | `element claim cursor paths (§3.7 D-series at cursor)` | 7 条 | 行为保留（R1）；改调新 API。「same-tag empty-id defers claiming」与「same-tag without id rejected when children do not fit」两条服务于 Portal 提前认领与 EmptyHost 布局壳的推断，在新模型中没有对应情形，删除，由 k15–k19 黑盒用例覆盖 |
 | `element claim deep-walk candidate fits` | 5 条 | 深度遍历与候选适配推断删除；对应的黑盒用例（`ssrHydrate.lifecycle` 的 Portal 系列）保留 |
 | `claim helpers error contracts` | `createElementForHydrateMismatch` 两条 | 改为 R1 新建的用例（含 SVG 命名空间） |
@@ -621,10 +825,10 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 | | `findRootComment` | 保留 |
 | `trailing cleanup at element cursor (D10/D11)` | 「host-structure markers ahead guard」 | 防护删除（父元素结束时子 Host 已消费完）；以「有 Host 时尾部杂节点照样清扫」替换 |
 | | 「cleanup skips …」 | 保留（R5） |
-| `Fragment reconcile walk branches` | 全部 10 条 | 函数删除；黑盒等价覆盖见 N1、N2、F2c 与 fuzz |
+| `Fragment reconcile walk branches` | 全部 10 条 | 函数删除。黑盒：N1a / N1b（数组含 `null` / boolean 项，元素 child 与 Fragment 根两种）、N2 系列、F2c（Fragment 根与数组 DirectNodes 的文本）、F3b（函数 → Fragment → 函数）；fuzz：扩展后 F1i 生成器的「Fragment 作为组件根」「Fragment 作为函数结构态的值」「Fragment 作为列表行」三种形态。S 的报告把 10 条逐条对到其中一个 |
 | `hydrateRoot end-to-end claim corners` | 全部 | 保留 |
 
-**其余文件：** 预计不改断言。下面写明每个文件的确认程度，PR-B 以全量门禁最终确认。
+**其余文件：** 预计不改断言。下面写明每个文件的确认程度；B1–B4 在内部入口那一遍逐步确认，S 以全量门禁最终确认。
 - `ssrHydrate.mismatch.spec.tsx`：断言预计全部保留，逐条走查的范围见 §4.5；「matched path」与 retained 计数两条没有失配，未单独走查。
 - `ssrHydrate.lifecycle.spec.tsx`：读过用例标题与 Portal 系列断言（「不得认领主树的同标签兄弟」、content identity），预计保留；只更新注释里的 `claimElement` 字样。
 - `ssrHydrate.lists`、`attrs-components`、`smoke`：读过其中检查 Host 内部形态的断言。这些断言检查的是：
@@ -637,7 +841,7 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 - `ssrAdjudication*`、`ssrReview*`：不调用 `hydrateRoot`，不受影响。
 - `ssrStyles`、`styleContent*`、`contentAddressedStyles`、`auditStylesFormsState`、`auditSsrCsrAttributeParity`：只有黑盒断言（不读 Host 内部字段），预计保留；依赖 §2.9 的样式 id 推断，没有逐条走查。
 
-> 待协调者确认：白盒用例按上表迁移。AGENTS.md 要求不删既有用例，但被测函数本身在新模型中不存在。
+> 已定（D3）：白盒用例按上表迁移。AGENTS.md 要求不删既有用例，但被测函数本身在新模型中不存在；按上面的要求逐条给出对应。
 
 ---
 
@@ -645,20 +849,23 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 
 | 风险 | 说明 | 缓解 |
 |---|---|---|
-| **Host 认领协议未在真实 Host 上原型验证**（最大的未验证点） | 原型验证的是遍历语法与位置对齐（§10）。真实 Host 还会在认领前读 `this.placeholder`，例如 `parentElement` getter、错误路径的 `placeholder.remove()`、`resetOptionOwnerSelect`、`isConnected`，以及 ComponentHost 与 innerHost 共享 placeholder | PR-B 逐个 Host 审计认领前对 placeholder 的读取；slot 常量不是节点，误用立即 TypeError；开发期不变量（§4.4）；扩展后的 F1i 与全量用例 |
-| 使用者依赖「激活期间 JSX 是节点」 | 公开契约变化（§3.1） | 开发期 Proxy 报告；生产 TypeError（方法、严格模式写入）；README 与站点迁移说明；`hydrateRoot` 在 PR-C 之前仍标实验性 |
+| **Host 认领协议未在真实 Host 上原型验证**（最大的未验证点） | 原型验证的是遍历语法与位置对齐（§10）。真实 Host 还会在认领前读 `this.placeholder`，例如 `parentElement` getter、错误路径的 `placeholder.remove()`、`resetOptionOwnerSelect`、`isConnected`，以及 ComponentHost 与 innerHost 共享 placeholder | B1 就在真实的 `StaticHost`、`ComponentHost`（含与 innerHost 共享 placeholder）、`FunctionHost`、`AtomHost` 上落地协议，最先验证这一点（§7.1 第 5 点）；每个 B PR 审计所实现的 Host 在认领前对 placeholder 的读取；slot 常量不是节点，误用立即 TypeError；开发期不变量（§4.4）；内部入口那一遍的全量激活用例与扩展后的 F1i |
+| 使用者依赖「激活期间 JSX 是节点」 | 公开契约变化（§3.1） | 开发期 Proxy 报告；生产 TypeError（方法、严格模式写入）；README 与站点迁移说明（PR D）；`hydrateRoot` 在 PR D 之前仍标实验性 |
+| **被闭包捕获的描述**（最容易到线上才暴露） | 激活结束后仍是描述，问题在用户操作时才出现；生产环境读属性静默得到 `undefined`，身份比较静默为 `false`（§3.1.1） | 不转发，开发期与生产行为一致；开发期在每次访问时报告并给出 JSX 位置；迁移说明把这种写法列为第一条；示例里没有这种写法（§3.1.2）。身份与类型比较在开发期也检测不到，只能靠文档 |
+| 过渡期两个模型同在 main 上 | B1 到 S 之间，旧模型与不可达的新模型代码并存 | 内部入口不导出、产物里没有它（每个 B PR 检查）；B1 到 D 之间不发版（§7.5）；S 删除旧模型 |
 | 副作用顺序与 CSR 不同（§2.9） | 祖先响应式属性的绑定晚于后代子 Host 的渲染 | 服务端已写入属性初值，DOM 观察一致；lifecycle 用例覆盖 attach 时机 |
 | 依赖 data0 的 `RxList.data` 写回 | 非文档行为 | `data0Contract.spec.tsx` 钉住；契约失效时退回「瘦身不写回」 |
-| 失配重同步丢失 identity | 双重失配时复用的节点变少 | 不变量保证正确性（§4.1）；漂移 fuzz（PR-C） |
-| 激活自身的分配 | 每个元素多一个描述对象 | 线性遍历取代二次搜索，总时间预期下降（F1d）；PR-B 记录激活耗时前后数字 |
-| 激活中没被渲染的描述（C10） | 激活结束后第一次渲染时 DOM 多一个结构 Comment；列表 / 数组里留描述壳 | 功能与 CSR 相同；开发期报告；迁移写法见 C10。若要严格同形，需要在 CSR 的非元素分支（`createElement` 的非函数动态 child、`createChildHost` 的非 Compact 分支、`StaticArrayHost` 的非元素项）各加一次 `instanceof` 判定，会给组件行、函数行的创建加一次常驻检查，本设计不采用，留给协调者决定（§12） |
+| 失配重同步丢失 identity | 双重失配时复用的节点变少 | 不变量保证正确性（§4.1）；漂移 fuzz（B3） |
+| 激活自身的分配 | 每个元素多一个描述对象 | 线性遍历取代二次搜索，总时间预期下降（F1d）；B2 在内部入口上记录激活耗时，S 记录切换前后的数字 |
+| 激活中没被渲染的描述（C10） | 激活结束后第一次渲染时 DOM 多一个结构 Comment；列表 / 数组里留描述壳 | 功能与 CSR 相同；开发期报告；迁移写法见 C10。D2 已定：接受多一个结构 Comment，B4 用 `retainedObjectDiagnostics` 量化每行多保留的对象并写回 §5.2。数字不可接受时，再考虑在 `createChildHost` 的非 Compact 分支上加一次描述判定（CSR 列表新行路径上的常驻检查） |
 | 服务端独有属性残留 | 干净认领、失配稍后暴露时（§4.1） | 失配路径上清理；开发期报告；与现状相同，不比现在差 |
 | 与 #50 / #52 / #56 的交叉 | 都动 `DOM.ts` / `hydration.ts` | 本设计只依赖「原始标记不透明」「表单 props 在子节点之后应用」「命名空间由描述决定」这三个接口；冲突按合入顺序合并 |
 
 **回退：**
-- PR-B 是唯一改变行为的 PR，回退 PR-B 即恢复现在的认领模型。PR-A 不改行为，可以保留。
+- PR-A、B1–B4 不改公开行为：B1–B4 的新代码只有内部入口可达。其中任何一个出问题，回退它本身即可，使用者感知不到。
+- S 是唯一改变公开行为的 PR。回退 S 即恢复现在的认领模型：S 删除的旧模型代码随回退恢复，B1–B4 的代码留在 main 上，仍然不可达。
 - 服务端格式不变，回退不涉及服务端发版，也不需要兼容分支。
-- 不提供「旧认领模型」的运行时开关：两套认领模型并存会把 §2.8 的全部启发式留在包里，也违反「不加兼容分支」。
+- 不向使用者提供「旧认领模型」的运行时开关：两套认领模型一起发布，会把 §2.8 的全部启发式留在包里，也违反「不加兼容分支」。过渡期的内部入口不是这种开关（§7.1 第 5 点）：它不导出，产物里没有它，S 之后旧模型不复存在。
 
 ---
 
@@ -691,8 +898,9 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
 `createElement` 零开销的原型测量见 §5.3。
 
 **没有验证的：**
-- 真实 Host 上的认领协议（§9 第一行）；
-- 失配修复后的 DOM ≡ CSR：walker 只检测失配位置，不做修复。修复的正确性由 §4.1 的不变量论证，留给 PR-B 的用例与 PR-C 的漂移 fuzz；
+- 真实 Host 上的认领协议（§9 第一行），由 B1 最先验证；
+- 失配修复后的 DOM ≡ CSR：walker 只检测失配位置，不做修复。修复的正确性由 §4.1 的不变量论证，留给 B3 的用例与漂移 fuzz；
+- 新旧模型经内部入口并存（§7.1）：由读源码得出，没有写原型；B1 的产物检查与全量门禁是它的验证；
 - `RxList.data` 按下标写回不触发：只读了 data0 2.16.0 的 `map` 实现，没有运行，留给 PR-A 的契约用例；
 - §5.3 的 B 组「激活分支被常量折叠」：只确认了 B 的产物里有描述分支，没有逐行检查折叠结果（原型产物已删除）；
 - §2.9 的副作用顺序与样式 id 结论：按源码推断，没有运行；
@@ -707,19 +915,26 @@ PR-B 必须逐一改掉下列调用点，判定统一用 `isHydrationElement`。
   - CSR：`<li><span>1</span></li><!--rx list item--><!--unhandledChild-->`；
   - 服务端：`<li><span>1</span></li><!--unhandledChild-->`（缺行级 Comment）。
   
-  激活时这一行的结构对不上。按 §2.6.4，两边应共用一个判定。建议单独开 issue；若 PR-B 之前未修，PR-B 一并处理。
-- **#54 报告的疑点不再存在。** 疑点是 `createElementForHydrateMismatch` 新建的元素没有登记为已认领，之后的无游标认领可能拿到它。新模型没有无游标认领，PR-B 之后不再成立，无需单独处理。
+  激活时这一行的结构对不上。按 §2.6.4，两边应共用一个判定。协调者已单独开 #68，排在实现 PR 之前修；B2 直接使用 #68 落地的判定。
+- **#54 报告的疑点不再存在。** 疑点是 `createElementForHydrateMismatch` 新建的元素没有登记为已认领，之后的无游标认领可能拿到它。新模型没有无游标认领，S 之后不再成立，无需单独处理。
 
 ---
 
-## 12. 需要协调者决定的取舍
+## 12. 取舍：已定
 
-| # | 取舍 | 建议 |
-|---|---|---|
-| D1 | 列表 / 数组在认领后写回真实节点（§3.3），依赖 `RxList.data` 可按下标写而不触发 | 采用。激活后的常驻对象与 CSR 相同，`list.data[i]` 与 CSR 一致；PR-A 先用 `data0Contract` 钉住，钉不住就退回「瘦身不写回」并单独接受每行一个壳的回归 |
-| D2 | C10（激活中没渲染过的描述）多一个结构 Comment，还是在 CSR 非元素分支加 `instanceof` 求严格同形 | 接受多一个 Comment，CSR 热路径零新增检查；开发期报告并给出迁移写法 |
-| D3 | `claimCorners` 白盒用例按 §8 迁移（被测函数在新模型中不存在） | 同意迁移，每条在 PR-B 报告里给出新旧对应 |
-| D4 | 属性边界（§4.1）：干净认领不清理服务端独有属性 | 接受。这是现状，开发期报告；要在生产里完全清理，需要对每次认领逐个比较属性，激活成本明显上升 |
-| D5 | 副作用顺序（§2.9）：祖先响应式属性的绑定晚于后代子 Host 的渲染 | 接受；子 Host 的构造顺序与 CSR 相同，样式与类型 id 不受影响 |
-| D6 | PR-B 是一个大的原子 PR（§7） | 接受；PR-A 先把不改行为的部分拆出去，PR-B 的回退面只有它自己 |
-| D7 | 服务端 Compact 判定的范围外缺陷（§11） | 单独开 issue 先修；来不及的话在 PR-B 里一并改用共享判定 |
+第一轮审阅时由协调者按维护者授权决定。下表「结论」一列是协调者的决定，「落实位置」是本文据此改动或要求的地方。
+
+| # | 取舍 | 结论 | 落实位置 |
+|---|---|---|---|
+| D1 | 列表 / 数组在认领后写回真实节点（§3.3），依赖 `RxList.data` 可按下标写而不触发 | 采用写回，先在 PR-A 用 `data0Contract.spec.tsx` 钉住契约 | §3.3；§7.4 PR-A、B2 |
+| D2 | C10（激活中没渲染过的描述）多一个结构 Comment，还是在 CSR 非元素分支加判定求严格同形 | 接受多一个结构 Comment，但要量化：激活时没渲染的列表（标签页、折叠区）之后每行都是非 Compact 行，外加一个描述壳。用 `retainedObjectDiagnostics` 给出每行多保留多少，写进本文；数字不可接受时，再考虑非 Compact 分支上的那次判定 | §5.2「C10 的量化」；§7.4 B4 的验收；§9 |
+| D3 | `claimCorners` 白盒用例按 §8 迁移（被测函数在新模型中不存在） | 同意迁移。报告要逐条给出「删除的用例 → 有名字的黑盒用例」；只写「由 fuzz 覆盖」的，要指出是生成器里的哪种形态 | §8（已按此要求写出 Fragment 两组的对应）；§7.2；§7.4 S |
+| D4 | 属性边界（§4.1）：干净认领不清理服务端独有属性 | 接受。#55 验收里的「修复为 CSR 结果」因此限定为**节点结构、文本和客户端 props 写下的属性**，这个口径由协调者写到 #55 上 | §4.1；§7.4 B3 漂移 fuzz 的判定 |
+| D5 | 副作用顺序（§2.9）：祖先响应式属性的绑定晚于后代子 Host 的渲染 | 接受 | §2.9 |
+| D6 | PR 拆分（§7） | 不按第一版的「原子 PR-B」接受，按「内部入口分步落地、最后切换」评估。评估结论为可行，§7 已据此改写 | §7 |
+| D7 | 服务端 Compact 判定的缺陷（§11） | 已单独开 #68，排在实现 PR 之前修；本设计引用 #68 | §2.6.4；§3.2；§11 |
+
+**仍需协调者确认的事**（本轮新出现的，各附建议）：
+- **过渡期不发版（§7.5）：** 建议 B1 合入到 D 合入之间不发版，D 紧跟 S 合入。
+- **Proxy 读探测的排除表（§3.4）：** 建议接受「目前只排除 `type`」。代价是开发期不报告用户读 `el.type`；为了报告它，要把 `createHost` 的描述分支挪到 ComponentNode 判定之前，那会给每次组件的 `createHost` 加一次检查。
+- **诊断开、关两遍在 S 之后长期保留（§3.4）：** 建议保留，开发期与生产拿到的是两种对象。代价是 15 个激活相关文件多跑一遍，不新增门禁命令。
