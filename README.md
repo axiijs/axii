@@ -56,6 +56,8 @@ cd myapp
 npm run dev
 ```
 
+Upgrading from an earlier version? [CHANGELOG.md](./CHANGELOG.md) lists the behavior changes in each release and how to migrate.
+
 ## ⚡ Quick Start Example
 
 Below is a simple example showing how to use reactive atomic data and bind it to a DOM property:

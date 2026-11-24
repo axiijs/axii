@@ -52,6 +52,8 @@ cd myapp
 npm run dev
 ```
 
+从旧版本升级？每个版本的行为变化与迁移方式见 [CHANGELOG.md](./CHANGELOG.md)（英文）。
+
 ## ⚡ 快速上手示例
 
 以下是一个简单示例，展示如何使用响应式原子数据并绑定到 DOM 属性中:
