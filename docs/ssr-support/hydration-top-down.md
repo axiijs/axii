@@ -943,7 +943,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 
 ## 11. 范围外发现（只列出，未修）
 
-- **函数结构态的值又是函数（B1 发现，服务端缺陷）。** `{() => () => x}`：CSR 里内层 FunctionHost 的 placeholder 是外层的 `<!--computed node-->`（Comment-ph），服务端 `ssr.serializeStructureResult` 却经 `serializeChild` 按 Text-ph 写内层，多出一个 `<!--axii:0-->`（内层结构态时在内层的 `computed node` 之后）。旧模型激活后，x 为空时留下这个 `axii:0`，x 是元素时抛错；新模型在认领处报告并抛出（B3 的 R3 会删除它并报告）。根治在服务端：函数结果按 Comment-ph 写（`serializeFunctionHost(result, out, 'comment')`）。`hydrateTopDown.spec` 里有一条 `test.fails` 钉住它。atom 结果不受影响（服务端按 Comment-ph 写）。
+- **函数结构态的值又是函数（B1 发现，服务端缺陷；#82 已修复）。** `{() => () => x}`：CSR 里内层 FunctionHost 的 placeholder 是外层的 `<!--computed node-->`（Comment-ph），服务端 `ssr.serializeStructureResult` 却经 `serializeChild` 按 Text-ph 写内层，多出一个 `<!--axii:0-->`（内层结构态时在内层的 `computed node` 之后）。旧模型激活后，x 为空时留下这个 `axii:0`，x 是元素时抛错；新模型在认领处报告并抛出（B3 的 R3 会删除它并报告）。根治在服务端：函数结果按 Comment-ph 写（`serializeFunctionHost(result, out, 'comment')`）。#82 按此在服务端修复：`serializeStructureResult` 对函数、RxList、reusable 结果走与根相同的 Comment-ph 分派（同一处曾给 RxList / reusable 多写一个 `unhandledChild`），数组项里的 atom 按 Comment-ph 写（空值不再写 `axii:0`）；`hydrateTopDown.spec` 里那条 `test.fails` 已翻转为 `test`，两个入口的用例在 `ssrHydrate.functionValues.spec.tsx`。atom 结果不受影响（服务端按 Comment-ph 写）。
 
 - **服务端 Compact 判定与 CSR 不一致（已在 chromium 复现）。** `serializeRxListRow` 只看行元素自己的 `detachStyle`，CSR 的 `detachStyledChildren` 还包括后代提升上来的。
   - 写法：`list.map(i => <li><span detachStyle={…}>{i}</span></li>)`；
