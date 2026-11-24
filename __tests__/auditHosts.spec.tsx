@@ -1109,3 +1109,45 @@ describe('audit follow-up: bulk row removal and what the row cleanups did to the
         r.destroy()
     })
 })
+
+describe('audit follow-up: rows that are still leaving are not retained by the list', () => {
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    function renderLeaving(el: HTMLElement) {
+        const r = createRoot(el)
+        const list = new RxList<string>(['stay', 'leave'])
+        r.render(<ul>{list.map(item => item === 'leave' ?
+            <li id="leave" style={{opacity: 1, transition: 'opacity 0.1s'}} detachStyle={{opacity: 0}}>leave</li> :
+            <li id="stay">stay</li>)}</ul>)
+        const listHost = (r.host as any).reactiveHosts
+        expect(Array.isArray(listHost.hosts)).toBe(true)
+        return {r, list, listHost}
+    }
+    beforeEach(() => { document.body.innerHTML = '' })
+
+    test('L1: the leaving row is released once its exit animation has removed it', async () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        const {r, list, listHost} = renderLeaving(el)
+        await sleep(30)
+        const leave = document.getElementById('leave')!
+        list.splice(1, 1)
+        await sleep(30)
+        // control: still playing, and the list knows (bulk removal must not wipe it)
+        expect(leave.isConnected).toBe(true)
+        expect(listHost.leavingNodes).toContain(leave)
+        await sleep(500)
+        expect(leave.isConnected).toBe(false)
+        expect(listHost.leavingNodes).toBe(undefined)
+        expect(listHost.leavingObserver).toBe(undefined)
+        r.destroy()
+    })
+
+    test('L2: destroying the list releases the leaving rows', async () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        const {r, list, listHost} = renderLeaving(el)
+        await sleep(30)
+        list.splice(1, 1)
+        r.destroy()
+        expect(listHost.leavingNodes).toBe(undefined)
+        expect(listHost.leavingObserver).toBe(undefined)
+    })
+})

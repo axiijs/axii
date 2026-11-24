@@ -71,6 +71,8 @@ export class RxListHost implements Host{
     declare destroyedWith?: boolean
     // 已经被删除、但顶层节点还留在列表区间里的行（离场动画播放中），见 removeRows
     leavingNodes?: Node[]
+    // 有离场行时才创建：它们被摘掉（动画播完）时释放 leavingNodes，见 trackLeavingNode
+    leavingObserver?: MutationObserver
     constructor(public source: RxList<any>, public placeholder:UnhandledPlaceholder, public pathContext: PathContext) {
     }
 
@@ -560,7 +562,7 @@ export class RxListHost implements Host{
                         const nodes = rowNodes(deleted)
                         deleted.destroy()
                         for (const node of nodes) {
-                            if (node.parentNode === parent) (this.leavingNodes ??= []).push(node)
+                            if (node.parentNode === parent) this.trackLeavingNode(node, parent)
                         }
                     } else {
                         deleted.destroy()
@@ -628,6 +630,24 @@ export class RxListHost implements Host{
             }
         }
     }
+    // CAUTION 离场节点只在动画期间被列表引用：动画播完、行自己把节点摘掉之后，
+    //  这里不能继续持有它们（否则一直留到这个列表的下一次删除、或者永远）。
+    //  只有出现离场行时才创建一个 MutationObserver 盯住父节点，节点全部离开后断开并释放；
+    //  列表销毁时同样释放。没有离场动画的列表不付任何东西。
+    trackLeavingNode(node: Node, parent: ParentNode) {
+        (this.leavingNodes ??= []).push(node)
+        if (!this.leavingObserver) {
+            this.leavingObserver = new MutationObserver(() => { this.hasLeavingRows() })
+            this.leavingObserver.observe(parent as Node, {childList: true})
+        }
+    }
+    releaseLeavingRows() {
+        this.leavingNodes = undefined
+        if (this.leavingObserver) {
+            this.leavingObserver.disconnect()
+            this.leavingObserver = undefined
+        }
+    }
     hasLeavingRows() {
         const nodes = this.leavingNodes
         if (!nodes) return false
@@ -637,7 +657,7 @@ export class RxListHost implements Host{
             if (node.parentNode === parent) nodes[kept++] = node
         }
         if (!kept) {
-            this.leavingNodes = undefined
+            this.releaseLeavingRows()
             return false
         }
         nodes.length = kept
@@ -799,6 +819,7 @@ export class RxListHost implements Host{
     destroy(fromParentDestroy?: boolean) {
         trackHostDestroyed(this)
         this.destroyedWith = !!fromParentDestroy
+        if (this.leavingNodes) this.releaseLeavingRows()
         // CAUTION render 可能中途抛错（行渲染错误已交给 error 钩子/向上抛出），
         //  此时 hostRenderComputed/hosts 可能尚未初始化，destroy 必须容忍，
         //  否则错误恢复路径（函数节点重算、root.destroy）会二次崩溃。
