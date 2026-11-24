@@ -176,6 +176,8 @@ next-action: 无
 
 **元素认领顺序（现状，#54；实验性）**：JSX 先求值子节点、后求值父节点，元素的 `createElement` 发生时父元素还没有认领、没有游标。此时 `tryClaimElement` 在整个激活根里按「子先于父」的顺序（DOM 后序）取第一个未认领、标签相同且合格的元素——一棵静态 JSX 树里各元素的 `createElement` 恰好按这个顺序发生。已认领的 `dangerouslySetInnerHTML` 元素的内容不参与搜索。已知局限（`auditSsrHydrate.spec.tsx` 的 `test.fails`，归 #55 自顶向下按位置认领）：子组件、函数子节点在父级 JSX 求值之后才渲染，服务端输出里也没有它们内容起点的标记，父级里排在后面的同标签元素会先拿走它们的节点（F1b、F1f–F1h）；原始标记元素认领自己时仍会搜到自己标记里的同标签节点（F1j）；另有 F3（函数子节点锚点前瞻）、F4（结构漂移不报告不修复）。在 #55 落地之前，README 与站点文档把 `hydrateRoot` 标为实验性。
 
+**元素认领顺序（#55 设计，待实现）**：激活期间 `createElement` 返回延迟描述，各 Host 按文档顺序自顶向下消费自己的节点，先内容、后 placeholder；服务端标记不变。设计、受影响的契约与迁移、失配修复规则、零开销保证与实现拆分见 [`hydration-top-down.md`](./hydration-top-down.md)。实现合入后，本段「现状」与 §3.7 的修复粒度以该文档为准。
+
 **CSR 隔离**：SSR 实现放在独立导出 `axii/ssr`（类比已有 `axii/vite-plugin`），不打进浏览器主包。Hydration 认领逻辑仅在 hydrate 入口设置的短生命周期上下文中生效；`LightBindingEffect` / atom 文本更新 / `RxListHost` patch / `createHost` 分发在非 hydrating 稳态下不增加分支成本（允许 hydrate 期间 Host.`render` 上一次布尔读，禁止热更新路径常驻 SSR 分支）。
 
 ### 3.2 标记与 DOM 对应
@@ -1200,6 +1202,8 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 | 观测 | 测试可断言：诊断被触发；失配子树节点 identity 与解析前不同；匹配子树 identity 保持 |
 
 版本/数据漂移与 HTML 篡改均落入本条款。正确匹配路径禁止重建（identity 断言）。
+
+自顶向下认领下的失配规则（按「游标处期望什么」分类的局部修复 R1–R5，以及「位置对齐 ⇒ DOM ≡ CSR」的不变量）见 [`hydration-top-down.md`](./hydration-top-down.md) §4。
 
 ### 3.8 公开 API 与产物
 
