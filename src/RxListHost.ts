@@ -218,9 +218,10 @@ export class RxListHost implements Host{
             }
         } catch (error) {
             if (this.destroyedWith === undefined) throw error
-            // 列表已被销毁：这批行马上整体丢弃，它们的错误没有归属，不交给 root 的监听器
-            //  （监听器在 destroy 之后保留，属于 root 之后的内容），经 reportAxiiError 报告，
-            //  不抛出、也不静默丢弃（#58）。
+            // 列表已被销毁：这批行马上整体丢弃。到这里的错误没有被内层的边界消费（行里的组件抛错
+            //  先经过它自己的 dispatch，root 上有 error 监听器时已经在那里交给监听器），
+            //  这里不再交给 root 的监听器（监听器在 destroy 之后保留，属于 root 之后的内容），
+            //  经 reportAxiiError 报告，不抛出、也不静默丢弃（#58）。
             reportAxiiError(error)
         } finally {
             this.rowsOnStack = outerRowsOnStack

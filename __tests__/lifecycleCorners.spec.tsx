@@ -16,9 +16,11 @@ import {
     createElement,
     createHost,
     createRoot,
+    hydrateRoot,
     RenderContext,
     RxList,
 } from "@framework";
+import {renderToString} from '../src/ssr.js'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 async function settle() {
@@ -104,6 +106,34 @@ describe('#58-1: a re-entrant destroy() dispatches detach once', () => {
         root.render(<Dialog/>)
         root.destroy()
         expect(events).toEqual(['attach', 'detach dialog', 'attach', 'detach toast'])
+        expect(rootEl.innerHTML).toBe('')
+    })
+
+    // 渲染中途被 error 监听器销毁的树，在渲染栈退出时才真正销毁：那是同一次销毁的后半段，
+    //  里面的清理函数再调用 root.destroy() 不再派发 detach；监听器往同一个 root 渲染了错误提示时，
+    //  错误提示被这个调用销毁，照常派发它自己的 detach。
+    test('a cleanup that calls root.destroy() while a tree discarded mid-render is torn down', () => {
+        const root = createRoot(rootEl)
+        const events: string[] = []
+        root.on('detach', () => { events.push(`detach ${(root.host as any)?.element?.textContent ?? 'nothing'}`) })
+        let fallback = false
+        root.on('error', () => {
+            root.destroy()
+            if (fallback) root.render(<i>fallback</i>)
+        })
+        function Dialog(_: any, {onCleanup}: RenderContext) {
+            onCleanup(() => { root.destroy() })
+            return <b>dialog</b>
+        }
+        function Broken(): any { throw new Error('render failed') }
+        root.render(<div><Dialog/><Broken/></div>)
+        expect(events).toEqual(['detach dialog'])
+        expect(rootEl.innerHTML).toBe('')
+
+        fallback = true
+        events.length = 0
+        root.render(<div><Dialog/><Broken/></div>)
+        expect(events).toEqual(['detach dialog', 'detach fallback'])
         expect(rootEl.innerHTML).toBe('')
     })
 
@@ -199,6 +229,7 @@ describe('#58-2: errors thrown after their content was destroyed are reported, n
         root.on('error', () => { root.destroy() })
         expect(() => root.render(<App/>)).not.toThrow()
         expect(reported).toHaveLength(1)
+        expect((reported[0] as any).code).toBe('AXII_DOM_BOUNDARY_BROKEN')
         expect(rootEl.innerHTML).toBe('')
     })
 
@@ -402,6 +433,61 @@ describe('#58-4: nodes from another realm (same-origin iframe)', () => {
         root.destroy()
     })
 
+    // 组件的 $item:_use 覆写成另一个 realm 的元素
+    test('an element from another realm as a $item:_use override', () => {
+        const root = createRoot(rootEl)
+        function App(_: any, {createElement}: RenderContext) {
+            return <div><span as="inner">original</span></div>
+        }
+        const replacement = foreign.createElement('em')
+        replacement.textContent = 'replaced'
+        root.render(<App $inner:_use={replacement}/>)
+        expect(rootEl.querySelector('div')!.innerHTML).toBe('<em>replaced</em>')
+        root.destroy()
+    })
+
+    // 激活 iframe 文档里的服务端标记：认领到的节点（<!--root-->、元素、atom / 函数文本的 Text 占位符）
+    //  都来自 iframe 的 realm，节点种类同样按 nodeType 判断。
+    test('hydrating a container inside an iframe document', async () => {
+        const count = atom(1)
+        const label = atom('a')
+        const items = new RxList(['x', 'y'])
+        function App({}, {createElement, Fragment}: RenderContext) {
+            return <section>
+                <span>{count}</span>
+                <em>{() => `${label()}!`}</em>
+                {[<s>array</s>, 'text']}
+                <ul>{items.map(item => <li>{item}</li>)}</ul>
+                <Fragment>
+                    <b>{count}</b>
+                    <i>{() => label()}</i>
+                </Fragment>
+            </section>
+        }
+        const container = foreign.body.appendChild(foreign.createElement('div'))
+        container.innerHTML = renderToString(createElement(App, null as any)).html
+        const span = container.querySelector('span')!
+        const em = container.querySelector('em')!
+        const firstLi = container.querySelector('li')!
+        const root = hydrateRoot(container, createElement(App, null as any))
+        expect(container.querySelector('span')).toBe(span)
+        expect(container.querySelector('em')).toBe(em)
+        expect(container.querySelector('li')).toBe(firstLi)
+        const b = container.querySelector('b')!
+        expect(container.querySelector('section')!.textContent).toBe('1a!arraytextxy1a')
+        count(2)
+        label('b')
+        items.push('z')
+        await settle()
+        expect(span.textContent).toBe('2')
+        expect(em.textContent).toBe('b!')
+        expect(container.querySelector('ul')!.textContent).toBe('xyz')
+        expect(container.querySelector('b')).toBe(b)
+        expect(container.querySelector('section')!.textContent).toBe('2b!arraytextxyz2b')
+        root.destroy()
+        expect(container.querySelector('section')).toBe(null)
+    })
+
     // 当前 realm 的 <form> 有名为 nodeType 的控件：form.nodeType 读到的是控件，仍然识别为元素
     test('guard: a form whose control is named "nodeType" is still an element', () => {
         const root = createRoot(rootEl)
@@ -439,6 +525,24 @@ describe('#58-5: bulk row removal keeps a node a cleanup prepended when the firs
         root.render(<ul id="ul">{list.map(item => item === 'text' ? item : <Item item={item}/>)}<li>tail</li></ul>)
         list.clear()
         expect(document.getElementById('ul')!.innerHTML).toBe('<hr><!--unhandledChild--><li>tail</li>')
+        root.destroy()
+    })
+
+    // 同一处理也在数组内容的整段删除里：第一项是 boolean（PrimitiveHost，destroy(true) 摘掉自己的空文本）
+    test('array content: the first item removed its own text', async () => {
+        const root = createRoot(rootEl)
+        const show = atom(true)
+        function Cleanup(_: any, {onCleanup}: RenderContext) {
+            onCleanup(() => { document.getElementById('d')!.prepend(document.createElement('hr')) })
+            return <i>item</i>
+        }
+        root.render(<div id="d">{() => show() ? [false, <Cleanup/>] : null}</div>)
+        expect(document.getElementById('d')!.textContent).toBe('item')
+        show(false)
+        await settle()
+        const d = document.getElementById('d')!
+        expect(d.firstChild!.nodeName).toBe('HR')
+        expect(d.textContent).toBe('')
         root.destroy()
     })
 
