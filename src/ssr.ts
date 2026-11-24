@@ -21,9 +21,9 @@ import {
     hashStyleContent,
     isAcceptableInlineDeclaration,
     isAcceptableSingleCssRule,
-    scanCssComponentValues,
-    CSS_NO_BRACES,
-    CSS_STOP_SEMICOLON,
+    splitInlineDeclarations,
+    isVoidInlineDeclaration,
+    type InlineDeclaration,
     cssPropertyName,
     sheetDeclaredKeys,
     prepareStyleContent,
@@ -378,15 +378,29 @@ function collectElementStyles(
     // 行内样式按条目顺序合成，≡ CSR StyleManager.update 逐条写 el.style（见那里的 CAUTION）：
     //  对象条目逐个属性写入（同名属性在同一段里原位更新），空值删除该属性；stylesheet 条目把它
     //  顶层声明的属性从前面的行内声明里删掉（让位给它的规则）。字符串条目按原样拼接在它的位置上，
-    //  之后的对象条目另起一段。删除（让位 / 空值）作用于前面的所有段，包括字符串条目里的声明
+    //  之后的对象条目另起一段——客户端的字符串条目同样只覆盖它声明的属性（#79），浏览器解析拼接后的文本
+    //  就是「后写的条目逐属性覆盖前面的」。删除（让位 / 空值）作用于前面的所有段，包括字符串条目里的声明
     //  （CSR 的 el.style[k] = '' 同样删得掉，#57）：字符串在第一次需要删除时才拆成声明，拆不准的
     //  （见 splitInlineDeclarations）保持原文、不参与删除，激活时由 CSR 重写修正。
+    //  CAUTION 唯一不能靠拼接表达的是 !important：解析一段声明时 !important 压过后面同名的普通声明，而客户端
+    //  后面的条目（对象条目的 el.style[k] = v、字符串条目的 setProperty）会替换它。所以后面的条目声明一个属性时，
+    //  把前面字符串条目里这个属性（简写连同 SHORTHAND_LONGHANDS 里的分项）的 !important 声明删掉。
+    //  只在前面某个字符串条目含 "!" 时才拆，没有 !important 的页面不多拆一次。
     let inlineSegments: InlineSegment[] | undefined
     let inlineDecls: Map<string, string> | undefined
+    let importantInStrings = false
 
     entries.forEach(({value: item, entryIsDynamic, isBound}, index) => {
         if (item == null || typeof item === 'boolean') return
         if (typeof item === 'string') {
+            if (importantInStrings) {
+                const declarations = splitInlineDeclarations(item)
+                if (declarations) for (const declaration of declarations) {
+                    // 客户端不写的声明（空值）不覆盖前面的 !important
+                    if (!isVoidInlineDeclaration(declaration)) removeInlineDeclaration(inlineSegments!, declaration[0], true, true)
+                }
+            }
+            if (item.indexOf('!') >= 0) importantInStrings = true
             ;(inlineSegments ??= []).push({text: item, declarations: undefined, edited: false})
             inlineDecls = undefined
             return
@@ -408,6 +422,8 @@ function collectElementStyles(
                 }
                 // CSR 里不合格的值整次赋值被拒绝，前面的值保留
                 if (!isAcceptableInlineDeclaration(cssKey, cssVal)) continue
+                // CSR 的 el.style[k] = v 替换前面字符串条目里的 !important 声明（见上面的 CAUTION）
+                if (importantInStrings) removeInlineDeclaration(inlineSegments!, cssKey, true, true)
                 if (!inlineDecls) (inlineSegments ??= []).push(inlineDecls = new Map())
                 inlineDecls.set(cssKey, cssVal)
             }
@@ -460,8 +476,8 @@ function collectElementStyles(
 
 // 行内样式的一段：对象条目的声明（属性名 → 值，同一段里原位更新），或一个字符串条目。
 //  字符串条目的 declarations：undefined = 还没拆；null = 拆不准，保持原文；
-//  edited 之前输出原文，删过声明之后输出剩下的声明原文。
-type InlineStringSegment = {text: string, declarations: [name: string, text: string][] | null | undefined, edited: boolean}
+//  edited 之前输出原文（declarations 是拆分器共用的只读结果），删过声明之后是自己的副本，输出剩下的声明原文。
+type InlineStringSegment = {text: string, declarations: readonly InlineDeclaration[] | null | undefined, edited: boolean}
 type InlineSegment = Map<string, string> | InlineStringSegment
 
 function joinInline(a: string, b: string): string {
@@ -490,56 +506,30 @@ function serializeInlineSegments(segments: InlineSegment[] | undefined): string 
 //  - 删除分项（margin-top）而行内写的是简写（margin）时保留简写：激活前这一个分项显示为行内值，
 //    其余分项正确；激活时 CSR 按同样的顺序重写行内样式，结果与纯 CSR 一致。
 //  - 拆不准的字符串条目（见 splitInlineDeclarations）保持原文、不删除，同样由激活时的 CSR 重写修正。
-function removeInlineDeclaration(segments: InlineSegment[], name: string, withLonghands: boolean) {
+//  onlyImportant：只删字符串条目里的 !important 声明（后面的条目覆盖它，见 collectElementStyles 的 CAUTION）；
+//  对象条目的段里没有 !important（门闩拒绝带 ! 的值），跳过。
+function removeInlineDeclaration(segments: InlineSegment[], name: string, withLonghands: boolean, onlyImportant = false) {
     for (const segment of segments) {
         if (segment instanceof Map) {
-            segment.delete(name)
+            if (!onlyImportant) segment.delete(name)
             continue
         }
         if (segment.declarations === undefined) segment.declarations = splitInlineDeclarations(segment.text)
-        const declarations = segment.declarations
+        let declarations = segment.declarations
         if (!declarations) continue
         for (let i = declarations.length - 1; i >= 0; i--) {
-            if (declarations[i][0] !== name) continue
-            declarations.splice(i, 1)
-            segment.edited = true
+            const declaration = declarations[i]
+            if (declaration[0] !== name || (onlyImportant && !declaration[3])) continue
+            // 拆分器的结果是共用的（见 splitInlineDeclarations 的 CAUTION）：第一次删除前复制一份
+            if (!segment.edited) {
+                segment.declarations = declarations = declarations.slice()
+                segment.edited = true
+            }
+            ;(declarations as InlineDeclaration[]).splice(i, 1)
         }
     }
     const longhands = withLonghands ? SHORTHAND_LONGHANDS[name] : undefined
-    if (longhands) for (const longhand of longhands) removeInlineDeclaration(segments, longhand, true)
-}
-
-const INLINE_DECLARATION_NAME = /^(?:--|-?[_a-zA-Z -￿])[-_a-zA-Z0-9 -￿]*$/
-
-/**
- * 把字符串条目拆成 [属性名, 声明原文]（属性名按 CSSOM 的认法：自定义属性区分大小写，其余转小写）。
- *
- * CAUTION 只在拆法与浏览器的 CSS 词法确定一致时返回，否则返回 null，由调用方保持原文：
- *  浏览器里引号 / 括号 / 函数里的 ";" 不是分隔符，未闭合的引号 / 注释 / 括号一直吞到结尾，
- *  不带引号的 url( 一旦含引号、"("、内部空白就成为 bad-url、在第一个 ")" 处结束——
- *  一个朴素的扫描在这些地方与浏览器分界不同，删声明就会删错、或把后面的声明拼进前一条。
- *  分界用声明门闩的同一份词法（scanCssComponentValues，#78）。未闭合或不配对的结构、bad-string、
- *  bad-url、不是属性名的段，整个字符串放弃拆分（不参与删除，激活时由 CSR 修正）。
- *  另外两类照旧放弃拆分（README「Style arrays」写明的约定）：带反斜杠（转义）的文本，以及字符串、
- *  注释、url 之外出现花括号的文本。
- */
-function splitInlineDeclarations(text: string): [string, string][] | null {
-    if (text.indexOf('\\') >= 0) return null
-    const declarations: [string, string][] = []
-    for (let start = 0; start <= text.length;) {
-        const end = scanCssComponentValues(text, start, CSS_STOP_SEMICOLON | CSS_NO_BRACES)
-        if (end < 0) return null
-        const declaration = text.slice(start, end).trim()
-        if (declaration) {
-            const colon = declaration.indexOf(':')
-            if (colon < 0) return null
-            const name = declaration.slice(0, colon).trim()
-            if (!INLINE_DECLARATION_NAME.test(name)) return null
-            declarations.push([name.startsWith('--') ? name : name.toLowerCase(), declaration])
-        }
-        start = end + 1
-    }
-    return declarations
+    if (longhands) for (const longhand of longhands) removeInlineDeclaration(segments, longhand, true, onlyImportant)
 }
 
 // CAUTION 删简写时连带删除的分项只能按显式的表，不能按名字前缀：前缀既会多删（flex 不重置
