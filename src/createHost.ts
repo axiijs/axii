@@ -12,6 +12,7 @@ import {isAxiiRetainedObjectDiagnosticsEnabled, trackHostCreated, trackHostDestr
 import {getAxiiSource} from "./diagnostics";
 import {claimEmptyHostComment, claimEmptyHostCommentBefore, isHydrateDeferredElement, isHydrating} from "./hydration";
 import {claimTextBeforeCommentPlaceholder} from "./hydration";
+import {COMMENT_NODE, DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isCommentNode, nodeTypeOf, TEXT_NODE} from "./nodeType";
 
 /**
  * @internal
@@ -55,7 +56,7 @@ class PrimitiveHost implements Host{
     constructor(public source: string|number|boolean|bigint, public placeholder:Comment|Text, public pathContext: PathContext) {
     }
     render() {
-        if (isHydrating() && this.placeholder instanceof Comment) {
+        if (isHydrating() && isCommentNode(this.placeholder)) {
             const text = typeof this.source === 'boolean' ? '' : this.source.toString()
             // §3.7 / D12: expected snapshot → report + identity rebuild on drift
             this.element = claimTextBeforeCommentPlaceholder(this.placeholder, text)
@@ -129,7 +130,10 @@ export type HostPosition = {
 }
 
 export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext, position?: HostPosition) {
-    assert(placeholder instanceof Comment || placeholder instanceof Text, 'incorrect placeholder type')
+    // CAUTION 节点种类一律按 nodeType 判断（见 nodeType.ts）：组件 / 函数节点返回的、激活时认领到的
+    //  节点可能来自另一个 realm（同源 iframe），instanceof 恒为 false（#58）。
+    const placeholderType = nodeTypeOf(placeholder)
+    assert(placeholderType === COMMENT_NODE || placeholderType === TEXT_NODE, 'incorrect placeholder type')
     // 节点自带的 JSX source 优先，否则沿用（继承自最近父级的）context.debugSource。
     // CAUTION 只有 source 真的更具体时才克隆 context，createHost 是高频路径，生产环境（无 __axiiSource）零额外分配。
     const ownSource = getAxiiSource(source)
@@ -140,6 +144,8 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     let typeIndex: number
     // CAUTION 按出现频率排序分支：函数（响应式文本/结构）和元素是最常见的动态 child
     const sourceType = typeof source
+    // 对象 source 的 nodeType 只读一次，元素 / 片段分支和最后的 Text / Comment 分支共用
+    let nodeType: number | undefined
     if (sourceType === 'function') {
         // atom 本身也是 function，必须先判断
         if (isAtom(source)) {
@@ -149,11 +155,12 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
             host = new FunctionHost(source, placeholder, pathContext, position)
             typeIndex = 8
         }
-    } else if( source instanceof HTMLElement || source instanceof SVGElement || source instanceof DocumentFragment){
+    } else if ((nodeType = nodeTypeOf(source)) === ELEMENT_NODE || nodeType === DOCUMENT_FRAGMENT_NODE) {
+        // 任何 Element（HTML / SVG / MathML）与 DocumentFragment，不论来自哪个 realm
         // Deferred stubs are Element carriers only (never DocumentFragment).
-        if (isHydrating() && source instanceof Element && isHydrateDeferredElement(source)) {
+        if (isHydrating() && nodeType === ELEMENT_NODE && isHydrateDeferredElement(source)) {
             source = materializeHydrateDeferred(source) as typeof source
-        } else if (isHydrating() && source instanceof DocumentFragment) {
+        } else if (isHydrating() && nodeType === DOCUMENT_FRAGMENT_NODE) {
             rematerializeDeferredFragmentChildren(source)
         }
         host = new StaticHost(source, placeholder, pathContext)
@@ -180,7 +187,7 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     } else if( sourceType === 'object' && typeof source?.type === 'function') {
         host = new ComponentHost(source, placeholder, pathContext)
         typeIndex = 6
-    } else if (source instanceof Comment || source instanceof Text) {
+    } else if (nodeType === TEXT_NODE || nodeType === COMMENT_NODE) {
         host = new NodeHost(source, placeholder, pathContext)
         typeIndex = 9
     } else {

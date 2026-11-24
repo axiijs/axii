@@ -6,6 +6,7 @@
 import {isAtom, RxList} from "data0"
 import {reportAxiiError} from "./diagnostics"
 import {RAWTEXT_TAGS, RCDATA_TAGS} from "./markupNames"
+import {isDomNode, isElementNode, isFragmentNode} from "./nodeType"
 
 const claimedElements = new WeakSet<Element>()
 
@@ -320,12 +321,12 @@ function hasPortalDeferContent(children: any[] | undefined): boolean {
         if (isHydrateDeferredElement(c)) continue
         if (c instanceof RxList || Array.isArray(c)) return true
         // ComponentNode alone: handled by isComponentNodeOnly in candidateFitsChildren
-        if (typeof c === 'object' && !(c instanceof Node) && typeof (c as any).type === 'function') {
+        if (typeof c === 'object' && !isDomNode(c) && typeof (c as any).type === 'function') {
             continue
         }
         const t = typeof c
         if (t === 'string' || t === 'number' || t === 'bigint' || t === 'function') return true
-        if (typeof Node !== 'undefined' && c instanceof Node) return true
+        if (isDomNode(c)) return true
     }
     return false
 }
@@ -335,7 +336,7 @@ function isComponentNodeOnlyChildren(children: any[] | undefined): boolean {
     let saw = false
     for (const c of children) {
         if (c == null || typeof c === 'boolean') continue
-        if (typeof c === 'object' && !(c instanceof Node) && typeof (c as any).type === 'function') {
+        if (typeof c === 'object' && !isDomNode(c) && typeof (c as any).type === 'function') {
             saw = true
             continue
         }
@@ -350,7 +351,7 @@ function isPortalOnlyComponentChildren(children: any[] | undefined): boolean {
     let saw = false
     for (const c of children) {
         if (c == null || typeof c === 'boolean') continue
-        if (typeof c === 'object' && !(c instanceof Node) && typeof (c as any).type === 'function') {
+        if (typeof c === 'object' && !isDomNode(c) && typeof (c as any).type === 'function') {
             if (!(c as any).type.__axiiPortal) return false
             saw = true
             continue
@@ -391,7 +392,7 @@ function impliedTableBody(el: Element, children: any[] | undefined): Element | n
     if (children) {
         for (const c of children) {
             // deferred stub 也是带 tagName 的真实元素
-            if (c instanceof Element && TABLE_SECTION_TAGS.has(c.tagName)) return null
+            if (isElementNode(c) && TABLE_SECTION_TAGS.has(c.tagName)) return null
         }
     }
     return only as Element
@@ -1464,7 +1465,7 @@ function walkFragmentHydrateChildren(
             // PrimitiveHost Comment-ph: empty content omitted in HTML; claim <!--unhandledChild-->.
             // PrimitiveHost.render inserts Text('') before the Comment (claimTextBeforeCommentPlaceholder).
             assignPlaceholder(claimCommentAtCursor('unhandledChild'), path)
-        } else if (child instanceof DocumentFragment) {
+        } else if (isFragmentNode(child)) {
             // Nested Fragment: contents already under parent; DF itself is not a sibling.
             // Recurse into deferred hydrate children so lifted unhandled (atom/fn/…) bind.
             const nested = (child as any).__axiiFragmentHydrateChildren as any[] | undefined
@@ -1472,7 +1473,7 @@ function walkFragmentHydrateChildren(
             if (nested?.length) {
                 walkFragmentHydrateChildren(nested, assignPlaceholder, path)
             }
-        } else if (child instanceof Node) {
+        } else if (isDomNode(child)) {
             // Element already claimElement'd during arg eval; advance so later claims stay aligned.
             advancePastNode(child)
         } else if (typeof child === 'function') {
@@ -1503,8 +1504,8 @@ function walkFragmentHydrateChildren(
                         child: item,
                         path: [index],
                     })
-                } else if (item instanceof Node) {
-                    if (item instanceof DocumentFragment) {
+                } else if (isDomNode(item)) {
+                    if (isFragmentNode(item)) {
                         advanceCursorUntilComment('array item')
                     } else {
                         advancePastNode(item)
