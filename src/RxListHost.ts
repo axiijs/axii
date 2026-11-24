@@ -1,5 +1,4 @@
 import {
-    ExtendedElement,
     insertAfter,
     insertBefore,
     restoreSelectValueAfterRemoval,
@@ -26,6 +25,7 @@ import {
     withReactiveTrace
 } from "./diagnostics";
 import {CompactElementHost, StaticHost} from "./StaticHost.js";
+import {isCompactListRowNode} from "./compactListRow.js";
 import {detachEffectFromCreationContext} from "./LightBindingEffect.js";
 import {ReusableHost} from "./ComponentHost.js";
 import {
@@ -102,8 +102,9 @@ export class RxListHost implements Host{
     }
 
     createChildHost(item: any) {
-        // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符
-        if ((item instanceof HTMLElement || item instanceof SVGElement) && !(item as ExtendedElement).detachStyledChildren) {
+        // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符。
+        // CAUTION Compact 判定只在 compactListRow.ts 定义，服务端写不写 <!--rx list item--> 用的是同一条规则（#68）
+        if (isCompactListRowNode(item)) {
             if (isHydrating()) {
                 advancePastNode(item)
             }
