@@ -383,6 +383,155 @@ describe('the same description or live node more than once in one activation (C6
     })
 })
 
+describe('a description placed before its static occurrence in an outer static tree (#55 B4b)', () => {
+    // CSR：外层的 createElement 在 JSX 求值时就把静态 child s 插进去，并把它的动态 child 与响应式属性提升到外层，它们归外层的
+    //  StaticHost；Host 之后才渲染 s，只把元素挪过去，不再为它建内层 Host。激活按文档顺序走，Host 先放置了 s：之前 Host 那一侧
+    //  又为 s 的动态 child 建了一份，外层预建的那一份没人消费，后面兄弟的子 Host 依次错位（y 绑到 x 的位置）。
+    //  hydrationCursor.ts「同一个描述的多次放置」：先放置它的一方只认领元素，外层在 s 的静态位置上认领内容、用自己预建的 Host。
+    type Shape = (s: any, y: () => any, ctx: RenderContext, list: RxList<number>) => any
+    const SHAPES: Record<string, Shape> = {
+        'function child, then static': (s, y, {createElement}) => <div>{() => s}{s}{() => y()}</div>,
+        'array item, then static': (s, y, {createElement}) => <div>{[s]}{s}{() => y()}</div>,
+        'list row, then static': (s, y, {createElement}, list) => <div>{list.map(() => s)}{s}{() => y()}</div>,
+        'component result, then static': (s, y, {createElement}) => {
+            function Leaf() { return s }
+            return <div><Leaf/>{s}{() => y()}</div>
+        },
+        'function child, another Host, then static': (s, y, {createElement}) => <div>{() => s}{() => 'z'}{s}{() => y()}</div>,
+        'function child, then static inside an element': (s, y, {createElement}) => <div>{() => s}<p>{s}</p>{() => y()}</div>,
+        'function child inside an element, then static': (s, y, {createElement}) => <div><p>{() => s}</p>{s}{() => y()}</div>,
+        'both inside a static element': (s, y, {createElement}) => <div><section>{() => s}<p>{s}</p></section>{() => y()}</div>,
+        'static child of JSX a Host creates, then static': (s, y, {createElement}) => <div>{() => <p>{s}</p>}{s}{() => y()}</div>,
+        'static child of JSX a Host creates, then static inside an element': (s, y, {createElement}) =>
+            <div>{() => <p>{s}</p>}<section>{s}</section>{() => y()}</div>,
+    }
+    type Source = (x: any, c: any, ctx: RenderContext) => any
+    const SOURCES: Record<string, Source> = {
+        'one function child': (x, _c, {createElement}) => <b>{() => x()}</b>,
+        'nested element, reactive attribute, function and atom children': (x, c, {createElement}) => <b class={() => c()}><i>{() => x()}</i>{x}</b>,
+    }
+    const makeCase = (shape: Shape, source: Source) => (live: boolean) => {
+        const x = atom('x')
+        const y = atom('y')
+        const c = atom('c1')
+        const list = new RxList([1])
+        // 现成节点（§2.6.8）：激活之外用 CSR 的 createElement 建好；服务端那一遍（live 为 false）写同一内容的 JSX
+        const liveNode = live ? createElement('b', null, () => x()) : undefined
+        function App({}: any, ctx: RenderContext) {
+            return shape(liveNode ?? source(x, c, ctx), y, ctx, list)
+        }
+        return {App, step: () => { x('x2'); y('y2'); c('c2') }}
+    }
+    // CSR 与激活各建一份，比较：DOM；Host 与绑定按种类的创建计数（§2.4.1：同一个 source 两边落到同样的 Host，没有多建的）；
+    //  更新之后的 DOM；激活的根销毁之后计数归零。激活这一次的诊断按 diagnostics 开或关。
+    const compareWithCsr = async (make: (live: boolean) => {App: any, step: () => void}, diagnostics: boolean, live = false) => {
+        reports = []
+        const onError = (e: unknown) => { reports.push(e) }
+        enableAxiiRetainedObjectDiagnostics({reset: true})
+        try {
+            const c = make(live)
+            const csr = mount()
+            createRoot(csr).render(createElement(c.App, null))
+            const csrCounts = getAxiiRetainedObjectDiagnosticsSnapshot()
+            const csrDom = kids(csr)
+            const hyd = mount()
+            hyd.innerHTML = renderToString(createElement(make(false).App, null)).html
+            const h = make(live)
+            resetAxiiRetainedObjectDiagnostics()
+            configureDiagnostics({enabled: diagnostics, onError})
+            let root: ReturnType<typeof hydrateRootTopDown>
+            try {
+                root = hydrateRootTopDown(hyd, createElement(h.App, null))
+            } finally {
+                configureDiagnostics({enabled: true, onError})
+            }
+            const hydCounts = getAxiiRetainedObjectDiagnosticsSnapshot()
+            const hydDom = kids(hyd)
+            c.step()
+            h.step()
+            await tick()
+            const result = {
+                csr: {dom: csrDom, hosts: csrCounts.hosts.createdByType, bindings: csrCounts.lightBindings.createdByType, after: kids(csr), active: {}},
+                hyd: {dom: hydDom, hosts: hydCounts.hosts.createdByType, bindings: hydCounts.lightBindings.createdByType, after: kids(hyd), active: {} as object},
+            }
+            root.destroy()
+            await tick()
+            result.hyd.active = getAxiiRetainedObjectDiagnosticsSnapshot().hosts.activeByType
+            return result
+        } finally {
+            disableAxiiRetainedObjectDiagnostics()
+            resetAxiiRetainedObjectDiagnostics()
+        }
+    }
+
+    test('≡ CSR: the later dynamic sibling keeps its own binding, no extra hosts, no mismatch, no development invariant; diagnostics on and off', async () => {
+        for (const [sourceName, source] of Object.entries(SOURCES)) {
+            for (const [shapeName, shape] of Object.entries(SHAPES)) {
+                for (const diagnostics of [true, false]) {
+                    const {csr, hyd} = await compareWithCsr(makeCase(shape, source), diagnostics)
+                    expect({sourceName, shapeName, diagnostics, ...hyd, mismatches: mismatches(), invariants: invariants()})
+                        .toEqual({sourceName, shapeName, diagnostics, ...csr, mismatches: [], invariants: []})
+                }
+            }
+        }
+    })
+
+    test('a live element (§2.6.8): the outer StaticHost renders its lifted dynamic children where CSR does; later siblings keep their bindings', async () => {
+        for (const shapeName of ['function child, then static', 'array item, then static', 'static child of JSX a Host creates, then static']) {
+            const {csr, hyd} = await compareWithCsr(makeCase(SHAPES[shapeName], SOURCES['one function child']), true, true)
+            expect({shapeName, ...hyd, mismatches: mismatches(), invariants: invariants()})
+                .toEqual({shapeName, ...csr, mismatches: [], invariants: []})
+        }
+    })
+
+    test('a Fragment description: its children stay at the static position like CSR (moved out on the first insertion); the server\'s copy at the Host is reported once (§11)', async () => {
+        const fragment: Source = (x, _c, {createElement, Fragment}) => <>{() => x()}<i>{x}</i></>
+        for (const shapeName of ['function child, then static', 'array item, then static', 'static child of JSX a Host creates, then static']) {
+            const {csr, hyd} = await compareWithCsr(makeCase(SHAPES[shapeName], fragment), true)
+            expect({shapeName, ...hyd, mismatches: mismatches().length, invariants: invariants()})
+                .toEqual({shapeName, ...csr, mismatches: 1, invariants: []})
+        }
+    })
+
+    test('placement order follows CSR: a static position in JSX created after a Host placed the element wins; static positions collected before it do not', async () => {
+        const shapes: Record<string, Shape> = {
+            'Host, then static in JSX a later Host creates': (s, y, {createElement}) => <div>{() => s}{() => <p>{s}</p>}{() => y()}</div>,
+            'Host, static, static': (s, y, {createElement}) => <div>{() => s}{s}{s}{() => y()}</div>,
+            'static, Host, static': (s, y, {createElement}) => <div>{s}{() => s}{s}{() => y()}</div>,
+            'static, static in JSX a Host creates, static': (s, y, {createElement}) => <div>{s}{() => <p>{s}</p>}{s}{() => y()}</div>,
+            'Host, Host, static': (s, y, {createElement}) => <div>{() => s}{() => s}{s}{() => y()}</div>,
+            'Host, static in JSX a later Host creates, static': (s, y, {createElement}) => <div>{() => s}{() => <p>{s}</p>}{s}{() => y()}</div>,
+        }
+        for (const [shapeName, shape] of Object.entries(shapes)) {
+            const {csr, hyd} = await compareWithCsr(makeCase(shape, SOURCES['one function child']), true)
+            // 同一个元素渲染两次是误用：一个 Host 的元素被之后的放置挪走时，CSR 里那个 Host 的区间同样断开，开发期不变量（§4.4）把这个
+            //  与 CSR 相同的状态报告出来（同 hydrateTopDown.spec「[s, s]」），这里不比较它
+            expect({shapeName, ...hyd, mismatches: mismatches()}).toEqual({shapeName, ...csr, mismatches: []})
+        }
+    })
+
+    test('a description placed by a Host in an earlier activation and written as a static child in a later one moves there like CSR (nothing carried across activations)', () => {
+        const make = () => {
+            let s: any
+            function First({}: any, {createElement}: RenderContext) { s = <b>s</b>; return <div>{() => s}</div> }
+            function Second({}: any, {createElement}: RenderContext) { return <section>{s}</section> }
+            return {First, Second}
+        }
+        const c = make()
+        const [csr1, csr2] = [mount(), mount()]
+        createRoot(csr1).render(createElement(c.First, null))
+        createRoot(csr2).render(createElement(c.Second, null))
+        const server = make()
+        const [hyd1, hyd2] = [mount(), mount()]
+        hyd1.innerHTML = renderToString(createElement(server.First, null)).html
+        hyd2.innerHTML = renderToString(createElement(server.Second, null)).html
+        const h = make()
+        hydrateRootTopDown(hyd1, createElement(h.First, null))
+        hydrateRootTopDown(hyd2, createElement(h.Second, null))
+        expect({dom: [kids(hyd1), kids(hyd2)], mismatches: mismatches()}).toEqual({dom: [kids(csr1), kids(csr2)], mismatches: []})
+    })
+})
+
 describe('C10 quantification (§5.2, D2)', () => {
     // 同一个 N 行列表：CSR 首次渲染，与「激活中建好（组件体里 map 出行描述）、激活中没有渲染（关着的标签页）、激活之后才第一次
     //  渲染」比较每行多保留的对象，按类型：Host、placeholder Comment、描述壳。B4 在 RxListHost.createChildHost 的非 Compact
