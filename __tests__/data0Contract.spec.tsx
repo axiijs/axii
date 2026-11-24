@@ -25,14 +25,19 @@
  */
 import {describe, expect, test} from "vitest";
 import {
+    atom,
+    autorun,
     computed,
     Computed,
     destroyComputed,
+    ManualCleanup,
+    ReactiveEffect,
     RxList,
     TrackOpTypes,
     TriggerInfo,
     TriggerOpTypes
 } from "data0";
+import {detachEffectFromCreationContext} from "../src/LightBindingEffect";
 
 // 与 RxListHost.render 完全相同的订阅方式，捕获 axii 实际会收到的 triggerInfos
 function captureTriggerInfos(source: RxList<any>) {
@@ -298,5 +303,167 @@ describe('data0 -> axii trigger info contract', () => {
         }
 
         destroyComputed(c)
+    })
+})
+
+/**
+ * 归属契约（axii 依赖的 data0 内部行为，不是文档化的 API）：
+ * 9. 新建的 effect（ReactiveEffect 子类、computed）在基类构造器里被压进「当前打开的」
+ *    ManualCleanup 收集帧的末尾；作用域栈顶的 effect 允许收集子 effect 时，它成为栈顶的
+ *    最后一个 child（`parent` / `index` / `_children[index]`）。computed(getter, applyPatch, true)
+ *    在 computed() 调用里同步执行第一次 getter，getter 的 this 是 Computed 实例，此刻它仍然是
+ *    收集帧和父 effect children 的最后一项、getter 期间 data0 不另开收集帧。
+ *    → `detachEffectFromCreationContext` 只看「末尾那一项」，ReactiveAttributeEffect（构造器里）
+ *      和列表的 computed（第一次 getter 里）都依赖这一点（见 LightBindingEffect.ts）。
+ * 10. 只有作用域栈顶的 effect 收集子 effect；把栈顶的 shouldCollectChild 置为 false 就不收集，
+ *     不会落到更外层的 effect 上。→ root.render / destroy / dispatch 的隔离（render.ts）。
+ * 11. ReactiveEffect.createDetached(fn) 里创建的 effect 既不进栈顶 effect 的 children，
+ *     也不进当前打开的收集帧；返回后两者恢复原状。→ dispatch('error') 的监听器隔离。
+ * 12. 正在运行的 computed（patch 执行中）被 destroyComputed 不会抛错，销毁推迟到它退出作用域栈后，
+ *     之后的变更不再调用它。→ RxListHost 在自己的 patch 里被同步销毁（重入销毁）。
+ */
+describe('data0 -> axii ownership contract', () => {
+    const top = () => ReactiveEffect.activeScopes[ReactiveEffect.activeScopes.length - 1]
+    const childrenOf = (effect: ReactiveEffect) => (effect as any)._children as ReactiveEffect[] | undefined
+
+    test('9a. a new effect is the last item of the open collect frame and the last child of the running effect', () => {
+        let running: ReactiveEffect | undefined
+        let created: ReactiveEffect | undefined
+        let frame: unknown[] = []
+        const stop = autorun(() => {
+            running = top()
+            const end = ManualCleanup.collectEffect()
+            created = new ReactiveEffect()
+            frame = end()
+        }, true)
+        expect(frame[frame.length - 1]).toBe(created)
+        expect(created!.parent).toBe(running)
+        const children = childrenOf(running!)!
+        expect(children[children.length - 1]).toBe(created)
+        expect(children[created!.index]).toBe(created)
+        stop()
+    })
+
+    test('9b. computed(getter, applyPatch, true) runs its first getter synchronously, as the last item of both', () => {
+        const source = new RxList<number>([1])
+        let seen: Record<string, boolean> | undefined
+        let running: ReactiveEffect | undefined
+        let frame: unknown[] = []
+        let c: any
+        const stop = autorun(() => {
+            running = top()
+            const end = ManualCleanup.collectEffect()
+            c = computed(function getter(this: Computed) {
+                if (!seen) {
+                    const frames = ManualCleanup.collectFrames
+                    const openFrame = frames[frames.length - 1] as unknown[]
+                    const children = childrenOf(running!)
+                    seen = {
+                        isComputedInstance: this instanceof Computed,
+                        lastInOpenFrame: openFrame[openFrame.length - 1] === this,
+                        parentIsRunning: this.parent === running,
+                        lastChild: !!children && children[children.length - 1] === this,
+                        indexMatches: !!children && children[this.index] === this,
+                    }
+                }
+                this.manualTrack(source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
+                return null
+            }, function applyPatch() {}, true)
+            // the getter already ran inside computed()
+            expect(seen).not.toBe(undefined)
+            frame = end()
+        }, true)
+        expect(seen).toEqual({isComputedInstance: true, lastInOpenFrame: true, parentIsRunning: true, lastChild: true, indexMatches: true})
+        expect(frame.length).toBe(1)
+        destroyComputed(c)
+        stop()
+    })
+
+    test('9c. detachEffectFromCreationContext leaves neither the frame nor the running effect owning the effect', () => {
+        let running: ReactiveEffect | undefined
+        let created: ReactiveEffect | undefined
+        let sibling: ReactiveEffect | undefined
+        let frame: unknown[] = []
+        const stop = autorun(() => {
+            running = top()
+            const end = ManualCleanup.collectEffect()
+            sibling = new ReactiveEffect()
+            created = new ReactiveEffect()
+            detachEffectFromCreationContext(created)
+            frame = end()
+        }, true)
+        expect(frame).toEqual([sibling])
+        expect(created!.parent).toBe(undefined)
+        const children = childrenOf(running!)!
+        expect(children.includes(created!)).toBe(false)
+        expect(children[sibling!.index]).toBe(sibling)
+        stop()
+    })
+
+    test('10. only the top of the scope stack collects, and pausing it does not fall through to an outer effect', () => {
+        let outer: ReactiveEffect | undefined
+        let inner: ReactiveEffect | undefined
+        let collected: ReactiveEffect | undefined
+        let paused: ReactiveEffect | undefined
+        const stopOuter = autorun(() => {
+            outer = top()
+            const stopInner = autorun(() => {
+                inner = top()
+                collected = new ReactiveEffect()
+                const saved = inner.shouldCollectChild
+                inner.shouldCollectChild = false
+                try {
+                    paused = new ReactiveEffect()
+                } finally {
+                    inner.shouldCollectChild = saved
+                }
+            }, true)
+            stopInner()
+        }, true)
+        expect(collected!.parent).toBe(inner)
+        expect(paused!.parent).toBe(undefined)
+        expect((childrenOf(outer!) ?? []).includes(paused!)).toBe(false)
+        stopOuter()
+    })
+
+    test('11. createDetached isolates both the running effect and the open collect frame, then restores them', () => {
+        let running: ReactiveEffect | undefined
+        let detached: ReactiveEffect | undefined
+        let after: ReactiveEffect | undefined
+        let frame: unknown[] = []
+        const stop = autorun(() => {
+            running = top()
+            const end = ManualCleanup.collectEffect()
+            detached = ReactiveEffect.createDetached(() => new ReactiveEffect())
+            after = new ReactiveEffect()
+            frame = end()
+        }, true)
+        expect(detached!.parent).toBe(undefined)
+        expect(frame).toEqual([after])
+        expect(after!.parent).toBe(running)
+        stop()
+    })
+
+    test('12. destroying a computed from inside its own applyPatch is deferred and does not throw', () => {
+        const source = new RxList<number>([])
+        const value = atom(0)
+        let patches = 0
+        const c: any = computed(
+            function computation(this: Computed) {
+                this.manualTrack(source, TrackOpTypes.METHOD, TriggerOpTypes.METHOD)
+                value()
+                return null
+            },
+            function applyPatch(this: Computed) {
+                patches++
+                destroyComputed(c)
+            },
+            true
+        )
+        expect(() => source.push(1)).not.toThrow()
+        expect(patches).toBe(1)
+        source.push(2)
+        value(1)
+        expect(patches).toBe(1)
     })
 })
