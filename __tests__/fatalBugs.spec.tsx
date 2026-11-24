@@ -128,7 +128,7 @@ describe('fatal bug regression', () => {
     })
 
     /**
-     * BUG 2: Root.destroy() 必须先派发 detach 再清空监听器。
+     * BUG 2: Root.destroy() 曾经先清空监听器、detach 监听器永远不会被调用。
      * 正确行为：destroy 时 detach 监听器应被调用（且只调用一次）。
      */
     test('BUG 2: detach event is dispatched on root.destroy()', () => {
@@ -143,9 +143,9 @@ describe('fatal bug regression', () => {
         root.destroy()
         expect(detachFired).toBe(1)
 
-        // destroy 之后监听器已被清空，再次 dispatch 不应重复触发
+        // 监听器属于 root，destroy 之后保留（#53）：之后的 detach 照常交给它
         root.dispatch('detach')
-        expect(detachFired).toBe(1)
+        expect(detachFired).toBe(2)
     })
 
     /**
