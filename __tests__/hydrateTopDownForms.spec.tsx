@@ -238,6 +238,59 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
         }
     })
 
+    test('a reusable() first placed after the activation under another component sees the creator\'s context like CSR', async () => {
+        const make = () => {
+            const open = atom(false)
+            const seen: unknown[] = []
+            function Reader({}: any, {context}: RenderContext) {
+                seen.push(context.get('k'))
+                return <i>r</i>
+            }
+            function Owner({}: any, {createElement, reusable, context}: RenderContext) {
+                context.set('k', 'owner')
+                const r = reusable(<Reader/>)
+                return <section>{() => open() ? <Other>{r}</Other> : null}</section>
+            }
+            function Other({children}: any, {createElement, context}: RenderContext) {
+                context.set('k', 'other')
+                return <div>{children}</div>
+            }
+            return {open, seen, App: Owner}
+        }
+        const c = make()
+        createRoot(mount()).render(createElement(c.App, null))
+        const h = make()
+        const hyd = mount()
+        hyd.innerHTML = renderToString(createElement(make().App, null)).html
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        c.open(true)
+        h.open(true)
+        await tick()
+        expect(h.seen).toEqual(c.seen)
+    })
+
+    test('C10 under SVG: shared-name array items of a late-rendered <svg> are SVG elements like CSR', async () => {
+        const make = () => {
+            const open = atom(false)
+            function App({}: any, {createElement, createSVGElement}: RenderContext) {
+                const g = createSVGElement('svg', null, [createElement('a', {href: '#x'}, createSVGElement('circle', {r: 1}))])
+                return <main>{() => open() ? g : null}</main>
+            }
+            return {open, App}
+        }
+        const c = make()
+        const csr = mount()
+        createRoot(csr).render(createElement(c.App, null))
+        const h = make()
+        const hyd = mount()
+        hyd.innerHTML = renderToString(createElement(make().App, null)).html
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        c.open(true)
+        h.open(true)
+        await tick()
+        expect([kids(hyd), hyd.querySelector('a')?.namespaceURI]).toEqual([kids(csr), csr.querySelector('a')?.namespaceURI])
+    })
+
     test('rows of a derived list never rendered during the activation are Compact rows like CSR when admitted later (C10 in a list)', async () => {
         const make = () => {
             const list = new RxList([1, 2, 3])
@@ -267,6 +320,66 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
         expect({dom: kids(hyd), first: hyd.querySelector('li') === first, late: devReports('AXII_HYDRATION_ELEMENT_LATE_RENDER').length, mismatches: mismatches()})
             .toEqual({dom: kids(csr), first: true, late: 2, mismatches: []})
         expect(kids(hyd)).not.toContain('rx list item')
+    })
+})
+
+describe('the same description or live node more than once in one activation (C6, §2.6.8; #55 B4 independent review)', () => {
+    const csrAndHydrate = async (make: () => {App: any, step?: () => void}, html?: string) => {
+        const c = make()
+        const csr = mount()
+        createRoot(csr).render(createElement(c.App, null))
+        const h = make()
+        const hyd = mount()
+        hyd.innerHTML = html ?? renderToString(createElement(make().App, null)).html
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        return {csr, hyd, c, h}
+    }
+
+    test('a repeated description with dynamic children is collected once: the next dynamic sibling keeps its own binding', async () => {
+        const make = () => {
+            const x = atom('x')
+            const y = atom('y')
+            function App({}: any, {createElement}: RenderContext) {
+                const s = <span>{() => x()}</span>
+                return <div>{s}{s}{() => y()}</div>
+            }
+            return {App, step: () => { x('x2'); y('y2') }}
+        }
+        const {csr, hyd, c, h} = await csrAndHydrate(make)
+        expect({dom: kids(hyd), invariants: invariants()}).toEqual({dom: kids(csr), invariants: []})
+        c.step!(); h.step!()
+        await tick()
+        expect(kids(hyd)).toBe(kids(csr))
+    })
+
+    test('a description placed by a Host and also written as a static child ends where CSR puts it (the Host renders last)', async () => {
+        for (const order of ['fn-first', 'array-first', 'static-first']) {
+            reports = []
+            const make = () => {
+                function App({}: any, {createElement}: RenderContext) {
+                    const s = <b>s</b>
+                    return order === 'fn-first' ? <div>{() => s}{s}<i>i</i></div>
+                        : order === 'array-first' ? <div>{[s]}{s}<i>i</i></div>
+                            : <div>{s}{() => s}<i>i</i></div>
+                }
+                return {App}
+            }
+            const {csr, hyd} = await csrAndHydrate(make)
+            expect({order, dom: kids(hyd), mismatches: mismatches()}).toEqual({order, dom: kids(csr), mismatches: []})
+        }
+    })
+
+    test('a mismatch-created element rendered a second time stays where the second occurrence puts it', async () => {
+        const make = () => {
+            function App({}: any, {createElement}: RenderContext) {
+                const s = <span>s</span>
+                return <div>{s}<i>i</i>{s}</div>
+            }
+            return {App}
+        }
+        // 服务端第一个位置是 <em>（失配，<span> 新建），第二个位置照常
+        const {csr, hyd} = await csrAndHydrate(make, '<div><em>s</em><i>i</i><span>s</span></div><!--root-->')
+        expect({dom: kids(hyd), mismatches: mismatches().length}).toEqual({dom: kids(csr), mismatches: 1})
     })
 })
 

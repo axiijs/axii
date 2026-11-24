@@ -1124,7 +1124,9 @@ export class ReusableHost implements Host{
             //  旧的那个从未渲染（没有订阅、没有 DOM），只撤销它的计数；组件类型 id 按类型分配，重建不会再分配
             if (isHydrationSlot(this.innerHost.placeholder)) {
                 trackHostDestroyed(this.innerHost)
-                this.innerHost = createHost(this.source, this.innerPlaceholder, this.pathContext)
+                // CAUTION 用旧 innerHost 的 context（reusable() 构造时所属组件的子 context），不用 this.pathContext：
+                //  放进树时 createHost 把后者改成了放置处的 context（见 reusable getter 的 CAUTION）
+                this.innerHost = createHost(this.source, this.innerPlaceholder, this.innerHost.pathContext)
             }
             insertBefore(this.innerPlaceholder, this.reusePlaceholder!)
             // debugger

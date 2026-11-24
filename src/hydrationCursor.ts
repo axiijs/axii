@@ -42,7 +42,7 @@ import {
     summarizeChild,
 } from "./hydration"
 import {COMMENT_NODE, ELEMENT_NODE, TEXT_NODE} from "./nodeType"
-import {ROOT_SLOT} from "./hydrationElement"
+import {HOST_PLACED_CHILDREN, isHydrationElement, ROOT_SLOT} from "./hydrationElement"
 import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
 import type {Host} from "./Host"
 
@@ -55,13 +55,16 @@ let activationMismatchBase = 0
 // 激活完的容器与根 Host（入口的根容器、各 Portal 容器）：[容器, Host] 平铺，入口在诊断开启时逐个检查开发期不变量（§4.4）
 const hydratedContainers: unknown[] = []
 
-export type TopDownActivationState = {portals: Record<string, HTMLElement> | undefined, mismatchBase: number, containers: number}
+export type TopDownActivationState = {
+    portals: Record<string, HTMLElement> | undefined, mismatchBase: number, containers: number, hostPlacedNodes: WeakSet<object> | undefined,
+}
 
 /** 入口开始一次激活：返回之前的状态交给 leaveTopDownActivation（回调里嵌套的激活返回后外层照常继续）。 */
 export function enterTopDownActivation(portals: Record<string, HTMLElement> | undefined): TopDownActivationState {
-    const saved = {portals: activationPortals, mismatchBase: activationMismatchBase, containers: hydratedContainers.length}
+    const saved = {portals: activationPortals, mismatchBase: activationMismatchBase, containers: hydratedContainers.length, hostPlacedNodes}
     activationPortals = portals
     activationMismatchBase = mismatchCount
+    hostPlacedNodes = undefined
     return saved
 }
 
@@ -69,6 +72,7 @@ export function leaveTopDownActivation(saved: TopDownActivationState): void {
     activationPortals = saved.portals
     activationMismatchBase = saved.mismatchBase
     hydratedContainers.length = saved.containers
+    hostPlacedNodes = saved.hostPlacedNodes
 }
 
 /** 这次激活开始时的失配条数。 */
@@ -377,7 +381,9 @@ export function insertTopDownFreshElements(mark: number, insert: (el: HTMLElemen
         // CAUTION 经调用方传入的 DOM.insertBefore 插入（≡ CSR 的 Host 插入）：插入之前写入待生效的 stylesheet；插进 <select> 的
         //  <option> 按 select 记下的值重放选中状态——裸 replaceChild 会让浏览器选中第一项（select 的 props 在新建的 option
         //  连入之前就应用了）。模块不直接导入 DOM.ts：DOM.ts 导入这里。
-        insert(pendingFresh[i + 1] as HTMLElement, anchor)
+        // 被之后的同一个节点的再次出现接管的（placeTopDownExistingNode）：只剩已经移除的占位
+        const el = pendingFresh[i + 1]
+        if (el !== null) insert(el as HTMLElement, anchor)
         anchor.remove()
     }
     pendingFresh.length = mark
@@ -555,12 +561,40 @@ export function removeTopDownCounterpart(node: Node): void {
     }
 }
 
+// 由 Host 放置过的描述与现成节点（Host 的 source：StaticHost / CompactElementHost / 现成节点的 Host）。
+//  CSR 里静态 child 在 createElement 时就插入，Host 在之后渲染：同一个元素既是某个 Host 的 source、又是静态 child 时，
+//  最后落在 Host 那里。激活按文档顺序走，静态 child 晚于 Host 出现时不能再把它挪走（#55 B4 独立审查）。
+//  描述：认领后瘦身时 rawChildren 写成共享的 HOST_PLACED_CHILDREN（每个 Host 的认领只多一次字段写入，不分配）；
+//  现成节点（少见）：记在这次激活的 WeakSet 里（enterTopDownActivation 时换一个新的）。
+let hostPlacedNodes: WeakSet<object> | undefined
+
+/** Host 认领了这个描述、或放置了这个现成节点。 */
+export function markTopDownHostPlaced(value: object): void {
+    if (isHydrationElement(value)) {
+        value.rawChildren = HOST_PLACED_CHILDREN
+    } else {
+        (hostPlacedNodes ??= new WeakSet()).add(value)
+    }
+}
+
+/** 这个描述 / 现成节点由 Host 放置过（描述：任何一次激活里；现成节点：这次激活里）。 */
+export function isTopDownHostPlaced(value: object): boolean {
+    return isHydrationElement(value) ? value.rawChildren === HOST_PLACED_CHILDREN : hostPlacedNodes !== undefined && hostPlacedNodes.has(value)
+}
+
 /**
  * 把现成的节点（§2.6.8 / C6，见 removeTopDownCounterpart）插在游标处：先删除它在服务端的对应物，再插入（≡ CSR createElement 的
  * child 循环 appendChild：节点已经在别处时被挪过来；DocumentFragment 的子节点整体搬入）。游标不动，下一个单元仍从这里开始。
  */
 export function placeTopDownExistingNode(node: Node): void {
     removeTopDownCounterpart(node)
+    // 它是这次激活里失配新建、还在等所属 StaticHost 插入的元素（#73）：那次插入作废，以这里为准（≡ CSR 第二次插入把它挪走）
+    for (let i = 1; i < pendingFresh.length; i += 2) {
+        if (pendingFresh[i] === node) {
+            pendingFresh[i - 1].remove()
+            pendingFresh[i] = null as unknown as ChildNode
+        }
+    }
     const next = peek()
     // 节点恰好就在游标处（用户把服务端的节点本身传了进来）：留在原处，游标移到它之后
     if (next === node) {

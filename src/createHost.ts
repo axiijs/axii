@@ -14,7 +14,7 @@ import {claimEmptyHostComment, claimEmptyHostCommentBefore, isHydrateDeferredEle
 import {claimTextBeforeCommentPlaceholder} from "./hydration";
 import {COMMENT_NODE, DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isCommentNode, nodeTypeOf, TEXT_NODE} from "./nodeType";
 import {HydrationSlot, isHydrationElement} from "./hydrationElement";
-import {claimTopDownComment, claimTopDownText, insertTopDownEmptyText, removeTopDownCounterpart, reportTopDownLiveNode} from "./hydrationCursor";
+import {claimTopDownComment, claimTopDownText, insertTopDownEmptyText, markTopDownHostPlaced, removeTopDownCounterpart, reportTopDownLiveNode} from "./hydrationCursor";
 
 /**
  * @internal
@@ -111,6 +111,7 @@ class NodeHost implements Host{
     //  source 按 CSR 插在 slot 前面
     hydrate(slot: HydrationSlot) {
         reportTopDownLiveNode(this.source)
+        markTopDownHostPlaced(this.source)
         removeTopDownCounterpart(this.source)
         this.placeholder = claimTopDownComment(slot)
         this.render()

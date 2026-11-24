@@ -37,6 +37,7 @@ import {
     claimTopDownComment,
     insertTopDownFreshElements,
     markTopDownFreshElements,
+    markTopDownHostPlaced,
     placeTopDownExistingNode,
     removeTopDownCounterpart,
     reportTopDownLiveNode,
@@ -912,6 +913,12 @@ const EMPTY_PATH: number[] = []
  * 唯一的文本 child（非 Fragment）是 CSR 的 textContent 快速路径，没有动态 child；内容是原始标记的元素不消费 children。
  * source：最近的带 JSX source 的祖先或自身（≡ liftElementMetadata 的继承规则）。
  */
+// 一次收集里已经走过的描述与现成节点。同一个描述（或现成节点）在同一棵静态子树里出现两次时，CSR 的 child 循环只在第一次提升
+//  它的动态 child（之后它的元数据已被消费），这里也只收集一次；遍历时第二次出现按现成节点处理、不取子 Host
+//  （DOM.hydrateExistingChild）。否则后面兄弟的子 Host 会错位（#55 B4 独立审查）。收集不重入（嵌套的 StaticHost 在遍历中才收集），
+//  所以用一个模块级的 Set，每次收集前清空。
+const collectedOnce = new Set<object>()
+
 function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], inheritedSource: AxiiSource | undefined, out: UnhandledChildInfo[]) {
     const rawProps = desc.rawProps
     const isFragment = desc.tag === Fragment
@@ -930,8 +937,13 @@ function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], i
         if (childType === 'string' || childType === 'number' || childType === 'bigint') continue
         if (isHydrationElement(child)) {
             // 已认领的描述（同一个描述出现第二次，C6）按它的 node 处理，元数据在第一次已被提升走（DOM.hydrateExistingChild）
-            if (child.node === null) collectTopDownDynamicChildren(child, path.concat(index), source, out)
+            if (child.node === null && !collectedOnce.has(child)) {
+                collectedOnce.add(child)
+                collectTopDownDynamicChildren(child, path.concat(index), source, out)
+            }
         } else if (isDomNode(child)) {
+            if (collectedOnce.has(child)) continue
+            collectedOnce.add(child)
             // 现成的节点（§2.6.8）：CSR 的 child 循环把它的 unhandledChildren（带真实 placeholder 的动态 child）提升到父级，
             //  ≡ liftElementMetadata 的 path 与 source 规则。它们由 createTopDownInnerHost 按 CSR 构造、遍历到它时按 CSR 渲染
             const dynamic = (child as ExtendedElement).unhandledChildren
@@ -1188,9 +1200,11 @@ export class StaticHost implements Host {
         let node: HTMLElement | SVGElement | DocumentFragment
         if (isHydrationElement(source)) {
             node = source.node as HTMLElement | SVGElement | DocumentFragment
+            markTopDownHostPlaced(source)
         } else {
             node = source as HTMLElement | SVGElement | DocumentFragment
             reportTopDownLiveNode(node)
+            markTopDownHostPlaced(node)
         }
         removeTopDownCounterpart(node)
         this.source = node
@@ -1207,7 +1221,10 @@ export class StaticHost implements Host {
         const isFragment = desc.tag === Fragment
         // 1. 构造子 Host（≡ collectInnerHost）
         const infos: UnhandledChildInfo[] = []
+        collectedOnce.clear()
+        collectedOnce.add(desc)
         collectTopDownDynamicChildren(desc, EMPTY_PATH, desc.rawProps?.__source, infos)
+        collectedOnce.clear()
         let innerHosts: TopDownInnerHosts | undefined
         if (infos.length === 1) {
             const host = this.createTopDownInnerHost(infos[0])
@@ -1227,6 +1244,7 @@ export class StaticHost implements Host {
         const node = hydrateElementDescription(desc, innerHosts)
         if (!isFragment) this.element = node as HTMLElement | SVGElement
         this.source = node
+        markTopDownHostPlaced(desc)
     }
     // ≡ createInnerHost，分派换成 createHydrateHost，placeholder 是 slot。CAUTION 两处的 context / position 规则一起改。
     createTopDownInnerHost(info: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
@@ -1671,9 +1689,11 @@ export class CompactElementHost extends StaticHost {
             let node: HTMLElement | SVGElement
             if (isHydrationElement(source)) {
                 node = source.node as HTMLElement | SVGElement
+                markTopDownHostPlaced(source)
             } else {
                 node = source as HTMLElement | SVGElement
                 reportTopDownLiveNode(node)
+                markTopDownHostPlaced(node)
             }
             placeTopDownExistingNode(node)
             this.source = this.element = node

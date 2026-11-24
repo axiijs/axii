@@ -84,10 +84,12 @@ import {
     exitTopDownElement,
     insertTopDownEmptyText,
     isTopDownClaimApproximate,
+    isTopDownHostPlaced,
     placeTopDownExistingNode,
     placeTopDownFreshElement,
     rememberTopDownRawElement,
     reportTopDownDevHint,
+    removeTopDownCounterpart,
     reportTopDownLiveNode,
 } from "./hydrationCursor";
 import type {Host} from "./Host";
@@ -1993,7 +1995,7 @@ function hydrateDescriptionChildren(
             if (child.node !== null) {
                 // 同一个描述在这次激活里第二次出现（C6）：已有 node，就当作那个节点，≡ CSR 的 child 循环再次 appendChild 同一个
                 //  元素（把它挪到这里，元数据已在第一次被提升走）
-                lifted = hydrateExistingChild(child.node, index, childAdoptsSvg, innerHosts, lifted, debugSource)
+                lifted = hydrateExistingChild(child.node, child, index, childAdoptsSvg, innerHosts, lifted, debugSource)
                 continue
             }
             const node = child.tag === Fragment ?
@@ -2003,7 +2005,7 @@ function hydrateDescriptionChildren(
         } else if (isDomNode(child)) {
             // 激活之外创建的现成节点（§2.6.8）：服务端不可能产出它，按 CSR 插在这里
             reportTopDownLiveNode(child)
-            lifted = hydrateExistingChild(child, index, childAdoptsSvg, innerHosts, lifted, debugSource)
+            lifted = hydrateExistingChild(child, child, index, childAdoptsSvg, innerHosts, lifted, debugSource)
         } else {
             // 动态 child：取出 StaticHost 预先构造的 Host，在游标处认领它的区域与 placeholder
             innerHosts!.hosts[innerHosts!.next++].hydrate!(childType === 'function' ? TEXT_SLOT : UNHANDLED_CHILD_SLOT)
@@ -2044,6 +2046,8 @@ function liftTopDownChildMetadata(childElement: ExtendedElement, index: number, 
  */
 function hydrateExistingChild(
     child: Node,
+    // 登记「由 Host 放置过」的那个对象：描述的 node 用描述本身，现成节点用节点
+    owner: object,
     index: number,
     childAdoptsSvg: boolean,
     innerHosts: TopDownInnerHosts | undefined,
@@ -2051,6 +2055,12 @@ function hydrateExistingChild(
     debugSource: AxiiSource | undefined,
 ): TopDownLiftedMetadata | undefined {
     let node = child
+    // 已经由某个 Host 放置过（它在前面作为 Host 的 source 出现过）：CSR 里静态 child 先插入、Host 后渲染，节点最后在 Host 那里。
+    //  这里只删除服务端为这个静态位置写下的对应物
+    if (isTopDownHostPlaced(owner)) {
+        removeTopDownCounterpart(node)
+        return lifted
+    }
     if (childAdoptsSvg && node.nodeType === ELEMENT_NODE && !isSvgClassString((node as any)[TO_STRING_TAG]) && isSharedNameHtmlElement(node as Element)) {
         node = adoptSvgChild(node as ExtendedElement, new Map())
     }
@@ -2099,7 +2109,11 @@ function materializeHydrationElement(desc: HydrationElement): HTMLElement | SVGE
     const replayed: any[] = new Array(children.length)
     for (let i = 0; i < children.length; i++) {
         const child = children[i]
-        replayed[i] = isHydrationElement(child) ? (child.node ?? materializeHydrationElement(child)) : child
+        replayed[i] = isHydrationElement(child) ? (child.node ?? materializeHydrationElement(child)) :
+            // 数组 child 里的描述项同样先物化：父元素的 createElement 才能像 CSR 一样改建其中的 SVG 同名标签（adoptSvgArrayItems）
+            Array.isArray(child) && child.some(isHydrationElement) ?
+                child.map(item => isHydrationElement(item) ? (item.node ?? materializeHydrationElement(item)) : item) :
+                child
     }
     let rawProps = desc.rawProps
     if (desc.tag !== Fragment && desc.isSVG && !((rawProps ? rawProps._isSVG : undefined) ?? svgOnlyElementNames.has(desc.tag as string))) {

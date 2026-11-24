@@ -41,6 +41,12 @@ export class HydrationElement {
     }
 }
 
+/**
+ * 由 Host 认领的描述瘦身时 rawChildren 写成它（hydrationCursor.markTopDownHostPlaced）：与「作为静态 child 认领」区分开，
+ * 不多占字段、不分配。是空数组：读已认领描述的 children 的地方（Compact 判定的访问器、隐含 tbody 的判定）当作没有 children。
+ */
+export const HOST_PLACED_CHILDREN: any[] = Object.freeze([]) as unknown as any[]
+
 /** 描述的预置字段名（§2.2）。开发期 Proxy 跳过它们；用例断言它们不在任何元素接口上。 */
 export const HYDRATION_ELEMENT_FIELDS = ['tag', 'rawProps', 'rawChildren', 'isSVG', 'node', 'listenerBoundArgs'] as const
 
@@ -106,8 +112,9 @@ function reportAccess(desc: HydrationElement, key: string, write: boolean): void
  */
 const DEV_PROXY_HANDLER: ProxyHandler<HydrationElement> = {
     get(target, key, receiver) {
-        if (typeof key === 'string' && !PRESET_FIELDS.has(key) && !FRAMEWORK_PROBES.has(key) && !(key in Object.prototype)
-            && key in elementInterfaceOf(target)) {
+        // 以 __ 开头的名字（框架的私有字段，如 getAxiiSource 读的 __axiiSource）不是元素接口名：先排除，不为它创建探测元素
+        if (typeof key === 'string' && !PRESET_FIELDS.has(key) && !FRAMEWORK_PROBES.has(key) && !key.startsWith('__')
+            && !(key in Object.prototype) && key in elementInterfaceOf(target)) {
             reportAccess(target, key, false)
         }
         return Reflect.get(target, key, receiver)
