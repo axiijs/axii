@@ -6,8 +6,10 @@
  *  HTMLElement / DocumentFragment，对当前窗口的构造器做 instanceof 恒为 false。组件、函数节点、
  *  数组项、列表行都可以返回这样的节点（从 iframe 里取内容、往 iframe 里渲染的编辑器 / 预览），
  *  激活 iframe 文档里的容器（hydrateRoot）时认领到的占位符也来自那个 realm。nodeType 与 realm 无关，
- *  与 #44 对 Portal 容器的处理一致。宿主层（createHost 的分发、各 host 对 source / 占位符种类的判断、
- *  诊断摘要）的判定都用这里的函数，不要再写 instanceof Text / Comment / Element / DocumentFragment。
+ *  与 #44 对 Portal 容器的处理一致。节点种类的判定（createHost 的分发、各 host 对 source / 占位符
+ *  种类的判断、createElement 的 JSX child、激活时对 JSX 值的判断、诊断摘要）都用这里的函数，
+ *  不要再写 instanceof Node / Text / Comment / Element / DocumentFragment。
+ *  不归这里的：元素的具体类型（HTMLSelectElement、SVGElement 这类按标签 / 命名空间的区分）。
  * CAUTION 性能：createHost / StaticHost.render 是热路径。Chromium 里对 DOM 构造器做 instanceof 比读
  *  nodeType 慢（同页、随机交替、带 A/A 对照的微基准，ns/次：createHost 式的分发 24.8 → 5.5，
  *  元素 / 片段判断 12.5 → 4.8，占位符 Text / Comment 判断 37 → 4.8）。这里是一次 typeof、
@@ -38,6 +40,7 @@ export function nodeTypeOf(value: unknown): number | undefined {
 
 // 被同名控件遮蔽的 form.nodeType，见文件头的说明
 function shadowedNodeType(value: object): number | undefined {
+    if (typeof Node === 'undefined') return undefined
     nativeNodeTypeGetter ??= Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType')!.get as (this: object) => number
     try {
         return nativeNodeTypeGetter.call(value)

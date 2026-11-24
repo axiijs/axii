@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 import {isAtom, RxList} from "data0";
 import {assert, each, isPlainObject} from './util'
-import {isDomNode, isFragmentNode} from './nodeType'
+import {isDomNode, isElementNode, isFragmentNode} from './nodeType'
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
@@ -825,7 +825,7 @@ export function ensureHydrateDeferredPortalContent(content: any): any {
         }
         return content
     }
-    if (typeof Node !== 'undefined' && content instanceof DocumentFragment) {
+    if (isFragmentNode(content)) {
         const fragKids = (content as any).__axiiFragmentHydrateChildren as any[] | undefined
         if (fragKids?.length) {
             for (let i = 0; i < fragKids.length; i++) {
@@ -844,7 +844,7 @@ export function ensureHydrateDeferredPortalContent(content: any): any {
         return content
     }
 
-    if (!(typeof Node !== 'undefined' && content instanceof Element)) return content
+    if (!isElementNode(content)) return content
 
     const el = content as Element
     const payload = takeHydrateReclaimPayload(el)
@@ -957,7 +957,7 @@ export function rematerializeDeferredFragmentChildren(frag: DocumentFragment): v
                 const el = materializeHydrateDeferred(c as Element) as ExtendedElement
                 kids[i] = el
                 liftChildMeta(el, path)
-            } else if (c instanceof DocumentFragment) {
+            } else if (isFragmentNode(c)) {
                 const nestedKids = (c as any).__axiiFragmentHydrateChildren as any[] | undefined
                 if (nestedKids?.length) {
                     processKids(nestedKids, path)
@@ -969,7 +969,7 @@ export function rematerializeDeferredFragmentChildren(frag: DocumentFragment): v
                     if (isHydrateDeferredElement(c[j])) {
                         // Item Element keeps its own unhandledChildren for StaticArrayHost.
                         c[j] = materializeHydrateDeferred(c[j] as Element)
-                    } else if (c[j] instanceof DocumentFragment) {
+                    } else if (isFragmentNode(c[j])) {
                         rematerializeDeferredFragmentChildren(c[j])
                     }
                 }
@@ -982,7 +982,7 @@ export function rematerializeDeferredFragmentChildren(frag: DocumentFragment): v
                 pushStructuralUnhandled(c, path)
             } else if (c != null && typeof c === 'object' && typeof (c as any).type === 'function') {
                 pushStructuralUnhandled(c, path)
-            } else if (typeof Node !== 'undefined' && c instanceof Element) {
+            } else if (isElementNode(c)) {
                 liftChildMeta(c as ExtendedElement, path)
             }
         }
@@ -1014,7 +1014,7 @@ function shouldMarkHydrateReclaim(children: any[]): boolean {
         const t = typeof c
         if (t === 'string' || t === 'number' || t === 'bigint' || t === 'function') return true
         if (Array.isArray(c) || c instanceof RxList) return true
-        if (typeof Node !== 'undefined' && c instanceof Node) return true
+        if (isDomNode(c)) return true
         // ComponentNode (and other host descriptors with a callable type)
         if (typeof c === 'object' && typeof (c as any).type === 'function') return true
     }
@@ -1287,7 +1287,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                                 path: [index],
                                 source: debugSource,
                             } as UnhandledChildInfo)
-                        } else if (item instanceof Node) {
+                        } else if (isDomNode(item)) {
                             // Element items: rematerialize main-root deferred stubs, then advance.
                             // DocumentFragment: content is under parent (fragment start…), not on the DF
                             let nodeItem: Node = item
@@ -1295,7 +1295,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                                 nodeItem = materializeHydrateDeferred(nodeItem as Element)
                                 child[itemIndex] = nodeItem
                             }
-                            if (nodeItem instanceof DocumentFragment) {
+                            if (isFragmentNode(nodeItem)) {
                                 rematerializeDeferredFragmentChildren(nodeItem)
                                 advanceCursorUntilComment('array item')
                             } else {

@@ -18,6 +18,7 @@ import {
 } from "./hydration";
 import {migrateSsrStyleTags} from "./StaticHost";
 import {createElement, rematerializeDeferredFragmentChildren} from "./DOM";
+import {isFragmentNode} from "./nodeType";
 
 
 type EventCallback = (e: any) => void
@@ -490,7 +491,7 @@ export function hydratePortalContent(
             const {type, rawProps, rawChildren} = takeHydrateDeferredPayload(content as Element)
             // Portal root is pushed — claiming is against portals[k], not main tree.
             resolved = createElement(type, rawProps, ...rawChildren)
-        } else if (content instanceof DocumentFragment) {
+        } else if (isFragmentNode(content)) {
             rematerializeDeferredFragmentChildren(content)
         }
         const root = createRootInternal(container, parentContext, placeholder)

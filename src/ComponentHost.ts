@@ -30,6 +30,7 @@ import {
     UseLayoutEffectFn,
 } from "./types";
 import {assert} from "./util";
+import {isElementNode} from "./nodeType";
 import {Portal, type PortalContainerRef} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
@@ -342,8 +343,8 @@ export class ComponentHost implements Host{
         if (name !== undefined) delete rawProps['as']
         assert(name !=='self', '"self" is reserved, please use another element name.')
 
-        // 支持 use 里面直接传入 HTMLElement 覆写整个节点
-        if (name && this.itemConfig[name]?.use && this.itemConfig[name]?.use instanceof Element) {
+        // 支持 use 里面直接传入 HTMLElement 覆写整个节点（按 nodeType 判断，可以是另一个 realm 的元素，见 nodeType.ts）
+        if (name && isElementNode(this.itemConfig[name]?.use)) {
             return this.itemConfig[name]!.use as HTMLElement
         }
 
