@@ -176,6 +176,29 @@ describe('migration as documented in the README (#55 D)', () => {
         }
     })
 
+    test('attribute values that differ from client props are rewritten without a report; a different static id is a mismatch', () => {
+        function App({}: any, {createElement}: RenderContext) {
+            return <div><p title="t" className="c" data-k="1">x</p><span id="s">y</span></div>
+        }
+        const html = renderToString(createElement(App, null)).html
+        const hyd = mount()
+        hyd.innerHTML = html
+        const p = hyd.querySelector('p')!
+        p.setAttribute('title', 'HACK')
+        p.setAttribute('class', 'x')
+        p.setAttribute('data-k', '2')
+        hydrateRoot(hyd, createElement(App, null))
+        expect({same: hyd.querySelector('p') === p, attrs: [p.title, p.className, p.dataset.k], reports})
+            .toEqual({same: true, attrs: ['t', 'c', '1'], reports: []})
+
+        reports = []
+        const hyd2 = mount()
+        hyd2.innerHTML = html
+        hyd2.querySelector('span')!.id = 'z'
+        hydrateRoot(hyd2, createElement(App, null))
+        expect({id: hyd2.querySelector('span')!.id, mismatches: mismatches().length}).toEqual({id: 's', mismatches: 1})
+    })
+
     test('C9: JSX and createRoot().render() in user callbacks give real nodes', async () => {
         for (const enabled of [true, false]) {
             reports = []

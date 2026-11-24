@@ -260,7 +260,8 @@ export const docGroups: DocGroup[] = [
           '(code AXII_HYDRATION_MISMATCH, to configureDiagnostics({ onError }) and console.error) and ' +
           'repaired where they are found, so structure, text and the attributes written by client props end ' +
           'up equal to a client render; attribute values are written again from client props without a ' +
-          'report, and attributes only the server wrote are removed on the repair path. A component error ' +
+          'report (a different static id is a mismatch), and attributes only the server wrote are removed on ' +
+          'the repair path. A component error ' +
           'that no root.on(\'error\') listener handles, such as a missing Portal container, is thrown from ' +
           'hydrateRoot as from createRoot().render(). Diagnostics are off by default ' +
           'in the published package. With configureDiagnostics({ enabled: true }) called before hydrateRoot, ' +

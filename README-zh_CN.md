@@ -233,7 +233,7 @@ function Search({}, { createElement, createRef }) {
 服务端 HTML 与客户端渲染结果不同时（例如数据不同，或者 HTML 来自旧版服务端），`hydrateRoot` 在发现差别的位置修复，然后继续：
 
 - **结构与文本。** 节点结构（节点类型、标签、命名空间与顺序）或文本的每一处差别都会报告并修复。修复之后结构与文本都与客户端渲染相同，位置匹配的节点保持 identity。容器末尾缺少 `<!--root-->` 时同样修复。
-- **属性。** 每个认领的元素都会按客户端 props 再写一遍属性，所以与客户端渲染不同的属性值会被改正，不报告。只由服务端写的属性，在修复路径上认领的元素上会被删除，在没有差别、干净认领的元素上保留；诊断开启时，这种残留报告为 `AXII_HYDRATION_ATTRIBUTE_RESIDUE`。
+- **属性。** 每个认领的元素都会按客户端 props 再写一遍属性，所以与客户端渲染不同的属性值会被改正，不报告。静态 `id` 不同是例外：它算失配，与结构差别一样报告并修复。只由服务端写的属性，在修复路径上认领的元素上会被删除，在没有差别、干净认领的元素上保留；诊断开启时，这种残留报告为 `AXII_HYDRATION_ATTRIBUTE_RESIDUE`。
 - **`dangerouslySetInnerHTML` 的内容**：干净认领的元素保留服务端写出的内容。只有这次激活报告过别的失配时，才会把它与客户端的标记比较，不同就换掉。
 - **报告。** 每条报告是一个 `code: 'AXII_HYDRATION_MISMATCH'` 的错误（`name` 为 `HydrationMismatchError`），带 `expected` / `actual` 字符串。无论诊断是否开启，它都交给 `configureDiagnostics({ onError })`，并输出到 `console.error`。
 - **错误。** 失配会被修复，不会抛出。组件抛出的错误与 `createRoot().render()` 一样处理：没有 `root.on('error')` 监听器时由 `hydrateRoot` 抛出，例如找不到 Portal 容器时。激活函数子节点的内容时抛出的错误会中止激活，并从 `hydrateRoot` 抛出，即使注册了这样的监听器。
