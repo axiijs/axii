@@ -122,11 +122,15 @@ function setProperty(node: HTMLElement, name: string, value: any) {
 
 // 反射 property 与它的 content attribute 不同名（转小写之后也不同）的少数情况。
 //  只在「移除 attribute」时用到：removeAttribute('htmlFor') 是空操作，for 永远留在元素上。
+//  classList / relList 是 DOMTokenList（[PutForwards=value]），对它们写 null 会先写出 "null"，
+//  必须按真实的 attribute 名移除（见 setEmptyOrBooleanProperty 的 object 行）。
 const propertyAttributeAliases: {[property: string]: string} = Object.assign(Object.create(null), {
     htmlFor: 'for',
     httpEquiv: 'http-equiv',
     acceptCharset: 'accept-charset',
     defaultValue: 'value',
+    classList: 'class',
+    relList: 'rel',
 })
 
 // ARIA 反射属性（ariaLabel / ariaExpanded ...）的判定见 markupNames.isAriaReflectionProperty
@@ -146,45 +150,79 @@ function attributeNameOfProperty(name: string): string {
  *    href={false} 链接到 /false，download={false} 反而变成下载链接，popover={false} 把元素变成
  *    隐藏的 manual popover，htmlFor={undefined} 关联到 id 为 "undefined" 的控件；
  *  - number property 把 false 变成 0：maxLength={false} 的输入框一个字符都输不进去；
+ *  - object 类型的可空 property（srcObject 的 MediaStream、valueAsDate 的 Date、popoverTargetElement）
+ *    不接受 ''：setter 抛 TypeError，setProperty 退回 setAttribute 写一个无意义的 attribute 再移除，
+ *    property 本身从没被清空——srcObject={cond && stream} / srcObject={null} 的视频继续播放。
+ *    它们的「空」是 null。当前值为 null 的可空反射属性（未设置的 popover / crossOrigin）写 null
+ *    同样等于移除 attribute；DOMTokenList（sandbox / relList，[PutForwards=value]）会先写出 "null"，
+ *    随后按 attribute 名移除（见 propertyAttributeAliases）。
  *  - 同一个 false 在 attribute 分支（foo={false}）是「移除」，两条路径曾经不一致。
  *  规则（「property 类型」= typeof node[name]，只在这个慢路径里读一次）：
  *
- *  | 值        | property 类型                            | 写入                                    |
- *  |-----------|------------------------------------------|-----------------------------------------|
- *  | null      | 任意                                     | property = ''，移除 attribute（原有语义）|
- *  | undefined | string                                   | 同 null                                 |
- *  | undefined | 其他                                     | property = undefined，移除 attribute（原有语义）|
- *  | false     | boolean                                  | property = false（原有语义）            |
- *  | false     | string / number / object（含 null）      | 同 null：「条件不满足」= 没写这个属性   |
- *  | true      | boolean                                  | property = true（原有语义）             |
- *  | true      | string，或当前值是 null 的可空反射属性   | property = ''（等价于 HTML 里只写属性名：download / popover / alt）|
- *  | true      | 其他                                     | property = true（原有语义）             |
+ *  | 值        | property 类型（current）                  | 写入                                    |
+ *  |-----------|-------------------------------------------|-----------------------------------------|
+ *  | null      | 任意                                      | property = ''，移除 attribute（原有语义）；setter 拒绝 '' 时写 null（object 类型）|
+ *  | undefined | string                                    | 同 null                                 |
+ *  | undefined | object（current 为 null 或对象）          | property = null，移除 attribute         |
+ *  | undefined | 其他                                      | property = undefined，移除 attribute（原有语义）|
+ *  | false     | boolean                                   | property = false（原有语义）            |
+ *  | false     | string / number                           | 同 null：「条件不满足」= 没写这个属性   |
+ *  | false     | object                                    | property = null，移除 attribute         |
+ *  | true      | boolean                                   | property = true（原有语义）             |
+ *  | true      | string，或 current 为 null 的可空反射属性 | property = ''（等价于 HTML 里只写属性名：download / popover / alt）|
+ *  | true      | 其他                                      | property = true（原有语义）             |
  *
- *  boolean 值原样写入的例外（与原来完全一致）：
- *  - 自定义元素（tagName 带 '-'）：property 的语义由组件自己定义，undefined 也原样传；
+ *  null 不读 property（与修改前一样便宜）：先写 ''，只有 object 类型的 setter 会拒绝 ''，
+ *  在异常分支里才读类型、改写 null（见 clearProperty）。
+ *
+ *  原样写入的例外（与原来完全一致，不读 property）：
+ *  - 自定义元素（tagName 带 '-'）：property 的语义由组件自己定义，boolean / undefined 原样传；
  *  - contentEditable / writingSuggestions / aria*：取值是 "true"/"false" 关键字的 string property，
  *    false 是有语义的值（与 attribute 分支对 contenteditable、aria-* 的处理一致）；
  *  - hidden：它的 getter 在 until-found 状态下返回字符串。
  *  value / checked（表单控件）不走这里，各有专门的分支。
  */
 function setEmptyOrBooleanProperty(node: HTMLElement, name: string, value: null | undefined | boolean) {
-    let empty = value === null
-    let remove = value === null || value === undefined
-    if (!empty && node.tagName.indexOf('-') === -1 &&
+    if (value === null) {
+        clearProperty(node, name)
+        node.removeAttribute(attributeNameOfProperty(name))
+        return
+    }
+    let write: any = value
+    let remove = value === undefined
+    if (node.tagName.indexOf('-') === -1 &&
         name !== 'contentEditable' && name !== 'writingSuggestions' && name !== 'hidden' &&
         !isAriaReflectionProperty(name)) {
         const current = (node as any)[name]
         const type = typeof current
-        if (value === undefined) {
-            empty = type === 'string'
-        } else if (value === false) {
-            empty = remove = type === 'string' || type === 'number' || type === 'object'
-        } else {
-            empty = type === 'string' || current === null
+        if (type === 'string') {
+            write = ''
+            if (value === false) remove = true
+        } else if (type === 'object') {
+            if (value !== true) {
+                write = null
+                remove = true
+            } else if (current === null) {
+                write = ''
+            }
+        } else if (type === 'number' && value === false) {
+            write = ''
+            remove = true
         }
     }
-    setProperty(node, name, empty ? '' : value)
+    setProperty(node, name, write)
     if (remove) node.removeAttribute(attributeNameOfProperty(name))
+}
+
+// null 的写入（见 setEmptyOrBooleanProperty 的表）：'' 对 string / number / boolean property 都是「空」。
+function clearProperty(node: HTMLElement, name: string) {
+    try {
+        (node as any)[name] = ''
+    } catch {
+        // object 类型的可空 property（srcObject / valueAsDate / popoverTargetElement）拒绝 ''，它们的「空」是 null。
+        //  其余拒绝 '' 的 setter（contentEditable、自定义元素）照旧交给 setProperty 的 attribute 兜底。
+        setProperty(node, name, typeof (node as any)[name] === 'object' ? null : '')
+    }
 }
 
 // CAUTION 数组形态的 prop（style / className / 事件 handler）可以被转发进另一个数组：

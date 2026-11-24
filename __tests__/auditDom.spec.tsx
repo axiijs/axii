@@ -773,4 +773,47 @@ describe('audit: DOM.ts / StaticHost.ts', () => {
             expect(document.getElementById('c')!.getAttribute('class')).toBe('base x y')
         })
     })
+
+    // ---------------------------------------------------------------- review of #48
+    describe('R: review of the property rule table', () => {
+        test('R1: null / false / undefined clear an object-typed nullable property (srcObject, valueAsDate, relList)', async () => {
+            const stream = new MediaStream()
+            const on = atom(true)
+            const day = new Date(Date.UTC(2026, 0, 2))
+            root.render(<div>
+                <video id="and" srcObject={() => on() && stream}/>
+                <video id="null" srcObject={() => on() ? stream : null}/>
+                <video id="undef" srcObject={() => on() ? stream : undefined}/>
+                <input id="date" type="date" valueAsDate={() => on() ? day : null}/>
+                <a id="rel" relList={() => on() ? 'noopener' : null}>a</a>
+                <div id="pop" popover={() => on() ? 'manual' : false}>p</div>
+                <img id="img" crossOrigin={() => on() ? 'anonymous' : null}/>
+            </div>)
+            const get = (id: string) => document.getElementById(id) as any
+            const attrs = (id: string) => get(id).getAttributeNames().filter((n: string) => n !== 'id' && n !== 'type').sort()
+            expect([get('and').srcObject, get('null').srcObject, get('undef').srcObject, get('date').value, get('rel').rel])
+                .toEqual([stream, stream, stream, '2026-01-02', 'noopener'])
+            on(false)
+            await settle()
+            expect({
+                srcObject: ['and', 'null', 'undef'].map(id => get(id).srcObject),
+                date: get('date').value,
+                attrs: ['and', 'null', 'undef', 'date', 'rel', 'pop', 'img'].map(attrs),
+            }).toEqual({
+                srcObject: [null, null, null],
+                date: '',
+                attrs: [[], [], [], [], [], [], []],
+            })
+            // true on a nullable reflected string still means "attribute present, empty value"
+            on(true)
+            await settle()
+            expect([get('pop').getAttribute('popover'), get('img').getAttribute('crossorigin')]).toEqual(['manual', 'anonymous'])
+            const other = document.createElement('div')
+            document.body.appendChild(other)
+            const otherRoot = createRoot(other)
+            otherRoot.render(<div><div id="t" popover={true}>t</div><img id="ti" crossOrigin={true}/></div>)
+            expect([get('t').getAttribute('popover'), get('ti').getAttribute('crossorigin')]).toEqual(['', ''])
+            otherRoot.destroy()
+        })
+    })
 })
