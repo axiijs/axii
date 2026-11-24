@@ -21,7 +21,7 @@ import {createElement, createRoot, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 /* eslint-disable no-sparse-arrays */
 

@@ -125,7 +125,7 @@ const DEV_PROXY_HANDLER: ProxyHandler<HydrationElement> = {
 }
 
 /**
- * @internal 新模型激活期间、诊断开启时（beginTopDownHydration 定一次），createElement 返回包着描述的 Proxy（§3.4）。
+ * @internal 激活期间、诊断开启时（beginHydration 定一次），createElement 返回包着描述的 Proxy（§3.4）。
  * 框架对它的判定、读写与描述本身相同（isHydrationElement 经原型判断，预置字段不报告）。
  */
 export function createHydrationElementDevProxy(desc: HydrationElement): HydrationElement {

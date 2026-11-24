@@ -1,4 +1,4 @@
-import {insertBefore, UnhandledPlaceholder, materializeHydrateDeferred, rematerializeDeferredFragmentChildren, resolveHydrationElement} from "./DOM";
+import {insertBefore, UnhandledPlaceholder, resolveHydrationElement} from "./DOM";
 import {Host, PathContext} from "./Host";
 import {isAtom, RxList} from "data0";
 import {ComponentHost, ReusableHost} from "./ComponentHost";
@@ -10,9 +10,7 @@ import {assert} from "./util";
 import {RxListHost} from "./RxListHost.js";
 import {isAxiiRetainedObjectDiagnosticsEnabled, trackHostCreated, trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 import {getAxiiSource} from "./diagnostics";
-import {claimEmptyHostComment, claimEmptyHostCommentBefore, isHydrateDeferredElement, isHydrating} from "./hydration";
-import {claimTextBeforeCommentPlaceholder} from "./hydration";
-import {COMMENT_NODE, DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isCommentNode, nodeTypeOf, TEXT_NODE} from "./nodeType";
+import {COMMENT_NODE, DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, nodeTypeOf, TEXT_NODE} from "./nodeType";
 import {HydrationSlot, isHydrationElement} from "./hydrationElement";
 import {claimTopDownComment, claimTopDownText, insertTopDownEmptyText, removeTopDownCounterpart, reportTopDownLiveNode, stampTopDownHost} from "./hydrationCursor";
 
@@ -26,20 +24,6 @@ class EmptyHost implements Host{
         this.element = document.createComment('empty')
     }
     render() {
-        if (isHydrating()) {
-            // List / array rows: empty is immediately before this Host's placeholder.
-            // Root EmptyHost: empty is sibling of <!--root-->.
-            if (this.placeholder.parentNode) {
-                try {
-                    this.element = claimEmptyHostCommentBefore(this.placeholder as Comment)
-                    return
-                } catch {
-                    // fall through to root search (top-level null → <!--empty--><!--root-->)
-                }
-            }
-            this.element = claimEmptyHostComment()
-            return
-        }
         this.placeholder.parentNode?.insertBefore(this.element, this.placeholder)
     }
     // #55 新模型（§2.5）：认领 <!--empty-->，然后认领 slot
@@ -63,12 +47,6 @@ class PrimitiveHost implements Host{
     constructor(public source: string|number|boolean|bigint, public placeholder:Comment|Text, public pathContext: PathContext) {
     }
     render() {
-        if (isHydrating() && isCommentNode(this.placeholder)) {
-            const text = typeof this.source === 'boolean' ? '' : this.source.toString()
-            // §3.7 / D12: expected snapshot → report + identity rebuild on drift
-            this.element = claimTextBeforeCommentPlaceholder(this.placeholder, text)
-            return
-        }
         // CAUTION boolean 渲染为空文本：{cond && <el/>} 的 falsy 结果不应该出现字面 "false"，
         //  与 FunctionHost/AtomHost 的语义一致。
         const text = typeof this.source === 'boolean' ? '' : this.source.toString()
@@ -182,12 +160,6 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
         }
     } else if ((nodeType = nodeTypeOf(source)) === ELEMENT_NODE || nodeType === DOCUMENT_FRAGMENT_NODE) {
         // 任何 Element（HTML / SVG / MathML）与 DocumentFragment，不论来自哪个 realm
-        // Deferred stubs are Element carriers only (never DocumentFragment).
-        if (isHydrating() && nodeType === ELEMENT_NODE && isHydrateDeferredElement(source)) {
-            source = materializeHydrateDeferred(source) as typeof source
-        } else if (isHydrating() && nodeType === DOCUMENT_FRAGMENT_NODE) {
-            rematerializeDeferredFragmentChildren(source)
-        }
         host = new StaticHost(source, placeholder, pathContext)
         typeIndex = 0
     // CAUTION bigint 与 string/number 同为文本形态（后端 bigint id 是自然输入，I61）

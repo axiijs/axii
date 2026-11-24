@@ -18,7 +18,7 @@ import {atom} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
-import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 type ProbeWindow = Window & {__axiiI73Probe?: string[]}
 const probeWindow = window as ProbeWindow

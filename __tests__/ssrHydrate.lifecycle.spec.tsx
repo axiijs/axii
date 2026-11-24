@@ -167,7 +167,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
     })
 
     test('lazy: SSR fallback → hydrate starts load → swaps to loaded', async () => {
-        // Fallback uses span so claimElement('div') for App wrapper is unambiguous
+        // Fallback uses span (under the children-first claim model, removed in #55 S, this kept the App wrapper's <div> claim unambiguous)
         function Fallback({}, {createElement}: RenderContext) {
             return <span id="fb">loading</span>
         }
@@ -195,10 +195,10 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         expect(rootEl.querySelector('#fb')).toBeNull()
     })
 
-    // D1 (k15-audit): eager HTML element portal content is claimed under the main
-    // hydrate root, but SSR emitted it into portals[k].html — mismatch. Same class:
-    // createPortal(createElement('div',...)) and <Portal content={<div/>} />.
-    // Function / ComponentNode content defers createElement into hydratePortalContent (OK).
+    // D1 (k15-audit): under the children-first claim model (removed in #55 S) eager HTML element portal content was
+    // claimed under the main hydrate root, but SSR emitted it into portals[k].html — mismatch. Same class:
+    // createPortal(createElement('div',...)) and <Portal content={<div/>} />. Since #55 S Portal content is a deferred
+    // description that the Portal claims in its own container (design §2.6.5).
     test('static element portal content hydrates + updates (Node SSR pattern)', () => {
         const t = atom('a')
         function App({}, {createElement, createPortal}: RenderContext) {
@@ -270,10 +270,9 @@ describe('M-05 hydrate Portal + lifecycle', () => {
     })
 })
 
-// D1 (k16-audit): k16 deferred only when tryClaimElement finds *no* candidate.
-// Eager portal createElement runs as an arg *before* pushHydrateRoot; if a later
-// same-tag main sibling exists in SSR HTML, deep claim steals it (atom binds wrong
-// node / text-unit mismatch). Same domain as k15 D1 → domain-review.
+// D1 (k16-audit): under the children-first claim model (removed in #55 S) eager portal createElement ran as an arg
+// *before* the Portal switched to its container; a later same-tag main sibling in the SSR HTML was stolen by the deep
+// claim (atom binds wrong node / text-unit mismatch). Black-box locks: since #55 S they hold by construction (§2.6.5).
 describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
     let rootEl: HTMLElement
     let portalEl: HTMLElement

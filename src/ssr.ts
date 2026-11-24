@@ -589,7 +589,7 @@ function emitTextPh(text: string, out: string[]): void {
 
 // CAUTION §3.2.1 A1c：placeholder 是结构 Comment 的文本单元（Comment-ph：数组项 / 列表行 / 根 / computed node 上的
 //  AtomHost、FunctionHost 文本态、PrimitiveHost）空时不写任何节点——激活时在 placeholder 前插入 Text('')。
-//  写 axii:0 是 Text-ph 的写法（emitTextPh）：CSR 里没有这个节点，旧模型激活后它留在 DOM 里，新模型在认领 slot 时报告失配。
+//  写 axii:0 是 Text-ph 的写法（emitTextPh）：CSR 里没有这个节点，激活在认领 slot 时报告失配。
 //  Comment-ph 的文本单元经这里写，不要在调用处重复判定。唯一的例外是 serializeStructureResult 的 atom 分支：
 //  同样空时不写，非空时省略 axii:t 对（紧挨 computed node，A2 允许），这个既有写法有用例钉住。
 function emitCommentPhText(text: string, out: string[]): void {
@@ -1057,7 +1057,7 @@ function evaluateFunctionChild(fn: Function): any {
 
 // CAUTION 字符数据父节点（textarea / title / style / script…）的函数子节点（#56）：取当前值，按文本单元写进
 //  首尾相接的字符数据（与 atom 子节点相同）。CSR 里它是 FunctionHost 的文本态（Text 占位符），激活时按这个值的长度
-//  从服务端的 Text 上切出自己的一段（hydration.claimFunctionTextPlaceholder）、再由 FunctionHost 绑定为响应式。
+//  从服务端的 Text 上切出自己的一段（hydrationCursor 的字符数据模式）、再由 FunctionHost 绑定为响应式。
 //  曾经一律抛错（#48 之前静默写成空）。结构态（返回元素等）没有任何写法能放进字符数据，照旧抛错。
 function characterDataFunctionText(fn: Function, parentTag: string): string {
     const result = evaluateFunctionChild(fn)
@@ -1207,7 +1207,7 @@ function serializeStaticArray(
 ): void {
     // CAUTION ≡ StaticArrayHost.render 的 forEach：稀疏数组的空位（[a, , b]、new Array(n) 部分赋值、对稀疏数组 map 的结果）
     //  没有 Host、CSR 不产生任何节点，这里不写任何东西（#85）。曾经用 for…of，空位按 undefined 写成 EmptyHost
-    //  （<!--empty--><!--array item-->）：内部入口在认领处报告失配，旧入口多建一个 EmptyHost 或抛错。
+    //  （<!--empty--><!--array item-->）：激活在认领处报告失配。
     //  显式的 undefined / null 不是空位（in 判定），照旧是 EmptyHost。
     for (let index = 0; index < items.length; index++) {
         if (!(index in items)) continue
@@ -1551,7 +1551,7 @@ function serializeElementContent(
 /**
  * §3.2: table 的子内容写成解析后结构不变的形态：直接子元素里有裸 <tr>、没有分区元素时，整段内容外面补一层
  * <tbody>（解析器本来就会补，显式写出来让列表 / 函数的 placeholder 也落在同一个 tbody 里，激活时按隐含 tbody 认领，
- * 见 hydration.impliedTableBody）。判定按写出的直接子元素，见 atTableLevel。
+ * 见 DOM.resolveTopDownChildParent）。判定按写出的直接子元素，见 atTableLevel。
  */
 function serializeTableContent(
     children: any[],

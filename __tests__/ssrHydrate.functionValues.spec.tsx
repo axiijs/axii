@@ -9,7 +9,7 @@
  * Oracles：
  *  - 每个改动位置的服务端 HTML 逐字比较（标记是否多余，解析后的形状看不出来）；
  *  - 解析后的服务端 HTML ≡ CSR；
- *  - 激活（经 helpers/hydrate，旧入口与内部入口两遍）：不报告、不抛错、服务端元素原地保留、不留下 axii:* 标记、DOM ≡ CSR；
+ *  - 激活（经 helpers/hydrate，激活期间诊断开、关两遍）：不报告、不抛错、服务端元素原地保留、不留下 axii:* 标记、DOM ≡ CSR；
  *  - 之后的更新（内层值在文本 / 空 / 元素 / atom / null 之间切换，外层函数换掉内层函数）每一步都 ≡ CSR。
  * Run: npx vitest run __tests__/ssrHydrate.functionValues.spec.tsx
  */

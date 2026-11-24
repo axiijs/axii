@@ -29,8 +29,8 @@ import {
 } from "./retainedObjectDiagnostics.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
-import {claimFragmentStartBefore, getHydrateRollingStyleBase, isAnyHydrating, isHydrating, reconcileFragmentHydrateChildren, runOutsideHydration, stripAxiiTextBoundariesBetween} from "./hydration";
-import {claimTopDownDeferredShell, hydrateElementDescription, rematerializeDeferredFragmentChildren, type TopDownInnerHosts} from "./DOM";
+import {getHydrateRollingStyleBase, isHydrating, runOutsideHydration} from "./hydration";
+import {claimTopDownDeferredShell, hydrateElementDescription, type TopDownInnerHosts} from "./DOM";
 import {createHydrateHost} from "./createHost";
 import {HydrationElement, HydrationSlot, isHydrationElement, isHydrationSlot, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
@@ -381,7 +381,7 @@ class StyleManager {
     private allocateRollingStyleId(staticId: string, reclaimEl?: ExtendedElement | null): string {
         // Separate SSR payloads can start their sequences at R0. A mounted owner reserves
         // its base through inline/content transitions, even after its last frame expires.
-        let id = reclaimEl && isAnyHydrating()
+        let id = reclaimEl && isHydrating()
             ? getHydrateRollingStyleBase(reclaimEl) ?? reclaimRollingStyleId(reclaimEl, staticId)
             : null
         while (!id || this.rollingBaseOwners.has(id)) {
@@ -1097,24 +1097,12 @@ export class StaticHost implements Host {
         assert(this.element === this.placeholder, 'should never rerender')
         if (isAxiiDiagnosticsEnabled()) warnIfRenderingConsumedElement(this.source)
 
-        const hydrating = isHydrating()
         // CAUTION source 是不是 fragment 按 nodeType 判断：createHost 收下的元素 / 片段可能来自另一个
-        //  realm（见 nodeType.ts，#58）。只判断一次，下面三处共用。
+        //  realm（见 nodeType.ts，#58）。只判断一次，下面两处共用。
         const isFragment = isFragmentNode(this.source)
         // CAUTION 如果是 fragment，我们用一个 comment 节点来作为第一个元素，这样后面  destroy 的时候就能一次性 remove 掉。
-        // Hydrate：认领已有 <!--fragment start-->（§3.2.4 FTS / G3-Fr），禁止新建。
         if (isFragment) {
-            this.element = hydrating
-                ? claimFragmentStartBefore(this.placeholder)
-                : document.createComment('fragment start')
-            if (hydrating) {
-                // Rematerialize main-root deferred element children, then claim placeholders
-                // in the fragment region (createElement left stubs under §3.3.d force-defer).
-                rematerializeDeferredFragmentChildren(this.source as DocumentFragment)
-                reconcileFragmentHydrateChildren(this.source as DocumentFragment, this.element, this.placeholder)
-                // Leftover static axii:t / axii:0 (no unhandledChildren path)
-                stripAxiiTextBoundariesBetween(this.element, this.placeholder)
-            }
+            this.element = document.createComment('fragment start')
         } else {
             this.element = this.source as HTMLElement | SVGElement
         }
@@ -1122,9 +1110,9 @@ export class StaticHost implements Host {
         // CAUTION 子树里每个带嵌套样式的元素（响应式属性、列表行、子组件）都可能新建 stylesheet，
         //  合并成一次 document.adoptedStyleSheets 写入（见 StyleManager.beginBatch）。写入发生在
         //  下面把自己插入文档之前，随后的 ref/layoutEffect 读到的样式与逐张写入时完全一样。
-        //  纯静态元素（没有任何响应式元数据）与 hydrate 不打开批次，路径与原来相同。
+        //  纯静态元素（没有任何响应式元数据）不打开批次，路径与原来相同。
         const sourceMeta = this.source as ExtendedElement
-        if (!hydrating && (sourceMeta.unhandledAttr !== undefined || sourceMeta.unhandledChildren !== undefined)) {
+        if (sourceMeta.unhandledAttr !== undefined || sourceMeta.unhandledChildren !== undefined) {
             const styleManager = StaticHost.styleManager
             const root = this.pathContext.root
             const outerRoot = styleManager.beginBatch(root)
@@ -1137,17 +1125,11 @@ export class StaticHost implements Host {
             this.collectAndRenderInner()
         }
 
-        if (!hydrating) {
-            insertBefore(this.element, this.placeholder)
-            // 如果是 fragment，那么还要插入真实内容
-            if (isFragment) {
-                insertBefore(this.source, this.placeholder)
-            }
-        } else if (!isFragment) {
-            // 元素已在 placeholder 前；校正顺序（已正确时 insertBefore 为无操作）
-            insertBefore(this.element, this.placeholder)
+        insertBefore(this.element, this.placeholder)
+        // 如果是 fragment，那么还要插入真实内容
+        if (isFragment) {
+            insertBefore(this.source, this.placeholder)
         }
-        // hydrating Fragment：内容已在 fragment start 与 placeholder 之间，DocumentFragment 为空
 
         this.setupRefHandles()
         // mount/unmount 记账只服务于 StyleManager 的 stylesheet 引用计数，

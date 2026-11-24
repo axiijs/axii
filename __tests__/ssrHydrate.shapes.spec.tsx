@@ -15,7 +15,7 @@ import {createElement, createRoot, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -252,7 +252,6 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(client), reports: []})
     }
     test.each(iconsRenderedLater.slice(0, 1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
-    // 内部入口那一遍：列表行与数组项的激活在 #55 B2
     test.each(iconsRenderedLater.slice(1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
 
     // Known limit (documented at DOM.adoptSvgChild): tags a function / list renders later are inserted by a Host,

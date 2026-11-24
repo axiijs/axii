@@ -98,8 +98,8 @@ const CASES: RowCase[] = [
     {name: 'descendant detachStyle passed via props.children (no explicit children)', compact: false,
         row: (i, {createElement}) => createElement('li', {children: [<span detachStyle={OPACITY_0}>{i}</span>]} as any)},
     // innerHTML 覆盖 children，但 createElement 照样先建 children、提升它们的 detachStyle（判定跟随 CSR）。
-    // CAUTION 不激活：dangerouslySetInnerHTML 与 children 并存的元素（I66 开发期警告的写法）在列表外、
-    //  不带 detachStyle 时激活也报告失配（children 去认领 innerHTML 的内容），与 Compact 判定无关，不归 #68。
+    // CAUTION 不激活：dangerouslySetInnerHTML 与 children 并存的元素是 I66 开发期警告的误用（innerHTML 覆盖 children），
+    //  与 Compact 判定无关，不归 #68；这里只守住两端对这一行的 Compact 判定一致。
     {name: 'dangerouslySetInnerHTML + child with detachStyle', compact: false, hydrate: false,
         row: (i, {createElement}) =>
             <li dangerouslySetInnerHTML={{__html: `<em>${i}</em>`}}><span detachStyle={OPACITY_0}>x</span></li>},
@@ -142,11 +142,9 @@ const CASES: RowCase[] = [
     // --- 列表挂在别的位置：数组项、组件根 ---
     {name: 'list inside a static array item, row descendant has detachStyle', compact: false, mount: 'arrayItem',
         row: (i, {createElement}) => <li><span detachStyle={OPACITY_0}>{i}</span></li>},
-    // CAUTION 不激活：组件直接返回 RxList 时，任何非 Compact 行（行自己带 detachStyle、atom 行、函数行）
-    //  的激活在 origin/main 上本来就抛 'advanceCursorUntilComment without cursor'（RxListHost.render 的
-    //  激活分支没有列表起点游标）。那是另一个缺陷，与 Compact 判定无关，不归 #68。这里只守住服务端形状。
+    // 组件直接返回 RxList、行不是 Compact 行：子先于父认领的旧模型在这里抛 'advanceCursorUntilComment without cursor'
+    //  （与 Compact 判定无关），这一格曾经只守住服务端形状；#55 S 起 hydrateRoot 自顶向下认领，这一格照常激活。
     {name: 'list as component root, row descendant has detachStyle', compact: false, mount: 'componentRoot',
-        hydrate: false,
         row: (i, {createElement}) => <li><span detachStyle={OPACITY_0}>{i}</span></li>},
 ]
 
@@ -173,7 +171,6 @@ describe('#68 RxList Compact row: server ≡ CSR, hydration claims without misma
     })
 
     for (const c of CASES) {
-        // 内部入口那一遍：每个 case 都激活一个 RxList（列表的激活在 #55 B2），不激活的 case 照常运行
         test(c.name, () => {
             // CSR 基准
             const csrEl = document.body.appendChild(document.createElement('div'))

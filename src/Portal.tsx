@@ -1,6 +1,6 @@
 import {ComponentNode, RenderContext} from "./types.js";
-import {createRoot, hydrateContainerTopDown, hydratePortalContent} from "./render.js";
-import {isAnyHydrating, isHydrating, resolveHydratePortalContainer} from "./hydration";
+import {createRoot, hydrateContainerTopDown} from "./render.js";
+import {isHydrating} from "./hydration";
 import {resolveTopDownPortalContainer} from "./hydrationCursor";
 /**
  * @category Basic
@@ -89,12 +89,8 @@ export function Portal({ container, content, destroyOnUnmount, portalKey }: Port
     let root: ReturnType<typeof createRoot>
 
     if (isHydrating()) {
-        const key = resolvePortalExportKey(container, portalKey)
-        portalEl = resolveHydratePortalContainer(key)
-        root = hydratePortalContent(portalEl, content as any, pathContext)
-    } else if (isAnyHydrating()) {
-        // #55 新模型（§2.6.5）：content 是 Portal 的 prop，主树里不会认领它（描述、组件、函数都是延迟的）。在 Portal 自己的位置
-        //  为容器推入新的游标栈激活它，结束后弹出，主树的游标原样继续。激活目标与旧模型同一条规则（options.portals，再 id）
+        // #55（§2.6.5）：content 是 Portal 的 prop，主树里不会认领它（描述、组件、函数都是延迟的）。在 Portal 自己的位置
+        //  为容器推入新的游标栈激活它，结束后弹出，主树的游标原样继续。激活目标：options.portals[key]，再 getElementById(key)
         const key = resolvePortalExportKey(container, portalKey)
         portalEl = resolveTopDownPortalContainer(key)
         root = hydrateContainerTopDown(portalEl, content, pathContext)

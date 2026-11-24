@@ -1,6 +1,9 @@
 export * from './DOM'
 export { default as PropTypes, type TypeChecker } from './propTypes.js'
-export { createRoot, hydrateRoot } from './render.js'
+export { createRoot } from './render.js'
+export { hydrateRoot } from './hydrateRoot.js'
+// 激活期间 JSX 的结果是延迟描述，不是 DOM 节点（#55 设计 C4）：需要按节点类型判断 JSX 结果时用它一并判断
+export { isHydrationElement } from './hydrationElement.js'
 export { createHost } from './createHost.js'
 export * from './eventAlias.js'
 export * from './Host.js'

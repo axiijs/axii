@@ -6,17 +6,10 @@ import {PathContext, Host} from "./Host";
 import {assert} from "./util";
 import {reportAxiiError} from "./diagnostics";
 import {
-    beginHydration,
-    endHydration,
-    findRootComment,
     HydrationMismatchError,
-    isHydrateDeferredElement,
-    isAnyHydrating,
+    isHydrating,
     runOutsideHydration,
-    pushHydrateRoot,
-    popHydrateRoot,
     removeHydrateContainerOrphans,
-    takeHydrateDeferredPayload,
 } from "./hydration";
 import {migrateSsrStyleTags} from "./StaticHost";
 import {
@@ -31,8 +24,6 @@ import {
     rememberTopDownContainer,
     verifyTopDownRawElements,
 } from "./hydrationCursor";
-import {createElement, rematerializeDeferredFragmentChildren} from "./DOM";
-import {isFragmentNode} from "./nodeType";
 
 
 type EventCallback = (e: any) => void
@@ -147,12 +138,12 @@ function addRootCallback(
 
 /**
  * @internal
- * hydratePlaceholder：旧模型激活（hydrateRoot）时已有的 <!--root-->。
- * topDown：#55 新模型激活（只由内部入口 hydrateRootTopDown 传 true）——根 Host 由 createHydrateHost(source, 'root') 创建，
- *  hydrate('root') 从容器的游标处消费内容，最后认领 <!--root-->（§2.5「根」）；不新建 placeholder、不建 fragment。
- * afterTopDownHydrate：新模型激活的树完整、没有被丢弃时，在派发 attach（ref / layoutEffect）之前调用一次（内部入口的收尾，#55 B3）。
+ * topDown：激活（只由 hydrateContainerTopDown 传 true，hydrateRoot 与 Portal 的激活容器）——根 Host 由
+ *  createHydrateHost(source, 'root') 创建，hydrate('root') 从容器的游标处消费内容，最后认领 <!--root-->（#55 §2.5「根」）；
+ *  不新建 placeholder、不建 fragment。
+ * afterTopDownHydrate：激活的树完整、没有被丢弃时，在派发 attach（ref / layoutEffect）之前调用一次（激活容器的收尾，#55 B3）。
  */
-export function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment, topDown?: boolean, afterTopDownHydrate?: () => void): Root {
+export function createRootInternal(element: HTMLElement, parentContext?:PathContext, topDown?: boolean, afterTopDownHydrate?: () => void): Root {
     // 用户监听器与每次渲染的内部 attach 回调共用这张表（派发顺序就是登记顺序）
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     // CAUTION 当前这次渲染登记在 eventCallbacks 里的内部 attach 回调（layoutEffect / ref / Portal 桥接）。
@@ -210,7 +201,7 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
             try {
                 let host: Host
                 let frag: DocumentFragment | undefined
-                // CAUTION 只有内部入口的那一次 render 是激活：之后 root.destroy() 再 render（包括激活中 error 监听器
+                // CAUTION 只有激活容器的那一次 render 是激活：之后 root.destroy() 再 render（包括激活中 error 监听器
                 //  销毁 root、渲染错误提示）都是 CSR
                 const hydrateTopDown = topDown
                 topDown = false
@@ -219,10 +210,9 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
                 if (hydrateTopDown) {
                     root.host = host = createHydrateHost(componentOrEl, ROOT_SLOT, pathContext)
                 } else {
-                    const placeholder = hydratePlaceholder ?? document.createComment('root')
-                    // Hydrate：认领已有 <!--root-->，不新建、不整树重建（没有 fragment）
-                    frag = hydratePlaceholder ? undefined : document.createDocumentFragment()
-                    frag?.appendChild(placeholder)
+                    const placeholder = document.createComment('root')
+                    frag = document.createDocumentFragment()
+                    frag.appendChild(placeholder)
                     root.host = host = createHost(componentOrEl, placeholder, pathContext)
                 }
                 // CAUTION 重入销毁：树渲染到一半时 root.destroy() 被同步调用——最常见的是 error
@@ -248,7 +238,7 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
                         //  经过 dispatch 的错误已经在那里报告（见 dispatch 的说明），到这里的是没有经过
                         //  dispatch 的（元素里非法 child 的断言等）：同样经 reportAxiiError 报告，
                         //  不抛出、也不静默丢弃（#58）。
-                        //  #55 新模型的失配在抛出之前已经报告过（reportHydrationMismatch），不重复报告。
+                        //  #55 激活的失配在抛出之前已经报告过（reportHydrationMismatch），不重复报告。
                         if (!(error instanceof HydrationMismatchError)) reportAxiiError(error)
                     }
                     // CAUTION 被丢弃的树在 renderingHost 仍指向它的时候销毁：它的清理函数抛出的错误
@@ -271,7 +261,7 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
                 } finally {
                     renderingHost = outerRenderingHost
                 }
-                // #55 新模型激活：内部入口在激活的树完整之后、派发 attach（ref / layoutEffect）之前的收尾（hydrateTopDown.ts）
+                // #55 激活：激活容器在激活的树完整之后、派发 attach（ref / layoutEffect）之前的收尾（hydrateContainerTopDown）
                 if (afterHydrate !== undefined) afterHydrate()
                 if (frag) element.appendChild(frag)
                 // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
@@ -384,8 +374,8 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
             // CAUTION 监听器（layoutEffect / ref 经 attach 触发，error 钩子等）是用户代码：
             //  hydrateRoot 期间派发时必须先退出激活上下文，见 runOutsideHydration。
             //  稳态下只多一次布尔读。
-            if (isAnyHydrating()) {
-                // #55 新模型激活的中止（失配、未实现的形态）不能被 error 监听器当作已消费：
+            if (isHydrating()) {
+                // #55 激活的中止（isTopDownAbort：渲染错误）不能被 error 监听器当作已消费：
                 //  激活在错位的游标上继续，只会得到更多失配或静默错误的 DOM。按未消费处理，由调用方向上抛出。
                 if (event === 'error' && isTopDownAbort(arg)) return false
                 return runOutsideHydration(() => root.dispatch(event, arg))
@@ -491,34 +481,8 @@ export function createRoot(element: HTMLElement, parentContext?:PathContext): Ro
 }
 
 /**
- * Activate a server-rendered DOM tree in-place (claim existing nodes; do not rebuild).
- * Container children must include `renderToString` output ending with `<!--root-->`.
- * @category Basic
- */
-export function hydrateRoot(
-    container: HTMLElement,
-    source: JSX.Element|ComponentNode|Function|null|undefined,
-    options?: { portals?: Record<string, HTMLElement> },
-): Root {
-    const placeholder = findRootComment(container)
-    beginHydration(container, options?.portals)
-    try {
-        const root = createRootInternal(container, undefined, placeholder)
-        root.render(source as any)
-        // Adopted stylesheets are live; drop SSR <style data-axii-ssr> without FOUC.
-        migrateSsrStyleTags(container)
-        // §3.7 / D11: container-level orphans (before/after <!--root-->) are outside
-        // element-child cursor cleanup — clear so DOM ≡ CSR createRoot shape.
-        if (root.host) removeHydrateContainerOrphans(container, root.host)
-        return root
-    } finally {
-        endHydration()
-    }
-}
-
-/**
  * @internal
- * #55 新模型：在一个激活容器里自顶向下激活 source——内部入口的根容器（hydrateTopDown.ts），以及 Portal 的容器（§2.6.5：
+ * #55：在一个激活容器里自顶向下激活 source——hydrateRoot 的根容器（hydrateRoot.ts），以及 Portal 的容器（§2.6.5：
  * Portal 在自己的位置为容器推入新的游标栈，激活结束后弹出，主树的游标原样继续）。调用方已处于新模型的激活中。
  *  1. 游标从容器的第一个子节点开始（容器上的 STYLE / SCRIPT / LINK 跳过，§2.3）；
  *  2. 根 Host 由 createHydrateHost(source, 'root') 创建，hydrate('root') 按文档顺序读回服务端节点，最后认领 <!--root-->；
@@ -527,14 +491,14 @@ export function hydrateRoot(
  *  4. 迁移服务端样式，激活区间之外剩下的节点删除并报告一次（D13）；
  *  5. 记下容器与根 Host，诊断开启时由入口检查开发期不变量（§4.4）。
  * 激活中 root 被销毁（error 监听器 root.destroy()）时，激活的树已整体丢弃（render 的重入说明），3–5 都不做。
- * CAUTION 不在这里把模式置为「新」：只有内部入口（beginTopDownHydration）会这样做，产物里没有它（§7.1 第 4 点）。
+ * CAUTION 不在这里进入激活状态：由 hydrateRoot（beginHydration）进入，Portal 在激活中调用这里时已处于激活状态。
  */
 export function hydrateContainerTopDown(container: HTMLElement, source: any, parentContext: PathContext | undefined): Root {
     const depth = enterTopDownContainer(container)
     const freshMark = markTopDownFreshElements()
     const rawMark = markTopDownRawElements()
     try {
-        const root = createRootInternal(container, parentContext, undefined, true, () => {
+        const root = createRootInternal(container, parentContext, true, () => {
             finishTopDownContainer()
             verifyTopDownRawElements(rawMark, getTopDownActivationMismatchBase())
         })
@@ -551,38 +515,5 @@ export function hydrateContainerTopDown(container: HTMLElement, source: any, par
         dropTopDownFreshElements(freshMark)
         dropTopDownRawElements(rawMark)
         leaveTopDownContainer(depth)
-    }
-}
-
-/**
- * Hydrate a Portal content tree into an already-filled portal container (§3.3.d).
- * Switches the claim root for the duration of render; caller must already be inside hydrateRoot.
- * @internal
- */
-export function hydratePortalContent(
-    container: HTMLElement,
-    content: JSX.Element|ComponentNode|Function,
-    parentContext: PathContext,
-): Root {
-    const placeholder = findRootComment(container)
-    pushHydrateRoot(container)
-    try {
-        // Eager HTML Portal content was deferred under the main tree (§3.3.d); claim here.
-        let resolved: any = content
-        if (isHydrateDeferredElement(content)) {
-            const {type, rawProps, rawChildren} = takeHydrateDeferredPayload(content as Element)
-            // Portal root is pushed — claiming is against portals[k], not main tree.
-            resolved = createElement(type, rawProps, ...rawChildren)
-        } else if (isFragmentNode(content)) {
-            rematerializeDeferredFragmentChildren(content)
-        }
-        const root = createRootInternal(container, parentContext, placeholder)
-        root.render(resolved)
-        migrateSsrStyleTags(container)
-        // Same container-orphan contract as hydrateRoot (§3.3.d / D11).
-        if (root.host) removeHydrateContainerOrphans(container, root.host)
-        return root
-    } finally {
-        popHydrateRoot()
     }
 }

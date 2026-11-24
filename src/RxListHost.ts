@@ -29,15 +29,7 @@ import {
 } from "./diagnostics";
 import {CompactElementHost, StaticHost} from "./StaticHost.js";
 import {detachEffectFromCreationContext} from "./LightBindingEffect.js";
-import {isDomNode, isElementNode} from "./nodeType";
-import {ReusableHost} from "./ComponentHost.js";
-import {
-    advanceCursorUntilComment,
-    advancePastNode,
-    claimCommentAtCursor,
-    isHydrating,
-    setChildCursor,
-} from "./hydration";
+import {isElementNode} from "./nodeType";
 import {HydrationElement, HydrationSlot, isHydrationElement, RX_LIST_ITEM_SLOT} from "./hydrationElement";
 import {claimTopDownComment} from "./hydrationCursor";
 import {isCompactListRowDescriptor, type ListRowDescriptorAccess} from "./compactListRow";
@@ -126,63 +118,12 @@ export class RxListHost implements Host{
         //  从静态子树提升好），服务端与激活按同一规则判断描述（#68）。改这里的条件要同步那份规则。
         //  热路径：保持内联，不经共享函数调用（多一层调用在生产构建微基准里方向一致地偏慢，#68）。
         if (isElementNode(item) && !(item as ExtendedElement).detachStyledChildren) {
-            if (isHydrating()) {
-                advancePastNode(item)
-            }
             const host = new CompactElementHost(item as HTMLElement | SVGElement, this.childContext!)
             if (isAxiiRetainedObjectDiagnosticsEnabled()) {
                 trackHostCreated(host, 'CompactElementHost')
                 trackCompactHostCreated(host)
             }
             return host
-        }
-
-        if (isHydrating()) {
-            // G3-RL: hydrate inner rows first, then claim outer <!--rx list item-->
-            if (item instanceof RxList) {
-                const nested = new RxListHost(item, this.placeholder, this.childContext!)
-                nested.childContext = {
-                    ...this.childContext!,
-                    hostPath: createLinkedNode<Host>(nested, this.childContext!.hostPath),
-                }
-                nested.hydrateRowsFromCursor()
-                advanceCursorUntilComment('rx list item')
-                nested.placeholder = claimCommentAtCursor('rx list item')
-                ;(nested as any).__axiiHydrated = true
-                if (isAxiiRetainedObjectDiagnosticsEnabled()) {
-                    trackHostCreated(nested, 'RxListHost')
-                }
-                return nested
-            }
-
-    // G3-RU: content already claimed; claim <!--reusable--> + row placeholder
-            if (item instanceof ReusableHost) {
-                // StaticHost keeps the claimed element on `.source` until render() assigns `.element`
-                const src = (item.innerHost as any)?.source
-                if (isDomNode(src) && src.parentNode) {
-                    advancePastNode(src)
-                }
-                advanceCursorUntilComment('reusable')
-                const reusablePh = claimCommentAtCursor('reusable')
-                ;(item as any).innerPlaceholder = reusablePh
-                if (item.innerHost) {
-                    ;(item.innerHost as any).placeholder = reusablePh
-                    // Field initializer set element=old Comment; reset so render()'s assert passes
-                    ;(item.innerHost as any).element = reusablePh
-                }
-                advanceCursorUntilComment('rx list item')
-                const rowPh = claimCommentAtCursor('rx list item')
-                item.moveTo(rowPh)
-                ;(item as any).__axiiHydrating = true
-                if (isAxiiRetainedObjectDiagnosticsEnabled()) {
-                    trackHostCreated(item, 'ReusableHost')
-                }
-                return item
-            }
-
-            advanceCursorUntilComment('rx list item')
-            const ph = claimCommentAtCursor('rx list item')
-            return createHost(item, ph, this.childContext!)
         }
 
         return this.createCommentRowHost(item)
@@ -199,30 +140,6 @@ export class RxListHost implements Host{
     createCommentRowHost(item: any): Host {
         if (isHydrationElement(item)) return this.createChildHost(resolveHydrationElement(item))
         return createHost(item, document.createComment('rx list item'), this.childContext!)
-    }
-
-    /** Claim existing SSR row DOM from the active child cursor (no insert). */
-    hydrateRowsFromCursor() {
-        this.hosts = []
-        const data = this.source.data
-        for (let i = 0; i < data.length; i++) {
-            this.hosts.push(this.createChildHost(data[i]))
-        }
-        for (const row of this.hosts) {
-            row.render()
-            // host.render() may strip axii:* or insert empty Text — resync cursor after row end
-            const parent = this.placeholder.parentNode
-            if (parent) {
-                const last = hostLastNode(row)
-                const kids = parent.childNodes
-                for (let i = 0; i < kids.length; i++) {
-                    if (kids[i] === last) {
-                        setChildCursor(parent, i + 1)
-                        break
-                    }
-                }
-            }
-        }
     }
 
     // CAUTION 调用方在拿到 fragment 之后必须先检查 destroyedWith：渲染某一行的过程中列表自己
@@ -269,29 +186,11 @@ export class RxListHost implements Host{
     }
 
     render(): void {
-        const source = this.source
         // 所有行共享同一个 childContext/hostPath 节点（内容完全相同），避免每行两次对象分配
         this.childContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
 
-        // Hydrate: claim SSR rows once; first computation only establishes tracking.
-        let hydrateSkipInitial = false
-        if (isHydrating()) {
-            if (!(this as any).__axiiHydrated) {
-                this.hosts = []
-                const savedParent = (source as any).__axiiHydrateListParent as ParentNode | undefined
-                const savedStart = (source as any).__axiiHydrateListStart as number | undefined
-                if (savedParent != null && savedStart != null) {
-                    setChildCursor(savedParent, savedStart)
-                }
-                this.hydrateRowsFromCursor()
-                ;(this as any).__axiiHydrated = true
-            }
-            // Nested row may already have hosts from createChildHost; do not clear them.
-            hydrateSkipInitial = true
-        } else {
-            this.hosts = []
-        }
-        this.createRenderComputed(hydrateSkipInitial)
+        this.hosts = []
+        this.createRenderComputed(false)
     }
     /**
      * #55 新模型（设计 §2.5 RxListHost 行、§2.6.4、§3.3）：从游标处逐行认领服务端节点，然后认领自己的 slot。
@@ -303,7 +202,7 @@ export class RxListHost implements Host{
      *  2. 行是描述时，认领之后把 source.data[i] 写回为认领到的节点（Fragment 行是那个空的 DocumentFragment，≡ CSR 的 data），
      *     普通下标赋值，不触发 patch（data0Contract 13a–13c）。激活完成后 data 里与 CSR 一样是节点，没有描述（§5.2）。
      *     只覆盖被渲染的这一个列表：map(f).filter(p) 的上游 map 仍持有描述壳，谓词稍后重新放行的行是描述（C10 / §3.3，B4）。
-     *  3. 认领 slot；computed 首次运行只建立追踪（≡ 旧模型的 hydrateSkipInitial），之后的 patch 走 CSR。
+     *  3. 认领 slot；computed 首次运行只建立追踪（createRenderComputed(true)），之后的 patch 走 CSR。
      * 行在 computed 之外认领：行 Host 的 effect 都自行脱离创建上下文（detachEffectFromCreationContext），与在 computation 里
      * 暂停子 effect 收集的 CSR 结果相同。激活时元素已在文档里，不打开样式批次（≡ StaticHost.hydrate）。
      */

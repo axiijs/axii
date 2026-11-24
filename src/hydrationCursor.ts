@@ -1,7 +1,7 @@
 /**
  * @internal
- * #55 新激活模型的节点指针游标（设计 docs/ssr-support/hydration-top-down.md §2.3、§2.5、§4）。只给新模型用；
- * 旧模型的下标游标（hydration.ts 的 childCursorParent / childCursorIndex）在 #55 S 随旧模型删除。
+ * #55 激活（自顶向下认领）的节点指针游标（设计 docs/ssr-support/hydration-top-down.md §2.3、§2.5、§4）。
+ * 子先于父认领的旧模型的下标游标在 #55 S 随旧模型删除。
  *
  * 激活是 ssr.ts serialize 的逆过程：服务端按什么顺序写出节点，各 Host 就按什么顺序从游标处读回。
  *  - 每个 DOM 父节点一层：{parent, next}，next 是下一个未消费的服务端子节点。用节点指针而不是下标：
@@ -90,7 +90,7 @@ export function getTopDownActivationMismatchBase(): number {
     return activationMismatchBase
 }
 
-/** Portal 的激活目标：与旧模型同一条规则（options.portals[key]，再 getElementById）。 */
+/** Portal 的激活目标：hydration.resolvePortalHydrateTarget（options.portals[key]，再 getElementById）。 */
 export function resolveTopDownPortalContainer(key: string): HTMLElement {
     return resolvePortalHydrateTarget(key, activationPortals)
 }
@@ -126,7 +126,7 @@ export function reportTopDownLiveNode(node: Node): void {
 let cursorParent: ParentNode | null = null
 let cursorNext: ChildNode | null = null
 // 字符数据父节点（textarea / title / style / script…，§2.6.6）：各文本单元从同一个 Text 上依次切出自己的前缀，
-//  空单元插入 Text('')，不认领任何 axii:*。判定与旧模型共用 hydration.isCharacterDataParent。
+//  空单元插入 Text('')，不认领任何 axii:*。判定是 hydration.isCharacterDataParent。
 let cursorCharData = false
 // 激活容器这一层：容器上的 STYLE / SCRIPT / LINK 留给 migrateSsrStyleTags 与之后的容器清扫，认领、R3 / R5 的删除都跳过它们（§2.3、D13）
 let cursorIsContainer = false
@@ -732,7 +732,7 @@ export function isTopDownClaimApproximate(): boolean {
  * 元素的子节点由调用方 enterTopDownElement 之后消费。失配时按 R1（见模块说明）近似认领、删除之间的节点，
  * 或者返回 null：调用方按 CSR 新建这个元素（enterTopDownFreshElement），建好之后 placeTopDownFreshElement。
  * 新建的层里永远返回 null，不报告。
- * CAUTION 标签比较同旧模型 tryClaimElement：Element.tagName 只有 HTML 元素是大写，SVG 元素保持原始大小写
+ * CAUTION 标签比较：Element.tagName 只有 HTML 元素是大写，SVG 元素保持原始大小写
  *  （'svg'、'clipPath'）。SVG 按原样比，HTML 按大写比，大小写本身也区分了 HTML / SVG 的同名标签（a / title / style / script）。
  */
 export function claimTopDownElement(tag: string, isSVG: boolean, wantId: string | null): Element | null {

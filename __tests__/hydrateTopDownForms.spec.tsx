@@ -1,8 +1,8 @@
 /** @jsx createElement */
 /**
  * #55 B4：新激活模型的其余形态与开发期检测（设计 docs/ssr-support/hydration-top-down.md §2.6.5、§2.6.8、§2.6.9、§3.1.1、
- * §3.4、§5.2），经内部入口 hydrateRootTopDown。激活相关的既有用例经 helpers/hydrate 在内部入口上跑两遍（激活期间诊断开、关，
- * vitest.config.ts 的 top-down / top-down-diag-off 项目）；这里补它们没有覆盖、只属于新模型的契约：
+ * §3.4、§5.2），经 hydrateRoot（B4 时是不导出的内部入口，#55 S 起是公开入口）。激活相关的既有用例经 helpers/hydrate 跑两遍
+ * （激活期间诊断开、关，vitest.config.ts 的 hydrate-diag-on / hydrate-diag-off 项目）；这里补它们没有覆盖的契约：
  *  - 开发期 Proxy：描述被当作节点读写时报告 AXII_HYDRATION_ELEMENT_ACCESS，行为与生产相同；框架与语言的探测不报告；
  *  - 事后渲染（C6 / C10）：激活中建好、之后才渲染的描述按 CSR 物化（AXII_HYDRATION_ELEMENT_LATE_RENDER），≡ CSR；
  *  - 现成节点（§2.6.8）：删除服务端的对应物，按 CSR 插入、渲染（AXII_HYDRATION_LIVE_NODE）；
@@ -12,7 +12,7 @@ import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {atom, RxList} from 'data0'
 import {configureDiagnostics, createElement, createRoot, lazy, type RenderContext} from '@framework'
 import {renderToString} from '../src/ssr.js'
-import {hydrateRootTopDown} from '../src/hydrateTopDown'
+import {hydrateRoot} from '../src/hydrateRoot'
 import {HydrationDevReport, HydrationInvariantError, HydrationMismatchError} from '../src/hydration'
 import {HydrationElement, isHydrationElement} from '../src/hydrationElement'
 import {
@@ -73,7 +73,7 @@ describe('development Proxy (§3.4, §3.1.1)', () => {
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make(), null)).html
         seen.length = 0
-        hydrateRootTopDown(hyd, createElement(make(), null))
+        hydrateRoot(hyd, createElement(make(), null))
         const access = devReports('AXII_HYDRATION_ELEMENT_ACCESS') as Error[]
         expect({seen, dom: kids(hyd), access: access.map(e => e.message.match(/"(\w+)" was read/)?.[1]), mismatches: mismatches()})
             .toEqual({seen: [undefined, undefined, undefined], dom: kids(csr), access: ['value', 'textContent'], mismatches: []})
@@ -90,7 +90,7 @@ describe('development Proxy (§3.4, §3.1.1)', () => {
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(App, null)).html
         errors.length = 0
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect(errors.map(e => (e as Error).constructor.name)).toEqual(['TypeError', 'TypeError'])
         expect((devReports('AXII_HYDRATION_ELEMENT_ACCESS') as Error[]).map(e => e.message.match(/"(\w+)" was (read|written)/)!.slice(1).join(' ')))
             .toEqual(['focus read', 'className written'])
@@ -107,7 +107,7 @@ describe('development Proxy (§3.4, §3.1.1)', () => {
         }
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(App, null)).html
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect(devReports('AXII_HYDRATION_ELEMENT_ACCESS')).toEqual([])
         hyd.querySelector('button')!.click()
         expect(errors.map(e => (e as Error).constructor.name)).toEqual(['TypeError'])
@@ -128,7 +128,7 @@ describe('development Proxy (§3.4, §3.1.1)', () => {
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(App, null)).html
         probes.length = 0
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect(probes).toEqual(['input', null, false, null, undefined, undefined, undefined, undefined, undefined, 'function', undefined, undefined, true, true])
         expect(reports).toEqual([])
     })
@@ -148,7 +148,7 @@ describe('development Proxy (§3.4, §3.1.1)', () => {
         hyd.innerHTML = renderToString(createElement(App, null)).html
         seen.length = 0
         errors.length = 0
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({seen, errors: errors.map(e => (e as Error).constructor.name), reports}).toEqual({seen: [undefined, true, true], errors: ['TypeError', 'TypeError'], reports: []})
     })
 })
@@ -170,7 +170,7 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
         const h = make()
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null)).html
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         for (const s of [c, h]) s.open(true)
         await tick()
         expect(kids(hyd)).toBe(kids(csr))
@@ -191,7 +191,7 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
         const h2 = make()
         const hyd2 = mount()
         hyd2.innerHTML = renderToString(createElement(make().App, null)).html
-        hydrateRootTopDown(hyd2, createElement(h2.App, null))
+        hydrateRoot(hyd2, createElement(h2.App, null))
         h2.open(true)
         h2.label('b')
         await tick()
@@ -217,7 +217,7 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
             const h = make()
             const hyd = mount()
             hyd.innerHTML = renderToString(createElement(make().App, null)).html
-            const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+            const root = hydrateRoot(hyd, createElement(h.App, null))
             const steps: string[][] = []
             for (const step of [() => [c, h].forEach(s => s.open(true)), () => [c, h].forEach(s => s.label('b')),
                 () => [c, h].forEach(s => s.open(false)), () => [c, h].forEach(s => s.open(true))]) {
@@ -262,7 +262,7 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
         const h = make()
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null)).html
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         c.open(true)
         h.open(true)
         await tick()
@@ -284,7 +284,7 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
         const h = make()
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null)).html
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         c.open(true)
         h.open(true)
         await tick()
@@ -312,7 +312,7 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
         const h = make()
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null)).html
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         const first = hyd.querySelector('li')!
         expect(kids(hyd)).toBe(kids(csr))
         for (const s of [c, h]) s.all(true)
@@ -331,7 +331,7 @@ describe('the same description or live node more than once in one activation (C6
         const h = make()
         const hyd = mount()
         hyd.innerHTML = html ?? renderToString(createElement(make().App, null)).html
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         return {csr, hyd, c, h}
     }
 
@@ -439,9 +439,9 @@ describe('a description placed before its static occurrence in an outer static t
             const h = make(live)
             resetAxiiRetainedObjectDiagnostics()
             configureDiagnostics({enabled: diagnostics, onError})
-            let root: ReturnType<typeof hydrateRootTopDown>
+            let root: ReturnType<typeof hydrateRoot>
             try {
-                root = hydrateRootTopDown(hyd, createElement(h.App, null))
+                root = hydrateRoot(hyd, createElement(h.App, null))
             } finally {
                 configureDiagnostics({enabled: true, onError})
             }
@@ -570,7 +570,7 @@ describe('a description placed before its static occurrence in an outer static t
             const hyd = mount()
             hyd.innerHTML = edit(renderToString(createElement(make().App, null)).html)
             const h = make()
-            hydrateRootTopDown(hyd, createElement(h.App, null))
+            hydrateRoot(hyd, createElement(h.App, null))
             const before = {dom: kids(hyd), mismatches: mismatches().length, invariants: invariants()}
             const csrBefore = kids(csr)
             c.step()
@@ -603,8 +603,8 @@ describe('a description placed before its static occurrence in an outer static t
             hyd1.innerHTML = renderToString(createElement(server.First, null)).html
             hyd2.innerHTML = renderToString(createElement(server.Second, null)).html
             const h = make()
-            hydrateRootTopDown(hyd1, createElement(h.First, null))
-            hydrateRootTopDown(hyd2, createElement(h.Second, null))
+            hydrateRoot(hyd1, createElement(h.First, null))
+            hydrateRoot(hyd2, createElement(h.Second, null))
             expect({dom: [kids(hyd1), kids(hyd2)], mismatches: mismatches()}).toEqual({dom: [kids(csr1), kids(csr2)], mismatches: []})
         }
     })
@@ -635,7 +635,7 @@ describe('C10 quantification (§5.2, D2)', () => {
                 if (hydrateIt) {
                     el.innerHTML = renderToString(createElement(make().App, null)).html
                     configureDiagnostics({enabled: diagnostics, onError: (e: unknown) => { reports.push(e) }})
-                    hydrateRootTopDown(el, createElement(s.App, null))
+                    hydrateRoot(el, createElement(s.App, null))
                     configureDiagnostics({enabled: true, onError: (e: unknown) => { reports.push(e) }})
                 } else {
                     createRoot(el).render(createElement(s.App, null))
@@ -687,7 +687,7 @@ describe('live nodes (§2.6.8)', () => {
         hyd.innerHTML = renderToString(createElement(make(false).App, null)).html
         const [i, u] = [hyd.querySelector('i'), hyd.querySelector('u')]
         const h = make(true)
-        hydrateRootTopDown(hyd, createElement(h.App, null))
+        hydrateRoot(hyd, createElement(h.App, null))
         expect({dom: kids(hyd), live: hyd.querySelector('b') === h.node, kept: hyd.querySelector('i') === i && hyd.querySelector('u') === u,
             liveReports: devReports('AXII_HYDRATION_LIVE_NODE').length, mismatches: mismatches(), invariants: invariants()})
             .toEqual({dom: kids(csr), live: true, kept: true, liveReports: 1, mismatches: [], invariants: []})
@@ -720,7 +720,7 @@ describe('live nodes (§2.6.8)', () => {
             createRoot(csr).render(createElement(make(true), null))
             const hyd = mount()
             hyd.innerHTML = renderToString(createElement(make(false), null)).html
-            const root = hydrateRootTopDown(hyd, createElement(make(true), null))
+            const root = hydrateRoot(hyd, createElement(make(true), null))
             expect({dom: kids(hyd), mismatches: mismatches(), invariants: invariants(), live: devReports('AXII_HYDRATION_LIVE_NODE').length > 0})
                 .toEqual({dom: kids(csr), mismatches: [], invariants: [], live: true})
             root.destroy()
@@ -750,7 +750,7 @@ describe('Portal (§2.6.5)', () => {
         inner.innerHTML = ssr.portals['fp-inner'].html.replace('<i>', '<u>').replace('</i>', '</u>')
         const kept = [hyd.querySelectorAll('span')[0], hyd.querySelectorAll('span')[1], outer.querySelector('b')]
         const h = make()
-        const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+        const root = hydrateRoot(hyd, createElement(h.App, null))
         expect({
             main: kids(hyd), outer: kids(outer), inner: kids(inner),
             kept: [hyd.querySelectorAll('span')[0], hyd.querySelectorAll('span')[1], outer.querySelector('b')].every((n, i) => n === kept[i]),
@@ -781,7 +781,7 @@ describe('Portal (§2.6.5)', () => {
         const one = mount('fp-one')
         hyd.innerHTML = ssr.html
         one.innerHTML = ssr.portals['fp-one'].html
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({mismatches: mismatches(), invariants: (invariants() as Error[]).map(e => e.message)})
             .toEqual({mismatches: [], invariants: ['[axii] hydration invariant broken: a leftover <!--axii:0--> marker (AXII_HYDRATION_INVARIANT)']})
     })
@@ -795,7 +795,7 @@ describe('Portal (§2.6.5)', () => {
         const one = mount('fp-one')
         hyd.innerHTML = ssr.html
         one.innerHTML = ssr.portals['fp-one'].html + '<!--axii:0-->'
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({one: kids(one), mismatches: mismatches().length, invariants: invariants()}).toEqual({one: '<p>"x"</p><!--root-->', mismatches: 1, invariants: []})
     })
 })
@@ -825,7 +825,7 @@ describe('AXII_HYDRATION_ATTRIBUTE_RESIDUE (§4.1)', () => {
     test('unmodified server output (style classes and markers, className, uuid, aria / data-*, htmlFor, controlled inputs, select, svg names, reactive props) reports no residue', () => {
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make(), null)).html
-        hydrateRootTopDown(hyd, createElement(make(), null))
+        hydrateRoot(hyd, createElement(make(), null))
         expect(reports).toEqual([])
     })
 
@@ -836,7 +836,7 @@ describe('AXII_HYDRATION_ATTRIBUTE_RESIDUE (§4.1)', () => {
         const html = renderToString(createElement(App, null)).html
         const hyd = mount()
         hyd.innerHTML = html.replace('<b>', '<b title="server" data-s="1">').replace('<i id="keep">', '<i id="drift" title="server">')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         const residue = devReports('AXII_HYDRATION_ATTRIBUTE_RESIDUE') as Error[]
         expect({
             residue: residue.map(e => e.message.match(/<(\w+)> claimed from the server keeps attribute\(s\) ([\w-, ]+) that/)!.slice(1).join(': ')),
@@ -849,7 +849,7 @@ describe('AXII_HYDRATION_ATTRIBUTE_RESIDUE (§4.1)', () => {
         reports = []
         const off = mount()
         off.innerHTML = html.replace('<b>', '<b title="server">')
-        hydrateRootTopDown(off, createElement(App, null))
+        hydrateRoot(off, createElement(App, null))
         expect({reports, b: off.querySelector('b')!.getAttributeNames()}).toEqual({reports: [], b: ['title']})
     })
 })
@@ -865,7 +865,7 @@ describe('lazy (§2.6.9)', () => {
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(App, null)).html
         const fallback = hyd.querySelector('span')
-        hydrateRootTopDown(hyd, createElement(App, null))
+        hydrateRoot(hyd, createElement(App, null))
         expect({kept: hyd.querySelector('span') === fallback, reports}).toEqual({kept: true, reports: []})
         resolve(Loaded)
         await new Promise(r => setTimeout(r, 0))
@@ -922,7 +922,7 @@ describe('retained objects (§5.2)', () => {
             const ssr = renderToString(createElement(App, null))
             hyd.innerHTML = ssr.html
             portal.innerHTML = ssr.portals['fp-ret'].html
-            const root = hydrateRootTopDown(hyd, createElement(App, null))
+            const root = hydrateRoot(hyd, createElement(App, null))
             open(true)
             label('y')
             await tick()

@@ -4,7 +4,7 @@
 import {describe, expect, test} from 'vitest'
 import {createElement, createSVGElement, Fragment} from '@framework'
 import {HYDRATION_ELEMENT_FIELDS, HydrationElement, isHydrationElement} from '../src/hydrationElement'
-import {beginTopDownHydration, endTopDownHydration} from '../src/hydration'
+import {beginHydration, endHydration} from '../src/hydration'
 
 describe('HydrationElement preset fields', () => {
     // 预置字段名不得出现在任何元素接口上：用户读 el.<名字> 会拿到描述的内部数据，开发期的读探测（B4）又跳过预置字段，
@@ -38,7 +38,7 @@ describe('HydrationElement preset fields', () => {
 describe('createElement during a top-down activation returns descriptions', () => {
     test('string tags and Fragment give descriptions (no DOM); components still give ComponentNode', () => {
         function Comp() { return null }
-        const saved = beginTopDownHydration()
+        const saved = beginHydration()
         let el: any, frag: any, svg: any, svgOnly: any, comp: any
         try {
             el = createElement('div', {id: 'a'}, 'x', createElement('b', null))
@@ -47,7 +47,7 @@ describe('createElement during a top-down activation returns descriptions', () =
             svgOnly = createElement('circle', null)
             comp = createElement(Comp, {p: 1})
         } finally {
-            endTopDownHydration(saved)
+            endHydration(saved)
         }
         expect(isHydrationElement(el)).toBe(true)
         expect({tag: el.tag, rawProps: el.rawProps, isSVG: el.isSVG, node: el.node}).toEqual({tag: 'div', rawProps: {id: 'a'}, isSVG: false, node: null})
