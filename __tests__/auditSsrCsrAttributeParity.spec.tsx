@@ -4,10 +4,11 @@
  * attributes as a client render of the same JSX. The server has no DOM to ask for a property's
  * type, so it follows a static table; this spec is what keeps the two sides from drifting apart.
  */
-import {atom, configureDiagnostics, createElement, createRoot, hydrateRoot, RenderContext} from '@framework'
+import {atom, configureDiagnostics, createElement, createRoot, RenderContext} from '@framework'
 import {describe, expect, test, vi} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {htmlPropertyTypeEntries, type HtmlPropertyType} from '../src/htmlPropertyTypes.js'
+import {hydrate} from './helpers/hydrate'
 
 function attributesOf(root: Element): string[] {
     const out: string[] = []
@@ -331,7 +332,7 @@ describe('#49 on* props that are not event handlers are written on neither side'
         quietly(() => {
             const container = renderServer(<App/>)
             document.body.appendChild(container)
-            const root = hydrateRoot(container, <App/>)
+            const root = hydrate(container, <App/>)
             clickAll(container)
             expect({
                 attrs: onAttributesOf(container),
@@ -539,7 +540,7 @@ describe('#52 checkbox / radio: a nullish value never touches the checked state,
         const container = document.createElement('div')
         container.innerHTML = renderToString(<App/>).html
         document.body.appendChild(container)
-        const root = hydrateRoot(container, <App/>)
+        const root = hydrate(container, <App/>)
         expectMatrix(container)
         root.destroy()
         container.remove()
@@ -572,7 +573,7 @@ describe('#52 checkbox / radio: a nullish value never touches the checked state,
         const container = document.createElement('div')
         container.innerHTML = renderToString(<Hydrated/>).html
         document.body.appendChild(container)
-        const hydrated = hydrateRoot(container, <Hydrated/>)
+        const hydrated = hydrate(container, <Hydrated/>)
         values.h(undefined)
         await settle()
         expect(stateOf(container)).toEqual({h: ['', true]})
@@ -699,7 +700,7 @@ describe('#51 one attribute rule for both sides: server markup parses to what th
             const container = document.createElement('div')
             container.innerHTML = renderToString(createElement(App, null as any)).html
             document.body.appendChild(container)
-            const root = hydrateRoot(container, createElement(App, null as any))
+            const root = hydrate(container, createElement(App, null as any))
             const state = stateOf(container, scope)
             root.destroy()
             container.remove()

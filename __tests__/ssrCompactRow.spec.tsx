@@ -18,13 +18,13 @@ import {
     configureDiagnostics,
     createElement,
     createRoot,
-    hydrateRoot,
     RenderContext,
     RxList,
 } from '@framework'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {CompactElementHost} from '../src/StaticHost.js'
+import {hydrate} from './helpers/hydrate'
 
 /** 递归的结构签名：标签、Comment、Text（不含属性），用于比较服务端解析结果与 CSR 的 DOM 形状。 */
 function structure(n: Node): string {
@@ -197,7 +197,7 @@ describe('#68 RxList Compact row: server ≡ CSR, hydration claims without misma
 
             // 激活：不报告、不重建（服务端节点原样保留），行 Host 种类 ≡ CSR
             const serverNodes = Array.from(rootEl.querySelectorAll('*'))
-            const hydrated = hydrateRoot(rootEl, createElement(makeApp(c, ssrList), null as any))
+            const hydrated = hydrate(rootEl, createElement(makeApp(c, ssrList), null as any))
             expect(errors).toEqual([])
             expect(structure(rootEl)).toBe(csrShape)
             for (const n of serverNodes) expect(n.isConnected).toBe(true)
@@ -246,7 +246,7 @@ describe('#68 exit animation of a hydrated row whose descendant has detachStyle'
         rootEl.innerHTML = html
         const rowA = rootEl.querySelector('#row-a')!
         const rowB = rootEl.querySelector('#row-b')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(errors).toEqual([])
         expect(rootEl.querySelector('#row-a')).toBe(rowA)
         await sleep(30)

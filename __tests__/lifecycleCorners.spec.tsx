@@ -16,11 +16,11 @@ import {
     createElement,
     createHost,
     createRoot,
-    hydrateRoot,
     RenderContext,
     RxList,
 } from "@framework";
 import {renderToString} from '../src/ssr.js'
+import {hydrate} from './helpers/hydrate'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 async function settle() {
@@ -469,7 +469,7 @@ describe('#58-4: nodes from another realm (same-origin iframe)', () => {
         const span = container.querySelector('span')!
         const em = container.querySelector('em')!
         const firstLi = container.querySelector('li')!
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
         expect(container.querySelector('span')).toBe(span)
         expect(container.querySelector('em')).toBe(em)
         expect(container.querySelector('li')).toBe(firstLi)

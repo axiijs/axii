@@ -11,10 +11,11 @@
  * after the reactive data changes the hydrated DOM ≡ a CSR root given the same change.
  * Run: npx vitest run __tests__/ssrHydrate.shapes.spec.tsx
  */
-import {createElement, createRoot, hydrateRoot, configureDiagnostics, RenderContext} from '@framework'
+import {createElement, createRoot, configureDiagnostics, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -72,7 +73,7 @@ function setup<S extends {App: any}>(make: () => S) {
     createRoot(client).render(createElement(c.App, null as any))
     const before = elementsOf(hyd)
     const h = make()
-    if (ssrError === undefined) hydrateRoot(hyd, createElement(h.App, null as any))
+    if (ssrError === undefined) hydrate(hyd, createElement(h.App, null as any))
     return {ssrError: ssrError === undefined ? undefined : String(ssrError), parsed, hyd, client, c, h, before}
 }
 
@@ -256,7 +257,8 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
     // the function leaves the server SVG <title> next to a new empty HTML one, the list row keeps the SVG <a>.
     // Kept executable as test.fails; it flips once hydration claims top-down (#55). A throw from hydrateRoot is not
     // this defect: it is logged and the body returns normally, so test.fails reports it instead of swallowing it.
-    test.fails('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
+    // 内部入口那一遍（#55 §7.2）：新模型在认领处看到命名空间不符，按 R1 报告并重建（B3），之前待实现
+    ;(pendingTopDown('B3') ? test.skip : test.fails)('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
         const make = () => {
             const tip = atom('d1')
             const rows = new RxList(['r1'])

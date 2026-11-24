@@ -21,7 +21,6 @@
 import {
     createElement,
     createRoot,
-    hydrateRoot,
     configureDiagnostics,
     bindProps,
     PropTypes,
@@ -30,6 +29,7 @@ import {
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {hydrate, pendingTopDown, TOP_DOWN_PASS} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -87,8 +87,13 @@ const tick = () => new Promise(r => setTimeout(r, 0))
  * fails as before (flip the case to `test`).
  */
 function hydrateKnownDefect(container: HTMLElement, source: any, reason?: RegExp): boolean {
+    // 内部入口那一遍（#55 §7.2）：这些是普通用例，不经守卫——任何错误都直接让用例失败
+    if (TOP_DOWN_PASS) {
+        hydrate(container, source)
+        return true
+    }
     try {
-        hydrateRoot(container, source)
+        hydrate(container, source)
         return true
     } catch (e) {
         if (reason && reason.test(String((e as Error)?.message))) throw e
@@ -97,6 +102,14 @@ function hydrateKnownDefect(container: HTMLElement, source: any, reason?: RegExp
         return false
     }
 }
+
+/**
+ * #55 的 11 条（§6）：旧入口那一遍是 test.fails + hydrateKnownDefect 守卫；内部入口那一遍是普通 test（§7.2）。
+ * F1b、F1f–F1h、F1j、F3a、F3b 从 B1 起在内部入口上通过；F4a–F4d 要等失配规则（B3），这一遍在那之前标为待实现。
+ * #55 S 把公开的 hydrateRoot 切到新模型时，两者都改成 test。
+ */
+const knownDefect = TOP_DOWN_PASS ? test : test.fails
+const knownDefectUntilB3 = pendingTopDown('B3') ? test.skip : test.fails
 
 // ───────────────────────── Finding 1: element claim order ─────────────────────────
 // v4.8.1 claimed the deepest same-tag element of the whole root (F1a / F1c / F1e). #54 claims the first
@@ -114,7 +127,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
     // #55: App's <p>hello</p> is claimed while App's JSX is evaluated, before <Header/> renders; the
     // first unclaimed <p> in children-before-parent order is Header's. Needs component-region
     // awareness (top-down claim), not a different search order.
-    test.fails('F1b child component deeper than a later sibling: content must survive hydration', () => {
+    knownDefect('F1b child component deeper than a later sibling: content must survive hydration', () => {
         function Header({}: any, {createElement}: RenderContext) {
             return <header><nav><p>deep</p></nav></header>
         }
@@ -156,7 +169,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
     // F1f / F1g passed on 4e5dbef only because the deepest-candidate rule happened to pick the deeper
     // element; that rule is what broke F1a / F1c, and the static form is far more common. F1h fails
     // under both rules (it throws). Fixing these needs top-down claim by position (#55).
-    test.fails('F1f component output shallower than a same-tag element in a later sibling', () => {
+    knownDefect('F1f component output shallower than a same-tag element in a later sibling', () => {
         function Comp({}: any, {createElement}: RenderContext) { return <p>c</p> }
         function App({}: any, {createElement}: RenderContext) {
             return <div><Comp/><main><p>x</p></main></div>
@@ -166,7 +179,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
-    test.fails('F1g function child output shallower than a same-tag element in a later sibling', () => {
+    knownDefect('F1g function child output shallower than a same-tag element in a later sibling', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <div>{() => <p>f</p>}<main><p>x</p></main></div>
         }
@@ -175,7 +188,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
-    test.fails('F1h component wrapping a same-tag element, same depth as one in a later sibling', () => {
+    knownDefect('F1h component wrapping a same-tag element, same depth as one in a later sibling', () => {
         function Comp({}: any, {createElement}: RenderContext) { return <header><div>logo</div></header> }
         function App({}: any, {createElement}: RenderContext) {
             return <div><Comp/><main><div>x</div></main></div>
@@ -193,7 +206,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
     // marker for it). Already failing on 4e5dbef (the deepest-candidate rule picks the inner node too).
     // Here the raw element and its markup are removed (reported); as an RxList row it is silent instead:
     // no report, class / listeners land on the inner node. A static id avoids it (exact-id match).
-    test.fails('F1j raw markup containing the raw element\'s own tag: the element claims itself, not its markup', () => {
+    knownDefect('F1j raw markup containing the raw element\'s own tag: the element claims itself, not its markup', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <section><div className="raw" dangerouslySetInnerHTML={'<div><b>raw</b></div>'}/><b>sibling</b></section>
         }
@@ -212,7 +225,7 @@ describe('F1 tryClaimElement: which same-tag element of the root a createElement
             }
             const hyd = ssrInto(make())
             const t0 = performance.now()
-            hydrateRoot(hyd, createElement(make(), null as any))
+            hydrate(hyd, createElement(make(), null as any))
             return performance.now() - t0
         }
         // best of 3: scheduling noise (other browser processes, GC) only ever adds time
@@ -314,7 +327,7 @@ describe('F1 regression: static trees hydrate in place (deterministic fuzz)', ()
             const keyed = Array.from(hyd.querySelectorAll('[data-k]')) as HTMLElement[]
             const keysBefore = keyed.map(el => el.getAttribute('data-k'))
             reports.length = 0
-            hydrateRoot(hyd, createElement(appOf(spec, log), null as any))
+            hydrate(hyd, createElement(appOf(spec, log), null as any))
             const nodesAfter = Array.from(hyd.querySelectorAll('*'))
             const clicked = keyed.map(el => { log.length = 0; el.click(); return log.join(',') })
             const actual = {
@@ -344,7 +357,7 @@ describe('F2 empty Comment-ph unit claims the preceding sibling Text', () => {
             return <p>Hello{false}</p>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({text: hyd.textContent, reports}).toEqual({text: 'Hello', reports: []})
     })
 
@@ -361,7 +374,7 @@ describe('F2 empty Comment-ph unit claims the preceding sibling Text', () => {
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(s.App, null as any)).html
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         expect(hyd.textContent).toBe('Ann')
         h.name('Bob')
         expect(hyd.textContent).toBe('Bob')
@@ -378,7 +391,7 @@ describe('F2 regression: text ownership in other containers and across hydration
     test('F2c Fragment root and array (DirectNodes) siblings keep their text', () => {
         for (const App of [FragmentApp, ArrayApp]) {
             const hyd = ssrInto(App)
-            hydrateRoot(hyd, createElement(App, null as any))
+            hydrate(hyd, createElement(App, null as any))
             expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
         }
     })
@@ -399,7 +412,7 @@ describe('F2 regression: text ownership in other containers and across hydration
             hyd.innerHTML = html
             const ownTextBefore = hyd.querySelectorAll('p')[1].childNodes[4] // Text("Ann") inside axii:t
             const h = make()
-            const root = hydrateRoot(hyd, createElement(h.App, null as any))
+            const root = hydrate(hyd, createElement(h.App, null as any))
             const sameOwnText = hyd.querySelectorAll('p')[1].childNodes[1] === ownTextBefore
             h.name('Bob')
             const text = hyd.textContent
@@ -424,7 +437,7 @@ describe('N1 array child with null / boolean items (list.map(i => cond ? <li/> :
         }
         const hyd = ssrInto(App)
         const liBefore = Array.from(hyd.querySelectorAll('li'))
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports, sameLi: Array.from(hyd.querySelectorAll('li')).every((li, i) => li === liBefore[i])})
             .toEqual({dom: kids(csr(App)), reports: [], sameLi: true})
     })
@@ -434,7 +447,7 @@ describe('N1 array child with null / boolean items (list.map(i => cond ? <li/> :
             return <Fragment>{[1, 2, 3].map(i => i % 2 ? <b>{i}</b> : null)}{['x', false]}</Fragment>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 })
@@ -465,7 +478,7 @@ describe('N2 Fragment with an element that has its own dynamic child, followed b
             const cs = make(), h = make()
             const client = mount()
             createRoot(client).render(createElement(cs.App, null as any))
-            hydrateRoot(hyd, createElement(h.App, null as any))
+            hydrate(hyd, createElement(h.App, null as any))
             const first = {dom: kids(hyd), reports: reports.slice()}
             for (const s of [cs, h]) { s.a('A'); s.c('C'); s.n(2) }
             await tick()
@@ -478,7 +491,7 @@ describe('N2 Fragment with an element that has its own dynamic child, followed b
 
 // ───────────────── Finding 3: FTS anchor look-ahead takes another function child's anchor ─────────────────
 describe('F3 claimFunctionTextPlaceholder takes the first computed+axii:0 pair it sees', () => {
-    test.fails('F3a text-state function child before a structure-state one must hydrate', async () => {
+    knownDefect('F3a text-state function child before a structure-state one must hydrate', async () => {
         const make = () => {
             const title = atom('title')
             function App({}: any, {createElement}: RenderContext) {
@@ -495,7 +508,7 @@ describe('F3 claimFunctionTextPlaceholder takes the first computed+axii:0 pair i
         expect(hyd.textContent).toBe('t2badge')
     })
 
-    test.fails('F3b function → Fragment → function: node order must equal CSR', () => {
+    knownDefect('F3b function → Fragment → function: node order must equal CSR', () => {
         function App({}: any, {createElement, Fragment}: RenderContext) {
             return <div>{() => <Fragment>{() => <b>x</b>}</Fragment>}</div>
         }
@@ -513,14 +526,14 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
             return <ul>{list.map(i => <li>{i}</li>)}</ul>
         }
     }
-    test.fails('F4a client list has one more row than the server HTML', () => {
+    knownDefectUntilB3('F4a client list has one more row than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2]))
         if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2, 3]), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(listApp([1, 2, 3])))})
     })
 
-    test.fails('F4b client list has one row fewer than the server HTML', () => {
+    knownDefectUntilB3('F4b client list has one row fewer than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2, 3]))
         if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2]), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
@@ -530,14 +543,14 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
     const fnApp = (asElement: boolean) => function App({}: any, {createElement}: RenderContext) {
         return <div>{() => asElement ? <b>el</b> : 'text'}<i>tail</i></div>
     }
-    test.fails('F4c server rendered an element, client function returns text', () => {
+    knownDefectUntilB3('F4c server rendered an element, client function returns text', () => {
         const hyd = ssrInto(fnApp(true))
         if (!hydrateKnownDefect(hyd, createElement(fnApp(false), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(fnApp(false)))})
     })
 
-    test.fails('F4d server rendered text, client function returns an element', () => {
+    knownDefectUntilB3('F4d server rendered text, client function returns an element', () => {
         const hyd = ssrInto(fnApp(false))
         // throws instead of rebuilding
         if (!hydrateKnownDefect(hyd, createElement(fnApp(true), null as any), /expected <!--computed node--> before FunctionHost placeholder/)) return
@@ -553,7 +566,7 @@ describe('F5 SSR wraps bare rows in <tbody>; hydration removes that tbody', () =
         }
         const hyd = ssrInto(App)
         expect(hyd.querySelectorAll('td').length).toBe(1)
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({cells: hyd.querySelectorAll('td').length, reports}).toEqual({cells: 1, reports: []})
     })
 
@@ -568,7 +581,7 @@ describe('F5 SSR wraps bare rows in <tbody>; hydration removes that tbody', () =
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         expect(Array.from(hyd.querySelectorAll('td')).map(td => td.textContent)).toEqual(['1', '2'])
         h.list.push(3)
         expect(Array.from(hyd.querySelectorAll('td')).map(td => td.textContent)).toEqual(['1', '2', '3'])
@@ -581,7 +594,7 @@ describe('F5 regression: implied vs authored tbody', () => {
         function App({}: any, {createElement}: RenderContext) { return <table><Row n="1"/></table> }
         const hyd = ssrInto(App)
         const tdBefore = hyd.querySelector('td')
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({sameTd: hyd.querySelector('td') === tdBefore, text: hyd.textContent, reports})
             .toEqual({sameTd: true, text: '1', reports: []})
     })
@@ -602,7 +615,7 @@ describe('F5 regression: implied vs authored tbody', () => {
         hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
         const sections = Array.from(hyd.querySelectorAll('#authored > *'))
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         expect(reports).toEqual([])
         expect(Array.from(hyd.querySelectorAll('#authored > *'))).toEqual(sections)
         h.list.push(2)
@@ -682,7 +695,7 @@ describe('F7 serializeAttrs / serializeSsrElement vs DOM.setAttribute', () => {
         expect(expected).toBe('<em>raw</em>')
         const hyd = ssrInto(App)
         const before = hyd.querySelector('#raw')!.innerHTML
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         const after = hyd.querySelector('#raw')!.innerHTML
         expect({before, after}).toEqual({before: expected, after: expected})
     })
@@ -705,7 +718,7 @@ describe('F7 regression: hydration of the new server output', () => {
         hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
         const inputBefore = hyd.querySelector('#i')
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         h.on(true); h.text('bye')
         expect({
             sameInput: hyd.querySelector('#i') === inputBefore,
@@ -726,7 +739,7 @@ describe('F7 regression: hydration of the new server output', () => {
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         const first = hyd.querySelector('#raw')!.innerHTML
         h.html('<u>2</u>')
         expect({first, second: hyd.querySelector('#raw')!.innerHTML, sibling: hyd.querySelector('#raw + b')!.textContent, reports})
@@ -740,7 +753,7 @@ describe('F7 regression: dangerouslySetInnerHTML on an element rebuilt after a t
             return <section>{createElement(tag, {id: 'raw', dangerouslySetInnerHTML: '<em>raw</em>'})}</section>
         }
         const hyd = ssrInto(app('p'))
-        hydrateRoot(hyd, createElement(app('div'), null as any))
+        hydrate(hyd, createElement(app('div'), null as any))
         expect({reported: reports.length > 0, dom: kids(hyd)}).toEqual({reported: true, dom: kids(csr(app('div')))})
     })
 })
@@ -791,7 +804,7 @@ describe('X extra confirmed defects', () => {
         const hyd = ssrInto(App)
         const parsed = kids(hyd)
         const svgBefore = hyd.querySelector('svg')
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({parsed, sameSvg: hyd.querySelector('svg') === svgBefore, reports})
             .toEqual({parsed: kids(csr(App)), sameSvg: true, reports: []})
     })
@@ -809,7 +822,7 @@ describe('X extra confirmed defects', () => {
         const hyd = ssrInto(App)
         const parsed = kids(hyd)
         const before = Array.from(hyd.querySelectorAll('*'))
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         const after = Array.from(hyd.querySelectorAll('*'))
         expect({parsed, same: after.length === before.length && after.every((n, i) => n === before[i]), reports})
             .toEqual({parsed: kids(csr(App)), same: true, reports: []})
@@ -826,7 +839,7 @@ describe('X extra confirmed defects', () => {
             const hyd = ssrInto(Root)
             const before = Array.from(hyd.querySelectorAll('*'))
             expect(hyd.querySelectorAll('path, circle').length).toBe(2)
-            hydrateRoot(hyd, createElement(Root, null as any))
+            hydrate(hyd, createElement(Root, null as any))
             const after = Array.from(hyd.querySelectorAll('*'))
             expect({dom: kids(hyd), same: after.length === before.length && after.every((n, i) => n === before[i]), reports})
                 .toEqual({dom: kids(csr(Root)), same: true, reports: []})
@@ -844,7 +857,7 @@ describe('X extra confirmed defects', () => {
             return <div><span>main</span></div>
         }
         const hyd = ssrInto(App)
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect(tipHtml).toBe('<span>tip</span><!--root-->')
     })
 
@@ -861,7 +874,7 @@ describe('X extra confirmed defects', () => {
                 // oracle below renders App again and must not hydrate the island a second time)
                 if (!islandHydrated) {
                     islandHydrated = true
-                    hydrateRoot(island, createElement(Island, null as any))
+                    hydrate(island, createElement(Island, null as any))
                 }
                 made.effect = (<b>from effect</b> as HTMLElement).outerHTML
             })
@@ -873,7 +886,7 @@ describe('X extra confirmed defects', () => {
         }
         const hyd = ssrInto(App)
         const before = Array.from(hyd.querySelectorAll('*'))
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         const after = Array.from(hyd.querySelectorAll('*'))
         expect({
             made,
@@ -911,7 +924,7 @@ describe('X extra confirmed defects', () => {
         }
         const hyd = ssrInto(App)
         const before = Array.from(hyd.querySelectorAll('*'))
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         const after = Array.from(hyd.querySelectorAll('*'))
         expect({made, same: after.length === before.length && after.every((n, i) => n === before[i]), reports}).toEqual({
             made: {layout: '<span>tip</span><!--root-->', ref: '<em>ref</em><!--root-->'},
@@ -927,7 +940,7 @@ describe('X extra confirmed defects', () => {
         const hyd = ssrInto(App)
         const parsed = kids(hyd)
         const aBefore = hyd.querySelector('a')
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({parsed, sameA: hyd.querySelector('a') === aBefore, reports})
             .toEqual({parsed: kids(csr(App)), sameA: true, reports: []})
     })
@@ -939,7 +952,7 @@ describe('X extra confirmed defects', () => {
         const hyd = ssrInto(App), client = csr(App)
         const value = (root: HTMLElement, id: string) => (root.querySelector('#' + id) as HTMLTextAreaElement).value
         const parsed = {nl: value(hyd, 'nl'), two: value(hyd, 'two')}
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({parsed, reports}).toEqual({parsed: {nl: value(client, 'nl'), two: value(client, 'two')}, reports: []})
     })
 
@@ -974,7 +987,7 @@ describe('X extra confirmed defects', () => {
         expect(csrBefore).toEqual({title: 'Hi Ann!', kids: 'Hello Ann', val: 'n1', raw: '\nline', txt: '\nline'})
         const firstTitleText = hyd.querySelector('title')!.firstChild
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         const sameFirst = hyd.querySelector('title')!.firstChild === firstTitleText
         for (const s of [c, h]) { s.name('Bob'); s.empty('?'); s.note('n2') }
         expect({parsed, sameFirst, after: read(hyd), shape: kids(hyd), reports})
@@ -998,7 +1011,7 @@ describe('X extra confirmed defects', () => {
         }
         const hyd = ssrInto(App)
         const parsed = kids(hyd)
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({parsed, hydrated: kids(hyd), reports}).toEqual({parsed: kids(csr(App)), hydrated: kids(csr(App)), reports: []})
     })
 
@@ -1077,7 +1090,7 @@ describe('F9 <style> / <script> under <svg> / <math> are parsed as foreign eleme
         const h = make(), c = make()
         const client = mount()
         createRoot(client).render(createElement(c.App, null as any))
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         const first = {text: hyd.querySelector('style')!.textContent, same: hyd.querySelector('style') === styleBefore}
         h.color('blue'); c.color('blue')
         expect({first, after: kids(hyd), reports})
@@ -1131,7 +1144,7 @@ describe('I50 dangerouslySetInnerHTML={{__html}}: CSR, reactive form, hydration'
         const hyd = ssrInto(App)
         const before = hyd.querySelector('#raw em')
         expect(before).not.toBe(null)
-        hydrateRoot(hyd, createElement(App, null as any))
+        hydrate(hyd, createElement(App, null as any))
         expect({inner: raw(hyd), dom: kids(hyd), reports, sameNode: hyd.querySelector('#raw em') === before})
             .toEqual({inner: '<p><em>raw</em></p>', dom: kids(csr(App)), reports: [], sameNode: true})
     })
@@ -1139,7 +1152,7 @@ describe('I50 dangerouslySetInnerHTML={{__html}}: CSR, reactive form, hydration'
     test('I50e hydration of a nullish {__html}: empty content, no report, DOM ≡ CSR', () => {
         for (const App of [rawApp({__html: null}), rawApp({__html: undefined})]) {
             const hyd = ssrInto(App)
-            hydrateRoot(hyd, createElement(App, null as any))
+            hydrate(hyd, createElement(App, null as any))
             expect({inner: raw(hyd), dom: kids(hyd), reports}).toEqual({inner: '', dom: kids(csr(App)), reports: []})
         }
     })
@@ -1151,7 +1164,7 @@ describe('I50 dangerouslySetInnerHTML={{__html}}: CSR, reactive form, hydration'
         const read = (client: any) => {
             const hyd = ssrInto(rawApp({__html: '<b>x</b>'}))
             reports.length = 0
-            hydrateRoot(hyd, createElement(rawApp(client), null as any))
+            hydrate(hyd, createElement(rawApp(client), null as any))
             return {inner: raw(hyd), dom: kids(hyd), reports: reports.slice()}
         }
         const baseline = read(undefined)
@@ -1175,7 +1188,7 @@ describe('I50 dangerouslySetInnerHTML={{__html}}: CSR, reactive form, hydration'
         const hyd = mount()
         hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
         const h = make()
-        hydrateRoot(hyd, createElement(h.App, null as any))
+        hydrate(hyd, createElement(h.App, null as any))
         const first = raw(hyd)
         h.html('<u>2</u>')
         expect({first, second: raw(hyd), sibling: hyd.querySelector('#raw + em')!.textContent, reports})

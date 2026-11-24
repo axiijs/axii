@@ -6,7 +6,6 @@
 import {
     createElement,
     createRoot,
-    hydrateRoot,
     RenderContext,
     Portal,
 } from '@framework'
@@ -14,6 +13,7 @@ import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {lazy} from '../src/lazy.js'
+import {hydrate} from './helpers/hydrate'
 
 describe('M-05 hydrate Portal + lifecycle', () => {
     let rootEl: HTMLElement
@@ -54,7 +54,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         const pcBefore = portalEl.querySelector('#pc')!
         const textBefore = Array.from(pcBefore.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
 
-        const root = hydrateRoot(rootEl, createElement(App, null as any), {
+        const root = hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
 
@@ -82,7 +82,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         const {html, portals} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(portalEl.querySelector('#only')!.textContent).toBe('p')
     })
 
@@ -100,7 +100,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         expect(portals['custom-key']).toBeTruthy()
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['custom-key'].html
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'custom-key': portalEl},
         })
         expect(portalEl.querySelector('#ck')!.textContent).toBe('keyed')
@@ -128,7 +128,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         expect(refHydrate.length).toBe(0)
 
         rootEl.innerHTML = html
-        const root = hydrateRoot(rootEl, createElement(HydrateApp, null as any))
+        const root = hydrate(rootEl, createElement(HydrateApp, null as any))
         expect(layoutHydrate).toEqual(['layout'])
         expect(refHydrate.length).toBe(1)
         expect(refHydrate[0]).toBe(rootEl.querySelector('#box'))
@@ -159,7 +159,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(effectCount).toBe(0)
         rootEl.innerHTML = html
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         await new Promise(r => setTimeout(r, 0))
         expect(effectCount).toBe(1)
         root.destroy()
@@ -186,7 +186,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         expect(html).toContain('id="fb"')
         expect(html).toContain('<!--computed node--><!--unhandledChild-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#fb')!.textContent).toBe('loading')
 
         resolveLoad(Loaded)
@@ -211,7 +211,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('#st')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#st')).toBe(before)
@@ -233,7 +233,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('#jx')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#jx')).toBe(before)
@@ -247,7 +247,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         const {html, portals} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         expect(portals['missing-portal']).toBeTruthy()
-        expect(() => hydrateRoot(rootEl, createElement(App, null as any))).toThrow(/not found|Portal/)
+        expect(() => hydrate(rootEl, createElement(App, null as any))).toThrow(/not found|Portal/)
     })
 
     test('destroyOnUnmount false keeps portal DOM after outer destroy', () => {
@@ -263,7 +263,7 @@ describe('M-05 hydrate Portal + lifecycle', () => {
         const {html, portals} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(portalEl.querySelector('#keep')).toBeTruthy()
         root.destroy()
         expect(portalEl.querySelector('#keep')).toBeTruthy()
@@ -301,7 +301,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const mainBefore = rootEl.querySelector('#main-span')!
         const portalBefore = portalEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(rootEl.querySelector('#main-span')).toBe(mainBefore)
@@ -325,7 +325,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const mainBefore = rootEl.querySelector('#main-span')!
         const portalBefore = portalEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(rootEl.querySelector('#main-span')).toBe(mainBefore)
@@ -350,7 +350,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const mainBefore = rootEl.querySelector('#empty-main')!
         const portalBefore = portalEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(rootEl.querySelector('#empty-main')).toBe(mainBefore)
@@ -374,7 +374,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const outer = portalEl.querySelector('#outer')!
         const inner = portalEl.querySelector('#inner')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#outer')).toBe(outer)
@@ -394,7 +394,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('#comp')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#comp')).toBe(before)
@@ -419,7 +419,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const mainBefore = rootEl.querySelector('#main-span')!
         const portalBefore = portalEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(rootEl.contains(mainBefore)).toBe(true)
@@ -449,7 +449,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
             ? `<style data-axii-ssr>${pStyles}</style>${portals['portal-target'].html}`
             : portals['portal-target'].html
         const before = portalEl.querySelector('#styled') as HTMLElement
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#styled')).toBe(before)
@@ -475,7 +475,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const portalSpan = portalEl.querySelector('span')!
         const mainBefore = rootEl.querySelector('#main-div')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.contains(portalSpan)).toBe(true)
@@ -504,7 +504,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const inner = portalEl.querySelector('#inner')!
         const mainBefore = rootEl.querySelector('#main-div')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#inner')).toBe(inner)
@@ -530,7 +530,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const first = portalEl.querySelectorAll('span')[0]!
         const mainBefore = rootEl.querySelector('#main-div')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelectorAll('span')[0]).toBe(first)
@@ -559,7 +559,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const portalBefore = portalEl.querySelector('span')!
         const mainBefore = rootEl.querySelector('#main-span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.contains(portalBefore)).toBe(true)
@@ -587,7 +587,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('span')).toBe(before)
@@ -612,7 +612,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('#inner')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#inner')).toBe(before)
@@ -634,7 +634,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const first = portalEl.querySelectorAll('span')[0]!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelectorAll('span')[0]).toBe(first)
@@ -660,7 +660,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('span')).toBe(before)
@@ -687,7 +687,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('span')).toBe(before)
@@ -714,7 +714,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('#inner')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#inner')).toBe(before)
@@ -738,7 +738,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const first = portalEl.querySelectorAll('span')[0]!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelectorAll('span')[0]).toBe(first)
@@ -756,7 +756,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const before = rootEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(before)
         t('a2')
         expect(before.textContent).toBe('a2')
@@ -775,7 +775,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const before = rootEl.querySelector('#inner')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#inner')).toBe(before)
         t('c2')
         expect(before.textContent).toBe('c2')
@@ -791,7 +791,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const first = rootEl.querySelectorAll('span')[0]!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelectorAll('span')[0]).toBe(first)
         list.push('c')
         expect(rootEl.querySelectorAll('span').length).toBe(3)
@@ -817,7 +817,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('span')!
         const mainBefore = rootEl.querySelector('#main-span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.contains(before)).toBe(true)
@@ -847,7 +847,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('span')!
         const mainBefore = rootEl.querySelector('#main-span')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.contains(before)).toBe(true)
@@ -876,7 +876,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const before = portalEl.querySelector('#inner')!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#inner')).toBe(before)
@@ -901,7 +901,7 @@ describe('M-05 portal-static-content hydrate (k16-audit locks)', () => {
         rootEl.innerHTML = html
         portalEl.innerHTML = portals['portal-target'].html
         const first = portalEl.querySelectorAll('span')[0]!
-        hydrateRoot(rootEl, createElement(App, null as any), {
+        hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelectorAll('span')[0]).toBe(first)

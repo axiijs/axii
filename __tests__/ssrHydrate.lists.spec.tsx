@@ -7,7 +7,6 @@ import {
     createElement,
     createRoot,
     Fragment,
-    hydrateRoot,
     RenderContext,
     RxList,
 } from '@framework'
@@ -15,6 +14,7 @@ import {atom, RxMap} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {CompactElementHost} from '../src/StaticHost.js'
+import {hydrate} from './helpers/hydrate'
 
 function shapeOf(el: Node): string[] {
     return Array.from(el.childNodes).map(n => {
@@ -82,7 +82,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const spansBefore = Array.from(rootEl.querySelectorAll('span'))
         expect(spansBefore.map(s => s.textContent)).toEqual(['1', '2', '3'])
 
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         const box = rootEl.querySelector('#t')!
         expect(shapeOf(box).filter(s => s === '<!--rx list item-->')).toEqual([])
@@ -117,7 +117,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--rx list item-->')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!).includes('<!--rx list item-->')).toBe(true)
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -135,7 +135,7 @@ describe('M-03 hydrateRoot RxList', () => {
         }
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         const box = rootEl.querySelector('#t')!
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -163,7 +163,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toContain('<!--empty-->')
         expect(html).not.toContain('computed')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         const lh = findHostByName((r as any).host, 'RxListHost')
         expect(lh.hosts[0].constructor.name).toBe('FunctionHost')
         expect((lh.hosts[0].placeholder as Comment).data).toBe('rx list item')
@@ -182,7 +182,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--empty--><!--rx list item-->')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual([
             '<!--empty-->',
             '<!--rx list item-->',
@@ -203,7 +203,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html.match(/computed node/g)?.length).toBe(2)
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -224,7 +224,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('computed')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toBe('r')
         expect(shapeOf(rootEl.querySelector('#t')!).includes('<!--rx list item-->')).toBe(true)
     })
@@ -240,7 +240,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!).includes('<!--fragment start-->')).toBe(true)
         expect(rootEl.querySelector('#t')!.textContent).toBe('ab')
     })
@@ -255,7 +255,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toContain('computed')
         expect(html).not.toContain('<!--empty-->')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         const box = rootEl.querySelector('#t')!
         expect(shapeOf(box).filter(s => s === '<!--rx list item-->').length).toBe(3)
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -279,7 +279,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--reusable-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(rootEl.querySelector('#reused')!.textContent).toBe('R')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual([
@@ -299,7 +299,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const trsBefore = Array.from(rootEl.querySelectorAll('tr'))
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         const trsAfter = Array.from(rootEl.querySelectorAll('tr'))
         expect(trsAfter[0]).toBe(trsBefore[0])
         expect(trsAfter[1]).toBe(trsBefore[1])
@@ -316,7 +316,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--axii:t-->x<!--axii:/t--><!--axii:t-->y<!--axii:/t--><!--rx list item-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('xy')
         const csr = document.createElement('div')
         document.body.appendChild(csr)
@@ -330,7 +330,7 @@ describe('M-03 hydrateRoot RxList', () => {
         }
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('12')
     })
 
@@ -343,7 +343,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--array item-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('AB')
         a('X')
         expect(rootEl.querySelector('#t')!.textContent).toContain('XB')
@@ -359,7 +359,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(rootEl.querySelector('#t')!.textContent).toBe('premidpost')
     })
@@ -372,7 +372,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const spansBefore = Array.from(rootEl.querySelectorAll('span'))
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(Array.from(rootEl.querySelectorAll('span'))[0]).toBe(spansBefore[0])
         const lh = findHostByName((r as any).host, 'RxListHost')
         expect(lh.hosts[0].constructor.name).toBe('StaticArrayHost')
@@ -397,7 +397,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toMatch(/<!--unhandledChild--><!--array item-->/)
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('12x')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
@@ -419,7 +419,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
@@ -442,7 +442,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
@@ -462,7 +462,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toMatch(/<!--unhandledChild--><!--array item-->/)
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -484,7 +484,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const before = rootEl.querySelector('#reused')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#reused')).toBe(before)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
@@ -513,7 +513,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const emBefore = rootEl.querySelector('em')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('em')).toBe(emBefore)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
@@ -535,7 +535,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--computed node--><!--array item-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -557,7 +557,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toContain('<!--computed node-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -579,7 +579,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--computed node-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -599,7 +599,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--fragment start-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -624,7 +624,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--fragment start-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('world')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -645,7 +645,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -665,7 +665,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--computed node-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -686,7 +686,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--unhandledChild-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -705,7 +705,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('world')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -734,7 +734,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--fragment start-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('changed')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -756,7 +756,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -781,7 +781,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('up')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -802,7 +802,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('up')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -821,7 +821,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -838,7 +838,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('changed')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -857,7 +857,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('z')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -882,7 +882,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('up')
@@ -904,7 +904,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         list.push(3)
@@ -924,7 +924,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toMatch(/axii:t/)
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('X')
@@ -946,7 +946,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const csrShape = shapeOf(csr.querySelector('#t')!)
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('A')
@@ -969,7 +969,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('#s')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#s')).toBe(spanBefore)
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
@@ -992,7 +992,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const csrShape = shapeOf(csr.querySelector('#t')!)
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('M')
@@ -1011,7 +1011,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const csrShape = shapeOf(csr.querySelector('#t')!)
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         map.set('c', 3)

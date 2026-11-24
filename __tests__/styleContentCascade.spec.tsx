@@ -1,7 +1,8 @@
 /** @jsx createElement */
-import {atom, createElement, createRoot, hydrateRoot, RenderContext} from '@framework'
+import {atom, createElement, createRoot, RenderContext} from '@framework'
 import {afterEach, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {hydrate} from './helpers/hydrate'
 
 const red = 'rgb(255, 0, 0)'
 const blue = 'rgb(0, 0, 255)'
@@ -84,7 +85,7 @@ test('a later stylesheet entry wins after hydration and reactive reevaluation', 
     container.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
     const element = container.querySelector('#styled')!
     expect(getComputedStyle(element).color).toBe(blue)
-    roots.push(hydrateRoot(container, <App/>))
+    roots.push(hydrate(container, <App/>))
     expect(container.querySelector('#styled')).toBe(element)
     expect(getComputedStyle(element).color).toBe(blue)
     color(green)
@@ -100,7 +101,7 @@ test.each([['parent', nested], ['child', direct]] as const)(
         const element = container.querySelector('#child')!
         expect(getComputedStyle(element).color).toBe(red)
         mount(<Prewarm style={style}/>)
-        roots.push(hydrateRoot(container, <ParentAndChild/>))
+        roots.push(hydrate(container, <ParentAndChild/>))
         expect(container.querySelector('#child')).toBe(element)
         expect(getComputedStyle(element).color).toBe(red)
     },
@@ -168,7 +169,7 @@ test('main and nested Portal SSR payloads each include shared rules and only the
     }
 
     const {main: mainContainer, ...portalContainers} = hydratedContainers
-    roots.push(hydrateRoot(mainContainer, <App/>, {portals: portalContainers}))
+    roots.push(hydrate(mainContainer, <App/>, {portals: portalContainers}))
     for (const [index, container] of Object.values(hydratedContainers).entries()) {
         const node = serverNodes[index]
         expect(container.querySelector('[data-target]')).toBe(node)

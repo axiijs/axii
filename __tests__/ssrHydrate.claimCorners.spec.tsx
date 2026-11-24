@@ -7,7 +7,6 @@
  */
 import {
     createElement,
-    hydrateRoot,
     configureDiagnostics,
     RenderContext,
 } from '@framework'
@@ -38,6 +37,7 @@ import {
     stripAxiiTextBoundariesBetween,
     tryClaimElement,
 } from '../src/hydration.js'
+import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
 
 function captureMismatches(): unknown[] {
     const errors: unknown[] = []
@@ -74,7 +74,9 @@ afterEach(() => {
     document.body.innerHTML = ''
 })
 
-describe('claimTextUnit / claimEmptyTextPh corners', () => {
+// #55 §7.2：下面直到「hydrateRoot end-to-end claim corners」的各组直接调用旧模型的内部函数，只在旧入口那一遍运行，
+// 随旧模型在 #55 S 删除（替换关系见设计 §8）。新游标的白盒用例在 hydrationCursor.spec.tsx。
+describe.skipIf(TOP_DOWN_PASS)('claimTextUnit / claimEmptyTextPh corners', () => {
     test('eof without expected throws (observable mismatch)', () => {
         const div = cursorFixture('')
         expect(() => claimTextUnit()).toThrow('expected text unit')
@@ -141,7 +143,7 @@ describe('claimTextUnit / claimEmptyTextPh corners', () => {
     })
 })
 
-describe('cursor comment claiming corners', () => {
+describe.skipIf(TOP_DOWN_PASS)('cursor comment claiming corners', () => {
     test('advanceCursorUntilComment throws when the target comment is not ahead', () => {
         const div = cursorFixture('<!--a-->')
         expect(() => advanceCursorUntilComment('b')).toThrow('not found from cursor')
@@ -185,7 +187,7 @@ describe('cursor comment claiming corners', () => {
     })
 })
 
-describe('claimTextBeforeCommentPlaceholder corners (Comment-ph)', () => {
+describe.skipIf(TOP_DOWN_PASS)('claimTextBeforeCommentPlaceholder corners (Comment-ph)', () => {
     test('malformed axii:t pair before placeholder throws', () => {
         const div = rootFixture('<!--axii:/t--><!--root-->')
         expect(() => claimTextBeforeCommentPlaceholder(div.lastChild as Comment))
@@ -210,7 +212,7 @@ describe('claimTextBeforeCommentPlaceholder corners (Comment-ph)', () => {
     })
 })
 
-describe('stripAxiiTextBoundariesBetween', () => {
+describe.skipIf(TOP_DOWN_PASS)('stripAxiiTextBoundariesBetween', () => {
     test('strips pairs, converts axii:0 to empty Text, leaves unmatched opens', () => {
         const div = rootFixture('<!--fs--><!--axii:t-->a<!--axii:/t--><!--axii:0-->b<!--axii:t--><!--end-->')
         stripAxiiTextBoundariesBetween(div.firstChild as Comment, div.lastChild as Comment)
@@ -220,7 +222,7 @@ describe('stripAxiiTextBoundariesBetween', () => {
     })
 })
 
-describe('element claim cursor paths (§3.7 D-series at cursor)', () => {
+describe.skipIf(TOP_DOWN_PASS)('element claim cursor paths (§3.7 D-series at cursor)', () => {
     test('same-tag wrong-id with exact id ahead: interstitial removed, exact identity claimed (D8)', () => {
         const div = cursorFixture('<span id="junk"></span><i></i><span id="a"></span>')
         const errors = captureMismatches()
@@ -268,7 +270,7 @@ describe('element claim cursor paths (§3.7 D-series at cursor)', () => {
     })
 })
 
-describe('element claim deep-walk candidate fits', () => {
+describe.skipIf(TOP_DOWN_PASS)('element claim deep-walk candidate fits', () => {
     test('array-child DirectNodes layout fits via trailing unhandledChild (first child not empty)', () => {
         const root = rootFixture('<div><!--axii:t-->a<!--axii:/t--><!--axii:t-->b<!--axii:/t--><!--unhandledChild--></div>')
         expect(tryClaimElement('div', undefined, [['a', 'b']])).toBe(root.firstElementChild)
@@ -300,7 +302,7 @@ describe('element claim deep-walk candidate fits', () => {
     })
 })
 
-describe('claim helpers error contracts', () => {
+describe.skipIf(TOP_DOWN_PASS)('claim helpers error contracts', () => {
     test('createElementForHydrateMismatch without an element cursor throws', () => {
         beginHydration(document.createElement('div'))
         expect(() => createElementForHydrateMismatch('span')).toThrow('without element cursor')
@@ -336,7 +338,7 @@ describe('claim helpers error contracts', () => {
     })
 })
 
-describe('trailing cleanup at element cursor (D10/D11)', () => {
+describe.skipIf(TOP_DOWN_PASS)('trailing cleanup at element cursor (D10/D11)', () => {
     test('host-structure markers ahead guard: junk after markers is kept', () => {
         const div = document.createElement('div')
         div.innerHTML = '<!--zzz--><!--computed node--><b>j</b>'
@@ -366,7 +368,7 @@ describe('trailing cleanup at element cursor (D10/D11)', () => {
     })
 })
 
-describe('Fragment reconcile walk branches', () => {
+describe.skipIf(TOP_DOWN_PASS)('Fragment reconcile walk branches', () => {
     function walkFixture(children: any[], unhandledCount: number, innerHtml: string) {
         const parent = document.createElement('div')
         parent.innerHTML = innerHtml
@@ -495,7 +497,7 @@ describe('hydrateRoot end-to-end claim corners', () => {
         rootEl.innerHTML = '<div>hello</div><!--root-->'
         const divBefore = rootEl.querySelector('div')!
         const textBefore = divBefore.firstChild as Text
-        const root = hydrateRoot(rootEl, createElement(App, null))
+        const root = hydrate(rootEl, createElement(App, null))
         expect(rootEl.querySelector('div')).toBe(divBefore)
         expect(divBefore.firstChild).toBe(textBefore)
         name('world')
@@ -510,7 +512,7 @@ describe('hydrateRoot end-to-end claim corners', () => {
         const {html} = renderToString(createElement(App, null))
         rootEl.innerHTML = html
         const divBefore = rootEl.querySelector('div')!
-        const root = hydrateRoot(rootEl, createElement(App, null))
+        const root = hydrate(rootEl, createElement(App, null))
         expect(rootEl.querySelector('div')).toBe(divBefore)
         expect(divBefore.textContent).toBe('ab')
         root.destroy()
@@ -521,7 +523,7 @@ describe('hydrateRoot end-to-end claim corners', () => {
         const {html} = renderToString(name)
         rootEl.innerHTML = html.replace('<!--axii:t-->x<!--axii:/t-->', '')
         const errors = captureMismatches()
-        const root = hydrateRoot(rootEl, name)
+        const root = hydrate(rootEl, name)
         const text = rootEl.firstChild
         expect(text?.nodeType).toBe(Node.TEXT_NODE)
         expect((text as Text).nodeValue).toBe('x')
@@ -535,11 +537,11 @@ describe('hydrateRoot end-to-end claim corners', () => {
     test('root atom hydrate throws when an Element sits before <!--root-->', () => {
         const name = atom('x')
         rootEl.innerHTML = '<span></span><!--root-->'
-        expect(() => hydrateRoot(rootEl, name)).toThrow('expected Text before Comment placeholder')
+        expect(() => hydrate(rootEl, name)).toThrow('expected Text before Comment placeholder')
     })
 
     test('hydrateRoot throws when the container is missing <!--root-->', () => {
         rootEl.innerHTML = '<span></span>'
-        expect(() => hydrateRoot(rootEl, createElement('span', null))).toThrow('missing <!--root-->')
+        expect(() => hydrate(rootEl, createElement('span', null))).toThrow('missing <!--root-->')
     })
 })
