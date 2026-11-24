@@ -29,6 +29,7 @@ const TOP_DOWN_HYDRATE_SPECS = [
   '__tests__/ssrHydrate.mismatchRebuild.spec.tsx',
   '__tests__/ssrHydrate.shapes.spec.tsx',
   '__tests__/ssrHydrate.smoke.spec.tsx',
+  '__tests__/ssrHydrate.sparseArrays.spec.tsx',
   '__tests__/ssrStyles.spec.tsx',
   '__tests__/styleContentCascade.spec.tsx',
   '__tests__/styleContentIdentity.spec.tsx',

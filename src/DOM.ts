@@ -1610,6 +1610,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     // StaticArrayHost DirectNodes / items — claim texts then <!--unhandledChild-->
                     const hydrateDirectNodes: Text[] = []
                     for (let itemIndex = 0; itemIndex < child.length; itemIndex++) {
+                        // ≡ StaticArrayHost.render 的 forEach：稀疏数组的空位没有 Host、服务端不写任何节点（#85）；
+                        //  显式的 undefined 不是空位（EmptyHost，<!--empty--><!--array item-->）
+                        if (!(itemIndex in child)) continue
                         const item = child[itemIndex]
                         const it = typeof item
                         if (it === 'string' || it === 'number' || it === 'bigint') {

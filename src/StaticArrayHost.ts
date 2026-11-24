@@ -131,29 +131,30 @@ export class StaticArrayHost implements Host{
                 setChildCursor(parent, startIdx)
 
                 let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
-                this.source.forEach((item, index) => {
+                // firstChild 是第一个访问到的项（≡ 下面 CSR 分支的 CAUTION：稀疏数组的 index 0 可以是空位）
+                this.source.forEach((item) => {
                     const itemType = typeof item
                     if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') {
                         const text = claimDirectNodeText()
                         ;(this.directNodes ??= []).push(text)
-                        if (index === 0) this.firstChild = text
+                        if (this.firstChild === undefined) this.firstChild = text
                     } else if (isTextNode(item)) {
                         advancePastNode(item)
                         ;(this.directNodes ??= []).push(item)
-                        if (index === 0) this.firstChild = item
+                        if (this.firstChild === undefined) this.firstChild = item
                     } else if (isFragmentNode(item)) {
                         // Fragment content lives under parent (<!--fragment start-->…), not on the DF
                         advanceCursorUntilComment('array item')
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                         this.childHosts.push(newHost)
-                        if (index === 0) this.firstChild = newHost
+                        if (this.firstChild === undefined) this.firstChild = newHost
                     } else if (isElementNode(item)) {
                         advancePastNode(item)
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                         this.childHosts.push(newHost)
-                        if (index === 0) this.firstChild = newHost
+                        if (this.firstChild === undefined) this.firstChild = newHost
                     } else if (item instanceof RxList) {
                         // Mark content start so RxListHost.render can hydrateRowsFromCursor (same as element-child RxList)
                         const cursor = getChildCursor()
@@ -163,7 +164,7 @@ export class StaticArrayHost implements Host{
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                         this.childHosts.push(newHost)
-                        if (index === 0) this.firstChild = newHost
+                        if (this.firstChild === undefined) this.firstChild = newHost
                     } else if (item instanceof ReusableHost) {
                         const src = (item.innerHost as any)?.source
                         if (isDomNode(src) && src.parentNode) {
@@ -185,7 +186,7 @@ export class StaticArrayHost implements Host{
                             trackHostCreated(item, 'ReusableHost')
                         }
                         this.childHosts.push(item)
-                        if (index === 0) this.firstChild = item
+                        if (this.firstChild === undefined) this.firstChild = item
                     } else if (typeof item === 'function') {
                         advanceCursorUntilComment('array item')
                         const itemPh = claimCommentAtCursor('array item')
@@ -194,14 +195,14 @@ export class StaticArrayHost implements Host{
                             elementPath: this.pathContext.elementPath,
                         })
                         this.childHosts.push(newHost)
-                        if (index === 0) this.firstChild = newHost
+                        if (this.firstChild === undefined) this.firstChild = newHost
                     } else {
                         // ComponentNode / nested Array / null / etc. — content then <!--array item-->
                         advanceCursorUntilComment('array item')
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                         this.childHosts.push(newHost)
-                        if (index === 0) this.firstChild = newHost
+                        if (this.firstChild === undefined) this.firstChild = newHost
                     }
                 })
                 this.childHosts.forEach(host => host.render())
@@ -216,21 +217,26 @@ export class StaticArrayHost implements Host{
 
             // 所有（非函数）子 host 共享同一个 hostPath 节点；全函数/atom 项时一个都不分配
             let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
-            this.source.forEach((item, index) => {
+            // CAUTION forEach 跳过稀疏数组的空位（[, a, b]、new Array(n) 部分赋值、对稀疏数组 map 的结果）：空位没有 Host、
+            //  不产生节点，服务端（ssr.serializeStaticArray）与两个激活入口的数组认领按同一规则跳过（#85）。
+            //  firstChild 因此是「第一个访问到的项」，不是 index 0：曾经只在 index === 0 时设置，首位是空位的数组
+            //  firstChild 一直为空、element 退回到 placeholder——销毁 / 替换时整段内容留在 DOM 里，
+            //  列表行移动时只搬走 placeholder，组件根上的这种数组激活时被判成容器里的残留节点。
+            this.source.forEach((item) => {
                 const itemType = typeof item
                 // bigint 与 string/number 同为文本形态（I61）
                 if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') {
                     const el = document.createTextNode(item.toString())
                     frag.appendChild(el)
                     ;(this.directNodes ??= []).push(el)
-                    if (index === 0) this.firstChild = el
+                    if (this.firstChild === undefined) this.firstChild = el
                 } else if (isTextNode(item)) {
                     // Component 或者 Function 返回值可能会是 DocumentFragment，而 DocumentFragment.childNodes 也会使用 StaticArrayHost 处理，
                     //  这个时候的 this.source 就是 childNodes，已经是 DOM.js 处理过的了，所以直接是 Text 节点。
                     //  按 nodeType 判断：数组项也可以是另一个 realm 的 Text（见 nodeType.ts，#58）。
                     frag.appendChild(item)
                     ;(this.directNodes ??= []).push(item)
-                    if (index === 0) this.firstChild = item
+                    if (this.firstChild === undefined) this.firstChild = item
                 } else {
                     // 其他未知节点了
                     const newPlaceholder: Comment = document.createComment('array item')
@@ -244,7 +250,7 @@ export class StaticArrayHost implements Host{
                         }) :
                         createHost(item, newPlaceholder, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                     this.childHosts.push(newHost)
-                    if (index === 0) this.firstChild = newHost
+                    if (this.firstChild === undefined) this.firstChild = newHost
                 }
             })
             this.childHosts.forEach(host => host.render())
@@ -268,7 +274,7 @@ export class StaticArrayHost implements Host{
      *  - 其余项 createHydrateHost(项, 'array item')：函数（含 atom）不克隆 pathContext、以 position 传位置，
      *    其余共享一个 hostPath 节点。
      * 先构造全部子 Host，再按文档顺序认领（≡ render：forEach 构造，再逐个 render），组件类型 id 的分配顺序与 CSR 相同；
- * 与 forEach 一样跳过稀疏数组的空位。
+ * 与 forEach 一样跳过稀疏数组的空位，firstChild 是第一个不是空位的项（≡ render，见那里的 CAUTION）。
      * 项是描述时，认领之后把 source[index] 写回为认领到的节点（§3.3；Fragment 项是那个空的 DocumentFragment）；
  * 冻结的数组不写回（CSR 照常渲染它）。
      */
@@ -276,10 +282,12 @@ export class StaticArrayHost implements Host{
         const source = this.source
         const length = source.length
         let hostPath: ReturnType<typeof createLinkedNode<Host>>|undefined
+        let first = -1
         for (let index = 0; index < length; index++) {
-            // ≡ render 的 forEach：稀疏数组的空位跳过（服务端的 for…of 却为空位写 <!--empty--><!--array item-->，
-            //  见设计 §11；这里与 CSR 一致，服务端多写的部分在认领处报告失配，不静默）
+            // ≡ render 的 forEach：稀疏数组的空位跳过，服务端同样不为空位写任何节点（#85）。
+            //  #85 之前的服务端为空位写 <!--empty--><!--array item-->，这样的 HTML 在认领处报告失配（设计 §11）
             if (!(index in source)) continue
+            if (first < 0) first = index
             const item = source[index]
             const itemType = typeof item
             if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') continue
@@ -291,7 +299,7 @@ export class StaticArrayHost implements Host{
                 }) :
                 createHydrateHost(item, ARRAY_ITEM_SLOT, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
             this.childHosts.push(newHost)
-            if (index === 0) this.firstChild = newHost
+            if (index === first) this.firstChild = newHost
         }
         // 冻结的数组（Object.freeze([...])）CSR 照常渲染；写回在严格模式下会 TypeError，这种数组不写回，项留在描述壳上
         const writeBack = !Object.isFrozen(source)
@@ -304,7 +312,7 @@ export class StaticArrayHost implements Host{
                 const text = item.toString()
                 const node = text === '' ? claimTopDownEmptyTextPlaceholder() : claimTopDownText(text)
                 ;(this.directNodes ??= []).push(node)
-                if (index === 0) this.firstChild = node
+                if (index === first) this.firstChild = node
             } else {
                 this.childHosts[next++].hydrate!(ARRAY_ITEM_SLOT)
                 if (writeBack && isHydrationElement(item) && source[index] === item) source[index] = item.node

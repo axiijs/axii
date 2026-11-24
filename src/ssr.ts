@@ -1219,7 +1219,13 @@ function serializeStaticArray(
     tailComment: string | null = 'unhandledChild',
     selectSo: SelectSoCtx | null = null,
 ): void {
-    for (const item of items) {
+    // CAUTION ≡ StaticArrayHost.render 的 forEach：稀疏数组的空位（[a, , b]、new Array(n) 部分赋值、对稀疏数组 map 的结果）
+    //  没有 Host、CSR 不产生任何节点，这里不写任何东西（#85）。曾经用 for…of，空位按 undefined 写成 EmptyHost
+    //  （<!--empty--><!--array item-->）：内部入口在认领处报告失配，旧入口多建一个 EmptyHost 或抛错。
+    //  显式的 undefined / null 不是空位（in 判定），照旧是 EmptyHost。
+    for (let index = 0; index < items.length; index++) {
+        if (!(index in items)) continue
+        const item = items[index]
         const itemType = typeof item
         // DirectNodes: no per-item <!--array item-->
         const isDirectNode =
