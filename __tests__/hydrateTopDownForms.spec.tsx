@@ -270,6 +270,65 @@ describe('descriptions rendered after the activation (C6 / C10, §2.2)', () => {
     })
 })
 
+describe('C10 quantification (§5.2, D2)', () => {
+    // 同一个 N 行列表：CSR 首次渲染，与「激活中建好（组件体里 map 出行描述）、激活中没有渲染（关着的标签页）、激活之后才第一次
+    //  渲染」比较每行多保留的对象，按类型：Host、placeholder Comment、描述壳。B4 在 RxListHost.createChildHost 的非 Compact
+    //  分支按描述的 node 重新走 Compact 判定，所以 Host 与 Comment 不多；多出来的只有 list.data 里留下的描述壳
+    //  （激活之后的 CSR 新行路径不知道行的下标，不写回）。诊断开启时 data 里是包着壳的开发期 Proxy，再多一个对象。
+    test.each([[true], [false]])('N rows built during the activation and rendered after it (diagnostics on: %s)', async (diagnostics) => {
+        const N = 200
+        const make = () => {
+            const items = new RxList(Array.from({length: N}, (_, i) => i))
+            const open = atom(false)
+            let rows: RxList<any> | undefined
+            function App({}: any, {createElement}: RenderContext) {
+                rows = items.map(i => <li>{i}</li>)
+                return <main>{() => open() ? <ul>{rows}</ul> : null}</main>
+            }
+            return {open, App, rows: () => rows!}
+        }
+        const measure = async (hydrateIt: boolean) => {
+            enableAxiiRetainedObjectDiagnostics({reset: true})
+            try {
+                const s = make()
+                const el = mount()
+                if (hydrateIt) {
+                    el.innerHTML = renderToString(createElement(make().App, null)).html
+                    configureDiagnostics({enabled: diagnostics, onError: (e: unknown) => { reports.push(e) }})
+                    hydrateRootTopDown(el, createElement(s.App, null))
+                    configureDiagnostics({enabled: true, onError: (e: unknown) => { reports.push(e) }})
+                } else {
+                    createRoot(el).render(createElement(s.App, null))
+                }
+                s.open(true)
+                await tick()
+                const snapshot = getAxiiRetainedObjectDiagnosticsSnapshot()
+                const ul = el.querySelector('ul')!
+                return {
+                    dom: kids(el),
+                    hosts: snapshot.hosts.activeByType,
+                    comments: Array.from(ul.childNodes).filter(n => n.nodeType === Node.COMMENT_NODE).length,
+                    shells: s.rows().data.filter(isHydrationElement).length,
+                }
+            } finally {
+                disableAxiiRetainedObjectDiagnostics()
+                resetAxiiRetainedObjectDiagnostics()
+            }
+        }
+        const csr = await measure(false)
+        const late = await measure(true)
+        // eslint-disable-next-line no-console
+        console.log(`[C10 §5.2] N=${N} diagnostics=${diagnostics} | CSR hosts ${JSON.stringify(csr.hosts)} comments ${csr.comments} | ` +
+            `late hosts ${JSON.stringify(late.hosts)} comments ${late.comments} shells ${late.shells} | per row: ` +
+            `Host +${(Object.values(late.hosts).reduce((a, b) => a + b, 0) - Object.values(csr.hosts).reduce((a, b) => a + b, 0)) / N}, ` +
+            `Comment +${(late.comments - csr.comments) / N}, description shell +${late.shells / N}`)
+        expect({dom: late.dom, hosts: late.hosts, comments: late.comments, shells: late.shells})
+            .toEqual({dom: csr.dom, hosts: csr.hosts, comments: csr.comments, shells: N})
+        // 激活之后诊断是开着的：每行物化时报告一次
+        expect(devReports('AXII_HYDRATION_ELEMENT_LATE_RENDER').length).toBe(N)
+    })
+})
+
 describe('live nodes (§2.6.8)', () => {
     test('a live element as a JSX child replaces its server counterpart and keeps its own reactive content; siblings keep their server nodes; AXII_HYDRATION_LIVE_NODE once', () => {
         // 激活之前在客户端建好的元素（CSR 的 createElement，带响应式 child）；服务端在同一位置写的是同一内容的 JSX
