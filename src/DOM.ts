@@ -88,7 +88,8 @@ import type {Host} from "./Host";
 
 // CAUTION 样式值 → CSS 文本（补单位名单、逗号列表、[数字, 单位] 简写、单位状态）只在 styleSerialize 有一份，
 //  行内样式与 stylesheet / SSR 共用（#60：这里曾有一份自己的 stringifyStyleValue 与同样的三张表）。
-//  这里只是保持原有的对外导出。
+//  这里只是保持原有的对外导出。例外：style 分支里的 CSS 自定义属性（--x）仍把原值交给 setProperty，
+//  数组的写法与 stylesheet / SSR 不同（见 styleSerialize 的「样式值 → CSS 文本」）。
 export {AUTO_ADD_UNIT_ATTR, COMMA_MULTI_VALUE_ATTR, setAutoUnitType, autoUnit}
 
 export function stringifyStyleValue(k:string, v: any): string {

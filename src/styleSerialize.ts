@@ -116,6 +116,9 @@ export function evaluateStyleEntries(styleValue: any): EvaluatedStyleEntry[] {
 //  axii/ssr 的行内样式都经 stringifyCssValue，补单位的名单、逗号列表的判定、[数字, 单位] 简写的单位表都只在这里。
 //  DOM.ts 曾有一份自己的 stringifyStyleValue 与三张同样的表：#48 修 [300, 'ms'] 时要改两处，
 //  名单内的非数字值两端写法也不同（见 stringifyCssValue）。DOM.ts 原样导出这里的名字，公开 API 不变。
+//  CAUTION 已知例外：客户端行内样式里的 CSS 自定义属性（--x）不经过这里，DOM.setAttribute 把求值后的原值交给
+//  el.style.setProperty，数组按 String() 逗号连接（{'--gap': [4, 8]} 客户端 "4,8"、这里 "4 8"；[300, 'ms'] 客户端 "300,ms"）。
+//  自定义属性的数组该按逗号还是空格连接没有唯一答案（字体列表 / 多值长度），留待单独决定，未在 #60 里改动。
 
 // CAUTION 数字自动补单位的名单（style 对象的驼峰 key）。口径：取值只由长度 / 百分比（以及关键字、函数）组成、
 //  无单位的非零数字不合法的标准 CSS 属性，含只由这类分项组成的简写（margin / inset / gap / borderRadius …）。
