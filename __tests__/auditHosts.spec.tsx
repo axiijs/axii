@@ -1241,3 +1241,77 @@ describe('audit follow-up: removing many options from a controlled select replay
         r.destroy()
     })
 })
+
+describe('audit follow-up: a function node destroyed while its OLD content is torn down', () => {
+    async function settleAll() {
+        for (let i = 0; i < 100; i++) await Promise.resolve()
+    }
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    async function catchUncaught(run: () => Promise<void>) {
+        const uncaught: string[] = []
+        const onError = (e: ErrorEvent) => { uncaught.push(String(e.error ?? e.message)); e.preventDefault() }
+        const onRejection = (e: PromiseRejectionEvent) => { uncaught.push(String(e.reason)); e.preventDefault() }
+        window.addEventListener('error', onError)
+        window.addEventListener('unhandledrejection', onRejection)
+        try {
+            await run()
+            await sleep(10)
+        } finally {
+            window.removeEventListener('error', onError)
+            window.removeEventListener('unhandledrejection', onRejection)
+        }
+        return uncaught
+    }
+    beforeEach(() => { document.body.innerHTML = '' })
+
+    for (const next of ['text', 'element'] as const) {
+        for (const where of ['the root content', 'inside an element'] as const) {
+            test(`D1: the old content's cleanup closes the root (next content: ${next}, function node is ${where})`, async () => {
+                const el = document.body.appendChild(document.createElement('div'))
+                const r = createRoot(el)
+                const show = atom(true)
+                const log: string[] = []
+                function Dialog(_: any, {onCleanup, useEffect}: RenderContext) {
+                    useEffect(() => { log.push('effect dialog'); return () => log.push('cleanup dialog') })
+                    onCleanup(() => r.destroy())
+                    return <b>dialog</b>
+                }
+                function Closed(_: any, {useEffect}: RenderContext) {
+                    useEffect(() => { log.push('effect closed'); return () => log.push('cleanup closed') })
+                    return <i>closed</i>
+                }
+                const fn = () => show() ? <Dialog/> : (next === 'text' ? 'closed' : <Closed/>)
+                r.render(where === 'the root content' ? fn : <div>{fn}</div>)
+                expect(el.textContent).toBe('dialog')
+                const uncaught = await catchUncaught(async () => {
+                    show(false)
+                    await settleAll()
+                })
+                expect(uncaught).toEqual([])
+                expect(el.innerHTML).toBe('')
+                // nothing was mounted for the destroyed node
+                expect(log).toEqual(['effect dialog', 'cleanup dialog'])
+            })
+        }
+    }
+
+    test('D2: the previous run registered an onCleanup that closes the root: the function is not called again', async () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        const r = createRoot(el)
+        const count = atom(0)
+        const calls: number[] = []
+        r.render(({onCleanup}: any) => {
+            const value = count()
+            calls.push(value)
+            onCleanup(() => { if (value === 1) r.destroy() })
+            return String(value)
+        })
+        count(1)
+        await settleAll()
+        expect(el.textContent).toBe('1')
+        count(2)
+        await settleAll()
+        expect(el.innerHTML).toBe('')
+        expect(calls).toEqual([0, 1])
+    })
+})

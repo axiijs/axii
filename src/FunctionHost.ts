@@ -151,7 +151,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     }
     renderSourceWithoutTrace(effect: DeferredBindingEffect) {
         // CAUTION 每次都清空上一次的结果
-        this.runCleanups()
+        if (this.cleanups !== undefined) {
+            this.runCleanups()
+            // 重入销毁之零：上一次登记的清理函数同步销毁了本节点（「这块内容消失就关掉弹层」）。
+            //  不能再调用 source：它是为一个已经不存在的节点求值。只在有清理函数时检查。
+            if (this.destroyedWith !== undefined) return
+        }
         let node: ReturnType<FunctionNode>|null = null
         try {
             // 零参 source 用不到 context，直接传 undefined，省掉每实例的 context 分配
@@ -186,6 +191,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
                 return
             }
             this.destroyInnerHost()
+            // 重入销毁之一（续）：旧内容的清理函数同步销毁了本节点。占位符可能已被摘掉，
+            //  下面的 insertBefore 会 TypeError（见 destroyInnerHost 之后结构路径的同一检查）。
+            if (this.destroyedWith !== undefined) return
             if (this.placeholder instanceof Text) {
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
                 this.placeholder.nodeValue = text
@@ -217,6 +225,9 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             this.textNode = null
         }
         this.destroyInnerHost()
+        // 旧内容（innerHost）的清理函数同步销毁了本节点：占位符可能已被摘掉，不能再在它前面
+        //  建新内容（insertBefore 会 TypeError；就算没被摘掉，新内容也没有人销毁）。
+        if (this.destroyedWith !== undefined) return
         // Hydrate FTS/FCS：认领已有 <!--computed node-->，禁止新建（§3.2.4 FS2 / §3.2.5）
         const hydrating = isHydrating()
         const newPlaceholder = hydrating
