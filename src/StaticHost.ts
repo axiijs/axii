@@ -244,6 +244,8 @@ class StyleManager {
     public elToStyleIdItorNum = new WeakMap<HTMLElement, number>()
     // 上一次 update 写入的 inline style key，用于清除本次不再出现的残留 key
     public elToInlineStyleKeys = new WeakMap<HTMLElement, Set<string>>()
+    // 上一次 update 里字符串条目声明的属性名（#79）：下一次更新时先全部删掉再重写；null = 有拆不准的字符串，整体清空
+    public elToInlineStringNames = new WeakMap<HTMLElement, string[] | null>()
     // 当前挂在元素 class 上的 stylesheet class id：响应式 className 整体覆写 class attribute 后，
     //  必须能把这些框架管理的 class 补回去，否则 stylesheet 样式静默丢失。
     public elToStyleClassIds = new WeakMap<HTMLElement, Set<string>>()
@@ -759,30 +761,35 @@ class StyleManager {
         // CAUTION 响应式 style 重算后，新值可能不再包含上一次写过的某些 key
         //  （条件样式 () => cond() && {...} 翻转为 falsy、或对象换了一批 key）。
         //  inline style 是按 key 赋值的，必须显式清掉本次不再出现的 key，否则旧样式残留。
-        //  字符串条目同样只写它声明的属性（#79，见 DOM.applyStyleText），按共用的拆分器记下属性名（CSS 写法），
-        //  与对象条目的 key 一起比较：不再声明的属性删掉，前面条目写下的其余属性不动。删除先于下面的重新写入，
-        //  同一个属性换了写法（字符串的 margin-top ↔ 对象的 marginTop）也只是先删后写。
-        //  拆不准的字符串（见 splitInlineDeclarations）不知道写过哪些属性：记哨兵，下一次更新时整体清空行内样式，
-        //  再由 setAttribute 按条目顺序全部重写。
+        //  字符串条目只写它声明的属性（#79，见 DOM.applyStyleText）：按共用的拆分器记下它声明的属性名（CSS 写法），
+        //  下一次更新时先全部删掉，再由 setAttribute 按条目顺序重写全部条目——前面条目写下的其余属性不动。
+        //  不能只删「这次不再声明的」：字符串的值一变成浏览器不接受的（'color: notacolor'、`width: ${w}px` 里
+        //  w 为 undefined），setProperty 忽略它，上一次的值就残留了；用同样的值重新渲染是没有这个属性的。
+        //  对象条目照旧只删本次不再出现的 key（对象条目是热路径，不多删多写）。
+        //  拆不准的字符串（见 splitInlineDeclarations）不知道写过哪些属性：记 null，下一次更新时整体清空行内样式再重写。
         const previousInlineKeys = this.elToInlineStyleKeys.get(el)
+        const previousStringNames = this.elToInlineStringNames.get(el)
         const nextInlineKeys = new Set<string>()
+        let nextStringNames: string[] | null | undefined
         for (const patch of stylePatches) {
             if (typeof patch === 'string') {
+                if (nextStringNames === null) continue
                 const declarations = splitInlineDeclarations(patch)
-                if (declarations === null) nextInlineKeys.add(CSS_TEXT_SENTINEL)
-                else for (const declaration of declarations) nextInlineKeys.add(declaration[0])
+                if (declarations === null) nextStringNames = null
+                else for (const declaration of declarations) (nextStringNames ??= []).push(declaration[0])
             } else if (patch && typeof patch === 'object') {
                 for (const k in patch) nextInlineKeys.add(k)
             }
         }
-        if (previousInlineKeys) {
-            if (previousInlineKeys.has(CSS_TEXT_SENTINEL)) {
-                el.style.cssText = ''
-            } else {
+        if (previousStringNames === null) {
+            el.style.cssText = ''
+        } else {
+            if (previousStringNames) for (const name of previousStringNames) el.style.removeProperty(name)
+            if (previousInlineKeys) {
                 for (const k of previousInlineKeys) {
                     if (nextInlineKeys.has(k)) continue
-                    // 带 "-" 的是 CSS 写法的名字：自定义属性、字符串条目里的属性、对象里写成 'margin-top' 的 key。
-                    //  removeProperty 认得它们；驼峰 key 只能按 el.style[k] = '' 删除
+                    // 带 "-" 的是 CSS 写法的名字（自定义属性、对象里写成 'margin-top' 的 key），removeProperty 认得；
+                    //  驼峰 key 只能按 el.style[k] = '' 删除
                     if (k.indexOf('-') >= 0) {
                         el.style.removeProperty(k)
                     } else {
@@ -795,6 +802,8 @@ class StyleManager {
         if (previousInlineKeys || nextInlineKeys.size) {
             this.elToInlineStyleKeys.set(el, nextInlineKeys)
         }
+        if (nextStringNames !== undefined) this.elToInlineStringNames.set(el, nextStringNames)
+        else if (previousStringNames !== undefined) this.elToInlineStringNames.delete(el)
         setAttribute(el, 'style', stylePatches, el instanceof SVGElement)
         // CAUTION 已连通的元素不能等批次结束：批次内的用户代码（组件函数体、函数节点）可能马上读它的
         //  computed style。排队的表只允许属于还没连入文档的元素（见 beginBatch 的不变量 4）。
@@ -821,10 +830,6 @@ class StyleManager {
 }
 
 type StyleObject = { [k: string]: any }
-
-// elToInlineStyleKeys 里的哨兵 key：上一轮有拆不准的字符串条目（见 splitInlineDeclarations），它写过哪些属性
-//  无从得知，下一次更新时必须整体清除 cssText 再重写。
-const CSS_TEXT_SENTINEL = '__cssText__'
 
 function hasInlineDeclarations(simpleStyles: StyleObject | string): boolean {
     if (typeof simpleStyles === 'string') return true

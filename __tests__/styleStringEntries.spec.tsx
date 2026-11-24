@@ -156,6 +156,26 @@ describe('#79 string entries: client render, parsed server HTML and hydrate agre
             expect(expectThreeWay([{marginTop: 1}, `color: ${RED} !important; color: ${BLUE}`]).inline)
                 .toEqual(['margin-top: 1px', `color: ${RED} !important`].sort())
         })
+        // 同一段文本里 !important 与普通声明、简写与分项交错：每个分项取最后一条 !important，没有才取最后一条普通声明。
+        //  单独的字符串整体赋值，跟在对象条目后面、以及激活时逐条写入，三条路径结果相同
+        const mixed = [
+            'margin-top: 1px !important; margin: 0',
+            'margin: 0 !important; margin-top: 1px',
+            'margin: 2px; margin-top: 1px !important; margin-left: 3px; margin: 0 !important; margin-right: 4px',
+            'padding: var(--p) !important; padding-top: 0; color: rgb(255, 0, 0)',
+        ]
+        test.each(mixed)('mixed !important inside one string: %s', text => {
+            const sole = expectThreeWay(text)
+            const after = expectThreeWay([{color: BLUE, marginLeft: 9}, text])
+            expect(after.inline.filter(line => !line.startsWith('color') && !line.startsWith('margin-left')))
+                .toEqual(sole.inline.filter(line => !line.startsWith('color') && !line.startsWith('margin-left')))
+        })
+        test('mixed !important inside one string matches the browser parsing the same text', () => {
+            const el = document.createElement('div')
+            el.style.cssText = mixed[2]
+            expect(expectThreeWay([{color: BLUE}, mixed[2]]).inline.filter(line => !line.startsWith('color')))
+                .toEqual(stateOf(el).inline)
+        })
         test('an empty declaration does not replace an earlier !important one', () => {
             const client = expectThreeWay([`color: ${RED} !important`, 'color: ; margin-top: 1px'])
             expect(client.inline).toContain(`color: ${RED} !important`)
@@ -241,6 +261,16 @@ describe('#79 reactive string entries: every update equals a fresh render of the
     test('!important across updates', async () => {
         await expectSteps(s => [{marginTop: 1}, typeof s === 'function' ? () => s() : s],
             [`color: ${RED} !important`, `color: ${BLUE}`, `color: ${RED} !important; margin-top: 3px`, {color: BLUE}])
+    })
+    // 声明的值变成浏览器不接受的：用同样的值重新渲染没有这个属性，更新后也不能残留上一次的值
+    test('a declaration that turns invalid or empty is removed', async () => {
+        const w: any = undefined
+        await expectSteps(s => [{paddingLeft: 1}, typeof s === 'function' ? () => s() : s],
+            [`color: ${RED}; width: 10px`, 'color: notacolor; width: 10px', `color: ${RED}`, 'color:', `width: ${w}px`, `color: ${BLUE}`])
+    })
+    test('a declaration that turns invalid keeps the value of an earlier entry', async () => {
+        await expectSteps(s => [{color: BLUE, marginTop: 1}, typeof s === 'function' ? () => s() : s],
+            [`color: ${RED}; margin-top: 3px`, 'color: notacolor; margin-top: ', `color: ${RED} !important`, 'color: nope'])
     })
     test('an unsplittable string across updates', async () => {
         await expectSteps(s => [{color: BLUE}, typeof s === 'function' ? () => s() : s],
