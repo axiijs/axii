@@ -337,7 +337,7 @@ describe('component boundary and construction order (§2.4)', () => {
 })
 
 describe('element claim details (§2.6.1, §2.6.7)', () => {
-    test('HTML / SVG shared-name tags as static children of <svg> are claimed as SVG (≡ CSR adoptSvgChildren, #56); integration points keep HTML', () => {
+    test('HTML / SVG shared-name tags as static children of <svg> are claimed as SVG (≡ CSR adoptSvgChild, #56); integration points keep HTML', () => {
         const make = () => {
             const tip = atom('t1')
             function App({}: any, {createElement, Fragment}: RenderContext) {
@@ -602,7 +602,7 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
     })
 
     test('an array under an element that only became SVG keeps HTML items like CSR: the parser\'s SVG <title> is reported and rebuilt, not claimed silently', () => {
-        // CSR 的 adoptSvgChildren 只在创建时就是 SVG 的元素上改建数组项；被父元素改建、或作为数组项被改建的 <a> 不改建它的数组项，
+        // CSR 只在创建时就是 SVG 的元素上改建数组项（adoptSvgArrayItems）；被父元素改建、或作为数组项被改建的 <a> 不改建它的数组项，
         //  其中的 <title> 是 HTML 元素，解析器却按 SVG 解析。激活与 CSR 一致按 HTML 认领，在认领处报告失配，按 R1 新建（B3）
         const ns = (root: Element) => Array.from(root.querySelectorAll('title')).map(n => n.namespaceURI === 'http://www.w3.org/2000/svg' ? 'svg' : 'html')
         const shapes = [
@@ -861,13 +861,27 @@ describe('server / CSR agreement found in B2 (fixed in #82)', () => {
     })
 })
 
-describe('a hole in a sparse static array (pre-existing server / CSR disagreement)', () => {
-    // CSR 的 StaticArrayHost.render 用 forEach，跳过空位；服务端 serializeStaticArray 用 for…of，为空位写 <!--empty--><!--array item-->。
-    //  激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配、按 R2 / R3 修复（B3），不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
+describe('a hole in a sparse static array (server / CSR disagreement, fixed in #85)', () => {
+    // CSR 的 StaticArrayHost.render 用 forEach，跳过空位；服务端 serializeStaticArray 曾经用 for…of，为空位写 <!--empty--><!--array item-->。
+    //  #85 在服务端修复（与 forEach 一样跳过空位）：renderToString 的输出激活后 ≡ CSR，不报告（各位置的覆盖见 ssrHydrate.sparseArrays.spec）。
+    test('the server skips the hole like CSR: the activation reports nothing and ≡ CSR', () => {
+        // eslint-disable-next-line no-sparse-arrays
+        function App({}: any, {createElement}: RenderContext) { return <p>{['a', , 'b']}</p> }
+        const csrEl = mount()
+        createRoot(csrEl).render(createElement(App, null))
+        const hyd = ssrInto(createElement(App, null))
+        expect(hyd.innerHTML).not.toContain('<!--empty-->')
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+    })
+
+    // #85 之前的服务端写出的 HTML（逐字）：激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配、按 R2 / R3 删除（B3），
+    //  不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
     test('the activation follows CSR (the hole is skipped), reports the extra server markup and removes it', () => {
         // eslint-disable-next-line no-sparse-arrays
         function App({}: any, {createElement}: RenderContext) { return <p>{['a', , 'b']}</p> }
-        const hyd = ssrInto(createElement(App, null))
+        const hyd = mount()
+        hyd.innerHTML = '<p><!--axii:t-->a<!--axii:/t--><!--empty--><!--array item--><!--axii:t-->b<!--axii:/t--><!--unhandledChild--></p><!--root-->'
         expect(hyd.innerHTML).toContain('<!--empty--><!--array item-->')
         hydrateRootTopDown(hyd, createElement(App, null))
         const csrEl = mount()

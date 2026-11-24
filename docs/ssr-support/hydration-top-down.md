@@ -127,7 +127,7 @@ export function isHydrationElement(v: unknown): v is HydrationElement   // 判�
 - **何时产生：** 新模型激活期间，对字符串标签与 `Fragment` 调用 `createElement` 和 `createSVGElement` 时。组件仍然返回 `ComponentNode`，不变。
 - **不碰 DOM：** 不创建元素，不认领，不应用 props，不提升元数据。`unhandledChildren`、`unhandledAttr`、`refHandles`、`detachStyledChildren` 都由消费它的 Host 在认领时按 CSR 的同一规则建立（§2.4）。
 - **字段预置：** 全部字段在构造器里预置，然后 `Object.preventExtensions`。这样形状单态，用户写入未知属性在严格模式下抛错（§3.4）。只在激活路径上分配。
-- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChildren`。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 `adoptSvgChildren` 的数组分支：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 报告并新建为 HTML 元素（B3；之前报告并抛出）。
+- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChild`（SVG 父元素在 `createElement` 的子节点循环里改建）。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 CSR 改建的数组分支（`adoptSvgArrayItems`）：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 报告并新建为 HTML 元素（B3；之前报告并抛出）。
 - **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
 - **两种对象：** 开发期返回包着描述的 Proxy，生产返回描述本身（§3.4）。用哪一种在 `beginHydration` 时按 `isAxiiDiagnosticsEnabled()` 定一次，同一次激活内不变。
 - **消费后瘦身：** 被认领或新建后，`rawProps` 和 `rawChildren` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。瘦身不会把描述变成节点：被闭包捕获的描述永远是描述（§3.1.1）。
@@ -289,7 +289,7 @@ interface Host {
 
 - **table：** `impliedTableBody` 的两头判定照旧（客户端 children 里没有显式分区元素，且 DOM 里 table 唯一的子节点是 TBODY），只是客户端一侧改为看描述的 `tag`。组件返回 `<tbody>` 的情况（#56）不受影响：这时 table 下还有 `<!--unhandledChild-->`，不满足「唯一子节点」。
   - B1 的实现（`DOM.resolveTopDownChildParent`）在客户端一侧也进入 Fragment 描述找分区元素：Fragment 在 table 这一层展开，服务端（`ssr.serializeTableContent` 的 `atTableLevel`）也把其中的分区元素算作 table 层。旧模型只看直接子元素，`<table><><tbody/></></table>` 会误判为隐含 tbody。
-- **SVG：** 描述的 `isSVG` 与 CSR 同一规则（§2.2「isSVG」），认领比较标签与命名空间。#56 已定为「CSR 跟随解析器」，只针对 SVG 元素的静态子元素（`adoptSvgChildren`）。函数 / 组件 / 列表稍后渲染的同名标签在 CSR 里仍是 HTML 元素，与解析器不同；新模型会在认领处看到标签或命名空间不符，按 R1 报告并新建，得到与 CSR 相同的 DOM（B3）。
+- **SVG：** 描述的 `isSVG` 与 CSR 同一规则（§2.2「isSVG」），认领比较标签与命名空间。#56 已定为「CSR 跟随解析器」，只针对 SVG 元素的静态子元素（`adoptSvgChild`）。函数 / 组件 / 列表稍后渲染的同名标签在 CSR 里仍是 HTML 元素，与解析器不同；新模型会在认领处看到标签或命名空间不符，按 R1 报告并新建，得到与 CSR 相同的 DOM（B3）。
 
 #### 2.6.8 现成的 DOM 节点作为 child
 
@@ -847,7 +847,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **computed：** `RxListHost.render` 与 `hydrate` 共用 `createRenderComputed(skipInitialRender)`，行的初次渲染与 patch 只有这一份；激活时行在 computed 之外认领（与旧模型相同），首次运行只建立追踪。这是每个列表一次的方法调用，不在行或 patch 的路径上；`createChildHost` 与各 patch 处理不变。
 - **atom 数组项的空值：** B2 实现时服务端对 atom 数组项按 Text-ph 写（`emitTextPh`，空值多一个 `axii:0`），CSR 是 Comment-ph 的 AtomHost，激活在未改动的服务端输出上失配。B2 起初让 `AtomHost.hydrate` 在 `'array item'` 上认领这个哨兵；合并 main 时 #82（#83）已在服务端改为 Comment-ph（空值不写节点），这个例外随之去掉，`AtomHost.hydrate` 对所有 Comment slot 一视同仁。旧服务端写出的 HTML 在这里多一个 `axii:0`，由 B3 的规则报告并清扫。
 - **SVG 的数组 child：** 见 §2.2「isSVG」。
-- **稀疏数组：** `StaticArrayHost.hydrate` 与 `render` 的 `forEach` 一样跳过空位（服务端为空位多写的标记见 §11）。
+- **稀疏数组：** `StaticArrayHost.hydrate` 与 `render` 的 `forEach` 一样跳过空位，`firstChild` 是第一个不是空位的项（#85，见 §11）。
 - **写回的边界：** 冻结的数组（`Object.freeze([...])`）不写回，CSR 照常渲染它，写回在严格模式下会 TypeError，项留在描述壳上。RxListHost 在全部行认领之后按 `data` 现在的内容写回，只写已认领的描述（行的组件在激活中改动列表时不会写错位置或写入 `null`）。
 - **独立审查后的修正：** 数组项的 SVG 改建只发生在创建时就是 SVG 的元素上（§2.2）；开发期不变量的遍历不用展开参数（行数超过参数个数上限时 RangeError）；以上两条与冻结数组、组件返回空 atom 作为数组项各有一条用例。
 - **同一个描述作为 Host 的 source 第二次出现**（`[s, s]`、同一个描述作为两行）：`hydrateSource` 在读 `rawChildren` 之前显式抛 B4「待实现」（`throwConsumedDescription` 收到 `hydrationElement.ts`，认领步骤与 Host 共用）。
@@ -998,7 +998,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
   
   激活时这一行的结构对不上。按 §2.6.4，两边应共用一个判定。协调者已单独开 #68，排在实现 PR 之前修；B2 直接使用 #68 落地的判定。
 - **函数结构态的值是 RxList（B2 发现，服务端缺陷，与上面第一条同类；#82 已修复）。** `{() => list.map(…)}`：CSR 里 RxListHost 的 placeholder 就是 FunctionHost 的 `<!--computed node-->`，服务端曾经经 `serializeChild` 按元素 child 写这个列表，行之后多一个 `<!--unhandledChild-->`。旧模型激活后把它留在 DOM 里，之后 push 的行插在它后面（DOM 与 CSR 不同，不报告）；新模型报告并抛出。#82 的修复（`serializeStructureResult` → `serialize`）一并覆盖了它；B2 写下的 `test.fails` 在合并 #82 之后翻转为 `test`，扩展后的 F1i 也生成这种形态。
-- **稀疏数组的空位（B2 发现，服务端与 CSR 不一致）。** `[a, , b]`：CSR 的 `StaticArrayHost.render` 用 `forEach`，跳过空位；服务端 `serializeStaticArray` 用 `for…of`，为空位写 `<!--empty--><!--array item-->`。激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配，B3 起按 R2 / R3 删除，≡ CSR。根治在服务端（跳过空位，#85）；#85 之前的服务端 HTML 仍按失配修复（`hydrateTopDownMismatch.spec` 用 `null` 项的服务端输出手写这种 HTML）。`hydrateTopDown.spec`「a hole in a sparse static array」钉住。
+- **稀疏数组的空位（B2 发现，服务端与 CSR 不一致；#85 已修复）。** `[a, , b]`：CSR 的 `StaticArrayHost.render` 用 `forEach`，跳过空位；服务端 `serializeStaticArray` 曾经用 `for…of`，为空位写 `<!--empty--><!--array item-->`。激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配，B3 起按 R2 / R3 删除，≡ CSR。#85 在服务端修复：`serializeStaticArray` 与 `forEach` 一样跳过空位（`index in items`，显式的 `undefined` / `null` 仍是 EmptyHost）；旧入口的两处数组认领（`DOM.ts` 元素 child、`hydration.walkFragmentHydrateChildren`）同样跳过。同一次修复了 `StaticArrayHost` 的 `firstChild`：曾经只在 `index === 0` 时设置，首位是空位的数组 `element` 退回到 placeholder，CSR 销毁 / 替换 / 移动时内容留在原处，组件根上的这种数组激活时被判成容器里的残留节点。`hydrateTopDown.spec`「a hole in a sparse static array」钉住 #85 之前的服务端 HTML（激活报告失配并修复，B3）与修复后的输出（不报告），各位置两个入口的用例在 `ssrHydrate.sparseArrays.spec.tsx`。
 - **激活中行组件同步改动列表（B2 交接，B3 确认）。** 行组件在 `useEffect` 里同步 `list.push(…)`：CSR 本身被 data0 拒绝（「detect recompute triggerred in sync recompute」），激活时行在 computed 之外认领、computed 在全部行认领之后才建立，这次改动不被追踪，也不报告。下一个 tick 的改动两边都被追踪、≡ CSR（`hydrateTopDownMismatch.spec` 钉住）。同步改动的检测不在 B3 范围。
 - **#54 报告的疑点不再存在。** 疑点是 `createElementForHydrateMismatch` 新建的元素没有登记为已认领，之后的无游标认领可能拿到它。新模型没有无游标认领，S 之后不再成立，无需单独处理。
 

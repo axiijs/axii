@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 import {isAtom, RxList} from "data0";
 import {assert, each, isPlainObject} from './util'
-import {isDomNode, isElementNode, isFragmentNode} from './nodeType'
+import {DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isDomNode, isElementNode, isFragmentNode, nodeTypeOf} from './nodeType'
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
@@ -779,7 +779,7 @@ const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink'
 /**
  * Rematerialize a main-root deferred stub with claiming enabled.
  * svgParent：stub 是一个 SVG 元素（不是 HTML integration point）的静态子元素。HTML / SVG 同名的标签按 SVG 认领与创建，
- *  ≡ CSR 里 SVG 父元素对同一个子元素做的改建（adoptSvgChildren，#56）。
+ *  ≡ CSR 里 SVG 父元素对同一个子元素做的改建（adoptSvgChild，#56）。
  */
 export function materializeHydrateDeferred(el: Element, svgParent = false): Node {
     const payload = takeHydrateDeferredPayload(el)
@@ -790,8 +790,43 @@ export function materializeHydrateDeferred(el: Element, svgParent = false): Node
     return createElement(payload.type, rawProps, ...payload.rawChildren) as Node
 }
 
-function isSharedNameHtmlElement(value: unknown): value is ExtendedElement {
-    return isElementNode(value) && value.namespaceURI === XHTML_NAMESPACE && svgHtmlSharedElementNames.has(value.localName)
+const TO_STRING_TAG = Symbol.toStringTag
+
+/**
+ * class string（value[Symbol.toStringTag]）以 SVG 开头：SVG 元素，一定不是要改建的同名 HTML 元素（#56，见 adoptSvgChild）。
+ * CAUTION 热路径的预判：SVG 父元素（integration point 除外）的每个子节点都要判断是不是同名的 HTML 元素，绝大多数是 SVG 元素。
+ *  Symbol.toStringTag 是 WebIDL 定义在每个接口原型上的数据属性（SVGPathElement、SVGAElement、未知 SVG 标签的 SVGElement……），
+ *  与 realm 无关；读它是普通的属性读取，不调用 DOM getter。nodeType / namespaceURI / localName 是 DOM getter，
+ *  同页微基准里各约 7–10 ns；#72 的单独扫描对每个子节点读两次 nodeType、一次 namespaceURI，生产构建下一个 <g> 里
+ *  40 个 <path> 的创建慢约 5%。
+ *  读取写在每个调用处（value[TO_STRING_TAG]），不放进共用的函数：属性读取的内联缓存按代码位置记录，
+ *  三处（子节点循环、数组项、Fragment 子元素）共用一个读取位置时它会变成 megamorphic，数组项的判断慢一倍。
+ *  不以 SVG 开头时（HTML、MathML、没有定义 toStringTag 的环境）由 isSharedNameHtmlElement 按命名空间和 localName 判定，
+ *  所以 document.createElement / cloneNode 出来的、别的 realm 的、customized built-in 的同名 HTML 元素都照样改建；
+ *  只有把 toStringTag 改成以 SVG 开头的 HTML 元素会被漏掉。
+ */
+function isSvgClassString(classString: unknown): boolean {
+    return typeof classString === 'string' && classString.charCodeAt(0) === 83 && classString.charCodeAt(1) === 86 &&
+        classString.charCodeAt(2) === 71 // 'SVG'
+}
+
+/**
+ * 元素是不是 HTML 命名空间里 HTML / SVG 同名的元素（svgHtmlSharedElementNames），即 SVG 父元素要改建的子元素（#56）。调用方先确认是元素。
+ * CAUTION 同一个判定在新激活模型里的写法是 isSharedNameHtmlDescription（输入是描述，不是 DOM 元素）：改其中一个时另一个一起改。
+ */
+function isSharedNameHtmlElement(el: Element): el is ExtendedElement {
+    return el.namespaceURI === XHTML_NAMESPACE && svgHtmlSharedElementNames.has(el.localName)
+}
+
+/**
+ * 新激活模型（#55）里的同一个判定（≡ isSharedNameHtmlElement）：描述是 HTML / SVG 同名的标签，且创建时不是 SVG，
+ *  即 SVG 父元素要按 SVG 认领的子描述（#56）。描述的 isSVG 与 CSR 元素的命名空间由 createElement 的同一个表达式决定
+ *  （显式 _isSVG，否则 SVG 专有标签），所以「还不是 SVG」≡ CSR 里「在 HTML 命名空间」。
+ *  父元素下的子描述（hydrateElementDescriptionAt）与数组项（adoptSvgArrayItemDescriptions）共用这一个判定。
+ *  Fragment 描述的 tag 不是字符串，不在名字表里。
+ */
+function isSharedNameHtmlDescription(desc: HydrationElement): boolean {
+    return !desc.isSVG && svgHtmlSharedElementNames.has(desc.tag as string)
 }
 
 // HTML 元素上的 attribute 名都被转成了小写：SVG 里大小写敏感、或要转成连字符的名字按 setAttribute 的 SVG 规则还原。
@@ -814,12 +849,21 @@ function svgAttributeNameOfLowercase(name: string): string {
 /**
  * CAUTION HTML / SVG 同名的标签（a / title / style / script，见 svgHtmlSharedElementNames）在 SVG 父元素下必须是 SVG 元素（#56）：
  *  HTML 解析器这样处理服务端写出的标记；客户端建成 HTML 元素的话，<a> 里的图形整个不渲染、<title> 不是图形的提示，
- *  激活时每个都报告失配并重建。JSX 先求值子节点，子元素创建时不知道父元素，所以由 SVG 父元素在这里把它的静态子元素
- *  （元素 child、数组项、Fragment 的子元素）改建到 SVG 命名空间：attribute 按 SVG 的写法搬过去（见 svgAttributeNameOfLowercase），子节点整体移过去，
+ *  激活时每个都报告失配并重建。JSX 先求值子节点，子元素创建时不知道父元素，所以由 SVG 父元素在 createElement 里把它的静态子元素
+ *  （元素 child、数组项、Fragment 的子元素：adoptSvgChild / adoptSvgArrayItems / adoptSvgFragmentChildren）改建到 SVG 命名空间：attribute 按 SVG 的写法搬过去（见 svgAttributeNameOfLowercase），子节点整体移过去，
  *  axii 写在元素上的字段（事件表、未处理的子节点 / 响应式属性 / ref / detachStyle 元数据、JSX source）原样转交，
  *  事件代理重新挂上；元数据里指向旧元素的 el 改指新元素（remapRecreatedElements）。响应式属性稍后由 StaticHost
- *  按新元素（SVG）的规则写入。激活时由 materializeHydrateDeferred 在同一个位置按 SVG 认领，服务端按 SVG 的规则写属性。
- *  只在 SVG 元素的创建路径上执行：HTML 元素的创建不多任何检查。
+ *  按新元素（SVG）的规则写入。激活时由 materializeHydrateDeferred 在同一个位置按 SVG 认领（新激活模型：hydrateElementDescriptionAt /
+ *  adoptSvgArrayItemDescriptions，判定是 isSharedNameHtmlDescription），服务端按 SVG 的规则写属性。
+ * CAUTION 性能：判定并在 createElement 唯一的子节点循环里做（adoptSharedNameChildren），不再单独扫一遍 children：
+ *  节点子元素用循环分发时已经读到的 nodeType 区分元素与 Fragment，元素先按 class string 排除 SVG 元素（isSvgClassString），
+ *  SVG 元素子节点不多读任何 DOM getter；数组项只在非节点分支里、按同样的预判检查。Fragment 的子元素要走一遍它的元素子节点
+ *  （firstElementChild / nextElementSibling），这是 Fragment 在 SVG 父元素下的固有代价。
+ *  adoptSharedNameChildren 只在 CSR 的 SVG 元素创建路径上为真：HTML 元素只多一个恒为 false 的局部布尔。
+ *  改建本身（adoptSvgChild 以下）是冷路径。
+ *  一个 SVG 父元素的所有改建共用一张 旧元素 → 新元素 的表（createElement 里的 adoptedElements，按需创建）：同一个元素
+ *  被两个兄弟先后用作子元素时（const u = <title ref={r}/>; <svg>{y}{x}</svg>，x、y 都包着 u），前一个兄弟改建出的新元素
+ *  要用来改指后一个兄弟元数据里的 el，与 #72 相同。
  *  已知限制：
  *   - 改建换掉了元素：在父元素创建之前拿到的子元素引用（const t = <title/>; <svg>{t}</svg>）指向被丢弃的 HTML 元素，
  *     之前直接 addEventListener 的监听器也不会带过去（ref 在之后执行，拿到的是新元素）；
@@ -828,37 +872,40 @@ function svgAttributeNameOfLowercase(name: string): string {
  *   - 函数、组件、列表渲染出来的同名标签由 Host 稍后插入，不经过这里，仍是 HTML 元素；它们的激活结果与 CSR 不一致是
  *     子先于父认领模型的既有缺陷（#55，见 ssrHydrate.shapes.spec 的 test.fails）。要在这些位置得到 SVG 元素，用 createSVGElement。
  */
-function adoptSvgChildren(children: any[]): void {
-    let recreated: Map<Element, Element> | undefined
-    for (let i = 0; i < children.length; i++) {
-        const child = children[i]
-        if (isSharedNameHtmlElement(child)) {
-            const svg = recreateInSvgNamespace(child, recreated ??= new Map())
-            remapRecreatedElements(svg, recreated)
-            children[i] = svg
-        } else if (Array.isArray(child)) {
-            for (let j = 0; j < child.length; j++) {
-                if (isSharedNameHtmlElement(child[j])) {
-                    const svg = recreateInSvgNamespace(child[j], recreated ??= new Map())
-                    remapRecreatedElements(svg, recreated)
-                    child[j] = svg
-                }
-            }
-        } else if (isFragmentNode(child)) {
-            // Fragment 子元素的元数据已经提升到 DocumentFragment 上
-            let node = child.firstChild
-            let fragmentRecreated = false
-            while (node) {
-                const next = node.nextSibling
-                if (isSharedNameHtmlElement(node)) {
-                    child.replaceChild(recreateInSvgNamespace(node, recreated ??= new Map()), node)
-                    fragmentRecreated = true
-                }
-                node = next
-            }
-            if (fragmentRecreated) remapRecreatedElements(child as unknown as ExtendedElement, recreated!)
+function adoptSvgChild(el: ExtendedElement, recreated: Map<Element, Element>): ExtendedElement {
+    const svg = recreateInSvgNamespace(el, recreated)
+    remapRecreatedElements(svg, recreated)
+    return svg
+}
+
+// 数组项原地替换：StaticArrayHost 稍后按同一个数组渲染。CSR 的这条循环不读数组项的 nodeType，先按 class string 排除 SVG 元素。
+// 返回（可能新建的）改建表。
+function adoptSvgArrayItems(items: any[], recreated: Map<Element, Element> | undefined): Map<Element, Element> | undefined {
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item !== null && typeof item === 'object' && !isSvgClassString(item[TO_STRING_TAG]) &&
+            isElementNode(item) && isSharedNameHtmlElement(item)) {
+            items[i] = adoptSvgChild(item, recreated ??= new Map())
         }
     }
+    return recreated
+}
+
+// Fragment 子元素的元数据已经提升到 DocumentFragment 上，在它上面改指。只走元素子节点（同名标签都是元素）。
+// 返回（可能新建的）改建表。
+function adoptSvgFragmentChildren(fragment: DocumentFragment, recreated: Map<Element, Element> | undefined): Map<Element, Element> | undefined {
+    let fragmentRecreated = false
+    let el = fragment.firstElementChild
+    while (el) {
+        const next = el.nextElementSibling
+        if (!isSvgClassString((el as any)[TO_STRING_TAG]) && isSharedNameHtmlElement(el)) {
+            fragment.replaceChild(recreateInSvgNamespace(el, recreated ??= new Map()), el)
+            fragmentRecreated = true
+        }
+        el = next
+    }
+    if (fragmentRecreated) remapRecreatedElements(fragment as unknown as ExtendedElement, recreated!)
+    return recreated
 }
 
 function recreateInSvgNamespace(el: ExtendedElement, recreated: Map<Element, Element>): ExtendedElement {
@@ -887,7 +934,7 @@ function recreateInSvgNamespace(el: ExtendedElement, recreated: Map<Element, Ele
     let child = el.firstChild
     while (child) {
         const next = child.nextSibling
-        svg.appendChild(!keepHtmlChildren && isSharedNameHtmlElement(child) ? recreateInSvgNamespace(child, recreated) : child)
+        svg.appendChild(!keepHtmlChildren && isElementNode(child) && isSharedNameHtmlElement(child) ? recreateInSvgNamespace(child, recreated) : child)
         child = next
     }
     const keys = Object.keys(el)
@@ -1427,6 +1474,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     let hydrateClaimed = false
     // 失配后新建：脱离文档建好，props 应用完再插到游标处（#73，见 createElementForHydrateMismatch）
     let hydrateRebuilt = false
+    // CSR 的 SVG 父元素（integration point 除外）在下面的子节点循环里把 HTML / SVG 同名的子元素改建到 SVG 命名空间（#56，见 adoptSvgChild）
+    let adoptSharedNameChildren = false
+    let adoptedElements: Map<Element, Element> | undefined
     if (type === Fragment) {
         container = document.createDocumentFragment()
     } else if (hydrating) {
@@ -1458,8 +1508,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         }
     } else if (_isSVG) {
         container = document.createElementNS(SVG_NAMESPACE, type as string) as SVGElement
-        // HTML / SVG 同名的子元素改建到 SVG 命名空间（#56，见 adoptSvgChildren）
-        if (children.length && !isSvgHtmlIntegrationPoint(type as string)) adoptSvgChildren(children)
+        adoptSharedNameChildren = children.length !== 0 && !isSvgHtmlIntegrationPoint(type as string)
     } else {
         container = (rawProps && typeof rawProps.is === 'string'
             ? document.createElement(type as string, {is: rawProps.is})
@@ -1511,6 +1560,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             if (child == null) continue // Handles both undefined and null
 
             const childType = typeof child
+            let childNodeType: number | undefined
             if (childType === 'string' || childType === 'number' || childType === 'bigint') {
                 if (hydrating) {
                     // Fragment: never claim via parent cursor — content belongs to
@@ -1534,10 +1584,20 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 } else {
                     container.appendChild(document.createTextNode(child.toString()))
                 }
-            } else if (isDomNode(child)) { // Covers Element (HTML / SVG / MathML), DocumentFragment, Text, Comment
+            } else if ((childNodeType = nodeTypeOf(child)) !== undefined) { // Covers Element (HTML / SVG / MathML), DocumentFragment, Text, Comment
                 // CAUTION 按 nodeType 判断（见 nodeType.ts）：JSX child 可以是另一个 realm（同源 iframe）的节点，
                 //  instanceof Node 恒为 false，会落进下面「函数 / 其他值」的分支，多出一个占位注释（#58）。
                 let nodeChild: Node = child
+                // 改建必须在 append 和元数据提升之前：提升读的是新元素上转交过来的字段（#56，见 adoptSvgChild）
+                if (adoptSharedNameChildren) {
+                    if (childNodeType === ELEMENT_NODE) {
+                        if (!isSvgClassString(child[TO_STRING_TAG]) && isSharedNameHtmlElement(child)) {
+                            children[index] = nodeChild = adoptSvgChild(child, adoptedElements ??= new Map())
+                        }
+                    } else if (childNodeType === DOCUMENT_FRAGMENT_NODE) {
+                        adoptedElements = adoptSvgFragmentChildren(child, adoptedElements)
+                    }
+                }
                 // Fragment: leave deferred stubs for rematerialize under fragment/portal root.
                 // Non-Fragment: rematerialize now (parent cursor / claim-allowed is active).
                 if (hydrating && isHydrateDeferredElement(nodeChild) && type !== Fragment) {
@@ -1568,16 +1628,17 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 // Handle extended element properties：提升子元素的元数据，路径规则见 liftElementMetadata
                 // CAUTION 新激活模型的认领步骤（hydrateDescriptionChildren）有同样的一段提升，改这里时那里一起改（#55 B1）
                 const childElement = nodeChild as ExtendedElement
-                // 动态节点自身没有 JSX source 时，继承最近的父元素 source
-                const inheritedSource = childElement.__axiiSource ?? debugSource
+                // 动态节点自身没有 JSX source 时，继承最近的父元素 source。
+                // CAUTION 只在真的提升 children / attr 元数据时才读 __axiiSource：每个节点子元素都读一次的话，
+                //  是这个循环里对每个子节点都付的一次属性读取（绝大多数子元素没有元数据，也没有 source）。
                 const childUnhandledChildren = childElement.unhandledChildren
                 if (childUnhandledChildren?.length) {
-                    unhandledChildren = liftElementMetadata(childUnhandledChildren, index, unhandledChildren, inheritedSource)
+                    unhandledChildren = liftElementMetadata(childUnhandledChildren, index, unhandledChildren, childElement.__axiiSource ?? debugSource)
                     childElement.unhandledChildren = undefined
                 }
                 const childUnhandledAttr = childElement.unhandledAttr
                 if (childUnhandledAttr?.length) {
-                    unhandledAttr = liftElementMetadata(childUnhandledAttr, index, unhandledAttr, inheritedSource)
+                    unhandledAttr = liftElementMetadata(childUnhandledAttr, index, unhandledAttr, childElement.__axiiSource ?? debugSource)
                     childElement.unhandledAttr = undefined
                 }
                 // ref / detachStyle 的项没有 source 字段，不继承（传 undefined，不给它们新增字段）
@@ -1592,6 +1653,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     childElement.detachStyledChildren = undefined
                 }
             } else {
+                if (adoptSharedNameChildren && Array.isArray(child)) adoptedElements = adoptSvgArrayItems(child, adoptedElements)
                 // 函数/atom child 大概率渲染为文本，直接用 Text 节点当占位符
                 let placeholder: UnhandledPlaceholder
                 if (hydrating && type === Fragment) {
@@ -1615,6 +1677,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     // StaticArrayHost DirectNodes / items — claim texts then <!--unhandledChild-->
                     const hydrateDirectNodes: Text[] = []
                     for (let itemIndex = 0; itemIndex < child.length; itemIndex++) {
+                        // ≡ StaticArrayHost.render 的 forEach：稀疏数组的空位没有 Host、服务端不写任何节点（#85）；
+                        //  显式的 undefined 不是空位（EmptyHost，<!--empty--><!--array item-->）
+                        if (!(itemIndex in child)) continue
                         const item = child[itemIndex]
                         const it = typeof item
                         if (it === 'string' || it === 'number' || it === 'bigint') {
@@ -1769,7 +1834,7 @@ export function hydrateElementDescription(desc: HydrationElement, innerHosts: To
 }
 
 // parentAdoptsSvg：父元素是 SVG 元素且不是 HTML integration point。HTML / SVG 同名的标签（a / title / style / script）
-//  作为它的静态子元素（含 Fragment 展开的）时按 SVG 认领与应用属性，≡ CSR 里 SVG 父元素的改建（adoptSvgChildren，#56）。
+//  作为它的静态子元素（含 Fragment 展开的）时按 SVG 认领与应用属性，≡ CSR 里 SVG 父元素的改建（adoptSvgChild，#56）。
 //  Host 稍后渲染的内容不经过这里（parentAdoptsSvg 为 false），与 CSR 相同仍是 HTML 元素。
 function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined, parentAdoptsSvg: boolean): HTMLElement | SVGElement {
     const tag = desc.tag as string
@@ -1777,7 +1842,7 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     // 创建时就是 SVG 元素（≡ createElement 的 _isSVG，同一个表达式）：数组 child 的改建只在这种元素上发生（见
     //  adoptSvgArrayItemDescriptions）。不能用 desc.isSVG：被父元素改建、或作为数组项被改建的同名标签，isSVG 已经改成了 true
     const createdSVG = (rawProps ? rawProps._isSVG : undefined) ?? svgOnlyElementNames.has(tag)
-    if (parentAdoptsSvg && !desc.isSVG && svgHtmlSharedElementNames.has(tag)) desc.isSVG = true
+    if (parentAdoptsSvg && isSharedNameHtmlDescription(desc)) desc.isSVG = true
     const isSVG = desc.isSVG
     const claimed = claimTopDownElement(tag, isSVG, staticAttrId(rawProps))
     // R1（§4.2）：游标处没有可以认领的元素（已经报告过）。按 CSR 新建，子节点在新建的层里消费（各单元直接新建、插入，
@@ -1859,20 +1924,19 @@ function clearHydratedElementAttributes(el: Element): void {
     while (attributes.length) el.removeAttributeNode(attributes[attributes.length - 1])
 }
 
-// ≡ CSR adoptSvgChildren 的数组分支（#56）：创建时就是 SVG 的元素（不是 HTML integration point）的数组 child，其中直接是
+// ≡ CSR 的数组项改建（adoptSvgArrayItems，#56）：创建时就是 SVG 的元素（不是 HTML integration point）的数组 child，其中直接是
 //  HTML / SVG 同名标签的元素项按 SVG 认领。数组项由 StaticArrayHost 稍后认领，这里先改描述的 isSVG（认领按它决定命名空间与
 //  写属性的规则，子元素随之按 SVG 父元素的规则认领）。与 CSR 相同只看这个元素自己的 children 里的数组：Fragment 里的数组、
 //  嵌套数组、Fragment 项都不在其列；被改建成 SVG 的同名标签（<svg><a>{[…]}</a></svg>）也不改建它的数组项——CSR 的
-//  adoptSvgChildren 只在 createElement 时 _isSVG 为真的元素上执行，改建（recreateInSvgNamespace）只遍历已有的 DOM 子节点。
+//  改建判定（createElement 的 adoptSharedNameChildren）只在 _isSVG 为真的元素上打开，改建（recreateInSvgNamespace）
+//  只遍历已有的 DOM 子节点。
 function adoptSvgArrayItemDescriptions(children: any[]): void {
     for (let i = 0; i < children.length; i++) {
         const child = children[i]
         if (!Array.isArray(child)) continue
         for (let j = 0; j < child.length; j++) {
             const item = child[j]
-            if (isHydrationElement(item) && item.tag !== Fragment && !item.isSVG && svgHtmlSharedElementNames.has(item.tag as string)) {
-                item.isSVG = true
-            }
+            if (isHydrationElement(item) && isSharedNameHtmlDescription(item)) item.isSVG = true
         }
     }
 }
@@ -1947,11 +2011,11 @@ function hydrateDescriptionChildren(
                 hydrateFragmentDescriptionChildren(child, innerHosts, childAdoptsSvg) :
                 hydrateElementDescriptionAt(child, innerHosts, childAdoptsSvg)
             const childElement = node as ExtendedElement
-            const inheritedSource = childElement.__axiiSource ?? debugSource
+            // __axiiSource 只在真的提升 attr 元数据时才读（≡ createElement 子节点循环里的同一段）
             const childUnhandledAttr = childElement.unhandledAttr
             if (childUnhandledAttr?.length) {
                 lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
-                lifted.unhandledAttr = liftElementMetadata(childUnhandledAttr, index, lifted.unhandledAttr, inheritedSource)
+                lifted.unhandledAttr = liftElementMetadata(childUnhandledAttr, index, lifted.unhandledAttr, childElement.__axiiSource ?? debugSource)
                 childElement.unhandledAttr = undefined
             }
             const childRefHandles = childElement.refHandles
