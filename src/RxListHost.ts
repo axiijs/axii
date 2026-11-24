@@ -284,14 +284,19 @@ export class RxListHost implements Host{
                     //  旧实现假定 computation 只跑一次,重跑时残留 hosts 会让行组件撞上
                     //  "should never rerender" 断言,列表区域从此永久崩坏。
                     if (hosts.length) {
+                        // CAUTION 先把上一轮的行整体摘出 hosts 再逐行销毁：行的清理函数是用户代码，
+                        //  可能同步销毁列表自己（关掉所在的弹层），destroy 会再销毁一遍还留在 hosts
+                        //  里的行——已经销毁过的行清理函数跑两遍（与 set 的旧行同一类问题）。
+                        const previousHosts = hosts.splice(0)
                         // 逐行移除时的 select 重放合并成一次（见 suspendSelectReplay）
                         suspendSelectReplay()
                         try {
-                            for (const previous of hosts) previous.destroy()
+                            for (const previous of previousHosts) previous.destroy()
                         } finally {
                             resumeSelectReplay()
                         }
-                        hosts.length = 0
+                        // 列表已被销毁：不再重建
+                        if (host.destroyedWith !== undefined) return null
                     }
                     const data = source.data
                     try {
@@ -526,9 +531,14 @@ export class RxListHost implements Host{
         const deletedHosts = spliceHosts(hosts, start, deleteCount, newHosts)
 
         // 2. 先拆旧行。kept：这次 splice 之外仍然在列表里的行数
-        if (deletedHosts.length) this.removeRows(deletedHosts, hosts.length - newHosts.length)
+        if (deletedHosts.length) {
+            this.removeRows(deletedHosts, hosts.length - newHosts.length)
+            // 旧行的清理函数同步销毁了列表自己：新行已经在 hosts 里，随列表一起销毁过了
+            //  （还没渲染），这里不能再交给 renderNewHosts——它会把它们再销毁一次。
+            if (this.destroyedWith !== undefined) return
+        }
 
-        // 3. 再挂新行（旧行的清理函数同步销毁了列表自己时，renderNewHosts 一行都不会渲染）
+        // 3. 再挂新行
         if (newHosts.length) {
             // CAUTION 一次 batch 中可能有连续 patch（例如 groupBy 一个一个插入），
             //  后面的 host 可能还没渲染，所以要往后找到第一个已经渲染过的元素作为插入锚点。

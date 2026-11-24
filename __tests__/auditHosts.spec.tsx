@@ -1315,3 +1315,66 @@ describe('audit follow-up: a function node destroyed while its OLD content is to
         expect(calls).toEqual([0, 1])
     })
 })
+
+describe('audit follow-up: a row cleanup that destroys the list destroys every row exactly once', () => {
+    beforeEach(() => { document.body.innerHTML = '' })
+
+    test('E1: rebuild after an unhandled patch error: a previous row cleanup closes the root', () => {
+        const list = new RxList<string>(['a', 'b', 'c'])
+        const log: string[] = []
+        let closed = false
+        const el = document.body.appendChild(document.createElement('div'))
+        const r = createRoot(el)
+        function Row({item}: {item: string}, {onCleanup}: RenderContext) {
+            if (item === 'boom') throw new Error('boom row')
+            onCleanup(() => {
+                log.push(`cleanup ${item}`)
+                if (item === 'b' && !closed) { closed = true; r.destroy() }
+            })
+            return <li>{item}</li>
+        }
+        r.render(<ul>{list.map(item => <Row item={item}/>)}</ul>)
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            expect(() => list.push('boom')).toThrow('boom row')
+            // data0 >= 2.9: the next change re-runs the computation (full rebuild)
+            list.splice(3, 1)
+        } finally {
+            consoleError.mockRestore()
+        }
+        expect(log.sort()).toEqual(['cleanup a', 'cleanup b', 'cleanup c'])
+        expect(el.innerHTML).toBe('')
+    })
+
+    test('E2: splice(i, 1, next) whose old row closes the root: the new (never rendered) rows are destroyed once', () => {
+        for (const where of ['in an element', 'as root content'] as const) {
+            const list = new RxList<string>(['b', 'a', 'c'])
+            const el = document.body.appendChild(document.createElement('div'))
+            const r = createRoot(el)
+            let closed = false
+            function Item({item}: {item: string}, {onCleanup}: RenderContext) {
+                if (item === 'a') onCleanup(() => { if (!closed) { closed = true; r.destroy() } })
+                return <li>{item}</li>
+            }
+            const rows = list.map(item => <Item item={item}/>)
+            r.render(where === 'in an element' ? <ul>{rows}</ul> : rows as any)
+            const listHost = where === 'in an element' ? (r.host as any).reactiveHosts : r.host as any
+            const rowProto = Object.getPrototypeOf(listHost.hosts[0])
+            const destroyCalls = new Map<object, number>()
+            const originalDestroy = rowProto.destroy
+            rowProto.destroy = function (this: object, ...args: any[]) {
+                destroyCalls.set(this, (destroyCalls.get(this) ?? 0) + 1)
+                return originalDestroy.apply(this, args)
+            }
+            try {
+                list.splice(1, 1, 'next', 'next2')
+            } finally {
+                rowProto.destroy = originalDestroy
+            }
+            expect([where, el.innerHTML]).toEqual([where, ''])
+            // b, a, c, next, next2
+            expect([where, destroyCalls.size]).toEqual([where, 5])
+            expect([where, [...destroyCalls.values()]]).toEqual([where, [1, 1, 1, 1, 1]])
+        }
+    })
+})
