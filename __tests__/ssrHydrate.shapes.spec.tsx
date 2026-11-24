@@ -79,7 +79,7 @@ function setup<S extends {App: any}>(make: () => S) {
 
 // ───────────────────────── 1. table sections rendered by dynamic children ─────────────────────────
 describe('#56-1 <table> sections from a list / function / fragment: no extra empty <tbody>', () => {
-    test.skipIf(pendingTopDown('B2'))('list of <tbody>, function returning <tbody>, fragment of sections: parse ≡ CSR, in place, updates ≡ CSR', async () => {
+    test('list of <tbody>, function returning <tbody>, fragment of sections: parse ≡ CSR, in place, updates ≡ CSR', async () => {
         const make = () => {
             const groups = new RxList([1, 2])
             const empty = new RxList<number>([])
@@ -116,7 +116,7 @@ describe('#56-1 <table> sections from a list / function / fragment: no extra emp
             .toEqual({dom: kids(client), tbodies: client.querySelectorAll('tbody').length, reports: []})
     })
 
-    test.skipIf(pendingTopDown('B2'))('bare rows (list / function / component) still get one explicit <tbody> and stay live', async () => {
+    test('bare rows (list / function / component) still get one explicit <tbody> and stay live', async () => {
         const make = () => {
             const rows = new RxList([1, 2])
             const more = atom(true)
@@ -148,7 +148,7 @@ describe('#56-1 <table> sections from a list / function / fragment: no extra emp
 
 // ───────────────────────── 2. HTML / SVG shared tag names under <svg> ─────────────────────────
 describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG elements on both ends', () => {
-    test.skipIf(pendingTopDown('B2'))('static children, nested and array items: parse ≡ CSR, in place, listeners and reactive attrs work', async () => {
+    test('static children, nested and array items: parse ≡ CSR, in place, listeners and reactive attrs work', async () => {
         const clicks: string[] = []
         const make = () => {
             const tip = atom('tip')
@@ -253,7 +253,7 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
     }
     test.each(iconsRenderedLater.slice(0, 1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
     // 内部入口那一遍：列表行与数组项的激活在 #55 B2
-    test.skipIf(pendingTopDown('B2')).each(iconsRenderedLater.slice(1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
+    test.each(iconsRenderedLater.slice(1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
 
     // Known limit (documented at DOM.adoptSvgChild): tags a function / list renders later are inserted by a Host,
     // CSR keeps them HTML while the parser makes them SVG. Hydration should then report and rebuild them ≡ CSR

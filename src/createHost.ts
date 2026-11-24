@@ -226,7 +226,9 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
  * 创建的 Host 随后由调用方 hydrate(slot)，从游标处消费自己的区域与 placeholder。构造时的 placeholder 就是 slot 常量。
  * CAUTION 与上面的 createHost 是同一条分派链的两份：类型判定的顺序相同，用同一张 HOST_TYPE_NAMES 登记 trackHostCreated。
  *  新增一种 source 必须同时改两处。区别只有：元素分支收的是描述（HydrationElement，不是 DOM 节点）；
- *  还没有在新模型里实现的种类显式抛错（列表、数组在 B2，reusable 与现成节点在 B4）。
+ *  还没有在新模型里实现的种类显式抛错（reusable 与现成节点在 B4）。
+ *  RxListHost 的 Compact 行（CompactElementHost）不经过这里：它由 RxListHost.hydrate 按 #68 的判定直接构造并登记，
+ *  ≡ CSR 的 RxListHost.createChildHost（§2.4.1 的种类计数把它也算在内）。
  */
 export function createHydrateHost(source: any, slot: HydrationSlot, context: PathContext, position?: HostPosition): Host {
     // 描述的 JSX source 在 rawProps 上（CSR 的元素由 applyElementProps 写到 __axiiSource）
@@ -257,12 +259,14 @@ export function createHydrateHost(source: any, slot: HydrationSlot, context: Pat
         host = new PrimitiveHost(source, placeholder, pathContext)
         typeIndex = 1
     } else if (Array.isArray(source)) {
-        throwTopDownPending('an array (StaticArrayHost)', 'B2')
+        host = new StaticArrayHost(source, placeholder as unknown as Comment, pathContext)
+        typeIndex = 2
     } else if (source === undefined || source === null) {
         host = new EmptyHost(pathContext, placeholder)
         typeIndex = 3
     } else if (source instanceof RxList) {
-        throwTopDownPending('an RxList (RxListHost)', 'B2')
+        host = new RxListHost(source, placeholder, pathContext)
+        typeIndex = 4
     } else if (source instanceof ReusableHost) {
         throwTopDownPending('reusable()', 'B4')
     } else if (sourceType === 'object' && typeof source?.type === 'function') {

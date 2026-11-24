@@ -14,7 +14,7 @@ import {
 import {atom} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {createElement as ssrCreateElement, renderToString} from '../src/ssr.js'
-import {hydrate, pendingTopDown} from './helpers/hydrate'
+import {hydrate} from './helpers/hydrate'
 
 function hasAxiiMarkers(root: Node): boolean {
     const walk = (n: Node): boolean => {
@@ -132,7 +132,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         expect(sel.value).toBe('b')
     })
 
-    test.skipIf(pendingTopDown('B2'))('SO: options from map/array under select — parse IDL before hydrate', () => {
+    test('SO: options from map/array under select — parse IDL before hydrate', () => {
         // CSR path (__tests__/fatalBugs11): select children = options.map(...).
         // k3 left selectSo unthreaded through StaticArrayHost → no selected → .value stays first option.
         const options = ['a', 'b', 'c']
@@ -253,7 +253,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
             .find(n => n.nodeType === Node.COMMENT_NODE && (n as Comment).data === 'computed node')!
         expect(computed.nextSibling).toBe(rootComment)
     })
-    test.skipIf(pendingTopDown('B2'))('FCS: StaticArray function item uses array item not rx list item', () => {
+    test('FCS: StaticArray function item uses array item not rx list item', () => {
         function App({}, {createElement}: RenderContext) {
             return <div id="box">{[() => <span id="s">x</span>]}</div>
         }
@@ -312,7 +312,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         expect(rootEl.querySelector('#s')!.childNodes.length).toBe(0)
     })
 
-    test.skipIf(pendingTopDown('B2'))('DirectNodes adjacent + empty', () => {
+    test('DirectNodes adjacent + empty', () => {
         function App({}, {createElement}: RenderContext) {
             return <div id="d">{['hello', 'world']}</div>
         }
@@ -340,7 +340,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         expect(sah2.directNodes[1].nodeValue).toBe('x')
     })
 
-    test.skipIf(pendingTopDown('B2'))('context + component nesting hydrate', () => {
+    test('context + component nesting hydrate', () => {
         const Ctx = createContext<string>('m2')
         function Child({}, {createElement, context}: RenderContext) {
             return <span id="c">{context.get(Ctx)}</span>

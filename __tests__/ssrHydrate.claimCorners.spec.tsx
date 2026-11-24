@@ -505,7 +505,7 @@ describe('hydrateRoot end-to-end claim corners', () => {
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B2'))('component-root element with array child claims DirectNodes layout', () => {
+    test('component-root element with array child claims DirectNodes layout', () => {
         function App({}, {createElement}: RenderContext) {
             return <div>{['a', 'b']}</div>
         }

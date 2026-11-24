@@ -32,7 +32,7 @@ import type {AxiiSource} from "./diagnostics";
 import {claimFragmentStartBefore, getHydrateRollingStyleBase, isAnyHydrating, isHydrating, reconcileFragmentHydrateChildren, stripAxiiTextBoundariesBetween} from "./hydration";
 import {hydrateElementDescription, rematerializeDeferredFragmentChildren, type TopDownInnerHosts} from "./DOM";
 import {createHydrateHost} from "./createHost";
-import {HydrationElement, HydrationSlot, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
+import {HydrationElement, HydrationSlot, isHydrationElement, TEXT_SLOT, throwConsumedDescription, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {claimTopDownComment} from "./hydrationCursor";
 import {innerHTMLOf} from "./markupNames";
 import {isDomNode} from "./nodeType";
@@ -1134,7 +1134,30 @@ export class StaticHost implements Host {
      * 认领后 source 换成认领到的元素（Fragment 换成一个空的 DocumentFragment，destroy / forceHandleElement 按它判断 fragment）。
      */
     hydrate(slot: HydrationSlot): void {
+        this.hydrateSource()
+        // 3. 自己的 slot
+        this.placeholder = claimTopDownComment(slot)
+        // 4. ≡ collectAndRenderInner 里除 collectInnerHost / renderReactiveHosts 之外的部分
+        this.collectReactiveAttr()
+        this.collectRefHandles()
+        this.collectDetachStyledChildren()
+        // ≡ render 的尾部
+        this.setupRefHandles()
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.mount(this)
+        }
+        if (this.placeholder.isConnected) {
+            this.pathContext.root.flushAttachQueue()
+        }
+    }
+    /**
+     * hydrate 的第 1、2 步（StaticHost.hydrate 与 CompactElementHost.hydrate 共用）：按文档顺序构造静态子树里的子 Host，
+     * 再认领 source 描述（Fragment 先认领 `fragment start`），认领后 source 换成节点、element 换成元素。
+     */
+    hydrateSource(): void {
         const desc = this.source as unknown as HydrationElement
+        // 同一个描述第二次作为 Host 的 source（[s, s]、列表里同一行两次）：已经瘦身，下面读 rawChildren 之前显式抛错（C6，B4）
+        if (desc.node !== null) throwConsumedDescription()
         const isFragment = desc.tag === Fragment
         // 1. 构造子 Host（≡ collectInnerHost）
         const infos: UnhandledChildInfo[] = []
@@ -1158,20 +1181,6 @@ export class StaticHost implements Host {
         const node = hydrateElementDescription(desc, innerHosts)
         if (!isFragment) this.element = node as HTMLElement | SVGElement
         this.source = node
-        // 3. 自己的 slot
-        this.placeholder = claimTopDownComment(slot)
-        // 4. ≡ collectAndRenderInner 里除 collectInnerHost / renderReactiveHosts 之外的部分
-        this.collectReactiveAttr()
-        this.collectRefHandles()
-        this.collectDetachStyledChildren()
-        // ≡ render 的尾部
-        this.setupRefHandles()
-        if (this.usesStyleManager) {
-            StaticHost.styleManager.mount(this)
-        }
-        if (this.placeholder.isConnected) {
-            this.pathContext.root.flushAttachQueue()
-        }
     }
     // ≡ createInnerHost，分派换成 createHydrateHost，placeholder 是 slot。CAUTION 两处的 context / position 规则一起改。
     createTopDownInnerHost({ placeholder, child, path, source }: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
@@ -1593,6 +1602,22 @@ export class CompactElementHost extends StaticHost {
         // CAUTION 自己的插入由 RxListHost 完成，这里不做，
         //  layoutEffect/ref 的 flush 也由 RxListHost 在插入后统一触发。
 
+        this.setupRefHandles()
+        if (this.usesStyleManager) {
+            StaticHost.styleManager.mount(this)
+        }
+    }
+    /**
+     * #55 新模型（设计 §2.5 RxListHost 行、§2.6.4）：RxListHost.hydrate 按 #68 的判定构造的 Compact 行，构造时 source 是
+     * 行的元素描述。≡ render：在游标处认领行元素（与 StaticHost.hydrate 共用 hydrateSource，子 Host 先构造再认领），
+     * 然后收集响应式属性、ref、detachStyle。Compact 行没有行级 Comment（服务端也不写，ssr.serializeRxListRow），
+     * slot 不认领；placeholder 仍是共享的 COMPACT_SHARED_PLACEHOLDER。layoutEffect / ref 的 flush 由 RxListHost 统一触发。
+     */
+    hydrate(_slot?: HydrationSlot): void {
+        this.hydrateSource()
+        this.collectReactiveAttr()
+        this.collectRefHandles()
+        this.collectDetachStyledChildren()
         this.setupRefHandles()
         if (this.usesStyleManager) {
             StaticHost.styleManager.mount(this)
