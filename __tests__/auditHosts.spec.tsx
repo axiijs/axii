@@ -8,6 +8,7 @@
 import {afterEach, beforeEach, describe, expect, test, vi} from "vitest";
 import {
     atom,
+    autorun,
     bindProps,
     computed,
     configureDiagnostics,
@@ -1427,5 +1428,82 @@ describe('audit follow-up: root.destroy() called again by the cleanups it runs',
         r.destroy()
         expect(el.innerHTML).toBe('')
         expect(log).toEqual(['toast layout', 'toast cleanup'])
+    })
+})
+
+describe('audit follow-up: effects created by content that dispatch("attach") runs belong to the content, not the dispatcher', () => {
+    async function settleAll() {
+        for (let i = 0; i < 100; i++) await Promise.resolve()
+    }
+    let rootEl: HTMLElement
+    let root: ReturnType<typeof createRoot>
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        rootEl = document.createElement('div')
+        root = createRoot(rootEl)
+    })
+
+    test('A1: attach listener path: a layout effect creates an effect; the effect that re-attached the container re-runs', () => {
+        const tick = atom(0)
+        const other = atom(0)
+        const visible = atom(false)
+        const seen: number[] = []
+        let stopInner: (() => void) | undefined
+        function Child(_: any, {useLayoutEffect}: RenderContext) {
+            useLayoutEffect(() => {
+                stopInner = autorun(() => { seen.push(tick()) }, true)
+            })
+            return <b>child</b>
+        }
+        root.render(<Child/>)   // container detached: the layout effect waits for attach
+        const stop = autorun(() => {
+            other()
+            if (visible() && !rootEl.isConnected) {
+                document.body.appendChild(rootEl)
+                root.dispatch('attach')
+            }
+        }, true)
+        visible(true)
+        expect(seen).toEqual([0])
+        other(1)              // the dispatcher re-runs
+        tick(1)
+        expect(seen).toEqual([0, 1])
+        stopInner?.()
+        stop()
+        root.destroy()
+    })
+
+    test('A2: deferred attach queue path: same, for content rendered while the container was detached', async () => {
+        const tick = atom(0)
+        const other = atom(0)
+        const visible = atom(false)
+        const show = atom(false)
+        const seen: number[] = []
+        let stopInner: (() => void) | undefined
+        function Child(_: any, {useLayoutEffect}: RenderContext) {
+            useLayoutEffect(() => { stopInner = autorun(() => { seen.push(tick()) }, true) })
+            return <b>child</b>
+        }
+        document.body.appendChild(rootEl)
+        root.render(<div>{() => show() ? <Child/> : null}</div>)
+        rootEl.remove()
+        show(true)
+        await settleAll()
+        expect(seen).toEqual([])
+        const stop = autorun(() => {
+            other()
+            if (visible() && !rootEl.isConnected) {
+                document.body.appendChild(rootEl)
+                root.dispatch('attach')
+            }
+        }, true)
+        visible(true)
+        expect(seen).toEqual([0])
+        other(1)
+        tick(1)
+        expect(seen).toEqual([0, 1])
+        stopInner?.()
+        stop()
+        root.destroy()
     })
 })
