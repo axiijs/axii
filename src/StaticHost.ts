@@ -1257,6 +1257,7 @@ export class StaticHost implements Host {
     //  它们的文本快速路径从不消费 hostPath，位置信息以一个 3 字段的 position
     //  对象传入（诊断/结构渲染按需读取），比「克隆 context + LinkedNode」
     //  少一半以上的每绑定常驻内存。
+    // CAUTION 新激活模型的 createTopDownInnerHost 是它的另一份（分派换成 createHydrateHost），context / position 规则一起改（#55 B1）
     createInnerHost({ placeholder, child, path, source }: UnhandledChildInfo, sharedHostPath?: LinkedNode<Host>) {
         if (typeof child === 'function') {
             // debugSource 只存 child 自己的（host 使用处会回退到 pathContext.debugSource）

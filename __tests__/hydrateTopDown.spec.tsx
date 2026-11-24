@@ -202,6 +202,57 @@ describe('component boundary and construction order (§2.4)', () => {
     })
 })
 
+describe('element claim details (§2.6.1, §2.6.7)', () => {
+    test('HTML / SVG shared-name tags as static children of <svg> are claimed as SVG (≡ CSR adoptSvgChildren, #56); integration points keep HTML', () => {
+        const make = () => {
+            const tip = atom('t1')
+            function App({}: any, {createElement, Fragment}: RenderContext) {
+                return <div>
+                    <svg viewBox="0 0 4 4">
+                        <title>{tip}</title>
+                        <a href="#x"><title>inner</title><path d="M0 0"/></a>
+                        <Fragment><style>{'.c{fill:red}'}</style><a href="#y"/></Fragment>
+                        <foreignObject><a href="#html">html</a></foreignObject>
+                    </svg>
+                    <a href="#page">page</a>
+                </div>
+            }
+            return {App, tip}
+        }
+        const csrEl = mount()
+        const c = make()
+        createRoot(csrEl).render(createElement(c.App, null))
+        const hyd = ssrInto(createElement(make().App, null))
+        const serverNodes = Array.from(hyd.querySelectorAll('*'))
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        expect(Array.from(hyd.querySelectorAll('*'))).toEqual(serverNodes)
+        const ns = (el: Element) => el.namespaceURI!.split('/').pop()
+        expect(Array.from(hyd.querySelectorAll('a, title, style')).map(e => `${e.localName}:${ns(e)}`))
+            .toEqual(Array.from(csrEl.querySelectorAll('a, title, style')).map(e => `${e.localName}:${ns(e)}`))
+        for (const s of [c, h]) s.tip('t2')
+        expect(kids(hyd)).toBe(kids(csrEl))
+    })
+
+    test('a Fragment source is replaced by a DocumentFragment after the claim: fragment semantics (forceHandleElement) ≡ CSR', () => {
+        function Exit({}: any, {createElement}: RenderContext) { return <i detachStyle={{opacity: 0}}>e</i> }
+        function C({}: any, {createElement, Fragment}: RenderContext) { return <Fragment><Exit/><b>x</b></Fragment> }
+        const csrEl = mount()
+        const csrRoot = createRoot(csrEl)
+        csrRoot.render(createElement(C, null))
+        const hyd = ssrInto(createElement(C, null))
+        const root = hydrateRootTopDown(hyd, createElement(C, null))
+        const csrHost = (csrRoot.host as any).innerHost
+        const host = (root.host as any).innerHost
+        expect(host.source).toBeInstanceOf(DocumentFragment)
+        expect(host.source.childNodes.length).toBe(0)
+        expect(host.forceHandleElement).toBe(csrHost.forceHandleElement)
+        expect(host.forceHandleElement).toBe(true)
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+    })
+})
+
 describe('root sources (§2.5 「根」)', () => {
     const cases: [string, () => {source: () => any, update?: () => void}][] = [
         ['atom', () => { const a = atom('a'); return {source: () => a, update: () => a('b')} }],

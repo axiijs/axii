@@ -1560,6 +1560,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 }
 
                 // Handle extended element properties：提升子元素的元数据，路径规则见 liftElementMetadata
+                // CAUTION 新激活模型的认领步骤（hydrateDescriptionChildren）有同样的一段提升，改这里时那里一起改（#55 B1）
                 const childElement = nodeChild as ExtendedElement
                 // 动态节点自身没有 JSX source 时，继承最近的父元素 source
                 const inheritedSource = childElement.__axiiSource ?? debugSource
