@@ -173,7 +173,7 @@ hydrateRoot(root, <App />)
 
 ### 激活怎样认领节点
 
-`hydrateRoot` 按 `renderToString` 写出的顺序把服务端输出读回来：每个组件、函数子节点和列表按文档顺序取走自己的服务端节点，再取走结束它们的标记。因此元素不会拿走属于别的位置的节点，激活耗时随页面大小线性增长。匹配的节点保持 identity。服务端 HTML 里的标记与以前相同，旧版服务端写出的 HTML 仍然可以激活；它与当前客户端渲染结果不同的地方按[失配](#失配)处理。
+`hydrateRoot` 按 `renderToString` 写出的顺序把服务端输出读回来：每个组件、函数子节点和列表按文档顺序取走自己的服务端节点，再取走结束它们的标记，不会在整个页面里搜索同标签的元素。服务端输出与客户端一致时，每个元素认领的就是服务端为它写出的那个节点，激活耗时随页面大小线性增长。匹配的节点保持 identity。服务端 HTML 里的标记与以前相同，旧版服务端写出的 HTML 仍然可以激活；它与当前客户端渲染结果不同的地方按[失配](#失配)处理。
 
 ### hydration 的契约变化
 
@@ -209,14 +209,14 @@ function Search({}, { createElement, createRef }) {
 | 读属性 | `input.value`、`el.textContent` | `undefined`；错误出现在后面使用这个值的地方 |
 | 写属性 | `el.className = 'x'` | 严格模式代码（ES module、TypeScript 编译产物）里抛 `TypeError` |
 | 调方法 | `input.focus()`、`el.addEventListener(…)` | `TypeError` |
-| 传给 DOM API | `parent.appendChild(el)`、`observer.observe(el)` | `TypeError`，不会事先报告 |
+| 传给 DOM API | `parent.appendChild(el)`、`observer.observe(el)` | `TypeError`，不会事先报告；也接受文本的方法（`append`、`before`、`replaceWith`）则插入文本 `[object Object]` |
 | 比较身份或类型 | `el === ref.current`、`el instanceof HTMLElement` | `false`，不会报告 |
 
 有变化的写法：
 
 - **把 JSX 结果当节点用**：在组件函数体、effect、事件处理器或定时器里，如上例。改用 `ref`，属性与监听器写成 JSX props。
 - **判断 JSX 结果是不是节点**，例如对 `children` 做 `child instanceof HTMLElement`。激活期间结果是 `false`，代码会走与客户端渲染不同的分支。不要按节点类型分支，或者同时判断 `isHydrationElement(child)`（从 `axii` 导出）。
-- **`RxList.map` 的行与普通数组的项**在激活期间是描述。一行被认领后，`list.data[i]`（或 `array[i]`）换成认领到的节点，所以激活之后它们与客户端渲染之后一样保存节点。只有在组件函数体或 `map` 回调里把行当节点用的代码需要改用 `ref`。
+- **`RxList.map` 的行与普通数组的项**在激活期间是描述。认领之后，`list.data[i]`（或 `array[i]`）换成认领到的节点，所以激活之后它们与客户端渲染之后一样保存节点；冻结的数组（`Object.freeze`）不能写入，保留描述。只有在组件函数体或 `map` 回调里把行当节点用的代码需要改用 `ref`。
 - **激活期间创建、激活之后才渲染的 JSX**，例如只在 `() => open() ? panel : null` 里显示的 `const panel = <div/>`，或者只在关着的标签页里显示的列表的行。它在第一次渲染时按客户端渲染的方式创建，功能正常，但每个这样的元素会留下一个小的描述对象（这样的列表每行一个）。要避免它，把 JSX 的创建放进渲染它的函数里：`() => open() ? <div/> : null`。
 - **激活之外创建的节点作为 child**：按客户端渲染的方式插入，替换它所在位置的服务端节点，不复用。想复用服务端节点，就把元素写成 JSX。直接传给 `hydrateRoot` 的元素也属于这种情况：`hydrateRoot(root, <main>…</main>)` 里的 JSX 在激活开始之前求值。请改为传组件 `hydrateRoot(root, <App />)`，如上面的示例。
 - **`$name:_use` 覆写**接受元素或描述。
@@ -226,16 +226,17 @@ function Search({}, { createElement, createRef }) {
 - `createRoot().render()`。
 - **存下来、认领之后再次渲染的 JSX**，渲染的是认领到的节点，与客户端渲染里再次渲染同一个元素相同。
 - Portal 的内容，以及 `ref` 回调、`useLayoutEffect`、`useEffect` 的执行时机。
-- **你的回调里的代码**——`ref` 回调、`useLayoutEffect`、`useEffect`、`root.on(…)` 监听器和 `onError`——即使在 `hydrateRoot` 运行期间，也在激活之外执行：其中的 JSX 返回真实节点，`createRoot().render()` 照常渲染。
+- **你的回调里的代码**——`ref` 回调、`useLayoutEffect`、`useEffect` 和 `root.on(…)` 监听器——即使在 `hydrateRoot` 运行期间，也在激活之外执行：其中的 JSX 返回真实节点，`createRoot().render()` 照常渲染。
 
 ### 失配
 
-服务端 HTML 与客户端渲染结果不同时（例如数据不同，或者 HTML 来自旧版服务端），`hydrateRoot` 报告每一处差别，在发现它的位置修复，然后继续：
+服务端 HTML 与客户端渲染结果不同时（例如数据不同，或者 HTML 来自旧版服务端），`hydrateRoot` 在发现差别的位置修复，然后继续：
 
-- 修复之后，节点结构（节点类型、标签、命名空间与顺序）、文本，以及客户端 props 写下的属性，都与客户端渲染相同；位置匹配的节点保持 identity。容器末尾缺少 `<!--root-->` 时同样修复。
-- 只由服务端写的属性，在修复路径上认领的元素上会被删除；没有差别、干净认领的元素保留它们，差别在同一个父节点里稍后才出现时就会这样。诊断开启时，这种残留报告为 `AXII_HYDRATION_ATTRIBUTE_RESIDUE`。
-- 每条报告是一个 `code: 'AXII_HYDRATION_MISMATCH'` 的错误（`name` 为 `HydrationMismatchError`），带 `expected` / `actual` 字符串。无论诊断是否开启，它都交给 `configureDiagnostics({ onError })`，并输出到 `console.error`。
-- 失配会被修复，不会抛出。找不到 Portal 容器时 `hydrateRoot` 仍然抛错；激活函数子节点的内容时抛出的错误会中止激活，并从 `hydrateRoot` 抛出，即使注册了 `root.on('error')` 监听器。
+- **结构与文本。** 节点结构（节点类型、标签、命名空间与顺序）或文本的每一处差别都会报告并修复。修复之后结构与文本都与客户端渲染相同，位置匹配的节点保持 identity。容器末尾缺少 `<!--root-->` 时同样修复。
+- **属性。** 每个认领的元素都会按客户端 props 再写一遍属性，所以与客户端渲染不同的属性值会被改正，不报告。只由服务端写的属性，在修复路径上认领的元素上会被删除，在没有差别、干净认领的元素上保留；诊断开启时，这种残留报告为 `AXII_HYDRATION_ATTRIBUTE_RESIDUE`。
+- **`dangerouslySetInnerHTML` 的内容**：干净认领的元素保留服务端写出的内容。只有这次激活报告过别的失配时，才会把它与客户端的标记比较，不同就换掉。
+- **报告。** 每条报告是一个 `code: 'AXII_HYDRATION_MISMATCH'` 的错误（`name` 为 `HydrationMismatchError`），带 `expected` / `actual` 字符串。无论诊断是否开启，它都交给 `configureDiagnostics({ onError })`，并输出到 `console.error`。
+- **错误。** 失配会被修复，不会抛出。组件抛出的错误与 `createRoot().render()` 一样处理：没有 `root.on('error')` 监听器时由 `hydrateRoot` 抛出，例如找不到 Portal 容器时。激活函数子节点的内容时抛出的错误会中止激活，并从 `hydrateRoot` 抛出，即使注册了这样的监听器。
 
 ### 开发期检测与诊断开关
 
@@ -255,13 +256,13 @@ configureDiagnostics({
 
 | `code` | 报告时机 |
 |---|---|
-| `AXII_HYDRATION_ELEMENT_ACCESS` | 描述被当作节点读或写（调用方法时先读到它）。消息里有属性名；使用开发期 JSX 转换（`jsxDEV`）时，还有 JSX 所在的文件、行和列。同一个 JSX 位置上的同一种访问只报告一次。 |
+| `AXII_HYDRATION_ELEMENT_ACCESS` | 描述被当作节点读或写（调用方法时先读到它）。消息里有属性名；使用开发期 JSX 转换（`jsxDEV`）时，还有 JSX 所在的文件、行和列。重复的访问按 JSX 位置只报告一次（没有 JSX 位置时按描述）。 |
 | `AXII_HYDRATION_ELEMENT_LATE_RENDER` | 激活期间创建的 JSX 在激活之后才第一次渲染。 |
 | `AXII_HYDRATION_LIVE_NODE` | 激活之外创建的节点替换了它所在位置的服务端节点。 |
 | `AXII_HYDRATION_ATTRIBUTE_RESIDUE` | 干净认领的元素上有只由服务端写的属性。 |
-| `AXII_HYDRATION_INVARIANT` | 激活之后，某个组件、函数子节点或列表的节点不再是文档里一段连续的区间，或者留下了激活用的标记。未经改动的服务端输出不会触发它，除非同一个元素被渲染了两次。 |
+| `AXII_HYDRATION_INVARIANT` | 激活之后，某个组件、函数子节点或列表的节点不再是文档里一段连续的区间，或者留下了激活用的标记。未经改动的服务端输出本身不会触发它；出现它说明有代码在激活期间挪动或删除了 axii 管理的节点（例如在 ref 回调里），或者同一个元素被渲染了两次，或者 `dangerouslySetInnerHTML` 的标记里含有 axii 的标记注释。 |
 
-这些检查有局限：把描述传给 DOM API、比较身份或类型都检测不到；只在用户操作时执行的代码（例如点击处理器）要真的执行到才会报告，所以开发时也要把这些交互走一遍。诊断关闭时，这些检查都不运行，描述是普通对象，失败方式见上面的表。
+这些检查有局限：把描述传给 DOM API、比较身份或类型都检测不到，读 `type` 和 `nodeType` 也不报告（axii 自己会读它们）；只在用户操作时执行的代码（例如点击处理器）要真的执行到才会报告，所以开发时也要把这些交互走一遍。诊断关闭时，这些检查都不运行，描述是普通对象，失败方式见上面的表。
 
 ### 设计说明 / 限制
 

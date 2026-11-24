@@ -237,25 +237,32 @@ export const docGroups: DocGroup[] = [
           '(e.g. <style data-axii-ssr>) and write each portals[key].html into the matching container before ' +
           'activation. On the client, hydrateRoot(container, source, { portals? }) reads the server output back ' +
           'top-down, in the order the server wrote it: each component, function child and list takes its own ' +
-          'server nodes, matched nodes keep their identity, and hydration time grows linearly with the page. ' +
+          'server nodes instead of searching the page for a same-tag element, so with matching output every ' +
+          'element claims the node written for it, matched nodes keep their identity, and hydration time ' +
+          'grows linearly with the page. ' +
           'Keep the component tree and reactive data identical between SSR and hydrate — axii does not ' +
           'dehydrate application state. Streaming SSR and state transfer are out of scope. Full design ' +
           'contracts live under docs/ssr-support/. ' +
           'Contract change: while hydrateRoot runs, JSX returns a hydration description, not a DOM node, and ' +
           'that value never becomes a node. Reading a property of it gives undefined, calling a method or ' +
-          'passing it to a DOM API throws a TypeError, writing a property throws in strict-mode code, and ' +
-          'identity or instanceof checks are false — also in event handlers that run long after hydration. ' +
+          'passing it to a DOM API that takes only nodes throws a TypeError (append or replaceWith insert the ' +
+          'text [object Object] instead), writing a property throws in strict-mode code, and identity or ' +
+          'instanceof checks are false — also in event handlers that run long after hydration. ' +
           'Reach nodes through ref, as Search does in the snippet; where code checks whether a JSX result is ' +
           'a node, also check isHydrationElement(value). RxList.map rows and array items hold the claimed ' +
-          'nodes once hydration is done. JSX created during hydration but first rendered after it is created ' +
+          'nodes once hydration is done (a frozen array keeps the descriptions). JSX created during hydration ' +
+          'but first rendered after it is created ' +
           'like in a client render. A node created outside hydration replaces the server node at its position ' +
           'instead of reusing it; this includes an element passed directly to hydrateRoot, so pass a component ' +
-          '(<App />). Code in ref callbacks, useLayoutEffect, useEffect, root.on listeners and onError runs ' +
-          'outside hydration and gets real nodes, and createRoot().render() is unchanged. ' +
-          'Mismatches between server HTML and the client render are reported (code AXII_HYDRATION_MISMATCH, ' +
-          'to configureDiagnostics({ onError }) and console.error) and repaired where they are found: node ' +
-          'structure, text and the attributes written by client props end up equal to a client render, and ' +
-          'attributes only the server wrote are removed on that repair path. Diagnostics are off by default ' +
+          '(<App />). Code in ref callbacks, useLayoutEffect, useEffect and root.on listeners runs outside ' +
+          'hydration and gets real nodes, and createRoot().render() is unchanged. ' +
+          'Differences in node structure or text between server HTML and the client render are reported ' +
+          '(code AXII_HYDRATION_MISMATCH, to configureDiagnostics({ onError }) and console.error) and ' +
+          'repaired where they are found, so structure, text and the attributes written by client props end ' +
+          'up equal to a client render; attribute values are written again from client props without a ' +
+          'report, and attributes only the server wrote are removed on the repair path. A component error ' +
+          'that no root.on(\'error\') listener handles, such as a missing Portal container, is thrown from ' +
+          'hydrateRoot as from createRoot().render(). Diagnostics are off by default ' +
           'in the published package. With configureDiagnostics({ enabled: true }) called before hydrateRoot, ' +
           'reading or writing a description is reported, with its JSX location when the JSX transform provides ' +
           'it (AXII_HYDRATION_ELEMENT_ACCESS), ' +

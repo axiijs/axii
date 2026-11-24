@@ -178,7 +178,7 @@ hydrateRoot(root, <App />)
 
 ### How hydration claims nodes
 
-`hydrateRoot` reads the server output back in the order `renderToString` wrote it. Each component, function child and list takes its own server nodes in document order, and then the marker that ends them. An element therefore never takes a node that belongs to another position, and hydration time grows linearly with the page. Matched nodes keep their identity. The markers in the server HTML are the same as before, so HTML from an older server can still be hydrated; where it differs from what the current client renders, the difference is handled like any other [mismatch](#mismatches).
+`hydrateRoot` reads the server output back in the order `renderToString` wrote it. Each component, function child and list takes its own server nodes in document order, and then the marker that ends them; nothing searches the page for an element with the same tag. When the server output matches, every element claims the node the server wrote for it, and hydration time grows linearly with the page. Matched nodes keep their identity. The markers in the server HTML are the same as before, so HTML from an older server can still be hydrated; where it differs from what the current client renders, the difference is handled like any other [mismatch](#mismatches).
 
 ### Hydration contract changes
 
@@ -214,14 +214,14 @@ A description used as a node fails the same way with diagnostics on or off; with
 | Read a property | `input.value`, `el.textContent` | `undefined`; the error comes later, where the value is used |
 | Write a property | `el.className = 'x'` | `TypeError` in strict-mode code (ES modules, TypeScript output) |
 | Call a method | `input.focus()`, `el.addEventListener(…)` | `TypeError` |
-| Pass it to a DOM API | `parent.appendChild(el)`, `observer.observe(el)` | `TypeError`, never reported in advance |
+| Pass it to a DOM API | `parent.appendChild(el)`, `observer.observe(el)` | `TypeError`, never reported in advance; methods that also take text (`append`, `before`, `replaceWith`) insert the text `[object Object]` instead |
 | Compare identity or type | `el === ref.current`, `el instanceof HTMLElement` | `false`, never reported |
 
 What changes:
 
 - **A JSX result used as a node** in the component body, an effect, an event handler or a timer, as in the example above. Use `ref`, and write attributes and listeners as JSX props.
 - **Checking whether a JSX result is a node**, for example `child instanceof HTMLElement` on `children`. During hydration this is `false`, so the code takes a different branch than in a client render. Don't branch on the node type, or check `isHydrationElement(child)` as well (exported from `axii`).
-- **Rows of `RxList.map` and items of plain arrays** are descriptions while hydration runs. When a row is claimed, `list.data[i]` (or `array[i]`) is replaced with the claimed node, so after hydration they hold the same nodes as after a client render. Only code that uses a row as a node inside the component body or the `map` callback needs the `ref` rewrite.
+- **Rows of `RxList.map` and items of plain arrays** are descriptions while hydration runs. Once they are claimed, `list.data[i]` (or `array[i]`) is replaced with the claimed node, so after hydration they hold the same nodes as after a client render; a frozen array (`Object.freeze`) cannot be written and keeps the descriptions. Only code that uses a row as a node inside the component body or the `map` callback needs the `ref` rewrite.
 - **JSX created during hydration but rendered only after it**, such as `const panel = <div/>` shown only by `() => open() ? panel : null`, or the rows of a list that is shown only in a closed tab. It is created like in a client render when it is first rendered, and it works, but a small description object stays behind for each such element (one per row of such a list). To avoid that, create the JSX inside the function that renders it: `() => open() ? <div/> : null`.
 - **A node created outside hydration and placed as a child** is inserted as in a client render, and the server node at its position is replaced instead of reused. Write the element as JSX to reuse the server node. This includes an element passed directly to `hydrateRoot`: in `hydrateRoot(root, <main>…</main>)` the JSX is evaluated before hydration starts. Pass a component instead, `hydrateRoot(root, <App />)`, as in the example above.
 - **`$name:_use` overrides** accept an element or a description.
@@ -231,16 +231,17 @@ What stays the same:
 - `createRoot().render()`.
 - **JSX kept and rendered again** after it was claimed renders the claimed node, as rendering the same element again does in a client render.
 - Portal content, and when `ref` callbacks, `useLayoutEffect` and `useEffect` run.
-- **Code in your callbacks** — `ref` callbacks, `useLayoutEffect`, `useEffect`, `root.on(…)` listeners and `onError` — runs outside hydration even while `hydrateRoot` is running: JSX there returns real nodes, and `createRoot().render()` renders as usual.
+- **Code in your callbacks** — `ref` callbacks, `useLayoutEffect`, `useEffect` and `root.on(…)` listeners — runs outside hydration even while `hydrateRoot` is running: JSX there returns real nodes, and `createRoot().render()` renders as usual.
 
 ### Mismatches
 
-When the server HTML and the client render differ, for example because the data differs or the HTML comes from an older server, `hydrateRoot` reports each difference and repairs it where it finds it, then continues:
+When the server HTML and the client render differ, for example because the data differs or the HTML comes from an older server, `hydrateRoot` repairs the difference where it finds it and continues:
 
-- After the repair, the node structure (node types, tags, namespaces and order), the text and the attributes that client props write are the same as in a client render. Nodes at matching positions keep their identity. A container whose trailing `<!--root-->` is missing is repaired the same way.
-- Attributes that only the server wrote are removed from an element claimed on a repair path. An element claimed without a difference keeps them; this can happen when a difference shows up only later in the same parent. With diagnostics on, such leftovers are reported as `AXII_HYDRATION_ATTRIBUTE_RESIDUE`.
-- Each report is an error with `code: 'AXII_HYDRATION_MISMATCH'` (`name` `HydrationMismatchError`) and `expected` / `actual` strings. It goes to `configureDiagnostics({ onError })` whether diagnostics are on or off, and to `console.error`.
-- Mismatches are repaired, not thrown. `hydrateRoot` still throws when a Portal container cannot be found, and when an error is thrown while a function child's content is hydrated: that error stops hydration and is thrown from `hydrateRoot`, even if a `root.on('error')` listener is registered.
+- **Structure and text.** Each difference in node structure (node types, tags, namespaces and order) or in text is reported and repaired. Afterwards structure and text are the same as in a client render, and nodes at matching positions keep their identity. A container whose trailing `<!--root-->` is missing is repaired the same way.
+- **Attributes.** Client props are written again on every claimed element, so attribute values that differ from the client render are corrected without a report. Attributes that only the server wrote are removed from an element claimed on a repair path and stay on an element claimed without a difference; with diagnostics on, such leftovers are reported as `AXII_HYDRATION_ATTRIBUTE_RESIDUE`.
+- **`dangerouslySetInnerHTML` content** of an element claimed without a difference is kept as the server wrote it. It is compared with the client markup, and replaced if it differs, only when the same hydration reported another mismatch.
+- **Reports.** Each report is an error with `code: 'AXII_HYDRATION_MISMATCH'` (`name` `HydrationMismatchError`) and `expected` / `actual` strings. It goes to `configureDiagnostics({ onError })` whether diagnostics are on or off, and to `console.error`.
+- **Errors.** Mismatches are repaired, not thrown. An error thrown by a component is handled as in `createRoot().render()`: without a `root.on('error')` listener, `hydrateRoot` throws it, for example when a Portal container cannot be found. An error thrown while a function child's content is hydrated stops hydration and is thrown from `hydrateRoot` even when such a listener is registered.
 
 ### Development checks and the diagnostics switch
 
@@ -260,13 +261,13 @@ With diagnostics on, each description is wrapped in a `Proxy` that reports node-
 
 | `code` | Reported when |
 |---|---|
-| `AXII_HYDRATION_ELEMENT_ACCESS` | A description is read or written as a node (calling a method reads it first). The message names the property and, with a development JSX transform (`jsxDEV`), the file, line and column of the JSX. The same access at the same JSX position is reported once. |
+| `AXII_HYDRATION_ELEMENT_ACCESS` | A description is read or written as a node (calling a method reads it first). The message names the property and, with a development JSX transform (`jsxDEV`), the file, line and column of the JSX. Repeated accesses are reported once per JSX position (once per description when there is no JSX location). |
 | `AXII_HYDRATION_ELEMENT_LATE_RENDER` | JSX created during hydration is rendered for the first time after it. |
 | `AXII_HYDRATION_LIVE_NODE` | A node created outside hydration replaced the server node at its position. |
 | `AXII_HYDRATION_ATTRIBUTE_RESIDUE` | An element claimed without a difference has attributes that only the server wrote. |
-| `AXII_HYDRATION_INVARIANT` | After hydration, the nodes of a component, function child or list are no longer one connected range in the document, or a hydration marker is left behind. Unmodified server output does not cause it unless the same element is rendered twice. |
+| `AXII_HYDRATION_INVARIANT` | After hydration, the nodes of a component, function child or list are no longer one connected range in the document, or a hydration marker is left behind. Unmodified server output does not cause it on its own; it points to code that moves or removes nodes axii manages while hydration runs (in a ref callback, for example), to the same element rendered twice, or to `dangerouslySetInnerHTML` markup that contains axii's marker comments. |
 
-The checks have limits. Passing a description to a DOM API and comparing identity or type cannot be detected. A line that runs only on a user action, such as a click handler, is reported only when it runs, so go through those interactions in development as well. With diagnostics off, none of these checks run, descriptions are plain objects, and the failures are the ones in the table above.
+The checks have limits. Passing a description to a DOM API and comparing identity or type cannot be detected, and reads of `type` and `nodeType` are not reported because axii reads them itself. A line that runs only on a user action, such as a click handler, is reported only when it runs, so go through those interactions in development as well. With diagnostics off, none of these checks run, descriptions are plain objects, and the failures are the ones in the table above.
 
 ### Design notes / limitations
 
