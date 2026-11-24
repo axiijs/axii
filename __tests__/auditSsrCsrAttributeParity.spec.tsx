@@ -838,6 +838,10 @@ describe('#51 one attribute rule for both sides: server markup parses to what th
                 <select id="so" value="a"><option id="so-a" value="a">A</option><option id="so-b" value="b" defaultSelected>B</option></select>
                 <select id="plain"><option id="plain-a" value="a">A</option><option id="plain-b" value="b" defaultSelected>B</option></select>
                 <video id="muted" muted defaultMuted={false}/>
+                {/* 转发组件里调用方不传的 value / checked 是 undefined：prop 存在，同样决定状态（#52 的形状） */}
+                <input id="vu-dv" value={undefined} defaultValue="d"/>
+                <input id="cb-cu-dc" type="checkbox" checked={undefined} defaultChecked/>
+                <input id="ra-cu-dc" type="radio" name="r4" checked={undefined} defaultChecked/>
             </div>
         }, 'live', 'idl')
     })
