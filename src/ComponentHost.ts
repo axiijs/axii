@@ -30,6 +30,7 @@ import {
     UseLayoutEffectFn,
 } from "./types";
 import {assert} from "./util";
+import {isElementNode} from "./nodeType";
 import {Portal, type PortalContainerRef} from "./Portal.js";
 import {createRef, createRxRef} from "./ref.js";
 import {createLinkedNode, LinkedNode} from "./LinkedList";
@@ -342,8 +343,8 @@ export class ComponentHost implements Host{
         if (name !== undefined) delete rawProps['as']
         assert(name !=='self', '"self" is reserved, please use another element name.')
 
-        // 支持 use 里面直接传入 HTMLElement 覆写整个节点
-        if (name && this.itemConfig[name]?.use && this.itemConfig[name]?.use instanceof Element) {
+        // 支持 use 里面直接传入 HTMLElement 覆写整个节点（按 nodeType 判断，可以是另一个 realm 的元素，见 nodeType.ts）
+        if (name && isElementNode(this.itemConfig[name]?.use)) {
             return this.itemConfig[name]!.use as HTMLElement
         }
 
@@ -862,6 +863,9 @@ export class ComponentHost implements Host{
             // root error 钩子。组件已经销毁时 effect 生命周期也已结束，错误没有归属：
             // 不交给 root 的监听器（它们在 destroy 之后保留，属于 root 之后渲染的内容），
             // 也不泄漏 unhandled rejection。
+            // CAUTION 与渲染 / 销毁栈上同步抛出、已经没有归属的错误不同（那些经 reportAxiiError
+            //  报告，#58），这里也不报告：effect 的 Promise 在组件销毁之后才 settle 是常态——
+            //  清理函数 abort 掉的请求以 AbortError reject，报告会把正常的取消变成错误输出。
             if (!state.active) return
             // 未注册钩子时重新 reject，保留原先的 unhandled-rejection 可观测语义。
             if (!root.dispatch('error', error)) throw error

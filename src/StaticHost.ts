@@ -31,6 +31,7 @@ import type {AxiiSource} from "./diagnostics";
 import {claimFragmentStartBefore, getHydrateRollingStyleBase, isHydrating, reconcileFragmentHydrateChildren, stripAxiiTextBoundariesBetween} from "./hydration";
 import {rematerializeDeferredFragmentChildren} from "./DOM";
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from "./styleCascade";
+import {isFragmentNode} from "./nodeType";
 import {
     contentStyleId,
     evaluateStyleEntries,
@@ -868,7 +869,7 @@ function warnIfRenderingConsumedElement(source: object) {
     if (consumedReactiveElements.has(source)) {
         /* eslint-disable no-console */
         console.error(
-            source instanceof DocumentFragment ?
+            isFragmentNode(source) ?
                 '[axii] This fragment has already been rendered once: its child nodes were moved ' +
                 'into the document by the previous render, so rendering it again produces NOTHING. ' +
                 'Create a fresh fragment each time (e.g. build JSX inside the function child), ' +
@@ -882,7 +883,7 @@ function warnIfRenderingConsumedElement(source: object) {
         return
     }
     const el = source as ExtendedElement
-    if (source instanceof DocumentFragment ||
+    if (isFragmentNode(source) ||
         el.unhandledChildren || el.unhandledAttr || el.refHandles || el.detachStyledChildren) {
         consumedReactiveElements.add(source)
     }
@@ -973,7 +974,7 @@ export class StaticHost implements Host {
     //  该 getter 只在销毁决策点（列表 bulk delete 候选、父区间销毁）被读取，不在渲染热路径上。
     get forceHandleElement(): boolean {
         if (this.detachStyledChildren?.length) return true
-        if (this.source instanceof DocumentFragment) {
+        if (isFragmentNode(this.source)) {
             const hosts = this.reactiveHosts
             if (!hosts) return false
             if (Array.isArray(hosts)) {
@@ -1009,22 +1010,25 @@ export class StaticHost implements Host {
         if (isAxiiDiagnosticsEnabled()) warnIfRenderingConsumedElement(this.source)
 
         const hydrating = isHydrating()
+        // CAUTION source 是不是 fragment 按 nodeType 判断：createHost 收下的元素 / 片段可能来自另一个
+        //  realm（见 nodeType.ts，#58）。只判断一次，下面三处共用。
+        const isFragment = isFragmentNode(this.source)
         // CAUTION 如果是 fragment，我们用一个 comment 节点来作为第一个元素，这样后面  destroy 的时候就能一次性 remove 掉。
         // Hydrate：认领已有 <!--fragment start-->（§3.2.4 FTS / G3-Fr），禁止新建。
-        if (this.source instanceof DocumentFragment) {
+        if (isFragment) {
             this.element = hydrating
                 ? claimFragmentStartBefore(this.placeholder)
                 : document.createComment('fragment start')
             if (hydrating) {
                 // Rematerialize main-root deferred element children, then claim placeholders
                 // in the fragment region (createElement left stubs under §3.3.d force-defer).
-                rematerializeDeferredFragmentChildren(this.source)
-                reconcileFragmentHydrateChildren(this.source, this.element, this.placeholder)
+                rematerializeDeferredFragmentChildren(this.source as DocumentFragment)
+                reconcileFragmentHydrateChildren(this.source as DocumentFragment, this.element, this.placeholder)
                 // Leftover static axii:t / axii:0 (no unhandledChildren path)
                 stripAxiiTextBoundariesBetween(this.element, this.placeholder)
             }
         } else {
-            this.element = this.source
+            this.element = this.source as HTMLElement | SVGElement
         }
 
         // CAUTION 子树里每个带嵌套样式的元素（响应式属性、列表行、子组件）都可能新建 stylesheet，
@@ -1048,10 +1052,10 @@ export class StaticHost implements Host {
         if (!hydrating) {
             insertBefore(this.element, this.placeholder)
             // 如果是 fragment，那么还要插入真实内容
-            if (this.source instanceof DocumentFragment) {
+            if (isFragment) {
                 insertBefore(this.source, this.placeholder)
             }
-        } else if (!(this.source instanceof DocumentFragment)) {
+        } else if (!isFragment) {
             // 元素已在 placeholder 前；校正顺序（已正确时 insertBefore 为无操作）
             insertBefore(this.element, this.placeholder)
         }
@@ -1117,7 +1121,7 @@ export class StaticHost implements Host {
         //  下一次挂载直接崩溃。子树的自我移除都是「连续子区间删除/搬移」，不会打断剩余
         //  节点的兄弟链，随后的 removeNodesBetween 仍然可以安全清理剩余部分。
         //  元素源的子区间嵌在根元素内部，整段删除只移除根元素本身，维持廉价的 destroy(true)。
-        const isFragment = this.source instanceof DocumentFragment
+        const isFragment = isFragmentNode(this.source)
         if (Array.isArray(hosts)) {
             for (const host of hosts) host.destroy(!(isFragment && host.forceHandleElement))
         } else {
@@ -1423,11 +1427,16 @@ export class StaticHost implements Host {
                 // CAUTION 等待离场动画期间，DOM 可能已被其他路径整体清理（例如外部直接清空了父节点），
                 //  整段区间脱离/父节点失配是这个场景下被容忍的合法状态，直接跳过删除。
                 //  其余更细的区间破坏（同父但链断了）仍会被 removeNodesBetween 的诊断捕获并 report。
-                if (!this.placeholder.parentNode || this.element.parentNode !== this.placeholder.parentNode) return
+                const parent = this.placeholder.parentNode
+                if (!parent || this.element.parentNode !== parent) return
                 removeNodesBetween(this.element!, this.placeholder, true, {
                     ownerHost: this,
                     operation: 'destroy',
                 })
+                // CAUTION 与同步移除路径一致（#58）：离场动画播完才移除的可能是被选中的 option /
+                //  optgroup，select 要按存值重放。移除发生在之后的任务里，批量入口的合并
+                //  （suspendSelectReplay）已经结束，每个离场的元素各自重放一次。
+                restoreSelectValueAfterRemoval(parent)
             })
         }
         // CAUTION 整段区间已脱离 DOM / 父节点失配，说明区间已被外部整体清理（例如 root 容器被直接清空），

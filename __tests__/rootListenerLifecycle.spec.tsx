@@ -125,9 +125,12 @@ describe('per-render internal attach callbacks belong to their render', () => {
 
     // 渲染到一半时 error 监听器销毁 root、再往同一个 root 渲染错误提示（render 的重入说明里
     //  最常见的写法）。被丢弃的那棵树在出错之前登记的 layoutEffect / ref 只属于它自己，
-    //  错误提示 attach 时不能执行；它之后抛出的错误也不属于错误提示，不能再交给监听器。
-    test('a tree discarded mid-render neither runs its callbacks nor reports later errors', () => {
+    //  错误提示 attach 时不能执行；它之后抛出的错误也不属于错误提示，不能再交给监听器，
+    //  而是经 reportAxiiError 报告（#58）。
+    test('a tree discarded mid-render neither runs its callbacks nor hands later errors to the listener', () => {
         document.body.appendChild(rootEl)
+        const reported: any[] = []
+        configureDiagnostics({onError: error => { reported.push(error) }})
         const root = createRoot(rootEl)
         const calls: string[] = []
         let fallbackRenders = 0
@@ -149,6 +152,7 @@ describe('per-render internal attach callbacks belong to their render', () => {
         })
         root.render(<div><Before/><Broken message="first"/><Before/><Broken message="second"/></div>)
         expect(seen).toEqual(['first'])
+        expect(reported.map(error => error.message)).toEqual(['second'])
         expect(fallbackRenders).toBe(1)
         expect(calls).toEqual(['fallback layoutEffect'])
         expect(rootEl.textContent).toBe('first')
@@ -190,10 +194,12 @@ describe('per-render internal attach callbacks belong to their render', () => {
     })
 
     // 渲染到一半被丢弃的树要等渲染栈退出才销毁：它的清理函数抛出的错误同样不属于 root 现在的内容，
-    //  不交给监听器（不会为一棵已丢弃的树把错误提示销毁重建）。与之前一致，没有人消费的错误从
-    //  root.render 抛出（#58 的决定会把它改成经 reportAxiiError 报告）。
+    //  不交给监听器（不会为一棵已丢弃的树把错误提示销毁重建），经 reportAxiiError 报告，
+    //  不再从 root.render 抛出（#58）。
     test('teardown errors of a tree discarded mid-render are not given to the listener', () => {
         document.body.appendChild(rootEl)
+        const reported: any[] = []
+        configureDiagnostics({onError: error => { reported.push(error) }})
         const root = createRoot(rootEl)
         let fallbackRenders = 0
         function Before(_: any, {useEffect}: RenderContext) {
@@ -220,7 +226,8 @@ describe('per-render internal attach callbacks belong to their render', () => {
         expect(seen).toEqual(['render failed'])
         expect(fallbackRenders).toBe(1)
         expect(rootEl.textContent).toBe('render failed')
-        expect(thrown?.message).toBe('discarded cleanup failed')
+        expect(thrown).toBe(undefined)
+        expect(reported.map(error => error.message)).toEqual(['discarded cleanup failed'])
         root.destroy()
     })
 

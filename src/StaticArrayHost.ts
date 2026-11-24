@@ -15,6 +15,7 @@ import {
 } from "./hydration";
 import type {UnhandledChildInfo} from "./DOM";
 import {RxList} from "data0";
+import {isDomNode, isElementNode, isFragmentNode, isTextNode} from "./nodeType";
 import {ReusableHost} from "./ComponentHost";
 
 /** Previous-host boundary comments (not part of this StaticArray content). */
@@ -134,18 +135,18 @@ export class StaticArrayHost implements Host{
                         const text = claimDirectNodeText()
                         ;(this.directNodes ??= []).push(text)
                         if (index === 0) this.firstChild = text
-                    } else if (item instanceof Text) {
+                    } else if (isTextNode(item)) {
                         advancePastNode(item)
                         ;(this.directNodes ??= []).push(item)
                         if (index === 0) this.firstChild = item
-                    } else if (item instanceof DocumentFragment) {
+                    } else if (isFragmentNode(item)) {
                         // Fragment content lives under parent (<!--fragment start-->…), not on the DF
                         advanceCursorUntilComment('array item')
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                         this.childHosts.push(newHost)
                         if (index === 0) this.firstChild = newHost
-                    } else if (item instanceof HTMLElement || item instanceof SVGElement) {
+                    } else if (isElementNode(item)) {
                         advancePastNode(item)
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
@@ -163,7 +164,7 @@ export class StaticArrayHost implements Host{
                         if (index === 0) this.firstChild = newHost
                     } else if (item instanceof ReusableHost) {
                         const src = (item.innerHost as any)?.source
-                        if (src instanceof Node && src.parentNode) {
+                        if (isDomNode(src) && src.parentNode) {
                             advancePastNode(src)
                         }
                         advanceCursorUntilComment('reusable')
@@ -221,9 +222,10 @@ export class StaticArrayHost implements Host{
                     frag.appendChild(el)
                     ;(this.directNodes ??= []).push(el)
                     if (index === 0) this.firstChild = el
-                } else if ( item instanceof Text) {
+                } else if (isTextNode(item)) {
                     // Component 或者 Function 返回值可能会是 DocumentFragment，而 DocumentFragment.childNodes 也会使用 StaticArrayHost 处理，
                     //  这个时候的 this.source 就是 childNodes，已经是 DOM.js 处理过的了，所以直接是 Text 节点。
+                    //  按 nodeType 判断：数组项也可以是另一个 realm 的 Text（见 nodeType.ts，#58）。
                     frag.appendChild(item)
                     ;(this.directNodes ??= []).push(item)
                     if (index === 0) this.firstChild = item
@@ -281,15 +283,21 @@ export class StaticArrayHost implements Host{
         //  unobserve(ref.current)）必须看到还连在文档里的 DOM。之前是先 removeNodesBetween 再销毁，
         //  `() => show() ? [<A/>, <B/>] : null` 这类数组内容里的组件清理时节点已经脱离文档。
         // CAUTION 区间起点要在销毁之前取：子 host 销毁后 element getter 会退回到自己的占位符；
-        //  个别子 host（PrimitiveHost）在 destroy(true) 里还会摘掉自己的文本节点，
-        //  起点恰好是它时改用「起点前一个兄弟」重新定位。
+        //  个别子 host（PrimitiveHost，第一项是 boolean / 返回原始值的组件）在 destroy(true) 里还会摘掉
+        //  自己的文本节点。起点恰好是它时改用起点后面的那个节点：PrimitiveHost 的文本后面紧跟着它自己的
+        //  <!--array item--> 占位符（destroy(true) 不摘）。不能用「起点前一个兄弟的下一个 / 父节点的第一个」
+        //  重新定位：子 host 的清理函数插在那里的节点（插在父节点最前面的提示等）会被当成区间一起删掉
+        //  （与 RxListHost.removeRows 的同一处理，#58）。两个都不在了才退回旧的定位。
         const first = this.element
         const parent = first.parentNode
         const before = first.previousSibling
+        const afterFirst = first !== this.placeholder ? first.nextSibling : null
         this.childHosts!.forEach(host => host.destroy(true))
         const start = first.parentNode === parent ?
             first :
-            ((before ? before.nextSibling : parent?.firstChild) as typeof first | null) ?? this.placeholder
+            afterFirst !== null && afterFirst.parentNode === parent ?
+                afterFirst as typeof first :
+                ((before ? before.nextSibling : parent?.firstChild) as typeof first | null) ?? this.placeholder
         removeNodesBetween(start, this.placeholder, true, {
             ownerHost: this,
             operation: 'destroy',
