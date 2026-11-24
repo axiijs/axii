@@ -64,7 +64,7 @@ export const svgOnlyElementNames = new Set([
  *  父元素是 SVG 元素、且不是 HTML integration point（isSvgHtmlIntegrationPoint）时是 SVG 元素，否则是 HTML 元素。
  * CAUTION 服务端写出的 <svg><title>…</title></svg> 解析后一定是 SVG 的 title，客户端只看标签名的话建出来的是 HTML 元素：
  *  CSR 里 <title> 不是图形的提示、<a> 里的图形整个不渲染；激活时每个都报告失配并重建。客户端 JSX 先求值子节点，
- *  子元素创建时不知道父元素，所以由 SVG 父元素在 createElement 里把这些子元素改建到 SVG 命名空间（DOM.adoptSvgChildren），
+ *  子元素创建时不知道父元素，所以由 SVG 父元素在 createElement 里把这些子元素改建到 SVG 命名空间（DOM.adoptSvgChild），
  *  激活时在父元素的游标下按 SVG 认领（DOM.materializeHydrateDeferred），服务端按 SVG 的规则写属性（ssr.serializeSsrElement）。
  *  三处都只用这一张表。
  */

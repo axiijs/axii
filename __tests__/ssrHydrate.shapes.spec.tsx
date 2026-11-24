@@ -250,7 +250,7 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(client), reports: []})
     })
 
-    // Known limit (documented at DOM.adoptSvgChildren): tags a function / list renders later are inserted by a Host,
+    // Known limit (documented at DOM.adoptSvgChild): tags a function / list renders later are inserted by a Host,
     // CSR keeps them HTML while the parser makes them SVG. Hydration should then report and rebuild them ≡ CSR
     // (design hydration-top-down.md §2.6.7). The children-first claim model does not (identical on 3ea5b96, before #56):
     // the function leaves the server SVG <title> next to a new empty HTML one, the list row keeps the SVG <a>.
