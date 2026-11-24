@@ -4,6 +4,7 @@
  * On pristine v4.8.1 every F* / X* / N* test of the original audit fails. With the fixes in src/:
  *  - pass: F1a, F1c, F1e (#54: claim order = JSX evaluation order, raw markup skipped), F1d
  *    (mitigated: cubic → quadratic), F2, F5, F6, F7, F8, X1–X7, N1, N2 and their regressions;
+ *    I50 (#50, dangerouslySetInnerHTML={{__html}} on the client; fails on 4712285);
  *  - NOT fixed, kept as `test.fails` so the evidence stays executable (each flips to a failure the
  *    day it starts passing): F1b, F1f–F1h (content a component / function child renders later is
  *    taken by a same-tag element of the parent), F1j (a raw-markup element claims a same-tag node
@@ -290,7 +291,9 @@ describe('F1 regression: static trees hydrate in place (deterministic fuzz)', ()
                 onClick: (e: Event) => { if (e.target === e.currentTarget) log.push(s.key) },
             }
             if (s.id) props.id = s.id
-            if (s.raw !== undefined) props.dangerouslySetInnerHTML = s.raw
+            // both value shapes of the same markup (#50): odd keys use the React shape {__html}. Chosen from the key,
+            // not from rnd(), so every seed still generates the same tree
+            if (s.raw !== undefined) props.dangerouslySetInnerHTML = Number(s.key.slice(1)) % 2 ? {__html: s.raw} : s.raw
             // kids.map runs before createElement(s.tag): the same order as JSX arguments
             const children = s.kids.map(k =>
                 'text' in k ? k.text
@@ -1079,5 +1082,103 @@ describe('F9 <style> / <script> under <svg> / <math> are parsed as foreign eleme
         h.color('blue'); c.color('blue')
         expect({first, after: kids(hyd), reports})
             .toEqual({first: {text: 'a>b{fill:red} & <x>', same: true}, after: kids(client), reports: []})
+    })
+})
+
+// ───────────────── #50: dangerouslySetInnerHTML in the React shape {__html} ─────────────────
+// The server always unwrapped {__html}; the client wrote the object itself ("[object Object]") and,
+// during hydration, replaced the claimed server markup with that string without a report.
+// Decision (#50): the client accepts {__html: string} as a static value too; the string form is unchanged.
+describe('I50 dangerouslySetInnerHTML={{__html}}: CSR, reactive form, hydration', () => {
+    const rawApp = (value: any) => function App({}: any, {createElement}: RenderContext) {
+        return <div><div id="raw" dangerouslySetInnerHTML={value}/><em>sibling</em></div>
+    }
+    const raw = (root: HTMLElement) => root.querySelector('#raw')!.innerHTML
+
+    test('I50a CSR: {__html} renders the same HTML as the string form', () => {
+        expect({object: raw(csr(rawApp({__html: '<b>x</b>'}))), string: raw(csr(rawApp('<b>x</b>')))})
+            .toEqual({object: '<b>x</b>', string: '<b>x</b>'})
+    })
+
+    test('I50b nullish __html clears the content on both ends, like the nullish string form', () => {
+        const read = (value: any) => ({csr: raw(csr(rawApp(value))), ssr: raw(ssrInto(rawApp(value)))})
+        expect([read({__html: null}), read({__html: undefined}), read(null), read(undefined)])
+            .toEqual(Array(4).fill({csr: '', ssr: ''}))
+    })
+
+    test('I50c reactive {__html} (function / atom) behaves like the reactive string form: first frame, update, nullish', () => {
+        const html = atom<string | null>('<b>1</b>')
+        const objectAtom = atom<{__html: string | null} | null>({__html: '<b>1</b>'})
+        const shapes: Record<string, any> = {
+            stringAtom: html,
+            stringFn: () => html(),
+            objectFn: () => ({__html: html()}),
+            objectOrNullFn: () => html() == null ? null : {__html: html()},
+            objectAtom,
+        }
+        const root = mount()
+        createRoot(root).render(<div>{Object.keys(shapes).map(k => <p id={k} dangerouslySetInnerHTML={shapes[k]}/>)}</div>)
+        const read = () => Object.fromEntries(Object.keys(shapes).map(k => [k, root.querySelector(`#${k}`)!.innerHTML]))
+        const frames = [read()]
+        html('<i>2</i>'); objectAtom({__html: '<i>2</i>'}); frames.push(read())
+        html(null); objectAtom(null); frames.push(read())
+        const all = (v: string) => Object.fromEntries(Object.keys(shapes).map(k => [k, v]))
+        expect(frames).toEqual([all('<b>1</b>'), all('<i>2</i>'), all('')])
+    })
+
+    test('I50d hydration: server {__html} markup is claimed as is (same nodes, no report, DOM ≡ CSR)', () => {
+        const App = rawApp({__html: '<p><em>raw</em></p>'})
+        const hyd = ssrInto(App)
+        const before = hyd.querySelector('#raw em')
+        expect(before).not.toBe(null)
+        hydrateRoot(hyd, createElement(App, null as any))
+        expect({inner: raw(hyd), dom: kids(hyd), reports, sameNode: hyd.querySelector('#raw em') === before})
+            .toEqual({inner: '<p><em>raw</em></p>', dom: kids(csr(App)), reports: [], sameNode: true})
+    })
+
+    test('I50e hydration of a nullish {__html}: empty content, no report, DOM ≡ CSR', () => {
+        for (const App of [rawApp({__html: null}), rawApp({__html: undefined})]) {
+            const hyd = ssrInto(App)
+            hydrateRoot(hyd, createElement(App, null as any))
+            expect({inner: raw(hyd), dom: kids(hyd), reports}).toEqual({inner: '', dom: kids(csr(App)), reports: []})
+        }
+    })
+
+    // The raw-content decision of a claimed element (DOM.createElement → exitElementChildCursor) reads
+    // the unwrapped value: a nullish {__html} is not raw markup, exactly like the nullish string form.
+    // Undefined is the baseline (static path); a bare null goes through the reactive attribute path.
+    test('I50g drift: server markup, client nullish {__html} → handled exactly like client undefined', () => {
+        const read = (client: any) => {
+            const hyd = ssrInto(rawApp({__html: '<b>x</b>'}))
+            reports.length = 0
+            hydrateRoot(hyd, createElement(rawApp(client), null as any))
+            return {inner: raw(hyd), dom: kids(hyd), reports: reports.slice()}
+        }
+        const baseline = read(undefined)
+        expect(baseline.inner).toBe('')
+        expect([read({__html: null}), read({__html: undefined})]).toEqual([baseline, baseline])
+    })
+
+    // Only objects that carry an __html key are unwrapped. TrustedHTML (the value innerHTML takes under
+    // Trusted Types) has none: unwrapping every object would read .__html (undefined) and blank the content.
+    test('I50h an object without __html (TrustedHTML) is passed through unchanged on both ends', () => {
+        const policy = (window as any).trustedTypes.createPolicy(`axii-i50h-${Math.random()}`, {createHTML: (s: string) => s})
+        const value = policy.createHTML('<b>t</b>')
+        expect({csr: raw(csr(rawApp(value))), ssr: raw(ssrInto(rawApp(value)))}).toEqual({csr: '<b>t</b>', ssr: '<b>t</b>'})
+    })
+
+    test('I50f hydration of the reactive {__html} form (≡ F7f): content kept, stays bound, no report', () => {
+        const make = () => {
+            const html = atom('<em>raw</em>')
+            return {App: rawApp(() => ({__html: html()})), html}
+        }
+        const hyd = mount()
+        hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
+        const h = make()
+        hydrateRoot(hyd, createElement(h.App, null as any))
+        const first = raw(hyd)
+        h.html('<u>2</u>')
+        expect({first, second: raw(hyd), sibling: hyd.querySelector('#raw + em')!.textContent, reports})
+            .toEqual({first: '<em>raw</em>', second: '<u>2</u>', sibling: 'sibling', reports: []})
     })
 })

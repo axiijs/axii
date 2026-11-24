@@ -5,7 +5,7 @@ import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 import {SSR_STYLE_CLASSES_ATTRIBUTE, autoUnit, getAutoUnitType, setAutoUnitType} from './styleSerialize'
-import {hasOnPrefix, isAriaReflectionProperty, isEventName, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
+import {hasOnPrefix, innerHTMLOf, isAriaReflectionProperty, isEventName, isInnerHTMLObject, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
 import {
     advanceCursorUntilComment,
     advanceCursorUntilRxListHostPlaceholder,
@@ -669,7 +669,10 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         // CAUTION nullish 表示清空：innerHTML 的 IDL 对 null 走 LegacyNullToEmptyString，
         //  但 undefined 会被字符串化成字面 "undefined" 渲染到页面上
         //  （dangerouslySetInnerHTML={() => maybeHtml()} 的条件写法会产出 undefined）。
-        node.innerHTML = value ?? ''
+        // CAUTION React 形状的 {__html} 在这里解包（#50）：曾经原样赋给 innerHTML，渲染成字面
+        //  "[object Object]"，而 axii/ssr 一直解包——激活时服务端的标记被静默替换。静态值与
+        //  函数 / atom 求值得到的值都经过这里；{__html: nullish} 与 nullish 一样清空。
+        node.innerHTML = innerHTMLOf(value) ?? ''
     // CAUTION list/type/form 是「与只读（或行为特殊的）DOM property 同名的合法 HTML attribute」：
     //  input.list / select.type / *.form 都是 readonly accessor，走 property 赋值在严格模式下
     //  直接 TypeError（sloppy 模式下静默无效），属性永远设不上去——
@@ -1366,7 +1369,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         // CAUTION dangerouslySetInnerHTML 的内容由服务端原样写出，客户端 children 里没有对应单元。
         //  按「尾部孤儿」清理的话会报一条假的失配并把这段标记删掉；而下面的 props 循环在激活时
         //  又跳过 innerHTML 赋值（保留服务端节点），结果元素永久为空。
-        exitElementChildCursor(!!rawProps && rawProps.dangerouslySetInnerHTML != null)
+        //  「内容是原始标记」按解包后的值判定（#50）：{__html: null} 与 null 一样不是原始标记。
+        exitElementChildCursor(!!rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null)
         const el = container as Element
         const ssrStyleClasses = el.getAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
         if (ssrStyleClasses !== null) {
@@ -1511,6 +1515,10 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
     if (name === 'style' && (isSimpleStyleObject(value) || valueType === 'string')) return true
     // 默认支持 className/class 的对象形式
     if ((name === 'className' || name === 'class') && isPlainObject(value)) return true
+    // CAUTION dangerouslySetInnerHTML 的 {__html} 是静态值（#50），不能落进响应式属性路径：
+    //  激活时那条路径会重新赋值 innerHTML，替换掉已认领的服务端标记（静态路径在已认领元素上跳过赋值）。
+    //  先比较名字：其余属性只多一次常量字符串比较，而且只有走到这里的对象值（随后就要建立响应式绑定）才付。
+    if (name === 'dangerouslySetInnerHTML' && isInnerHTMLObject(value)) return true
 
     return false
 }
