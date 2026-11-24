@@ -65,13 +65,14 @@ import {
     reconcileFlattenedFragmentHydrateChildren,
     resolveHydrateChildParent,
     rememberHydrateRollingStyleBase,
+    runOutsideHydration,
     staticAttrId,
     takeHydrateDeferredPayload,
     takeHydrateReclaimPayload,
     tryClaimElement,
     unclaimHydrateElement,
 } from "./hydration";
-import {HydrationElement, isHydrationElement, TEXT_SLOT, throwConsumedDescription, throwTopDownPending, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
+import {HydrationElement, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
     claimTopDownElement,
     claimTopDownEmptyTextPlaceholder,
@@ -81,8 +82,11 @@ import {
     exitTopDownElement,
     insertTopDownEmptyText,
     isTopDownClaimApproximate,
+    placeTopDownExistingNode,
     placeTopDownFreshElement,
     rememberTopDownRawElement,
+    reportTopDownDevHint,
+    reportTopDownLiveNode,
 } from "./hydrationCursor";
 import type {Host} from "./Host";
 
@@ -1783,7 +1787,7 @@ export type TopDownInnerHosts = {hosts: Host[], next: number}
  * unhandledChildren 不建立：子 Host 已由 StaticHost 预先构造。
  */
 export function hydrateElementDescription(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined): HTMLElement | SVGElement | DocumentFragment {
-    if (desc.node !== null) throwConsumedDescription()
+    // 已认领的描述（C6）不到这里：StaticHost.hydrate / CompactElementHost.hydrate 按现成节点处理它的 node
     return desc.tag === Fragment ?
         hydrateFragmentDescriptionChildren(desc, innerHosts, false) :
         hydrateElementDescriptionAt(desc, innerHosts, false)
@@ -1962,39 +1966,128 @@ function hydrateDescriptionChildren(
                 claimTopDownText(text)
             }
         } else if (isHydrationElement(child)) {
-            if (child.node !== null) throwConsumedDescription()
+            if (child.node !== null) {
+                // 同一个描述在这次激活里第二次出现（C6）：已有 node，就当作那个节点，≡ CSR 的 child 循环再次 appendChild 同一个
+                //  元素（把它挪到这里，元数据已在第一次被提升走）
+                lifted = hydrateExistingChild(child.node, index, childAdoptsSvg, innerHosts, lifted, debugSource)
+                continue
+            }
             const node = child.tag === Fragment ?
                 hydrateFragmentDescriptionChildren(child, innerHosts, childAdoptsSvg) :
                 hydrateElementDescriptionAt(child, innerHosts, childAdoptsSvg)
-            const childElement = node as ExtendedElement
-            // __axiiSource 只在真的提升 attr 元数据时才读（≡ createElement 子节点循环里的同一段）
-            const childUnhandledAttr = childElement.unhandledAttr
-            if (childUnhandledAttr?.length) {
-                lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
-                lifted.unhandledAttr = liftElementMetadata(childUnhandledAttr, index, lifted.unhandledAttr, childElement.__axiiSource ?? debugSource)
-                childElement.unhandledAttr = undefined
-            }
-            const childRefHandles = childElement.refHandles
-            if (childRefHandles?.length) {
-                lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
-                lifted.refHandles = liftElementMetadata(childRefHandles, index, lifted.refHandles, undefined)
-                childElement.refHandles = undefined
-            }
-            const childDetachStyled = childElement.detachStyledChildren
-            if (childDetachStyled?.length) {
-                lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
-                lifted.detachStyledChildren = liftElementMetadata(childDetachStyled, index, lifted.detachStyledChildren, undefined)
-                childElement.detachStyledChildren = undefined
-            }
+            lifted = liftTopDownChildMetadata(node as ExtendedElement, index, lifted, debugSource)
         } else if (isDomNode(child)) {
-            // 激活之外创建的现成节点（§2.6.8）
-            throwTopDownPending('a DOM node created outside hydration used as a JSX child', 'B4')
+            // 激活之外创建的现成节点（§2.6.8）：服务端不可能产出它，按 CSR 插在这里
+            reportTopDownLiveNode(child)
+            lifted = hydrateExistingChild(child, index, childAdoptsSvg, innerHosts, lifted, debugSource)
         } else {
             // 动态 child：取出 StaticHost 预先构造的 Host，在游标处认领它的区域与 placeholder
             innerHosts!.hosts[innerHosts!.next++].hydrate!(childType === 'function' ? TEXT_SLOT : UNHANDLED_CHILD_SLOT)
         }
     }
     return lifted
+}
+
+// 子节点（认领的描述，或现成的节点）的元数据提升到父级（≡ createElement 子节点循环里的同一段；__axiiSource 只在真的提升
+//  attr 元数据时才读）。unhandledChildren 不在这里：新模型的子 Host 由 StaticHost 预先构造
+function liftTopDownChildMetadata(childElement: ExtendedElement, index: number, lifted: TopDownLiftedMetadata | undefined, debugSource: AxiiSource | undefined): TopDownLiftedMetadata | undefined {
+    const childUnhandledAttr = childElement.unhandledAttr
+    if (childUnhandledAttr?.length) {
+        lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
+        lifted.unhandledAttr = liftElementMetadata(childUnhandledAttr, index, lifted.unhandledAttr, childElement.__axiiSource ?? debugSource)
+        childElement.unhandledAttr = undefined
+    }
+    const childRefHandles = childElement.refHandles
+    if (childRefHandles?.length) {
+        lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
+        lifted.refHandles = liftElementMetadata(childRefHandles, index, lifted.refHandles, undefined)
+        childElement.refHandles = undefined
+    }
+    const childDetachStyled = childElement.detachStyledChildren
+    if (childDetachStyled?.length) {
+        lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
+        lifted.detachStyledChildren = liftElementMetadata(childDetachStyled, index, lifted.detachStyledChildren, undefined)
+        childElement.detachStyledChildren = undefined
+    }
+    return lifted
+}
+
+/**
+ * 现成的节点作为 JSX child（§2.6.8：激活之外创建的节点；C6：这次激活里已经认领过、又一次出现的描述的 node）。
+ * ≡ CSR createElement 的 child 循环：SVG 父元素里的同名标签改建到 SVG 命名空间（adoptSvgChild），插入（removeTopDownCounterpart
+ * 先删除服务端在这里为它的 JSX 版本写下的对应物），提升元数据。它的 unhandledChildren（CSR 建好、带真实 placeholder 的动态 child）
+ * 已由 StaticHost 按同一顺序预先构造（collectTopDownDynamicChildren），内容是仅客户端的：在激活上下文之外按 CSR 渲染。
+ */
+function hydrateExistingChild(
+    child: Node,
+    index: number,
+    childAdoptsSvg: boolean,
+    innerHosts: TopDownInnerHosts | undefined,
+    lifted: TopDownLiftedMetadata | undefined,
+    debugSource: AxiiSource | undefined,
+): TopDownLiftedMetadata | undefined {
+    let node = child
+    if (childAdoptsSvg && node.nodeType === ELEMENT_NODE && !isSvgClassString((node as any)[TO_STRING_TAG]) && isSharedNameHtmlElement(node as Element)) {
+        node = adoptSvgChild(node as ExtendedElement, new Map())
+    }
+    placeTopDownExistingNode(node)
+    const element = node as ExtendedElement
+    const dynamic = element.unhandledChildren
+    if (dynamic?.length) {
+        for (let i = 0; i < dynamic.length; i++) {
+            const host = innerHosts!.hosts[innerHosts!.next++]
+            runOutsideHydration(() => host.render())
+        }
+        element.unhandledChildren = undefined
+    }
+    return liftTopDownChildMetadata(element, index, lifted, debugSource)
+}
+
+function formatAxiiSource(source: AxiiSource | undefined): string {
+    return source ? ` at ${source.fileName}:${source.lineNumber}:${source.columnNumber}` : ''
+}
+
+/**
+ * @internal
+ * #55 §2.2「事后渲染」（C6 / C10）：激活期间的描述在激活之外到达 CSR 的分派（createHost 链尾、RxListHost.createChildHost 的新行、
+ * 激活中建好、之后才第一次渲染的 reusable()）。已有 node（这次激活里认领过，或者之前物化过）就是那个节点：与 CSR 重复渲染同一个
+ * 元素对象相同，元数据已被消费。否则它在激活中没有被渲染过（C10）：按 CSR 物化，诊断开启时报告
+ * AXII_HYDRATION_ELEMENT_LATE_RENDER。描述本身永远不变成节点（§3.1.1），之后再渲染它拿到的是同一个 node。
+ */
+export function resolveHydrationElement(desc: HydrationElement): HTMLElement | SVGElement | DocumentFragment {
+    const node = desc.node as HTMLElement | SVGElement | DocumentFragment | null
+    if (node !== null) return node
+    if (isAxiiDiagnosticsEnabled()) {
+        const tag = desc.tag === Fragment ? 'Fragment' : `<${desc.tag as string}>`
+        reportTopDownDevHint('AXII_HYDRATION_ELEMENT_LATE_RENDER',
+            `JSX created during hydration (${tag}${formatAxiiSource(desc.rawProps?.__source as AxiiSource | undefined)}) was not rendered ` +
+            'during hydration and is rendered for the first time now: it is built on the client like createRoot().render() would. ' +
+            'Create the JSX inside the function child that renders it, e.g. () => open() ? <div/> : null')
+    }
+    // 激活上下文之外重放：新模型激活中也可能走到这里（激活中建好的 reusable 在之后由 CSR 渲染），createElement 必须返回节点
+    return runOutsideHydration(() => materializeHydrationElement(desc))
+}
+
+// 按 CSR 重放 createElement。静态的子描述先物化，父元素的 createElement 循环因此把它们当作元素 child（提升元数据），不会各自
+//  变成带 <!--unhandledChild--> 的动态 child。认领时按父元素改建过命名空间的同名标签（isSVG 与创建时的规则不同）显式带上 _isSVG。
+function materializeHydrationElement(desc: HydrationElement): HTMLElement | SVGElement | DocumentFragment {
+    const children = desc.rawChildren!
+    const replayed: any[] = new Array(children.length)
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i]
+        replayed[i] = isHydrationElement(child) ? (child.node ?? materializeHydrationElement(child)) : child
+    }
+    let rawProps = desc.rawProps
+    if (desc.tag !== Fragment && desc.isSVG && !((rawProps ? rawProps._isSVG : undefined) ?? svgOnlyElementNames.has(desc.tag as string))) {
+        rawProps = {...rawProps, _isSVG: true}
+    }
+    const node = createElement(desc.tag as any, rawProps as AttributesArg, ...replayed) as HTMLElement | SVGElement | DocumentFragment
+    // ≡ ComponentHost.createHTMLOrSVGElement 在 CSR 里写在 createElement 返回值上的字段
+    if (desc.listenerBoundArgs !== undefined) (node as ExtendedElement).listenerBoundArgs = desc.listenerBoundArgs
+    desc.node = node
+    desc.rawProps = undefined
+    desc.rawChildren = undefined
+    return node
 }
 
 /**

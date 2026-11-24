@@ -17,7 +17,7 @@ import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
-import {hydrate, pendingTopDown} from './helpers/hydrate'
+import {hydrate} from './helpers/hydrate'
 
 describe('M-06 hydration mismatch (§3.7)', () => {
     let rootEl: HTMLElement
@@ -960,7 +960,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B4'))('portal container trailing junk after <!--root-->: must not leave orphan', () => {
+    test('portal container trailing junk after <!--root-->: must not leave orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}, {createElement, createPortal}: RenderContext) {
             return <div>
@@ -986,7 +986,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B4'))('portal container leading STYLE orphan: must not remain after migrate', () => {
+    test('portal container leading STYLE orphan: must not remain after migrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}, {createElement, createPortal}: RenderContext) {
             return <div>

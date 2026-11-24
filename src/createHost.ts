@@ -1,4 +1,4 @@
-import {insertBefore, UnhandledPlaceholder, materializeHydrateDeferred, rematerializeDeferredFragmentChildren} from "./DOM";
+import {insertBefore, UnhandledPlaceholder, materializeHydrateDeferred, rematerializeDeferredFragmentChildren, resolveHydrationElement} from "./DOM";
 import {Host, PathContext} from "./Host";
 import {isAtom, RxList} from "data0";
 import {ComponentHost, ReusableHost} from "./ComponentHost";
@@ -13,8 +13,8 @@ import {getAxiiSource} from "./diagnostics";
 import {claimEmptyHostComment, claimEmptyHostCommentBefore, isHydrateDeferredElement, isHydrating} from "./hydration";
 import {claimTextBeforeCommentPlaceholder} from "./hydration";
 import {COMMENT_NODE, DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isCommentNode, nodeTypeOf, TEXT_NODE} from "./nodeType";
-import {HydrationSlot, isHydrationElement, throwTopDownPending} from "./hydrationElement";
-import {claimTopDownComment, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
+import {HydrationSlot, isHydrationElement} from "./hydrationElement";
+import {claimTopDownComment, claimTopDownText, insertTopDownEmptyText, removeTopDownCounterpart, reportTopDownLiveNode} from "./hydrationCursor";
 
 /**
  * @internal
@@ -105,6 +105,15 @@ class NodeHost implements Host{
     render() {
         this.element = this.source
         insertBefore(this.source, this.placeholder)
+    }
+    // #55 新模型（§2.5 NodeHost 行、§2.6.8）：服务端不可能产出客户端的现成节点，它是仅客户端的内容。游标处是它的对应物
+    //  （它是 Text 时的文本单元）就删除，然后按 R3 认领 slot（服务端在 slot 前写下的其余内容由 R3 删除并报告），
+    //  source 按 CSR 插在 slot 前面
+    hydrate(slot: HydrationSlot) {
+        reportTopDownLiveNode(this.source)
+        removeTopDownCounterpart(this.source)
+        this.placeholder = claimTopDownComment(slot)
+        this.render()
     }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
@@ -206,9 +215,11 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
         host = new NodeHost(source, placeholder, pathContext)
         typeIndex = 9
     } else if (isHydrationElement(source)) {
-        // #55：激活期间的描述（新模型）走到了 CSR 的分派（reusable() 的构造、激活中存下的 JSX 之后才渲染，C6 / C10）。
-        //  在链尾判定，常见类型永远到不了这里（§2.2「事后渲染」，B4 落地）。
-        throwTopDownPending('a description rendered through createHost (reusable() / rendered after the activation)', 'B4')
+        // #55：激活期间的描述（新模型）走到了 CSR 的分派：激活中存下的 JSX 之后才渲染（C6 / C10）、派生列表重新放进来的行
+        //  （§3.3）。已有 node 就是那个节点，否则按 CSR 物化（DOM.resolveHydrationElement）。在链尾判定，常见类型永远到不了
+        //  这里（§2.2「事后渲染」）。≡ 元素分支的 StaticHost，种类表下标相同
+        host = new StaticHost(resolveHydrationElement(source), placeholder, pathContext)
+        typeIndex = 0
     } else {
         assert(false, `unknown child type ${source}`)
     }
@@ -225,8 +236,8 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
  * #55 新激活模型的分派（设计 docs/ssr-support/hydration-top-down.md §2.4、§2.4.1）：激活期间由各 Host 调用，
  * 创建的 Host 随后由调用方 hydrate(slot)，从游标处消费自己的区域与 placeholder。构造时的 placeholder 就是 slot 常量。
  * CAUTION 与上面的 createHost 是同一条分派链的两份：类型判定的顺序相同，用同一张 HOST_TYPE_NAMES 登记 trackHostCreated。
- *  新增一种 source 必须同时改两处。区别只有：元素分支收的是描述（HydrationElement，不是 DOM 节点）；
- *  还没有在新模型里实现的种类显式抛错（reusable 与现成节点在 B4）。
+ *  新增一种 source 必须同时改两处。区别只有：元素分支先收描述（HydrationElement，不是 DOM 节点），现成的元素 / 片段
+ *  （激活之外创建的节点，§2.6.8）与 CSR 一样落到 StaticHost，由它的 hydrate 按 CSR 渲染。
  *  RxListHost 的 Compact 行（CompactElementHost）不经过这里：它由 RxListHost.hydrate 按 #68 的判定直接构造并登记，
  *  ≡ CSR 的 RxListHost.createChildHost（§2.4.1 的种类计数把它也算在内）。
  */
@@ -254,7 +265,9 @@ export function createHydrateHost(source: any, slot: HydrationSlot, context: Pat
         host = new StaticHost(source as any, placeholder, pathContext)
         typeIndex = 0
     } else if ((nodeType = nodeTypeOf(source)) === ELEMENT_NODE || nodeType === DOCUMENT_FRAGMENT_NODE) {
-        throwTopDownPending('a DOM node created outside hydration as a Host source', 'B4')
+        // 激活之外创建的现成元素 / 片段（§2.6.8）：StaticHost.hydrate 按 CSR 渲染它（≡ createHost 的元素分支）
+        host = new StaticHost(source, placeholder, pathContext)
+        typeIndex = 0
     } else if (sourceType === 'string' || sourceType === 'number' || sourceType === 'boolean' || sourceType === 'bigint') {
         host = new PrimitiveHost(source, placeholder, pathContext)
         typeIndex = 1
@@ -268,12 +281,16 @@ export function createHydrateHost(source: any, slot: HydrationSlot, context: Pat
         host = new RxListHost(source, placeholder, pathContext)
         typeIndex = 4
     } else if (source instanceof ReusableHost) {
-        throwTopDownPending('reusable()', 'B4')
+        // ≡ createHost：复用的 Host 放到这个位置，错误归因落在新位置；它的 placeholder（reusePlaceholder）由 hydrate 认领 slot
+        source.pathContext = pathContext
+        host = source
+        typeIndex = 5
     } else if (sourceType === 'object' && typeof source?.type === 'function') {
         host = new ComponentHost(source, placeholder, pathContext)
         typeIndex = 6
     } else if (nodeType === TEXT_NODE || nodeType === COMMENT_NODE) {
-        throwTopDownPending('a DOM node created outside hydration as a Host source', 'B4')
+        host = new NodeHost(source, placeholder, pathContext)
+        typeIndex = 9
     } else {
         assert(false, `unknown child type ${source}`)
     }

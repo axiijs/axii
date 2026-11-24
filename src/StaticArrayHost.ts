@@ -17,8 +17,8 @@ import type {UnhandledChildInfo} from "./DOM";
 import {RxList} from "data0";
 import {isDomNode, isElementNode, isFragmentNode, isTextNode} from "./nodeType";
 import {ReusableHost} from "./ComponentHost";
-import {ARRAY_ITEM_SLOT, HydrationSlot, isHydrationElement, throwTopDownPending} from "./hydrationElement";
-import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText} from "./hydrationCursor";
+import {ARRAY_ITEM_SLOT, HydrationSlot, isHydrationElement} from "./hydrationElement";
+import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText, placeTopDownExistingNode, reportTopDownLiveNode} from "./hydrationCursor";
 
 /** Previous-host boundary comments (not part of this StaticArray content). */
 function isArrayRegionBoundaryComment(data: string): boolean {
@@ -270,7 +270,7 @@ export class StaticArrayHost implements Host{
      * 项的分类、子 Host 的 context / position 与 render 逐项相同（CAUTION 改其中一处两处一起改）：
      *  - 字符串 / 数字 / bigint 是 DirectNodes：认领文本单元，空串认领 `<!--axii:0-->`（插入 Text('')；
      *    服务端 ssr.serializeStaticArrayItemContent 对空串写哨兵），没有 `<!--array item-->`；
-     *  - 现成的 Text（激活之外创建的节点，§2.6.8）在 render 里也是 DirectNodes，新模型在 B4 落地，之前显式抛错；
+     *  - 现成的 Text（激活之外创建的节点，§2.6.8）在 render 里也是 DirectNodes：删除服务端为它写的文本单元，插入它本身；
      *  - 其余项 createHydrateHost(项, 'array item')：函数（含 atom）不克隆 pathContext、以 position 传位置，
      *    其余共享一个 hostPath 节点。
      * 先构造全部子 Host，再按文档顺序认领（≡ render：forEach 构造，再逐个 render），组件类型 id 的分配顺序与 CSR 相同；
@@ -291,7 +291,7 @@ export class StaticArrayHost implements Host{
             const item = source[index]
             const itemType = typeof item
             if (itemType === 'string' || itemType === 'number' || itemType === 'bigint') continue
-            if (isTextNode(item)) throwTopDownPending('a DOM node created outside hydration used as an array item', 'B4')
+            if (isTextNode(item)) continue
             const newHost = itemType === 'function' ?
                 createHydrateHost(item, ARRAY_ITEM_SLOT, this.pathContext, {
                     owner: this,
@@ -313,6 +313,13 @@ export class StaticArrayHost implements Host{
                 const node = text === '' ? claimTopDownEmptyTextPlaceholder() : claimTopDownText(text)
                 ;(this.directNodes ??= []).push(node)
                 if (index === first) this.firstChild = node
+            } else if (isTextNode(item)) {
+                // 现成的 Text（§2.6.8）：≡ render 的 DirectNodes。服务端为它写的是同值的文本单元（ssr 把数组里的 Text 按文本写出），
+                //  删除这个对应物，插入客户端的节点本身
+                reportTopDownLiveNode(item)
+                placeTopDownExistingNode(item)
+                ;(this.directNodes ??= []).push(item)
+                if (index === first) this.firstChild = item
             } else {
                 this.childHosts[next++].hydrate!(ARRAY_ITEM_SLOT)
                 if (writeBack && isHydrationElement(item) && source[index] === item) source[index] = item.node

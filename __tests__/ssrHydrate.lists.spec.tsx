@@ -14,7 +14,7 @@ import {atom, RxMap} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {CompactElementHost} from '../src/StaticHost.js'
-import {hydrate, pendingTopDown} from './helpers/hydrate'
+import {hydrate} from './helpers/hydrate'
 
 function shapeOf(el: Node): string[] {
     return Array.from(el.childNodes).map(n => {
@@ -271,7 +271,7 @@ describe('M-03 hydrateRoot RxList', () => {
         ])
     })
 
-    test.skipIf(pendingTopDown('B4'))('G3-RU reusable row', () => {
+    test('G3-RU reusable row', () => {
         function App({}, {createElement, reusable}: RenderContext) {
             const reused = reusable(<div id="reused">R</div>)
             return <div id="t">{new RxList([reused])}</div>
@@ -466,7 +466,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test.skipIf(pendingTopDown('B4'))('G3-A Reusable item: reusable + array item (no nested unhandledChild)', () => {
+    test('G3-A Reusable item: reusable + array item (no nested unhandledChild)', () => {
         function App({}, {createElement, reusable}: RenderContext) {
             const reused = reusable(<div id="reused">R</div>)
             return <div id="t">{new RxList([[reused, 'z'] as any])}</div>
@@ -1019,9 +1019,8 @@ describe('M-03 hydrateRoot RxList', () => {
     })
 
     // #55 §3.3 / C10：激活后的写回只覆盖被渲染的那一个列表（filter），上游 map 的 data 仍持有描述。谓词重新放行、
-    //  上游重排使 filter 整体重建时，插入的是这些描述，要靠 createHost 链尾的描述分支（B4）按 CSR 处理。
-    //  在那之前内部入口那一遍显式抛 TopDownPendingError（hydrateTopDown.spec 钉住），这里标为 B4 待实现。
-    test.skipIf(pendingTopDown('B4'))('map(f).filter(p): rows the predicate admits again after hydration, and an upstream reorder ≡ CSR', () => {
+    //  上游重排使 filter 整体重建时，插入的是这些描述：RxListHost.createChildHost 按描述的 node 重新走 Compact 判定（B4）。
+    test('map(f).filter(p): rows the predicate admits again after hydration, and an upstream reorder ≡ CSR', () => {
         const make = () => {
             const list = new RxList([1, 2, 3])
             const show = atom(true)

@@ -61,8 +61,10 @@ export const ROOT_SLOT = 'root'
 export const RX_LIST_ITEM_SLOT = 'rx list item'
 /** StaticArrayHost 的非 DirectNodes 项（≡ StaticArrayHost.render 的 `<!--array item-->`）。 */
 export const ARRAY_ITEM_SLOT = 'array item'
+/** ReusableHost 的 innerHost（≡ reusable() 的 innerPlaceholder `<!--reusable-->`，服务端 ssr.serializeReusable）。 */
+export const REUSABLE_SLOT = 'reusable'
 export type HydrationSlot = typeof TEXT_SLOT | typeof UNHANDLED_CHILD_SLOT | typeof COMPUTED_NODE_SLOT | typeof ROOT_SLOT
-    | typeof RX_LIST_ITEM_SLOT | typeof ARRAY_ITEM_SLOT | 'reusable'
+    | typeof RX_LIST_ITEM_SLOT | typeof ARRAY_ITEM_SLOT | typeof REUSABLE_SLOT
 
 /** 值是不是还没有认领的 slot（placeholder 还不是节点）。开发期不变量用（§4.4）。 */
 export function isHydrationSlot(value: unknown): value is HydrationSlot {
@@ -70,36 +72,13 @@ export function isHydrationSlot(value: unknown): value is HydrationSlot {
 }
 
 /**
- * 内部入口上还没有实现的形态（§7.2）：显式抛错，不回退到旧模型，也不静默。参数是落地它的 PR。
- */
-export class TopDownPendingError extends Error {
-    constructor(kind: string, pr: 'B2' | 'B3' | 'B4') {
-        super(`[axii] top-down hydrate entry: ${kind} not implemented yet (#55 ${pr})`)
-        this.name = 'TopDownPendingError'
-    }
-}
-
-export function throwTopDownPending(kind: string, pr: 'B2' | 'B3' | 'B4'): never {
-    throw new TopDownPendingError(kind, pr)
-}
-
-/**
- * 同一个描述在一次激活里第二次被消费（const s = <span/>; <div>{s}{s}</div>、[s, s]，或激活中存下的 JSX 再次渲染，C6）：
- * CSR 第二次插入时把节点挪走，服务端写两份；描述已经瘦身（rawChildren 为 undefined），「已有 node 就当作那个元素」的分支
- * 在 B4 落地，之前显式抛错。消费描述的每个入口（认领步骤的子描述、StaticHost / CompactElementHost 的 source）在读
- * rawChildren 之前先判断 desc.node，不能在空的 rawChildren 上 TypeError。
- */
-export function throwConsumedDescription(): never {
-    throwTopDownPending('the same JSX element rendered more than once (C6)', 'B4')
-}
-
-/**
- * 新模型激活的中止：未实现的形态（B4 之前）。B1 / B2 的失配也报告并抛出 HydrationMismatchError；B3 起失配按 R1–R5
- * 修复、不再抛出，这里仍把它算作中止（新模型里没有地方再抛出它，万一有，也不能被组件的监听器吞掉）。
+ * 新模型激活的中止。B1 / B2 的失配报告并抛出 HydrationMismatchError，B4 之前未实现的形态抛出「待实现」错误；B3 起失配按
+ * R1–R5 修复，B4 起全部形态都已实现，这两种都不再抛出，这里仍把 HydrationMismatchError 算作中止（万一有，也不能被组件的
+ * 监听器吞掉）。剩下的中止是函数结构态的内容渲染抛错（markTopDownAbort）。
  * root.dispatch('error') 在激活期间不把它们当作已消费：注册了 root.on('error') 也不能让激活在错位的游标上继续。
  */
 export function isTopDownAbort(error: unknown): boolean {
-    return error instanceof HydrationMismatchError || error instanceof TopDownPendingError
+    return error instanceof HydrationMismatchError
         || (abortingError !== NOT_ABORTING && error === abortingError)
 }
 

@@ -35,7 +35,7 @@ import {
     getAxiiRetainedObjectDiagnosticsSnapshot,
     resetAxiiRetainedObjectDiagnostics,
 } from '../src/retainedObjectDiagnostics'
-import {hydrate, pendingTopDown, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {

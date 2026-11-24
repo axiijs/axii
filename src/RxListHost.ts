@@ -3,6 +3,7 @@ import {
     Fragment,
     insertAfter,
     insertBefore,
+    resolveHydrationElement,
     restoreSelectValueAfterRemoval,
     resumeSelectReplay,
     suspendSelectReplay,
@@ -44,7 +45,7 @@ import {isCompactListRowDescriptor, type ListRowDescriptorAccess} from "./compac
 const EMPTY_ROW_CHILDREN: readonly unknown[] = []
 /**
  * #55 新模型：#68 的 Compact 判定读描述（HydrationElement）的访问器，模块级常量，不每行分配（compactListRow.ts 的约定）。
- * 已认领的描述（同一个描述第二次作为行）已经瘦身，按没有 children 判定；随后认领它时显式抛错（throwConsumedDescription，B4）。
+ * 已认领的描述（同一个描述第二次作为行）已经瘦身，按没有 children 判定；CompactElementHost.hydrate 按它的 node 处理（C6）。
  */
 const HYDRATION_ROW_ACCESS: ListRowDescriptorAccess<HydrationElement> = {
     asStaticNode: (value) => isHydrationElement(value) ? value : undefined,
@@ -118,7 +119,7 @@ export class RxListHost implements Host{
         return false
     }
 
-    createChildHost(item: any) {
+    createChildHost(item: any): Host {
         // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符。
         //  元素按 nodeType 判断：行可以返回另一个 realm 的元素（见 nodeType.ts，#58）。
         // CAUTION 这是 compactListRow.ts 里 Compact 行规则的节点形态（detachStyledChildren 由 createElement
@@ -184,6 +185,11 @@ export class RxListHost implements Host{
             return createHost(item, ph, this.childContext!)
         }
 
+        // #55：激活中建好的描述作为新行进来——派生列表（map(f).filter(p)）重新放行的行、上游重排（§3.3，已认领的壳带着 node），
+        //  激活中没有渲染过的行（C10，按 CSR 物化）。它代表的就是那个元素，按节点重新走上面的 Compact 判定，行的形状、Host 与 CSR
+        //  相同（D2 原定接受「多一个 <!--rx list item-->」，B4 改为在这里判定，见设计 §5.2）。
+        //  CAUTION 放在 Compact 快速路径与旧模型分支之后：元素行（最常见）到不了这里，非 Compact 新行多一次 instanceof。
+        if (isHydrationElement(item)) return this.createChildHost(resolveHydrationElement(item))
         return createHost(item, document.createComment('rx list item'), this.childContext!)
     }
 
@@ -299,7 +305,8 @@ export class RxListHost implements Host{
         const hosts: Host[] = this.hosts = []
         for (let i = 0; i < data.length; i++) {
             const row = data[i]
-            if (isCompactListRowDescriptor(row, HYDRATION_ROW_ACCESS)) {
+            // Compact 行：描述按 #68 的判定；现成的行元素（§2.6.8）按 createChildHost 的 CSR 判定（同一条规则的节点形态）
+            if (isCompactListRowDescriptor(row, HYDRATION_ROW_ACCESS) || (isElementNode(row) && !(row as ExtendedElement).detachStyledChildren)) {
                 const host = new CompactElementHost(row as unknown as HTMLElement, childContext)
                 if (isAxiiRetainedObjectDiagnosticsEnabled()) {
                     trackHostCreated(host, 'CompactElementHost')

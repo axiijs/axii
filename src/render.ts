@@ -19,6 +19,18 @@ import {
     takeHydrateDeferredPayload,
 } from "./hydration";
 import {migrateSsrStyleTags} from "./StaticHost";
+import {
+    dropTopDownFreshElements,
+    dropTopDownRawElements,
+    enterTopDownContainer,
+    finishTopDownContainer,
+    getTopDownActivationMismatchBase,
+    leaveTopDownContainer,
+    markTopDownFreshElements,
+    markTopDownRawElements,
+    rememberTopDownContainer,
+    verifyTopDownRawElements,
+} from "./hydrationCursor";
 import {createElement, rematerializeDeferredFragmentChildren} from "./DOM";
 import {isFragmentNode} from "./nodeType";
 
@@ -501,6 +513,44 @@ export function hydrateRoot(
         return root
     } finally {
         endHydration()
+    }
+}
+
+/**
+ * @internal
+ * #55 新模型：在一个激活容器里自顶向下激活 source——内部入口的根容器（hydrateTopDown.ts），以及 Portal 的容器（§2.6.5：
+ * Portal 在自己的位置为容器推入新的游标栈，激活结束后弹出，主树的游标原样继续）。调用方已处于新模型的激活中。
+ *  1. 游标从容器的第一个子节点开始（容器上的 STYLE / SCRIPT / LINK 跳过，§2.3）；
+ *  2. 根 Host 由 createHydrateHost(source, 'root') 创建，hydrate('root') 按文档顺序读回服务端节点，最后认领 <!--root-->；
+ *  3. 激活的树完整之后、派发 attach（ref / layoutEffect 是用户代码）之前：容器这一层 <!--root--> 之后剩下的节点按 R5 删除并
+ *     报告；这次激活有失配时核对干净认领的原始元素（§4.1 末段）；
+ *  4. 迁移服务端样式，激活区间之外剩下的节点删除并报告一次（D13）；
+ *  5. 记下容器与根 Host，诊断开启时由入口检查开发期不变量（§4.4）。
+ * 激活中 root 被销毁（error 监听器 root.destroy()）时，激活的树已整体丢弃（render 的重入说明），3–5 都不做。
+ * CAUTION 不在这里把模式置为「新」：只有内部入口（beginTopDownHydration）会这样做，产物里没有它（§7.1 第 4 点）。
+ */
+export function hydrateContainerTopDown(container: HTMLElement, source: any, parentContext: PathContext | undefined): Root {
+    const depth = enterTopDownContainer(container)
+    const freshMark = markTopDownFreshElements()
+    const rawMark = markTopDownRawElements()
+    try {
+        const root = createRootInternal(container, parentContext, undefined, true, () => {
+            finishTopDownContainer()
+            verifyTopDownRawElements(rawMark, getTopDownActivationMismatchBase())
+        })
+        const host = root.render(source)
+        if (root.host !== host) return root
+        // Adopted stylesheets are live; drop SSR <style data-axii-ssr> without FOUC.
+        migrateSsrStyleTags(container)
+        // 报告是用户代码（onError），在激活上下文之外执行（同 hydrationCursor 的 report）
+        runOutsideHydration(() => removeHydrateContainerOrphans(container, host as {element: Node, placeholder: Node}))
+        rememberTopDownContainer(container, host)
+        return root
+    } finally {
+        // 中止时还没插入的新建元素、记下的原始元素随激活的树丢弃
+        dropTopDownFreshElements(freshMark)
+        dropTopDownRawElements(rawMark)
+        leaveTopDownContainer(depth)
     }
 }
 

@@ -8,30 +8,18 @@
  *  每个实现 PR 的验收都检查 dist 里找不到本模块独有的字符串（下面的报错文本）。
  *
  * 过程（§2.1、§2.5「根」）：
- *  1. 模式置为「新」：激活期间的 createElement 返回描述（HydrationElement）；
- *  2. 游标从容器的第一个子节点开始（容器上的 STYLE / SCRIPT / LINK 跳过）；
- *  3. 根 Host 由 createHydrateHost(source, 'root') 创建，hydrate('root') 按文档顺序逐个读回服务端节点，最后认领 <!--root-->；
- *  4. 容器上 <!--root--> 之后的节点（STYLE / SCRIPT / LINK 除外）按 R5 删除；这次激活有失配时核对干净认领的原始元素
- *     （§4.1 末段）；迁移服务端样式之后，激活区间之外剩下的节点删除（D13）；
- *  5. 诊断开启时检查开发期不变量（§4.4）。
+ *  1. 模式置为「新」：激活期间的 createElement 返回描述（HydrationElement）；记下 options.portals（Portal 按 key 找容器）；
+ *  2. 根容器按 render.hydrateContainerTopDown 激活（游标、根 Host、容器层的 R5、原始标记核对、样式迁移、D13），
+ *     Portal 在自己的位置对它的容器走同一个过程（§2.6.5）；
+ *  3. 诊断开启时对每个激活完的容器检查开发期不变量（§4.4）。
  * 失配（B3）：报告 HydrationMismatchError（交给 onError），按 R1–R5 在游标处修复，不中止（hydrationCursor.ts）。
- * 还没有实现的形态（Portal、reusable、lazy、现成节点在 B4）显式抛出 TopDownPendingError。
+ * 剩下的中止只有渲染错误（§7.8）。
  */
-import {beginTopDownHydration, endTopDownHydration, HydrationInvariantError, isCommentData, removeHydrateContainerOrphans} from "./hydration"
-import {createRootInternal} from "./render"
+import {beginTopDownHydration, endTopDownHydration, HydrationInvariantError, isCommentData} from "./hydration"
+import {hydrateContainerTopDown} from "./render"
 import type {Root} from "./render"
-import {
-    dropTopDownFreshElements,
-    dropTopDownRawElements,
-    enterTopDownContainer,
-    finishTopDownContainer,
-    getTopDownMismatchCount,
-    leaveTopDownContainer,
-    markTopDownFreshElements,
-    markTopDownRawElements,
-    verifyTopDownRawElements,
-} from "./hydrationCursor"
-import {CompactElementHost, migrateSsrStyleTags} from "./StaticHost"
+import {enterTopDownActivation, getTopDownContainers, leaveTopDownActivation} from "./hydrationCursor"
+import {CompactElementHost} from "./StaticHost"
 import {RxListHost} from "./RxListHost"
 import {StaticArrayHost} from "./StaticArrayHost"
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
@@ -41,39 +29,25 @@ import {clearTopDownAbort, isHydrationSlot} from "./hydrationElement"
 export function hydrateRootTopDown(
     container: HTMLElement,
     source: any,
-    _options?: { portals?: Record<string, HTMLElement> },
+    options?: { portals?: Record<string, HTMLElement> },
 ): Root {
     const saved = beginTopDownHydration()
-    const depth = enterTopDownContainer(container)
-    const freshMark = markTopDownFreshElements()
-    const rawMark = markTopDownRawElements()
-    const mismatchesBefore = getTopDownMismatchCount()
+    const activation = enterTopDownActivation(options?.portals)
     try {
-        // 激活的树完整之后、派发 attach（ref / layoutEffect 是用户代码，可能改动原始标记的内容）之前：
-        //  R5：容器这一层在 <!--root--> 之后剩下的节点（STYLE / SCRIPT / LINK 除外）删除并报告；
-        //  这次激活有失配时，干净认领的原始元素可能跨了角色：核对它们的内容（§4.1、§2.6.2）。
-        //  root.render 只在激活的树没有被丢弃时调用它
-        const root = createRootInternal(container, undefined, undefined, true, () => {
-            finishTopDownContainer()
-            verifyTopDownRawElements(rawMark, mismatchesBefore)
-        })
-        const host = root.render(source)
-        // 激活中 root 被销毁（error 监听器 root.destroy()，可能随后渲染了别的内容）：激活的树已整体丢弃（root.render 的重入
-        //  说明，丢弃的树在那里销毁），容器清扫与不变量都不适用
-        if (root.host !== host) return root
-        // Adopted stylesheets are live; drop SSR <style data-axii-ssr> without FOUC.
-        migrateSsrStyleTags(container)
-        // D13：CSR 的 createRoot 之后容器里只有根 Host 的区间 [host.element … <!--root-->]。服务端样式迁移之后，
-        //  区间之外的节点（不带 data-axii-ssr 的 STYLE / SCRIPT / LINK、前导的杂节点）删除并报告一次（与旧模型同一个函数）
-        if (root.host) removeHydrateContainerOrphans(container, root.host as {element: Node, placeholder: Node})
-        if (root.host && isAxiiDiagnosticsEnabled()) checkTopDownInvariants(container, root.host)
+        // 根容器与各 Portal 容器（§2.6.5）走同一个过程：render.hydrateContainerTopDown
+        const root = hydrateContainerTopDown(container, source, undefined)
+        // 激活中 root 被销毁时激活的树已整体丢弃，没有记下容器；Portal 的容器在各自的 Portal 里记下（它们的 root 属于 Portal）
+        const containers = getTopDownContainers(activation)
+        // 根容器在自己的激活完成之后最后记下；没有它就是激活的树被丢弃了（其中 Portal 的 root 随之销毁），不检查
+        if (isAxiiDiagnosticsEnabled() && containers[containers.length - 2] === container) {
+            for (let i = 0; i < containers.length; i += 2) {
+                checkTopDownInvariants(containers[i] as ParentNode, containers[i + 1] as Host)
+            }
+        }
         return root
     } finally {
-        // 中止时还没插入的新建元素、记下的原始元素随激活的树丢弃
-        dropTopDownFreshElements(freshMark)
-        dropTopDownRawElements(rawMark)
         clearTopDownAbort()
-        leaveTopDownContainer(depth)
+        leaveTopDownActivation(activation)
         endTopDownHydration(saved)
     }
 }

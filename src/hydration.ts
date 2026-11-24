@@ -42,6 +42,29 @@ export class HydrationInvariantError extends Error {
     }
 }
 
+/**
+ * #55 B4 只在开发期（诊断开启时）出现的报告（设计 §3.4、§2.6.8、§4.1、C10）。它们不是失配：结构已经与 CSR 相同，
+ * 报告的是「这里的写法在激活中有代价或者有风险」。经 reportAxiiError 交给 onError，不抛出；生产环境不检测、不分配。
+ *  - AXII_HYDRATION_ELEMENT_ACCESS：激活期间的 JSX 结果（描述）被当作节点读写（§3.1.1）；
+ *  - AXII_HYDRATION_ELEMENT_LATE_RENDER：激活中建好、没有被渲染的描述在激活之后才第一次渲染，按 CSR 物化（C10）；
+ *  - AXII_HYDRATION_LIVE_NODE：激活之外创建的现成节点按 CSR 插入，这个位置的服务端节点没有被复用（§2.6.8）；
+ *  - AXII_HYDRATION_ATTRIBUTE_RESIDUE：干净认领的元素上有客户端 props 不写的服务端属性（§4.1「属性的边界」）。
+ */
+export type HydrationDevReportCode =
+    | 'AXII_HYDRATION_ELEMENT_ACCESS'
+    | 'AXII_HYDRATION_ELEMENT_LATE_RENDER'
+    | 'AXII_HYDRATION_LIVE_NODE'
+    | 'AXII_HYDRATION_ATTRIBUTE_RESIDUE'
+
+export class HydrationDevReport extends Error {
+    readonly code: HydrationDevReportCode
+    constructor(code: HydrationDevReportCode, detail: string) {
+        super(`[axii] ${detail} (${code})`)
+        this.name = 'HydrationDevReport'
+        this.code = code
+    }
+}
+
 /** Report §3.7 mismatch (never silent wrong bindings — caller must rebuild or abort). */
 export function reportHydrationMismatch(expected: string, actual: string): HydrationMismatchError {
     const err = new HydrationMismatchError(expected, actual)
@@ -288,7 +311,14 @@ export function popHydrateRoot(): void {
  * Throws when still missing (§3.3.d).
  */
 export function resolveHydratePortalContainer(key: string): HTMLElement {
-    const fromOpt = hydratePortalEls?.[key]
+    return resolvePortalHydrateTarget(key, hydratePortalEls)
+}
+
+/**
+ * Portal 激活目标的唯一规则（两个模型共用，#55 B4）：先 options.portals[key]，再 document.getElementById(key)，都没有就抛错。
+ */
+export function resolvePortalHydrateTarget(key: string, portals: Record<string, HTMLElement> | undefined): HTMLElement {
+    const fromOpt = portals?.[key]
     if (fromOpt) return fromOpt
     const el = typeof document !== 'undefined' ? document.getElementById(key) : null
     if (!el) throw new Error(`[axii] hydrate Portal key "${key}" not found (pass options.portals or matching element id)`)

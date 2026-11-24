@@ -47,7 +47,5 @@ export function lazy(load: () => Promise<any>, fallback?: (error?: unknown) => J
     //  标记让包装自己的 host 不消费它们、原样留在 props 里（见 ComponentHost 的 forwardsProps），
     //  上面的 createElement(LoadedLazyComponent, props) 才能把它们交到真正的组件手里。
     ;(LazyWrapper as any).__axiiForwardProps = true
-    // #55：新激活模型在 B4 之前对 lazy 显式抛错，见 ComponentHost.hydrate
-    ;(LazyWrapper as any).__axiiLazy = true
     return LazyWrapper as unknown as Component
 }

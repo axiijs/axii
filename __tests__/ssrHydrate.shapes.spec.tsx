@@ -15,7 +15,7 @@ import {createElement, createRoot, configureDiagnostics, RenderContext} from '@f
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, pendingTopDown, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
