@@ -1,5 +1,6 @@
 import {Notifier, ReactiveEffect} from "data0";
-import {createHost} from "./createHost";
+import {createHost, createHydrateHost} from "./createHost";
+import {isTopDownAbort, ROOT_SLOT} from "./hydrationElement";
 import {ComponentNode} from "./types";
 import {PathContext, Host} from "./Host";
 import {assert} from "./util";
@@ -9,7 +10,7 @@ import {
     endHydration,
     findRootComment,
     isHydrateDeferredElement,
-    isHydrating,
+    isAnyHydrating,
     runOutsideHydration,
     pushHydrateRoot,
     popHydrateRoot,
@@ -131,7 +132,13 @@ function addRootCallback(
     }
 }
 
-function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment): Root {
+/**
+ * @internal
+ * hydratePlaceholder：旧模型激活（hydrateRoot）时已有的 <!--root-->。
+ * topDown：#55 新模型激活（只由内部入口 hydrateRootTopDown 传 true）——根 Host 由 createHydrateHost(source, 'root') 创建，
+ *  hydrate('root') 从容器的游标处消费内容，最后认领 <!--root-->（§2.5「根」）；不新建 placeholder、不建 fragment。
+ */
+export function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment, topDown?: boolean): Root {
     // 用户监听器与每次渲染的内部 attach 回调共用这张表（派发顺序就是登记顺序）
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     // CAUTION 当前这次渲染登记在 eventCallbacks 里的内部 attach 回调（layoutEffect / ref / Portal 桥接）。
@@ -187,12 +194,17 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             detachDispatched = false
             const running = pauseRunningEffect()
             try {
-                const placeholder = hydratePlaceholder ?? document.createComment('root')
                 let host: Host
-                // Hydrate：认领已有 <!--root-->，不新建、不整树重建（没有 fragment）
-                const frag = hydratePlaceholder ? undefined : document.createDocumentFragment()
-                frag?.appendChild(placeholder)
-                root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                let frag: DocumentFragment | undefined
+                if (topDown) {
+                    root.host = host = createHydrateHost(componentOrEl, ROOT_SLOT, pathContext)
+                } else {
+                    const placeholder = hydratePlaceholder ?? document.createComment('root')
+                    // Hydrate：认领已有 <!--root-->，不新建、不整树重建（没有 fragment）
+                    frag = hydratePlaceholder ? undefined : document.createDocumentFragment()
+                    frag?.appendChild(placeholder)
+                    root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                }
                 // CAUTION 重入销毁：树渲染到一半时 root.destroy() 被同步调用——最常见的是 error
                 //  监听器把出错的 root 销毁掉、再渲染一个错误提示（同一个 root 或另一个 root）。
                 //  那一刻树只建了一半：立刻销毁的话，渲染栈退出时剩下的组件照常渲染、跑 effect，
@@ -204,7 +216,11 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
                 renderingHost = host
                 try {
                     try {
-                        host.render()
+                        if (topDown) {
+                            host.hydrate!(ROOT_SLOT)
+                        } else {
+                            host.render()
+                        }
                     } catch (error) {
                         // 没有被销毁时保持向上抛出（root.host 仍被占用，由调用方 destroy）。
                         if (root.host === host) throw error
@@ -345,7 +361,12 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             // CAUTION 监听器（layoutEffect / ref 经 attach 触发，error 钩子等）是用户代码：
             //  hydrateRoot 期间派发时必须先退出激活上下文，见 runOutsideHydration。
             //  稳态下只多一次布尔读。
-            if (isHydrating()) return runOutsideHydration(() => root.dispatch(event, arg))
+            if (isAnyHydrating()) {
+                // #55 新模型激活的中止（失配、未实现的形态）不能被 error 监听器当作已消费：
+                //  激活在错位的游标上继续，只会得到更多失配或静默错误的 DOM。按未消费处理，由调用方向上抛出。
+                if (event === 'error' && isTopDownAbort(arg)) return false
+                return runOutsideHydration(() => root.dispatch(event, arg))
+            }
             // CAUTION render 到 detached 容器、之后手动 dispatch('attach') 是公开用法。
             //  必须同步更新 attached 标记，否则之后动态创建的组件/元素会重新注册
             //  once 的 attach 监听，永远等不到下一次 attach，layoutEffect/ref 永不执行。

@@ -13,6 +13,8 @@ import {getAxiiSource} from "./diagnostics";
 import {claimEmptyHostComment, claimEmptyHostCommentBefore, isHydrateDeferredElement, isHydrating} from "./hydration";
 import {claimTextBeforeCommentPlaceholder} from "./hydration";
 import {COMMENT_NODE, DOCUMENT_FRAGMENT_NODE, ELEMENT_NODE, isCommentNode, nodeTypeOf, TEXT_NODE} from "./nodeType";
+import {HydrationSlot, isHydrationElement, throwTopDownPending} from "./hydrationElement";
+import {claimTopDownComment, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
 
 /**
  * @internal
@@ -39,6 +41,11 @@ class EmptyHost implements Host{
             return
         }
         this.placeholder.parentNode?.insertBefore(this.element, this.placeholder)
+    }
+    // #55 新模型（§2.5）：认领 <!--empty-->，然后认领 slot
+    hydrate(slot: HydrationSlot) {
+        this.element = claimTopDownComment('empty')
+        this.placeholder = claimTopDownComment(slot)
     }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
@@ -67,6 +74,13 @@ class PrimitiveHost implements Host{
         const text = typeof this.source === 'boolean' ? '' : this.source.toString()
         this.element = document.createTextNode(text);
         insertBefore(this.element, this.placeholder)
+    }
+    // #55 新模型（§2.5）：非空时认领文本单元，空时（服务端什么都不写）在游标处插入 Text('')，然后认领 slot。
+    //  PrimitiveHost 只有 Comment 种类的 slot（元素子节点里的文本是 createElement 的静态文本，不建 Host）。
+    hydrate(slot: HydrationSlot) {
+        const text = typeof this.source === 'boolean' ? '' : this.source.toString()
+        this.element = text === '' ? insertTopDownEmptyText() : claimTopDownText(text)
+        this.placeholder = claimTopDownComment(slot)
     }
     destroy(parentHandle?: boolean) {
         trackHostDestroyed(this)
@@ -129,6 +143,7 @@ export type HostPosition = {
     debugSource?: ReturnType<typeof getAxiiSource>,
 }
 
+// CAUTION 新激活模型的分派 createHydrateHost 在下面，是同一条分派链的另一份（#55 §2.4.1）：新增一种 source 两处一起改。
 export function createHost(source: any, placeholder: UnhandledPlaceholder, context: PathContext, position?: HostPosition) {
     // CAUTION 节点种类一律按 nodeType 判断（见 nodeType.ts）：组件 / 函数节点返回的、激活时认领到的
     //  节点可能来自另一个 realm（同源 iframe），instanceof 恒为 false（#58）。
@@ -190,6 +205,71 @@ export function createHost(source: any, placeholder: UnhandledPlaceholder, conte
     } else if (nodeType === TEXT_NODE || nodeType === COMMENT_NODE) {
         host = new NodeHost(source, placeholder, pathContext)
         typeIndex = 9
+    } else if (isHydrationElement(source)) {
+        // #55：激活期间的描述（新模型）走到了 CSR 的分派（reusable() 的构造、激活中存下的 JSX 之后才渲染，C6 / C10）。
+        //  在链尾判定，常见类型永远到不了这里（§2.2「事后渲染」，B4 落地）。
+        throwTopDownPending('a description rendered through createHost (reusable() / rendered after the activation)', 'B4')
+    } else {
+        assert(false, `unknown child type ${source}`)
+    }
+
+    if (isAxiiRetainedObjectDiagnosticsEnabled()) {
+        trackHostCreated(host!, HOST_TYPE_NAMES[typeIndex!])
+    }
+
+    return host!
+}
+
+/**
+ * @internal
+ * #55 新激活模型的分派（设计 docs/ssr-support/hydration-top-down.md §2.4、§2.4.1）：激活期间由各 Host 调用，
+ * 创建的 Host 随后由调用方 hydrate(slot)，从游标处消费自己的区域与 placeholder。构造时的 placeholder 就是 slot 常量。
+ * CAUTION 与上面的 createHost 是同一条分派链的两份：类型判定的顺序相同，用同一张 HOST_TYPE_NAMES 登记 trackHostCreated。
+ *  新增一种 source 必须同时改两处。区别只有：元素分支收的是描述（HydrationElement，不是 DOM 节点）；
+ *  还没有在新模型里实现的种类显式抛错（列表、数组在 B2，reusable 与现成节点在 B4）。
+ */
+export function createHydrateHost(source: any, slot: HydrationSlot, context: PathContext, position?: HostPosition): Host {
+    // 描述的 JSX source 在 rawProps 上（CSR 的元素由 applyElementProps 写到 __axiiSource）
+    const ownSource = isHydrationElement(source) ? source.rawProps?.__source as ReturnType<typeof getAxiiSource> : getAxiiSource(source)
+    const pathContext = ownSource && ownSource !== context.debugSource ?
+        {...context, debugSource: ownSource} :
+        context
+    const placeholder = slot as unknown as UnhandledPlaceholder
+    let host: Host
+    let typeIndex: number
+    const sourceType = typeof source
+    let nodeType: number | undefined
+    if (sourceType === 'function') {
+        if (isAtom(source)) {
+            host = new AtomHost(source, placeholder, pathContext, position)
+            typeIndex = 7
+        } else {
+            host = new FunctionHost(source, placeholder, pathContext, position)
+            typeIndex = 8
+        }
+    } else if (isHydrationElement(source)) {
+        // 元素 / Fragment 描述 ≡ createHost 的元素 / 片段分支
+        host = new StaticHost(source as any, placeholder, pathContext)
+        typeIndex = 0
+    } else if ((nodeType = nodeTypeOf(source)) === ELEMENT_NODE || nodeType === DOCUMENT_FRAGMENT_NODE) {
+        throwTopDownPending('a DOM node created outside hydration as a Host source', 'B4')
+    } else if (sourceType === 'string' || sourceType === 'number' || sourceType === 'boolean' || sourceType === 'bigint') {
+        host = new PrimitiveHost(source, placeholder, pathContext)
+        typeIndex = 1
+    } else if (Array.isArray(source)) {
+        throwTopDownPending('an array (StaticArrayHost)', 'B2')
+    } else if (source === undefined || source === null) {
+        host = new EmptyHost(pathContext, placeholder)
+        typeIndex = 3
+    } else if (source instanceof RxList) {
+        throwTopDownPending('an RxList (RxListHost)', 'B2')
+    } else if (source instanceof ReusableHost) {
+        throwTopDownPending('reusable()', 'B4')
+    } else if (sourceType === 'object' && typeof source?.type === 'function') {
+        host = new ComponentHost(source, placeholder, pathContext)
+        typeIndex = 6
+    } else if (nodeType === TEXT_NODE || nodeType === COMMENT_NODE) {
+        throwTopDownPending('a DOM node created outside hydration as a Host source', 'B4')
     } else {
         assert(false, `unknown child type ${source}`)
     }

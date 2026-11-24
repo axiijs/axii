@@ -14,7 +14,7 @@ import {
     UnhandledPlaceholder
 } from "./DOM";
 import {Host, PathContext} from "./Host";
-import {createHost} from "./createHost";
+import {createHost, createHydrateHost} from "./createHost";
 import {
     Component,
     ComponentNode,
@@ -37,7 +37,8 @@ import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
-import {isHydrating, runOutsideHydration} from "./hydration";
+import {isAnyHydrating, isHydrating, runOutsideHydration} from "./hydration";
+import {HydrationSlot, isHydrationElement, throwTopDownPending} from "./hydrationElement";
 import {getComponentTypeId, componentTypeIds} from "./styleSerialize";
 
 
@@ -119,6 +120,8 @@ const EMPTY_COMPONENT_PROP: Props = {}
 //  所以这类组件的 host 不捕获 ref、不解析 `$` 配置，合并后原样留在 props 里转发。
 //  用组件函数上的内部标记识别（同 Portal 的 __axiiPortal），不进公开类型。
 const FORWARD_PROPS_MARK = '__axiiForwardProps'
+// lazy() 的包装组件（lazy.ts）。只给 #55 新模型的激活用：lazy 的激活在 B4 落地，之前显式抛错
+export const LAZY_COMPONENT_MARK = '__axiiLazy'
 function forwardsProps(type: Component): boolean {
     return (type as any)[FORWARD_PROPS_MARK] === true
 }
@@ -344,8 +347,10 @@ export class ComponentHost implements Host{
         assert(name !=='self', '"self" is reserved, please use another element name.')
 
         // 支持 use 里面直接传入 HTMLElement 覆写整个节点（按 nodeType 判断，可以是另一个 realm 的元素，见 nodeType.ts）
-        if (name && isElementNode(this.itemConfig[name]?.use)) {
-            return this.itemConfig[name]!.use as HTMLElement
+        // #55：新模型激活期间，父级 JSX 里的元素是描述（§3.2，判定追加在旧判定之后）
+        const use = name ? this.itemConfig[name]?.use : undefined
+        if (name && (isElementNode(use) || isHydrationElement(use))) {
+            return use as HTMLElement
         }
 
 
@@ -402,7 +407,9 @@ export class ComponentHost implements Host{
                 const targetNode = node as ExtendedElement
                 thisItemConfig.eventTarget.forEach(receiveDispatch => receiveDispatch((sourceEvent: Event) => {
                     const EventConstructor = sourceEvent.constructor as typeof Event
-                    return dispatchEvent(targetNode, new EventConstructor(sourceEvent.type, sourceEvent))
+                    // #55：新模型激活期间 node 是描述，派发时取它认领到的元素（§3.2）
+                    const target = isHydrationElement(targetNode) ? targetNode.node as ExtendedElement : targetNode
+                    return dispatchEvent(target, new EventConstructor(sourceEvent.type, sourceEvent))
                 }))
             }
         }
@@ -739,6 +746,17 @@ export class ComponentHost implements Host{
         return normalizedProps
     }
     render(): void {
+        this.renderOrHydrate(undefined)
+    }
+    // #55 新模型（§2.4「组件边界」）：调用组件，用 createHydrateHost(结果, 同一个 slot) 建 innerHost 并 hydrate(slot)；
+    //  完成后组件与 innerHost 共享 placeholder（与 CSR 相同）。其余步骤（错误钩子、effect、layoutEffect / ref）与 render 共用。
+    hydrate(slot: HydrationSlot): void {
+        // lazy() 的激活（§2.6.9）在 B4 落地，之前显式抛错
+        if ((this.type as any)[LAZY_COMPONENT_MARK]) throwTopDownPending('lazy()', 'B4')
+        this.renderOrHydrate(slot)
+    }
+    // render 与 hydrate 共用（§5.1）：slot 为 undefined 是 CSR
+    renderOrHydrate(slot: HydrationSlot | undefined): void {
         if (this.element !== this.placeholder) {
             // CAUTION 因为现在没有 diff，所以不可能出现 Component rerender
             assert(false, 'should never rerender')
@@ -777,16 +795,26 @@ export class ComponentHost implements Host{
             // 就用当前 component 的 placeholder
             const childContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
             try {
-                this.innerHost = createHost(node, this.placeholder, childContext)
+                this.innerHost = slot === undefined ?
+                    createHost(node, this.placeholder, childContext) :
+                    createHydrateHost(node, slot, childContext)
             } catch (e) {
                 // 组件函数成功返回、但返回值不是合法 child 时，错误同样属于本组件的
                 // render 阶段。错误钩子消费后用 EmptyHost 保持区域可销毁，而不是让
                 // root.render 同步击穿并留下一个已占用的 root.host。
                 if (!this.pathContext.root.dispatch('error', e)) throw e
                 renderFailed = true
-                this.innerHost = createHost(null, this.placeholder, childContext)
+                this.innerHost = slot === undefined ?
+                    createHost(null, this.placeholder, childContext) :
+                    createHydrateHost(null, slot, childContext)
             }
-            this.innerHost.render()
+            if (slot === undefined) {
+                this.innerHost.render()
+            } else {
+                this.innerHost.hydrate!(slot)
+                // 组件与 innerHost 共享 placeholder（§2.4）
+                this.placeholder = this.innerHost.placeholder
+            }
         })
 
         if (renderFailed) {
@@ -815,7 +843,7 @@ export class ComponentHost implements Host{
             //  已渲染好的树永远挂不上容器）；未注册时保持向上抛出的行为。
             // CAUTION useEffect 回调是用户代码，不参与激活时的节点认领（见 runOutsideHydration）；
             //  它在组件 render 里同步执行，hydrateRoot 期间必须先退出激活上下文。稳态只多一次布尔读。
-            const handle = isHydrating() ?
+            const handle = isAnyHydrating() ?
                 runOutsideHydration(() => this.runWithErrorHook(effect)) :
                 this.runWithErrorHook(effect)
             if (typeof handle === 'function') {
