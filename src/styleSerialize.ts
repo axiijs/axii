@@ -609,8 +609,9 @@ export function scanCssComponentValues(text: string, start: number, flags: numbe
     //  （hash / at-keyword token，#url( 不是 url token）
     let name = -1
     // 当前名字里最后一个非 ASCII 字符（未转义）的位置。Chromium 把所有非 ASCII 都当名字字符，现行
-    //  CSS Syntax 3 只认其中若干区段（U+00A0 等不在内）；SSR 的输出由各家引擎解析，所以名字在非 ASCII
-    //  字符之后的部分是 url 时，同样按 url token 判断（\u00A0url( 在收窄的引擎里是 url token）。
+    //  CSS Syntax 3 只认其中若干区段（U+00A0 等不在内）；SSR 的输出由各家引擎解析。名字在非 ASCII 字符
+    //  之后的部分是 url 时（\u00A0url(），一种引擎里是普通函数、另一种里是 url token，两种分界不同，
+    //  无法确定，返回 -1。
     let nonAscii = -1
     let i = start
     while (i < length) {
@@ -637,7 +638,8 @@ export function scanCssComponentValues(text: string, start: number, flags: numbe
         name = -1
         nonAscii = -1
         if (c === 0x28) {
-            if ((nameStart >= 0 && isCssUrlName(text, nameStart, i)) || (nameNonAscii >= 0 && isCssUrlName(text, nameNonAscii + 1, i))) {
+            if (nameNonAscii >= 0 && isCssUrlName(text, nameNonAscii + 1, i)) return -1
+            if (nameStart >= 0 && isCssUrlName(text, nameStart, i)) {
                 let j = i + 1
                 while (j < length && isCssWhitespace(text.charCodeAt(j))) j++
                 const q = text.charCodeAt(j)
