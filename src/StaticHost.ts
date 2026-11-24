@@ -921,7 +921,8 @@ function collectTopDownDynamicChildren(desc: HydrationElement, path: number[], i
         const childType = typeof child
         if (childType === 'string' || childType === 'number' || childType === 'bigint') continue
         if (isHydrationElement(child)) {
-            collectTopDownDynamicChildren(child, path.concat(index), source, out)
+            // 已认领的描述（同一个描述出现第二次）没有 children 了，遍历走到它时显式抛错（DOM.hydrateDescriptionChildren）
+            if (child.node === null) collectTopDownDynamicChildren(child, path.concat(index), source, out)
         } else if (!isDomNode(child)) {
             out.push({
                 placeholder: (childType === 'function' ? TEXT_SLOT : UNHANDLED_CHILD_SLOT) as unknown as UnhandledPlaceholder,

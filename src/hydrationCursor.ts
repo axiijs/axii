@@ -14,7 +14,7 @@
  *  只容忍 ssr.ts 确实会写出的差异：非空文本单元可以带也可以不带 axii:t 包边（§3.2.1 A2），字符数据父节点里没有
  *  任何 axii:* 标记（各文本单元首尾相接，A3），textarea 的 value 子文本（认领元素时清掉，见 DOM.ts）。
  *
- * CAUTION 这个模块在 axii/ssr 的导入链之外，但仍不在模块顶层碰 document / Node（与 hydration.ts 一致）。
+ * CAUTION 这个模块在 axii/ssr 的导入链上（ssr.ts → ComponentHost → createHost → 这里）：模块顶层不能碰 document / Node。
  */
 import {
     isCharacterDataParent,
@@ -75,7 +75,9 @@ function isContainerAsset(node: ChildNode): boolean {
 function peek(expectedElementName?: string): ChildNode | null {
     let node = cursorNext
     if (cursorIsContainer) {
-        while (node !== null && isContainerAsset(node) && (node as Element).localName !== expectedElementName) {
+        // 服务端样式（data-axii-ssr）永远跳过：期望的正是 <style> 时也不能把它当作应用自己的元素
+        while (node !== null && isContainerAsset(node)
+            && ((node as Element).localName !== expectedElementName || (node as Element).hasAttribute('data-axii-ssr'))) {
             node = node.nextSibling
         }
         cursorNext = node
@@ -195,19 +197,9 @@ export function claimTopDownEmptyTextPlaceholder(): Text {
 }
 
 /**
- * 多个 child 里的空字符串（ElementChildText）：CSR 追加一个空 Text。服务端写 `<!--axii:0-->`，
- * 但 null / undefined 之外只有这一个 child 时什么都不写（ssr.serializeChildren 的 soleChild），所以哨兵可有可无：
- * 有就换成 Text('')，没有就在游标处插入。空 Text 不可见，两种写法都不是失配。
- */
-export function claimTopDownOptionalEmptyText(): Text {
-    const node = peek()
-    if (!cursorCharData && node !== null && isCommentData(node, 'axii:0')) return claimTopDownEmptyTextPlaceholder()
-    return insertTopDownEmptyText()
-}
-
-/**
  * 在游标处插入一个 Text('')，不消费游标处的节点：空的 Comment-ph 文本（服务端在 placeholder 前面什么都不写，
- * §3.2.1 A1c，随后由调用方认领 placeholder），字符数据父节点里的空单元。
+ * §3.2.1 A1c，随后由调用方认领 placeholder），字符数据父节点里的空单元，以及服务端不写哨兵的空字符串 child
+ * （null / undefined 之外唯一的 child，ssr.serializeChildren 的 soleChild，由调用方按 children 判定）。
  */
 export function insertTopDownEmptyText(): Text {
     const text = document.createTextNode('')
@@ -220,6 +212,13 @@ export function insertTopDownEmptyText(): Text {
  * 不符是失配（B1 报告并抛出；向前查找与插入是 B3 的 R3）。
  */
 export function claimTopDownComment(data: string): Comment {
+    if (cursorCharData) {
+        // 字符数据父节点里服务端写不出注释（CSR 在这里为 boolean child 建的 PrimitiveHost 有 <!--unhandledChild-->，
+        //  服务端跳过 boolean，ssr.serializeChildren）：与空单元一样在游标处插入，DOM ≡ CSR
+        const comment = document.createComment(data)
+        cursorParent!.insertBefore(comment, cursorNext)
+        return comment
+    }
     const node = peek()
     if (node !== null && node.nodeType === COMMENT_NODE && (node as Comment).data === data) {
         cursorNext = node.nextSibling

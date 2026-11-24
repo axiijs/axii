@@ -9,6 +9,7 @@ import {
     beginHydration,
     endHydration,
     findRootComment,
+    HydrationMismatchError,
     isHydrateDeferredElement,
     isAnyHydrating,
     runOutsideHydration,
@@ -196,7 +197,11 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
             try {
                 let host: Host
                 let frag: DocumentFragment | undefined
-                if (topDown) {
+                // CAUTION 只有内部入口的那一次 render 是激活：之后 root.destroy() 再 render（包括激活中 error 监听器
+                //  销毁 root、渲染错误提示）都是 CSR
+                const hydrateTopDown = topDown
+                topDown = false
+                if (hydrateTopDown) {
                     root.host = host = createHydrateHost(componentOrEl, ROOT_SLOT, pathContext)
                 } else {
                     const placeholder = hydratePlaceholder ?? document.createComment('root')
@@ -216,7 +221,7 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
                 renderingHost = host
                 try {
                     try {
-                        if (topDown) {
+                        if (hydrateTopDown) {
                             host.hydrate!(ROOT_SLOT)
                         } else {
                             host.render()
@@ -228,7 +233,8 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
                         //  经过 dispatch 的错误已经在那里报告（见 dispatch 的说明），到这里的是没有经过
                         //  dispatch 的（元素里非法 child 的断言等）：同样经 reportAxiiError 报告，
                         //  不抛出、也不静默丢弃（#58）。
-                        reportAxiiError(error)
+                        //  #55 新模型的失配在抛出之前已经报告过（reportHydrationMismatch），不重复报告。
+                        if (!(error instanceof HydrationMismatchError)) reportAxiiError(error)
                     }
                     // CAUTION 被丢弃的树在 renderingHost 仍指向它的时候销毁：它的清理函数抛出的错误
                     //  同样不属于 root 现在的内容，由 dispatch 报告并按已消费处理，销毁不会停在第一个

@@ -63,10 +63,11 @@ import {
 import {HydrationElement, isHydrationElement, TEXT_SLOT, throwTopDownPending, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
     claimTopDownElement,
-    claimTopDownOptionalEmptyText,
+    claimTopDownEmptyTextPlaceholder,
     claimTopDownText,
     enterTopDownElement,
     exitTopDownElement,
+    insertTopDownEmptyText,
 } from "./hydrationCursor";
 import type {Host} from "./Host";
 
@@ -1755,9 +1756,16 @@ export type TopDownInnerHosts = {hosts: Host[], next: number}
  * unhandledChildren 不建立：子 Host 已由 StaticHost 预先构造。
  */
 export function hydrateElementDescription(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined): HTMLElement | SVGElement | DocumentFragment {
+    if (desc.node !== null) throwConsumedDescription()
     return desc.tag === Fragment ?
         hydrateFragmentDescriptionChildren(desc, innerHosts, false) :
         hydrateElementDescriptionAt(desc, innerHosts, false)
+}
+
+// 同一个描述在一次激活里第二次出现（const s = <span/>; <div>{s}{s}</div>，或激活中存下的 JSX 再次渲染，C6）：
+//  CSR 第二次插入时把节点挪走，服务端写两份；描述已经瘦身，「已有 node 就当作那个元素」的分支在 B4 落地，之前显式抛错。
+function throwConsumedDescription(): never {
+    throwTopDownPending('the same JSX element rendered more than once (C6)', 'B4')
 }
 
 // parentAdoptsSvg：父元素是 SVG 元素且不是 HTML integration point。HTML / SVG 同名的标签（a / title / style / script）
@@ -1848,6 +1856,10 @@ function hydrateDescriptionChildren(
     debugSource: AxiiSource | undefined,
 ): TopDownLiftedMetadata | undefined {
     let lifted: TopDownLiftedMetadata | undefined
+    // 空字符串 child：服务端写 <!--axii:0-->，只有它是 null / undefined 之外唯一的 child 时什么都不写
+    //  （ssr.serializeChildren 的 isSingleEmptyString / soleChild，元素与 Fragment 的 children 各自判定）。
+    //  按同一条规则决定认领哨兵还是插入，不能见到 axii:0 就拿：它可能是后面单元（atom、函数）的哨兵。
+    let soleChild: boolean | undefined
     for (let index = 0; index < children.length; index++) {
         const child = children[index]
         if (child == null) continue
@@ -1855,11 +1867,21 @@ function hydrateDescriptionChildren(
         if (childType === 'string' || childType === 'number' || childType === 'bigint') {
             const text = child.toString()
             if (text === '') {
-                claimTopDownOptionalEmptyText()
+                if (soleChild === undefined) {
+                    let nonNull = 0
+                    for (let i = 0; i < children.length; i++) if (children[i] != null) nonNull++
+                    soleChild = nonNull === 1
+                }
+                if (soleChild) {
+                    insertTopDownEmptyText()
+                } else {
+                    claimTopDownEmptyTextPlaceholder()
+                }
             } else {
                 claimTopDownText(text)
             }
         } else if (isHydrationElement(child)) {
+            if (child.node !== null) throwConsumedDescription()
             const node = child.tag === Fragment ?
                 hydrateFragmentDescriptionChildren(child, innerHosts, childAdoptsSvg) :
                 hydrateElementDescriptionAt(child, innerHosts, childAdoptsSvg)

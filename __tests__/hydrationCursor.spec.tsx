@@ -11,7 +11,6 @@ import {
     claimTopDownComment,
     claimTopDownElement,
     claimTopDownEmptyTextPlaceholder,
-    claimTopDownOptionalEmptyText,
     claimTopDownText,
     enterTopDownContainer,
     enterTopDownElement,
@@ -111,18 +110,15 @@ describe('text units', () => {
         expectMismatch(() => claimTopDownEmptyTextPlaceholder(), /expected Comment\("axii:0"\), got Comment\("computed node"\)/)
     })
 
-    test('optional empty text (a "" child among others): sentinel or not, an empty Text is left at the cursor, no report', () => {
-        const withSentinel = element('p', '<!--axii:0--><!--axii:t-->a<!--axii:/t-->')
-        claimTopDownOptionalEmptyText()
-        claimTopDownText('a')
+    test('an empty unit without a sentinel (sole "" child, empty Comment-ph text) is inserted at the cursor; the next unit\'s axii:0 is left alone', () => {
+        // <p><>{''}</>{atom('')}</p>：Fragment 里唯一的 '' 服务端不写哨兵，后面的 axii:0 属于 atom（DOM.hydrateDescriptionChildren 按 children 判定）
+        const p = element('p', '<!--axii:0-->')
+        const sole = insertTopDownEmptyText()
+        const atomText = claimTopDownEmptyTextPlaceholder()
         exitTopDownElement()
-        expect(nodes(withSentinel)).toEqual(['""', '"a"'])
-        leaveTopDownContainer(depth)
-        // ssr.serializeChildren writes nothing for a "" that is the only non-null child
-        const without = element('p', '')
-        claimTopDownOptionalEmptyText()
-        exitTopDownElement()
-        expect(nodes(without)).toEqual(['""'])
+        expect(p.firstChild).toBe(sole)
+        expect(p.lastChild).toBe(atomText)
+        expect(nodes(p)).toEqual(['""', '""'])
         expect(reports).toEqual([])
     })
 
@@ -145,11 +141,23 @@ describe('character-data parents (textarea / title / style / script, §2.6.6)', 
         expect(claimTopDownText('3')).toBe(title.childNodes[1])
         const empty = claimTopDownEmptyTextPlaceholder()
         expect(empty.nodeValue).toBe('')
-        expect(claimTopDownOptionalEmptyText().nodeValue).toBe('')
+        expect(insertTopDownEmptyText().nodeValue).toBe('')
         claimTopDownText(') - ')
         claimTopDownText('Site')
         exitTopDownElement()
         expect(nodes(title)).toEqual(['"Inbox ("', '"3"', '""', '""', '") - "', '"Site"'])
+        expect(reports).toEqual([])
+    })
+
+    test('structure Comments have no server form there either: they are inserted at the cursor (a boolean child\'s PrimitiveHost)', () => {
+        // <title>{false}x</title>：服务端跳过 boolean，CSR 有 Text('') + <!--unhandledChild-->
+        const title = element('title', 'x')
+        insertTopDownEmptyText()
+        const comment = claimTopDownComment('unhandledChild')
+        claimTopDownText('x')
+        exitTopDownElement()
+        expect(comment.parentNode).toBe(title)
+        expect(nodes(title)).toEqual(['""', '<!--unhandledChild-->', '"x"'])
         expect(reports).toEqual([])
     })
 
@@ -207,6 +215,14 @@ describe('the container level', () => {
         expect(claimTopDownElement('div', false, null)).toBe(root.childNodes[2])
         expect(claimTopDownElement('style', false, null)).toBe(root.childNodes[3])
         expect(claimTopDownComment('root')).toBe(root.childNodes[4])
+        finishTopDownContainer()
+        expect(reports).toEqual([])
+    })
+
+    test('the server style payload (data-axii-ssr) is skipped even when a <style> element is expected', () => {
+        const root = container('<style data-axii-ssr>.a{}</style><style>.own{}</style><!--root-->')
+        expect(claimTopDownElement('style', false, null)).toBe(root.childNodes[1])
+        claimTopDownComment('root')
         finishTopDownContainer()
         expect(reports).toEqual([])
     })

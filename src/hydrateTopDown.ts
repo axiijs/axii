@@ -34,7 +34,10 @@ export function hydrateRootTopDown(
     const depth = enterTopDownContainer(container)
     try {
         const root = createRootInternal(container, undefined, undefined, true)
-        root.render(source)
+        const host = root.render(source)
+        // 激活中 root 被销毁（error 监听器 root.destroy()，可能随后渲染了别的内容）：激活的树已整体丢弃（root.render 的重入
+        //  说明），游标停在中途，容器检查与不变量都不适用
+        if (root.host !== host) return root
         finishTopDownContainer()
         // Adopted stylesheets are live; drop SSR <style data-axii-ssr> without FOUC.
         migrateSsrStyleTags(container)

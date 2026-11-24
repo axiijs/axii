@@ -159,6 +159,130 @@ describe('metadata collected by the claim step ≡ CSR createElement (§2.6.1)',
     })
 })
 
+describe('server forms that are easy to misread (review findings)', () => {
+    // 服务端对「null / undefined 之外唯一的 ''」不写 axii:0，元素与 Fragment 的 children 各自判定；
+    //  见到 axii:0 就拿的话，Fragment 里的 '' 会拿走后面 atom 的哨兵，atom 再认领时失配
+    test.each([
+        ['Fragment whose only child is "" before an empty atom', (a: any, createElement: any, Fragment: any) => <p><Fragment>{''}</Fragment>{a}</p>],
+        ['"" after a null, before an empty atom', (a: any, createElement: any) => <p>{null}{''}</p>],
+        ['"" among other children', (a: any, createElement: any) => <p>{''}{a}{'x'}</p>],
+        ['function → Fragment with a sole "" before an empty function', (a: any, createElement: any, Fragment: any) => <p>{() => <Fragment>{''}</Fragment>}{() => a()}</p>],
+    ])('%s: DOM ≡ CSR, no report', (_name, body) => {
+        const make = () => {
+            const a = atom('')
+            function App({}: any, {createElement, Fragment}: RenderContext) { return body(a, createElement, Fragment) }
+            return {App, a}
+        }
+        const csrEl = mount()
+        const c = make()
+        createRoot(csrEl).render(createElement(c.App, null))
+        const hyd = ssrInto(createElement(make().App, null))
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        expect(hyd.childNodes.length).toBe(csrEl.childNodes.length)
+        expect(hyd.firstChild!.childNodes.length).toBe(csrEl.firstChild!.childNodes.length)
+        for (const s of [c, h]) s.a('v')
+        expect(kids(hyd)).toBe(kids(csrEl))
+    })
+
+    test('a boolean child of <title> / <style> (the server skips it): hydrates in place ≡ CSR', () => {
+        const make = () => {
+            const dark = atom(false)
+            function App({}: any, {createElement}: RenderContext) {
+                return <div><title>{false}{'x'}</title><style>{() => dark() && '.d{color:red}'}{false}</style></div>
+            }
+            return {App, dark}
+        }
+        const csrEl = mount()
+        const c = make()
+        createRoot(csrEl).render(createElement(c.App, null))
+        const hyd = ssrInto(createElement(make().App, null))
+        const title = hyd.querySelector('title')!.firstChild
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        expect(Array.from(hyd.querySelector('title')!.childNodes).map(n => n.nodeType))
+            .toEqual(Array.from(csrEl.querySelector('title')!.childNodes).map(n => n.nodeType))
+        expect(hyd.querySelector('title')!.childNodes[2]).toBe(title)
+    })
+
+    test('a root destroyed and re-rendered by an error listener during the activation renders with CSR; the discarded tree raises no second error', () => {
+        const make = (clientThrows: boolean) => function App({}: any, {createElement, pathContext}: RenderContext) {
+            if (pathContext) {
+                pathContext.root.on('error', () => {
+                    pathContext.root.destroy()
+                    pathContext.root.render(createElement('p', null, 'fallback'))
+                })
+            }
+            function Bad() { if (clientThrows) throw new Error('client only'); return createElement('b', null, 'ok') }
+            return <div><Bad/>{'tail'}</div>
+        }
+        const hyd = ssrInto(createElement(make(false), null))
+        const root = hydrateRootTopDown(hyd, createElement(make(true), null))
+        // 被丢弃的激活树里的失配只报告一次（认领处），没有容器检查等后续报告
+        expect(reports.map(e => (e as Error).message)).toEqual(['[axii] hydration mismatch: expected Comment("empty"), got Element(<b>)'])
+        expect(hyd.querySelector('p')?.textContent).toBe('fallback')
+        // 之后 destroy + render 仍是 CSR
+        root.destroy()
+        root.render(createElement('i', null, 'again'))
+        expect(hyd.querySelector('i')?.textContent).toBe('again')
+    })
+
+    test('the same JSX element rendered twice in one activation throws TopDownPendingError (C6, B4) instead of a TypeError', () => {
+        const make = () => function App({}: any, {createElement}: RenderContext) {
+            const s = <span>s</span>
+            return <div>{s}{s}</div>
+        }
+        const hyd = mount()
+        hyd.innerHTML = '<div><span>s</span><span>s</span></div><!--root-->'
+        let thrown: unknown
+        try { hydrateRootTopDown(hyd, createElement(make(), null)) } catch (e) { thrown = e }
+        expect(thrown).toBeInstanceOf(TopDownPendingError)
+        expect((thrown as Error).message).toContain('(#55 B4)')
+    })
+})
+
+describe('§3.2 B1 call points: $name:_use and $name:_eventTarget', () => {
+    test('$name:_use given a JSX element from the parent: the description is claimed at the named position', () => {
+        const make = () => {
+            const n = atom(1)
+            function Child({}: any, {createElement}: RenderContext) { return <div><span as="box">own</span><i>tail</i></div> }
+            function App({}: any, {createElement}: RenderContext) { return <Child $box:_use={<section>{n}</section>}/> }
+            return {App, n}
+        }
+        const csrEl = mount()
+        const c = make()
+        createRoot(csrEl).render(createElement(c.App, null))
+        const hyd = ssrInto(createElement(make().App, null))
+        const section = hyd.querySelector('section')
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        expect(hyd.querySelector('section')).toBe(section)
+        for (const s of [c, h]) s.n(2)
+        expect(kids(hyd)).toBe(kids(csrEl))
+    })
+
+    test('$name:_eventTarget dispatches to the claimed element, not to its description', () => {
+        const make = () => {
+            const log: string[] = []
+            let forward: ((e: Event) => any) | undefined
+            function Child({}: any, {createElement}: RenderContext) { return <button as="btn" onClick={() => log.push('clicked')}>b</button> }
+            function App({}: any, {createElement}: RenderContext) {
+                return <div><Child $btn:_eventTarget={(dispatch: (e: Event) => any) => { forward = dispatch }}/></div>
+            }
+            return {App, log, forward: (e: Event) => forward!(e)}
+        }
+        const hyd = ssrInto(createElement(make().App, null))
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        h.forward(new MouseEvent('click'))
+        expect(h.log).toEqual(['clicked'])
+        expect(reports).toEqual([])
+    })
+})
+
 describe('component boundary and construction order (§2.4)', () => {
     test('all child hosts of a static subtree are constructed before any of them hydrates: component type ids follow CSR order', () => {
         // 服务端 HTML 用另一组同样的组件生成，激活用的组件第一次出现在激活里，类型 id 在这里按构造顺序分配
