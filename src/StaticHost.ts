@@ -1094,7 +1094,7 @@ export class StaticHost implements Host {
             } else {
                 // CAUTION 一定要保存退订函数，元素如果在 root attach 之前被销毁，
                 //  必须退订，否则 attach 时会把已销毁的元素重新附加到 ref 上。
-                this.removeAttachListener = root.on('attach', () => this.attachRefs(), {once: true})
+                this.removeAttachListener = root.onAttachForRender(() => this.attachRefs())
             }
         }
     }
@@ -1273,7 +1273,7 @@ export class StaticHost implements Host {
         }
     }
     // CAUTION 原型方法而不是实例箭头函数：每个元素 host 都有这个字段的话，长列表每行多一个闭包。
-    //  需要脱离 this 使用的注册点（root.on('attach')）自己包一层箭头函数，只有带 ref 的元素才分配。
+    //  需要脱离 this 使用的注册点（root.onAttachForRender）自己包一层箭头函数，只有带 ref 的元素才分配。
     //  attach 抛错不能中断同元素的兄弟 ref 与后续渲染流程
     //  （flush 队列路径已逐条隔离，这里的同步连通路径必须对齐），错误语义与 detach 一致。
     attachRefs() {

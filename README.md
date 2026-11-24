@@ -128,10 +128,12 @@ We provide progressively organized examples and explanations in the documentatio
 
 axii can string-render on the server and activate the same DOM in the browser without a Virtual DOM pass.
 
+> **`hydrateRoot` is experimental.** In the shapes listed under [Known hydration limits](#known-hydration-limits) it can activate the wrong server node: content is lost, `hydrateRoot` throws, or attributes and listeners silently land on another element. Check your pages against that list.
+
 | API | Package | Role |
 |---|---|---|
 | `renderToString(source)` | `axii/ssr` | Node-safe HTML serialization — **no DOM globals** |
-| `hydrateRoot(container, source, options?)` | `axii` | Claim existing nodes; bind events and reactive hosts |
+| `hydrateRoot(container, source, options?)` | `axii` | Claim existing nodes; bind events and reactive hosts (**experimental**) |
 
 ```jsx
 /* @jsx createElement */
@@ -173,6 +175,17 @@ hydrateRoot(root, <App />)
 - **lazy**: the server always emits the fallback (or `null`) and does not await `load()`; the client starts loading after hydrate.
 - Not in scope: streaming (`renderToStream`), app-state serialization.
 - Design detail and host/marker contracts: `docs/ssr-support/`.
+
+### Known hydration limits
+
+`hydrateRoot` claims server nodes while your JSX runs: children before their parent, and each element takes the first unclaimed server element with the same tag in that order. Within one component's JSX this matches the server output — same tags at different depths, list rows, and `dangerouslySetInnerHTML` markup activate in place. It goes wrong where a child component or a function child renders **after** its parent's JSX has run, because the server writes nothing that marks where that output starts:
+
+1. **A child component or function child placed before a same-tag element of the parent.** In `<div><Header/><main><p>…</p></main></div>` where `Header` renders a `<p>`, the `<p>` inside `<main>` takes `Header`'s `<p>`: `<main>` ends up empty and a `HydrationMismatchError` is reported. If the parent's wrapper has the same tag as an element `Header` renders (a `<div>` around a `Header` that renders `<header><div>…</div></header>`), `hydrateRoot` throws.
+2. **Function children with mixed output.** A function child that returns text followed by one that returns an element (`<h1>{() => title()}{() => <b/>}</h1>`) makes `hydrateRoot` throw; a function that returns a Fragment containing another function child ends up with its nodes in a different order than a client render.
+3. **Server and client render different structure.** A list with more or fewer rows, or a function that returns an element on one side and text on the other, is neither reported nor repaired: the page keeps the server structure and the extra or missing rows stay out of sync (server text → client element throws). Keep the data identical, as the contracts above require.
+4. **`dangerouslySetInnerHTML` markup that contains the element's own tag**, such as `<div dangerouslySetInnerHTML={'<div>…</div>'}/>`: the element claims the inner `<div>` of its markup. Usually the element and its markup are then removed and a `HydrationMismatchError` is reported; as a list row, its attributes and listeners silently land on that inner `<div>` instead. Give such an element a static `id`; an element with a static `id` only claims the server node with that `id`.
+
+These limits go away when hydration claims nodes top-down by position (axiijs/axii#55); the experimental label will be removed then.
 
 ### Design notes / limitations
 
