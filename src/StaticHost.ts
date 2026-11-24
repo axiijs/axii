@@ -1423,11 +1423,16 @@ export class StaticHost implements Host {
                 // CAUTION 等待离场动画期间，DOM 可能已被其他路径整体清理（例如外部直接清空了父节点），
                 //  整段区间脱离/父节点失配是这个场景下被容忍的合法状态，直接跳过删除。
                 //  其余更细的区间破坏（同父但链断了）仍会被 removeNodesBetween 的诊断捕获并 report。
-                if (!this.placeholder.parentNode || this.element.parentNode !== this.placeholder.parentNode) return
+                const parent = this.placeholder.parentNode
+                if (!parent || this.element.parentNode !== parent) return
                 removeNodesBetween(this.element!, this.placeholder, true, {
                     ownerHost: this,
                     operation: 'destroy',
                 })
+                // CAUTION 与同步移除路径一致（#58）：离场动画播完才移除的可能是被选中的 option /
+                //  optgroup，select 要按存值重放。移除发生在之后的任务里，批量入口的合并
+                //  （suspendSelectReplay）已经结束，每个离场的元素各自重放一次。
+                restoreSelectValueAfterRemoval(parent)
             })
         }
         // CAUTION 整段区间已脱离 DOM / 父节点失配，说明区间已被外部整体清理（例如 root 容器被直接清空），
