@@ -445,6 +445,11 @@ export function claimTopDownComment(data: string): Comment {
     return ahead
 }
 
+// 失配报告里的期望（只在失配时拼接，匹配路径不分配）
+function describeElement(tag: string, wantId: string | null): string {
+    return wantId === null ? `Element(<${tag}>)` : `Element(<${tag} id=${JSON.stringify(wantId)}>)`
+}
+
 // 最近一次 claimTopDownElement 是不是近似认领（§4.1）：id 漂移、向前查找后的认领，或者这一层已经报告过失配。
 //  认领步骤据此先清掉元素的全部属性再应用 props（DOM.hydrateElementDescription）。
 let lastClaimApproximate = false
@@ -467,7 +472,6 @@ export function claimTopDownElement(tag: string, isSVG: boolean, wantId: string 
     if (cursorFresh) return null
     const expectedTagName = isSVG ? tag : tag.toUpperCase()
     const node = peek(tag.toLowerCase())
-    const description = wantId === null ? `Element(<${tag}>)` : `Element(<${tag} id=${JSON.stringify(wantId)}>)`
     if (node !== null && node.nodeType === ELEMENT_NODE) {
         const el = node as Element
         if (el.tagName === expectedTagName) {
@@ -478,7 +482,7 @@ export function claimTopDownElement(tag: string, isSVG: boolean, wantId: string 
                 return el
             }
             // 同标签、id 不符：前方有 id 相符的同标签元素就删除两者之间的节点、认领它（D8），否则按属性漂移认领（D2 / D9）
-            reportAt(description, el)
+            reportAt(describeElement(tag, wantId), el)
             const target = findElementAhead(el.nextSibling, expectedTagName, wantId) ?? el
             removeUntil(target)
             cursorNext = target.nextSibling
@@ -487,19 +491,19 @@ export function claimTopDownElement(tag: string, isSVG: boolean, wantId: string 
         }
         if (wantId !== null && el.id === wantId) {
             // 不同标签的元素带着期望的 id：它就是这个角色，替换（D4）
-            reportAt(description, el)
+            reportAt(describeElement(tag, wantId), el)
             removeUnitAtCursor()
             return null
         }
     }
     if (node === null || (node.nodeType === COMMENT_NODE && !isTextUnitMarker(node))) {
         // 结构 Comment 或 eof：新建、插在它前面，不消费（它可能是后面某个 Host 的 placeholder）
-        reportAt(description, node)
+        reportAt(describeElement(tag, wantId), node)
         return null
     }
     // 不同标签的元素、文本单元：客户端有静态 id 且前方有 id 相符的同标签元素时，删除之间的节点、认领它（D6）；
     //  否则替换这一个单元（D5）。没有静态 id 时不向前找：那会偷走后面兄弟的元素
-    reportAt(description, node)
+    reportAt(describeElement(tag, wantId), node)
     if (wantId !== null) {
         const ahead = findElementAhead(node.nextSibling, expectedTagName, wantId)
         if (ahead !== null) {
