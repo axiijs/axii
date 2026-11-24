@@ -217,6 +217,39 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
             .toEqual({same: true, dom: kids(client), reports: []})
     })
 
+    // The whole icon (svg + its <title>) rendered later is fine: the svg and its static children come from the same render.
+    // On 3ea5b96 these reported and rebuilt every <title> / <a>; the component inside a list row made hydrateRoot throw.
+    // One root per shape: same-tag content rendered later before same-tag static content is the known #55 defect.
+    test.each([
+        ['function child', ({show}: any, createElement: any) =>
+            <p>{() => show() ? <svg><title>fn</title><a href="#fn"><path d="M0"/></a></svg> : null}<span>s</span></p>],
+        ['list rows', ({rows}: any, createElement: any) =>
+            <ul>{rows.map((i: number) => <li><svg><title>{'r' + i}</title><path d={'M' + i}/></svg></li>)}</ul>],
+        ['components in list rows', ({rows}: any, createElement: any) => {
+            function Icon({n}: any, {createElement}: RenderContext) {
+                return <svg><title>{'c' + n}</title><a href={'#c' + n}><path d={'M' + n}/></a></svg>
+            }
+            return <ul>{rows.map((i: number) => <li><Icon n={i}/></li>)}</ul>
+        }],
+        ['array items', (_: any, createElement: any) =>
+            <div>{[1, 2].map(i => <svg><title>{'a' + i}</title><path d={'M' + i}/></svg>)}</div>],
+    ])('whole icons rendered later (%s): in place, no report, updates ≡ CSR', async (_name, body) => {
+        const make = () => {
+            const state = {show: atom(true), rows: new RxList([1, 2])}
+            function App({}: any, {createElement}: RenderContext) { return body(state, createElement) }
+            return {App, ...state}
+        }
+        const {ssrError, parsed, hyd, client, c, h, before} = setup(make)
+        expect({ssrError, parsed}).toEqual({ssrError: undefined, parsed: kids(client)})
+        expect({same: sameNodes(elementsOf(hyd), before), dom: kids(hyd), reports})
+            .toEqual({same: true, dom: kids(client), reports: []})
+        for (const s of [c, h]) { s.rows.push(3); s.show(false) }
+        await tick()
+        for (const s of [c, h]) s.show(true)
+        await tick()
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(client), reports: []})
+    })
+
     // Known limit (documented at DOM.adoptSvgChildren): tags a function / list renders later are inserted by a Host,
     // CSR keeps them HTML while the parser makes them SVG. Hydration should then report and rebuild them ≡ CSR
     // (design hydration-top-down.md §2.6.7). The children-first claim model does not (identical on 3ea5b96, before #56):

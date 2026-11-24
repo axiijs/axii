@@ -696,12 +696,25 @@ function tryClaimElementAtCursor(
  *   §3.7 mismatch; setAttribute reapplies the client id (no orphan + empty deferred).
  *   No-cursor wrongIdMiss is suppressed when a different-tag unclaimed sibling exists (D7).
  */
+// 最近一次 tryClaimElement 是否因为遇到同名的 SVG 对应物而停下（见 tryClaimElement 的 svgCounterpart）
+let claimStoppedAtSvgCounterpart = false
+
+/**
+ * 最近一次 tryClaimElement 返回 null 是因为后序里先遇到了同名的 SVG 对应物（#56）：调用方必须把元素留成 deferred stub，
+ * 交给 SVG 父元素在自己的游标下按 SVG 认领，而不是按「没有候选」抛错——组件在列表行里渲染 <svg><title/>…</svg> 时，
+ * 列表的游标还在，按没有候选处理会让整个 hydrateRoot 抛错（createSVGElement('title') 的同一写法能激活）。
+ */
+export function isClaimStoppedAtSvgCounterpart(): boolean {
+    return claimStoppedAtSvgCounterpart
+}
+
 export function tryClaimElement(
     tagName: string,
     props?: any,
     children?: any[],
     isSVG?: boolean,
 ): Element | null {
+    claimStoppedAtSvgCounterpart = false
     const root = hydrateRootEl
     if (!root) throw new Error('[axii] hydrate claimElement without active hydration')
     // CAUTION Element.tagName 只有 HTML 元素才是大写；SVG 元素保持原始大小写（'svg'、'clipPath'）。
@@ -790,7 +803,10 @@ export function tryClaimElement(
 
     const best = walkChildren(root)
 
-    if (best !== null && best.tagName === svgCounterpart) return null
+    if (best !== null && best.tagName === svgCounterpart) {
+        claimStoppedAtSvgCounterpart = true
+        return null
+    }
 
     if (best) {
         claimedElements.add(best)

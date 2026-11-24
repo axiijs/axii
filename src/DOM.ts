@@ -40,6 +40,7 @@ import {
     isElementChildCursorActive,
     isHydrateDeferredElement,
     isHydrateOnMainRoot,
+    isClaimStoppedAtSvgCounterpart,
     isHydrating,
     markHydrateReclaimPayload,
     peekAxii0,
@@ -1157,7 +1158,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             // List/array setChildCursor alone must not rebuild (would delete row placeholders).
             if (isElementChildCursorActive()) {
                 container = createElementForHydrateMismatch(type as string, _isSVG) as HTMLElement
-            } else if (!getChildCursor().parent) {
+            } else if (!getChildCursor().parent || isClaimStoppedAtSvgCounterpart()) {
+                // HTML / SVG 同名的标签遇到了它的 SVG 对应物：交给 SVG 父元素按 SVG 认领（#56，见 isClaimStoppedAtSvgCounterpart）
                 return createHydrateDeferredElement(type as string, rawProps, children)
             } else {
                 throw new Error(`[axii] hydrate mismatch: no unmatched <${type as string}> to claim`)
