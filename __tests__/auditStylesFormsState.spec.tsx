@@ -359,6 +359,8 @@ function lastSelector(rules: string[]) {
 }
 
 describe('audit attrs: regressions for the fixes', () => {
+    // 按「父级 × 子级」逐个展开，每个选择器保留自己的特异性；原生嵌套用 :is() 取列表里最高的特异性。
+    //  匹配到的元素相同，只有特异性可能不同——写在 README「Style arrays」里（#57）。
     describe('F1 selector lists', () => {
         test('a list in the middle of three levels is expanded on every level', () => {
             const rules = generateStyleContent('.x', {'& .a': {'& .b, & .c': {'&:hover': {color: 'red'}}}})
@@ -405,13 +407,42 @@ describe('audit attrs: regressions for the fixes', () => {
         }
 
         // 「后写的条目赢」只对顶层声明成立：stylesheet 条目把它顶层声明的属性从前面的行内样式里拿走。
-        //  更早的行内值 vs 后面条目里的**嵌套**规则仍是行内赢——已知局限，与 v4.8.1 相同
-        //  （修它需要把前面的行内条目搬进 stylesheet，代价是每行/每帧一张表，见下面的计数用例）。
+        //  更早的行内值 vs 后面条目里的**嵌套**规则仍是行内赢——已知局限，与 v4.8.1 相同（#57）。
+        //  用户文档与推荐写法：README「Design notes / limitations → Style arrays」，下面两个用例钉住推荐写法。
+        //  修它要么把前面的行内条目搬进 stylesheet（每行/每帧一张表，见文件末尾的计数用例；被搬的值
+        //  还会掉到 class 特异性、输给外部 CSS），要么把嵌套声明升成 !important（压过应用 CSS 用来覆盖
+        //  组件样式的 !important、压过 CSS 动画，还要在服务端判断简写/分项的重叠），要么改写成
+        //  var(--…) 间接引用（行内值的文本变了，简写/分项要逐项展开，服务端做不到）——都不可取。
         test.fails('known limitation: a later nested rule does not beat an earlier plain declaration', () => {
             root.render(
                 <div className="on" style={[{color: 'rgb(0, 0, 255)'}, {'&.on': {color: 'rgb(255, 0, 0)'}}]}>x</div>
             )
             expect(getComputedStyle(rootEl.firstElementChild!).color).toBe('rgb(255, 0, 0)')
+        })
+
+        test('documented form: the base value in the same entry as the nested rule', () => {
+            root.render(<div>
+                <p className="on" style={{color: 'rgb(0, 0, 255)', '&.on': {color: 'rgb(255, 0, 0)'}}}>a</p>
+                <p className="on" style={[{marginTop: 1}, {color: 'rgb(0, 0, 255)', '&.on': {color: 'rgb(255, 0, 0)'}}]}>b</p>
+            </div>)
+            for (const p of Array.from(rootEl.querySelectorAll('p'))) {
+                expect(getComputedStyle(p).color).toBe('rgb(255, 0, 0)')
+            }
+        })
+
+        test('documented form: an outside override restates the inner base property at its top level', () => {
+            function Box({}: any, {createElement}: RenderContext) {
+                return <div as="root" className="on" style={{color: 'rgb(0, 0, 255)', marginTop: 1}}>x</div>
+            }
+            root.render(<div>
+                <Box $root:style={{'&.on': {color: 'rgb(255, 0, 0)'}}}/>
+                <Box $root:style={{color: 'rgb(0, 0, 255)', '&.on': {color: 'rgb(255, 0, 0)'}}}/>
+            </div>)
+            const [nestedOnly, restated] = Array.from(rootEl.firstElementChild!.children) as HTMLElement[]
+            // the limitation: the inner inline value wins over the caller's nested rule
+            expect(getComputedStyle(nestedOnly).color).toBe('rgb(0, 0, 255)')
+            expect(getComputedStyle(restated).color).toBe('rgb(255, 0, 0)')
+            expect(getComputedStyle(restated).marginTop).toBe('1px')
         })
 
         test('a stylesheet entry takes its own properties back from earlier inline entries; later inline entries win again', () => {
@@ -465,6 +496,38 @@ describe('audit attrs: regressions for the fixes', () => {
             const el = rootEl.firstElementChild as HTMLElement
             expect(getComputedStyle(el).color).toBe('rgb(255, 0, 0)')
             expect(getComputedStyle(el).marginTop).toBe('3px')
+        })
+
+        // #57：服务端曾把字符串条目当作不透明文本：后面条目的让位 / 空值删除够不到它，
+        //  激活前行内的 blue 压过 stylesheet 的 red。逐个属性比较激活前的 SSR 与纯 CSR。
+        const stringEntryCases: [string, any[]][] = [
+            ['a stylesheet entry yields', ['color: rgb(0, 0, 255); margin-top: 3px', {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.74}}]],
+            ['!important in the string', ['color: rgb(0, 0, 255) !important; margin-top: 3px', {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.74}}]],
+            ['a yielding shorthand', ['margin-top: 1px; padding-top: 2px', {margin: 5, '&:hover': {opacity: 0.74}}]],
+            ['an empty value in a later plain entry', ['color: rgb(0, 0, 255); margin-top: 3px', {color: null}]],
+        ]
+        test.each(stringEntryCases)('SSR before hydration matches CSR for string entries: %s', (_label, style) => {
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
+            document.adoptedStyleSheets = []
+            try {
+                function App({}: any, {createElement}: RenderContext) {
+                    return <div id="t" style={style}>x</div>
+                }
+                const properties = ['color', 'margin-top', 'margin-left', 'padding-top']
+                const read = () => {
+                    const computed = getComputedStyle(rootEl.querySelector('#t')!)
+                    return properties.map(p => `${p}: ${computed.getPropertyValue(p)}`)
+                }
+                root.render(<App/>)
+                const csr = read()
+                root.destroy()
+                const {html, styles} = renderToString(createElement(App, null as any))
+                rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
+                expect(read()).toEqual(csr)
+            } finally {
+                document.adoptedStyleSheets = saved
+            }
         })
 
         // Chain on one element: inner JSX style < bound `$name:style` < the caller's `$name:style`.
@@ -565,7 +628,8 @@ describe('audit attrs: regressions for the fixes', () => {
         })
 
         test('SSR emits the same classes and inline style as CSR when a stylesheet entry yields; hydration claims them', () => {
-            const saved = document.adoptedStyleSheets
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
             try {
@@ -610,7 +674,8 @@ describe('audit attrs: regressions for the fixes', () => {
 
         // 服务端不解析简写：删分项时保留简写（激活前这一个分项不对），激活后 CSR 重写行内样式，与纯 CSR 一致
         test('shorthand/longhand corners the server cannot resolve are corrected by hydration', () => {
-            const saved = document.adoptedStyleSheets
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
             try {
@@ -629,7 +694,8 @@ describe('audit attrs: regressions for the fixes', () => {
         })
 
         test('a hydrated element flips between yielding and plain inline and back', async () => {
-            const saved = document.adoptedStyleSheets
+            // (a copy: the getter returns the live ObservableArray, which the next assignment empties too)
+            const saved = [...document.adoptedStyleSheets]
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
             try {
@@ -1470,6 +1536,28 @@ describe('style entry order: no stylesheet per inline value', () => {
         expect(getComputedStyle(last).paddingTop).toBe('2px')
         expect(last.style.top).toBe(`${3 * 10000 + N - 1}px`)
     })
+
+    // #57 文档里给「每行 / 每帧不同的基础值 + 嵌套规则」的写法（README「Style arrays」）：
+    //  值留在行内的自定义属性里，stylesheet 条目只引用它——所有行共用一张表，更新不建表，嵌套规则照常生效。
+    test('documented form: a per-row base value as an inline custom property shares one stylesheet', async () => {
+        const y = atom(0)
+        const list = new RxList<number>(Array.from({length: N}, (_, i) => i))
+        root.render(<div>{list.map(i =>
+            <div class={i === 0 ? 'row on' : 'row'} style={[
+                () => ({'--row-color': `rgb(0, ${(y() + i) % 256}, 0)`}),
+                {color: 'var(--row-color)', '&.on': {color: 'rgb(255, 0, 0)'}, '&:hover': {opacity: 0.42}},
+            ]}>{i}</div>
+        )}</div>)
+        expect(counts().sheetsCreated).toBeLessThanOrEqual(1)
+        for (let k = 1; k <= 3; k++) {
+            y(k)
+            await settle()
+        }
+        expect(counts()).toEqual({setterCalls: 0, sheetsCreated: 0})
+        const rows = rootEl.querySelectorAll('.row')
+        expect(getComputedStyle(rows[0]).color).toBe('rgb(255, 0, 0)')
+        expect(getComputedStyle(rows[N - 1]).color).toBe(`rgb(0, ${(3 + N - 1) % 256}, 0)`)
+    })
 })
 
 // 同一个声明，行内（CSSOM 逐个属性赋值）与 stylesheet 规则（文本拼接）必须得到同样的结果：
@@ -1507,6 +1595,7 @@ describe('stylesheet declarations behave like inline declarations', () => {
 
     // CSSOM 在值的末尾自动补齐未闭合的括号（行内 url(a.png 有效）；规则文本里它会吞掉后面的声明，
     //  所以 stylesheet / SSR 整条丢弃它（更严格），但同一条目里的其他声明不受影响。
+    //  这一处与行内不同写在 README「Style arrays」里（#57）。
     test('an unbalanced parenthesis is dropped alone', () => {
         root.render(<div id="t" style={{color: 'rgb(1, 2, 3)', backgroundImage: 'url(a.png', marginTop: 3, '&:hover': {opacity: 0.8}}}>x</div>)
         const computed = getComputedStyle(rootEl.querySelector('#t')!)
