@@ -57,14 +57,19 @@ const hydratedContainers: unknown[] = []
 
 export type TopDownActivationState = {
     portals: Record<string, HTMLElement> | undefined, mismatchBase: number, containers: number, hostPlacedNodes: WeakSet<object> | undefined,
+    walkBase: number, walk: number, liveLifts: Map<object, TopDownLiveLift> | undefined, deferredShells: Map<object, number> | undefined,
 }
 
 /** 入口开始一次激活：返回之前的状态交给 leaveTopDownActivation（回调里嵌套的激活返回后外层照常继续）。 */
 export function enterTopDownActivation(portals: Record<string, HTMLElement> | undefined): TopDownActivationState {
-    const saved = {portals: activationPortals, mismatchBase: activationMismatchBase, containers: hydratedContainers.length, hostPlacedNodes}
+    const saved = {portals: activationPortals, mismatchBase: activationMismatchBase, containers: hydratedContainers.length, hostPlacedNodes,
+        walkBase: activationWalkBase, walk: currentTopDownWalk, liveLifts, deferredShells}
     activationPortals = portals
     activationMismatchBase = mismatchCount
     hostPlacedNodes = undefined
+    activationWalkBase = currentTopDownWalk = topDownWalkSerial
+    liveLifts = undefined
+    deferredShells = undefined
     return saved
 }
 
@@ -73,6 +78,10 @@ export function leaveTopDownActivation(saved: TopDownActivationState): void {
     activationMismatchBase = saved.mismatchBase
     hydratedContainers.length = saved.containers
     hostPlacedNodes = saved.hostPlacedNodes
+    activationWalkBase = saved.walkBase
+    currentTopDownWalk = saved.walk
+    liveLifts = saved.liveLifts
+    deferredShells = saved.deferredShells
 }
 
 /** 这次激活开始时的失配条数。 */
@@ -561,25 +570,108 @@ export function removeTopDownCounterpart(node: Node): void {
     }
 }
 
-// 由 Host 放置过的描述与现成节点（Host 的 source：StaticHost / CompactElementHost / 现成节点的 Host）。
-//  CSR 里静态 child 在 createElement 时就插入，Host 在之后渲染：同一个元素既是某个 Host 的 source、又是静态 child 时，
-//  最后落在 Host 那里。激活按文档顺序走，静态 child 晚于 Host 出现时不能再把它挪走（#55 B4 独立审查）。
-//  描述：认领后瘦身时 rawChildren 写成共享的 HOST_PLACED_CHILDREN（每个 Host 的认领只多一次字段写入，不分配）；
-//  现成节点（少见）：记在这次激活的 WeakSet 里（enterTopDownActivation 时换一个新的）。
+// ───────────────────────── 同一个描述（或现成节点）的多次放置（#55 B4、B4b） ─────────────────────────
+//
+// CSR 的时间顺序：外层的 createElement 在 JSX 求值时就把静态 child 插进去，并把它的元数据（动态 child、响应式属性、ref、
+//  detachStyle）提升到外层，它们归外层的 StaticHost；Host 在之后才渲染，渲染同一个元素时把它挪到 Host 那里，元数据已被提升走，
+//  不再为它建内层 Host。Fragment 的子节点在第一次被插入时就整体搬走，之后再插入它什么也不放。
+// 激活按文档顺序走：外层 StaticHost 先收集整棵静态子树（StaticHost.collectTopDownDynamicChildren，≡ 提升），之后逐个认领，
+//  中间穿插子 Host 的激活。按 CSR 的时间顺序：
+//  1. 收集：静态子树里还没认领、也还没被这次激活里别的遍历收集过的描述，liftedBy 记下收集它的遍历（enterTopDownWalk 的编号）；
+//     现成节点记在 liveLifts 里，它的 unhandledChildren 提升到收集它的遍历并从节点上取走（≡ createElement 的提升）。
+//  2. 被收集过、还没认领的描述先由别的一方放置（Host 的 source：函数、数组项、列表行、组件的结果；或者别的遍历里的静态 child——
+//     它的外层是之后才建的）：那一方只认领元素（Fragment 只有一个空的承载片段），内容留给收集它的遍历（「延后的内容」，
+//     DOM.claimTopDownDeferredShell）——≡ CSR 里这时元素的元数据已经提升走，Host 只放置它。收集它的遍历走到它的静态位置时
+//     删除服务端为这里写的那一份，在已放置的元素里认领内容（子节点、props），动态 child 用自己预先构造的 Host，元数据提升到自己
+//     （DOM.hydrateClaimedDescriptionChild）。之前后面兄弟的子 Host 会错位：两边各为它的动态 child 建了一份（#55 B4b）。
+//  3. 已认领的描述 / 现成节点又作为静态 child 出现：如果这是收集它的遍历，并且它在收集之后由别的一方放置过（markTopDownHostPlaced），
+//     不挪，只删除服务端为这里写的那一份（CSR 里那次放置更晚）；其余挪到这里（CSR 里这个静态位置更晚：同一个 createElement 里后面的
+//     child，或者之后才建的外层），由别的遍历挪走的同样记为「别的一方放置过」。
+//  近似：CSR 的「更早 / 更晚」以外层描述的创建为准，这里以外层的收集为准。外层先建好、被捕获、之后才由 Host 渲染的
+//   （const q = <p>{s}</p>; <div>{() => q}{s}</div>）两者不同，见设计 §11。
+
+// 认领遍历（StaticHost.hydrateSource 的一次收集加认领）的编号：全局递增、不回绕（Smi 范围内够用），所以之前的激活留在描述上的
+//  编号不会与这次的混淆；activationWalkBase 是这次激活开始时的值，大于它的编号属于这次激活。
+let topDownWalkSerial = 0
+let activationWalkBase = 0
+let currentTopDownWalk = 0
+
+/** StaticHost.hydrateSource 开始一次收集加认领：返回外层的编号交给 leaveTopDownWalk。遍历严格嵌套（子 Host 的认领在外层的遍历之中）。 */
+export function enterTopDownWalk(): number {
+    const outer = currentTopDownWalk
+    currentTopDownWalk = ++topDownWalkSerial
+    return outer
+}
+
+export function leaveTopDownWalk(outer: number): void {
+    currentTopDownWalk = outer
+}
+
+/** 当前的认领遍历的编号。 */
+export function getTopDownWalk(): number {
+    return currentTopDownWalk
+}
+
+/** 这次激活里收集过这个描述的遍历的编号（没有时 0）。 */
+export function getTopDownLift(desc: {liftedBy: number}): number {
+    return desc.liftedBy > activationWalkBase ? desc.liftedBy : 0
+}
+
+/** 现成节点的收集（见上面第 1 条）：收集它的遍历，以及提升走、还没在它的静态位置上渲染的预建 Host 数。 */
+export type TopDownLiveLift = {walk: number, hosts: number}
+let liveLifts: Map<object, TopDownLiveLift> | undefined
+
+/** 收集现成节点：这次激活里已经被收集过时返回 undefined（不再提升），否则记下当前的遍历。 */
+export function liftTopDownLiveNode(node: object, hosts: number): TopDownLiveLift | undefined {
+    if (liveLifts?.has(node)) return undefined
+    const lift = {walk: currentTopDownWalk, hosts}
+    ;(liveLifts ??= new Map()).set(node, lift)
+    return lift
+}
+
+export function getTopDownLiveLift(node: object): TopDownLiveLift | undefined {
+    return liveLifts === undefined ? undefined : liveLifts.get(node)
+}
+
+// 内容延后的描述（第 2 条）在认领元素时的失配状态：位 1 新建（R1），位 2 近似认领（§4.1）。只在误用的路径上分配
+let deferredShells: Map<object, number> | undefined
+
+export function rememberTopDownDeferredShell(desc: object, flags: number): void {
+    if (flags !== 0) (deferredShells ??= new Map()).set(desc, flags)
+}
+
+export function takeTopDownDeferredShell(desc: object): number {
+    if (deferredShells === undefined) return 0
+    const flags = deferredShells.get(desc)
+    if (flags === undefined) return 0
+    deferredShells.delete(desc)
+    return flags
+}
+
+/** 认领了元素、内容还留给收集它的遍历的描述（第 2 条）：已有 node，rawChildren 还没瘦身。 */
+export function isTopDownContentDeferred(desc: {node: unknown, rawChildren: unknown}): boolean {
+    return desc.node !== null && desc.rawChildren !== undefined && desc.rawChildren !== HOST_PLACED_CHILDREN
+}
+
+// 由收集它的遍历以外的一方放置过的描述与现成节点（第 3 条）。
+//  描述：认领后瘦身时 rawChildren 写成共享的 HOST_PLACED_CHILDREN（只多一次字段写入，不分配）；内容延后的描述本身就是这种状态，
+//  不改它的 rawChildren（内容还没认领）。现成节点（少见）：记在这次激活的 WeakSet 里（enterTopDownActivation 时换一个新的）。
 let hostPlacedNodes: WeakSet<object> | undefined
 
-/** Host 认领了这个描述、或放置了这个现成节点。 */
+/** 收集它的遍历以外的一方（Host、别的遍历）认领或放置了这个描述 / 现成节点。 */
 export function markTopDownHostPlaced(value: object): void {
     if (isHydrationElement(value)) {
-        value.rawChildren = HOST_PLACED_CHILDREN
+        if (!isTopDownContentDeferred(value)) value.rawChildren = HOST_PLACED_CHILDREN
     } else {
         (hostPlacedNodes ??= new WeakSet()).add(value)
     }
 }
 
-/** 这个描述 / 现成节点由 Host 放置过（描述：任何一次激活里；现成节点：这次激活里）。 */
+/** 这个描述 / 现成节点由收集它的遍历以外的一方放置过（描述：任何一次激活里；现成节点：这次激活里）。 */
 export function isTopDownHostPlaced(value: object): boolean {
-    return isHydrationElement(value) ? value.rawChildren === HOST_PLACED_CHILDREN : hostPlacedNodes !== undefined && hostPlacedNodes.has(value)
+    return isHydrationElement(value) ?
+        value.rawChildren === HOST_PLACED_CHILDREN || isTopDownContentDeferred(value) :
+        hostPlacedNodes !== undefined && hostPlacedNodes.has(value)
 }
 
 /**
