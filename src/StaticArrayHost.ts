@@ -15,6 +15,7 @@ import {
 } from "./hydration";
 import type {UnhandledChildInfo} from "./DOM";
 import {RxList} from "data0";
+import {isDomNode, isElementNode, isFragmentNode, isTextNode} from "./nodeType";
 import {ReusableHost} from "./ComponentHost";
 
 /** Previous-host boundary comments (not part of this StaticArray content). */
@@ -134,18 +135,18 @@ export class StaticArrayHost implements Host{
                         const text = claimDirectNodeText()
                         ;(this.directNodes ??= []).push(text)
                         if (index === 0) this.firstChild = text
-                    } else if (item instanceof Text) {
+                    } else if (isTextNode(item)) {
                         advancePastNode(item)
                         ;(this.directNodes ??= []).push(item)
                         if (index === 0) this.firstChild = item
-                    } else if (item instanceof DocumentFragment) {
+                    } else if (isFragmentNode(item)) {
                         // Fragment content lives under parent (<!--fragment start-->…), not on the DF
                         advanceCursorUntilComment('array item')
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
                         this.childHosts.push(newHost)
                         if (index === 0) this.firstChild = newHost
-                    } else if (item instanceof HTMLElement || item instanceof SVGElement) {
+                    } else if (isElementNode(item)) {
                         advancePastNode(item)
                         const itemPh = claimCommentAtCursor('array item')
                         const newHost = createHost(item, itemPh, {...this.pathContext, hostPath: hostPath ??= createLinkedNode<Host>(this, this.pathContext.hostPath)})
@@ -163,7 +164,7 @@ export class StaticArrayHost implements Host{
                         if (index === 0) this.firstChild = newHost
                     } else if (item instanceof ReusableHost) {
                         const src = (item.innerHost as any)?.source
-                        if (src instanceof Node && src.parentNode) {
+                        if (isDomNode(src) && src.parentNode) {
                             advancePastNode(src)
                         }
                         advanceCursorUntilComment('reusable')
@@ -221,9 +222,10 @@ export class StaticArrayHost implements Host{
                     frag.appendChild(el)
                     ;(this.directNodes ??= []).push(el)
                     if (index === 0) this.firstChild = el
-                } else if ( item instanceof Text) {
+                } else if (isTextNode(item)) {
                     // Component 或者 Function 返回值可能会是 DocumentFragment，而 DocumentFragment.childNodes 也会使用 StaticArrayHost 处理，
                     //  这个时候的 this.source 就是 childNodes，已经是 DOM.js 处理过的了，所以直接是 Text 节点。
+                    //  按 nodeType 判断：数组项也可以是另一个 realm 的 Text（见 nodeType.ts，#58）。
                     frag.appendChild(item)
                     ;(this.directNodes ??= []).push(item)
                     if (index === 0) this.firstChild = item

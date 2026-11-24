@@ -27,6 +27,7 @@ import {
 } from "./diagnostics";
 import {CompactElementHost, StaticHost} from "./StaticHost.js";
 import {detachEffectFromCreationContext} from "./LightBindingEffect.js";
+import {isDomNode, isElementNode} from "./nodeType";
 import {ReusableHost} from "./ComponentHost.js";
 import {
     advanceCursorUntilComment,
@@ -102,12 +103,13 @@ export class RxListHost implements Host{
     }
 
     createChildHost(item: any) {
-        // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符
-        if ((item instanceof HTMLElement || item instanceof SVGElement) && !(item as ExtendedElement).detachStyledChildren) {
+        // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符。
+        //  元素按 nodeType 判断：行可以返回另一个 realm 的元素（见 nodeType.ts，#58）。
+        if (isElementNode(item) && !(item as ExtendedElement).detachStyledChildren) {
             if (isHydrating()) {
                 advancePastNode(item)
             }
-            const host = new CompactElementHost(item, this.childContext!)
+            const host = new CompactElementHost(item as HTMLElement | SVGElement, this.childContext!)
             if (isAxiiRetainedObjectDiagnosticsEnabled()) {
                 trackHostCreated(host, 'CompactElementHost')
                 trackCompactHostCreated(host)
@@ -137,7 +139,7 @@ export class RxListHost implements Host{
             if (item instanceof ReusableHost) {
                 // StaticHost keeps the claimed element on `.source` until render() assigns `.element`
                 const src = (item.innerHost as any)?.source
-                if (src instanceof Node && src.parentNode) {
+                if (isDomNode(src) && src.parentNode) {
                     advancePastNode(src)
                 }
                 advanceCursorUntilComment('reusable')

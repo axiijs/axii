@@ -7,6 +7,7 @@ import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
 import type {HostPosition} from "./createHost";
 import {isHydrating} from "./hydration";
 import {claimTextBeforeCommentPlaceholder} from "./hydration";
+import {isCommentNode, isTextNode} from "./nodeType";
 
 
 function stringValue(v: any) {
@@ -45,7 +46,8 @@ export class AtomHost extends LightBindingEffect implements Host{
 
     replace(value: any) {
         if (this.element === this.placeholder) {
-            if (this.placeholder instanceof Text) {
+            // 按 nodeType 判断：激活时认领到的占位符可能来自另一个 realm（见 nodeType.ts）
+            if (isTextNode(this.placeholder)) {
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数/atom child 快速路径），直接复用
                 this.placeholder.nodeValue = stringValue(value)
             } else {
@@ -94,7 +96,7 @@ export class AtomHost extends LightBindingEffect implements Host{
         trackLightBindingCreated(this, 'AtomTextBinding')
         // Hydrate Comment-ph：认领 placeholder 前已有 Text（含 axii:t 包边），或插入空 Text
         // §3.7 / D12: pass client snapshot so value drift reports + rebuilds (not silent run() fix)
-        if (isHydrating() && this.placeholder instanceof Comment && this.element === this.placeholder) {
+        if (isHydrating() && isCommentNode(this.placeholder) && this.element === this.placeholder) {
             Notifier.instance.pauseTracking()
             let expected: string
             try {

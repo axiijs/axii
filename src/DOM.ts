@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import {isAtom, RxList} from "data0";
 import {assert, each, isPlainObject} from './util'
+import {isDomNode, isFragmentNode} from './nodeType'
 import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
@@ -1165,7 +1166,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 } else {
                     container.appendChild(document.createTextNode(child.toString()))
                 }
-            } else if (child instanceof Node) { // Covers HTMLElement, DocumentFragment, SVGElement
+            } else if (isDomNode(child)) { // Covers Element (HTML / SVG / MathML), DocumentFragment, Text, Comment
+                // CAUTION 按 nodeType 判断（见 nodeType.ts）：JSX child 可以是另一个 realm（同源 iframe）的节点，
+                //  instanceof Node 恒为 false，会落进下面「函数 / 其他值」的分支，多出一个占位注释（#58）。
                 let nodeChild: Node = child
                 // Fragment: leave deferred stubs for rematerialize under fragment/portal root.
                 // Non-Fragment: rematerialize now (parent cursor / claim-allowed is active).
@@ -1177,7 +1180,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     // Fragment Node children: claim during rematerializeDeferredFragmentChildren
                     // (not via parent list/array cursor).
                     if (type !== Fragment) {
-                        if (nodeChild instanceof DocumentFragment) {
+                        if (isFragmentNode(nodeChild)) {
                             // Element-child Fragment: SSR flatten (no fragment start).
                             rematerializeDeferredFragmentChildren(nodeChild)
                             reconcileFlattenedFragmentHydrateChildren(nodeChild)

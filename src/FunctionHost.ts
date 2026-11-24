@@ -7,6 +7,7 @@ import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed
 import {DeferredBindingEffect} from "./LightBindingEffect.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 import {claimComputedNodeBefore, claimTextBeforeCommentPlaceholder, isHydrating} from "./hydration";
+import {isTextNode} from "./nodeType";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -200,7 +201,8 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             // 重入销毁之一（续）：旧内容的清理函数同步销毁了本节点。占位符可能已被摘掉，
             //  下面的 insertBefore 会 TypeError（见 destroyInnerHost 之后结构路径的同一检查）。
             if (this.destroyedWith !== undefined) return
-            if (this.placeholder instanceof Text) {
+            // 按 nodeType 判断：激活时认领到的占位符可能来自另一个 realm（见 nodeType.ts）
+            if (isTextNode(this.placeholder)) {
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
                 this.placeholder.nodeValue = text
                 this.textNode = this.placeholder

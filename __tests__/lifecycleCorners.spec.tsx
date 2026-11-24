@@ -14,12 +14,11 @@ import {
     atom,
     configureDiagnostics,
     createElement,
+    createHost,
     createRoot,
-    hydrateRoot,
     RenderContext,
     RxList,
 } from "@framework";
-import {renderToString} from '../src/ssr.js'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 async function settle() {
@@ -295,60 +294,93 @@ describe('#58-4: nodes from another realm (same-origin iframe)', () => {
         foreign = iframe.contentDocument!
     })
 
-    test('components, function children, array items and list rows may return them', async () => {
-        const text = foreign.createTextNode('text')
-        const comment = foreign.createComment('comment')
-        const element = foreign.createElement('b')
-        element.textContent = 'element'
-        const fragment = foreign.createDocumentFragment()
-        fragment.append(foreign.createElement('i'), foreign.createTextNode('fragment'))
-        expect(text instanceof Text).toBe(false)
-
-        const root = createRoot(rootEl)
-        function ReturnsText() { return text as any }
-        function ReturnsComment() { return comment as any }
-        function ReturnsElement() { return element as any }
-        function ReturnsFragment() { return fragment as any }
-        const which = atom<'text' | 'element'>('text')
-        const fnText = foreign.createTextNode('fn text')
-        const fnElement = foreign.createElement('u')
-        fnElement.textContent = 'fn element'
-        const arrayText = foreign.createTextNode('array text')
-        const arrayElement = foreign.createElement('s')
-        arrayElement.textContent = 'array element'
-        const rows = new RxList(['x', 'y'])
+    // 同一份内容分别用当前 realm 和 iframe 的节点渲染：入口覆盖组件返回值、函数节点、数组项、
+    //  JSX child、列表行，DOM 形态（占位注释、紧凑行、数组里的直接文本节点）逐字相同。
+    function renderWith(doc: Document, container: HTMLElement) {
+        const el = (tag: string, text: string) => {
+            const element = doc.createElement(tag)
+            element.textContent = text
+            return element as any
+        }
+        const text = doc.createTextNode('text')
+        const comment = doc.createComment('comment')
+        const element = el('b', 'element')
+        const fragment = doc.createDocumentFragment()
+        fragment.append(doc.createElement('i'), doc.createTextNode('fragment'))
         // <form> 的同名控件遮蔽 form.nodeType（[LegacyOverrideBuiltIns]），读到的是那个控件
-        const form = foreign.createElement('form')
-        const input = foreign.createElement('input')
+        const form = doc.createElement('form')
+        const input = doc.createElement('input')
         input.name = 'nodeType'
         form.appendChild(input)
-        expect(typeof (form as any).nodeType).toBe('object')
+        function ReturnsText() { return text as any }
+        function ReturnsComment() { return comment as any }
+        function ReturnsElement() { return element }
+        function ReturnsFragment() { return fragment as any }
         function ReturnsForm() { return form as any }
+        const which = atom<'text' | 'element'>('text')
+        const fnText = doc.createTextNode('fn text')
+        const fnElement = el('u', 'fn element')
+        const rows = new RxList(['x', 'y'])
+        const root = createRoot(container)
         root.render(<div>
-            <p id="components"><ReturnsText/><ReturnsComment/><ReturnsElement/><ReturnsFragment/><ReturnsForm/></p>
-            <p id="fn">{() => which() === 'text' ? fnText : fnElement}</p>
-            <p id="array">{[arrayText, arrayElement] as any}</p>
-            <ul id="rows">{rows.map(item => {
-                const li = foreign.createElement('li')
-                li.textContent = item
-                return li as any
-            })}</ul>
+            <p><ReturnsText/><ReturnsComment/><ReturnsElement/><ReturnsFragment/><ReturnsForm/></p>
+            <p>{() => which() === 'text' ? fnText : fnElement}</p>
+            <p>{[doc.createTextNode('array text'), el('s', 'array element')] as any}</p>
+            <p>{doc.createTextNode('jsx text') as any}{el('q', 'jsx element')}</p>
+            <ul>{rows.map(item => el('li', item))}</ul>
         </div>)
-        const html = (id: string) => document.getElementById(id)!.innerHTML.replace(/<!--(?!comment)[^>]*-->/g, '')
-        expect(html('components')).toBe('text<!--comment--><b>element</b><i></i>fragment<form><input name="nodeType"></form>')
-        expect(html('fn')).toBe('fn text')
-        expect(html('array')).toBe('array text<s>array element</s>')
-        expect(html('rows')).toBe('<li>x</li><li>y</li>')
+        return {root, which, rows, text, form}
+    }
 
-        which('element')
-        rows.push('z')
-        rows.splice(0, 1)
+    test('components, function children, array items, JSX children and list rows render them like local nodes', async () => {
+        const localEl = document.body.appendChild(document.createElement('div'))
+        const local = renderWith(document, localEl)
+        const remote = renderWith(foreign, rootEl)
+        expect(remote.text instanceof Text).toBe(false)
+        expect(typeof (remote.form as any).nodeType).toBe('object')
+        expect(rootEl.textContent).toBe('textelementfragmentfn textarray textarray elementjsx textjsx elementxy')
+        expect(rootEl.querySelectorAll('form input').length).toBe(1)
+        expect(rootEl.innerHTML).toBe(localEl.innerHTML)
+
+        for (const {which, rows} of [local, remote]) {
+            which('element')
+            rows.push('z')
+            rows.splice(0, 1)
+        }
         await settle()
-        expect(html('fn')).toBe('<u>fn element</u>')
-        expect(html('rows')).toBe('<li>y</li><li>z</li>')
+        expect(rootEl.querySelector('u')!.textContent).toBe('fn element')
+        expect(rootEl.querySelector('ul')!.textContent).toBe('yz')
+        expect(rootEl.innerHTML).toBe(localEl.innerHTML)
 
-        root.destroy()
+        local.root.destroy()
+        remote.root.destroy()
         expect(rootEl.innerHTML).toBe('')
+        expect(localEl.innerHTML).toBe('')
+    })
+
+    // createHost（公开导出）收到另一个 realm 的 Text 占位符：atom 文本与函数文本直接复用它，
+    //  与当前 realm 的 Text 占位符（createElement 的函数 / atom child 快速路径）相同。
+    test('a Text placeholder from another realm is reused by atom and function text', async () => {
+        const root = createRoot(rootEl)
+        root.render(<div id="slot"/>)
+        const slot = document.getElementById('slot')!
+        const value = atom('a')
+        const hosts = [value, () => `${value()}!`].map(source => {
+            const placeholder = foreign.createTextNode('')
+            slot.appendChild(placeholder)
+            const host = createHost(source, placeholder, root.pathContext)
+            host.render()
+            return host
+        })
+        expect(slot.childNodes.length).toBe(2)
+        expect(slot.textContent).toBe('aa!')
+        value('b')
+        await settle()
+        expect(slot.childNodes.length).toBe(2)
+        expect(slot.textContent).toBe('bb!')
+        hosts.forEach(host => host.destroy())
+        expect(slot.childNodes.length).toBe(0)
+        root.destroy()
     })
 
     // 当前 realm 的 <form> 有名为 nodeType 的控件：form.nodeType 读到的是控件，仍然识别为元素
@@ -361,35 +393,6 @@ describe('#58-4: nodes from another realm (same-origin iframe)', () => {
         expect(form.parentElement!.tagName).toBe('DIV')
         root.destroy()
         expect(rootEl.innerHTML).toBe('')
-    })
-
-    // 激活 iframe 文档里的服务端标记：认领到的占位符（<!--root-->、atom / 函数文本的 Text）都来自
-    //  iframe 的 realm，占位符的种类同样按 nodeType 判断。
-    test('hydrating a container inside an iframe document', async () => {
-        const count = atom(1)
-        const label = atom('a')
-        function App({}, {createElement}: RenderContext) {
-            return <p>
-                <span>{count}</span>
-                <em>{() => `${label()}!`}</em>
-            </p>
-        }
-        const container = foreign.body.appendChild(foreign.createElement('div'))
-        container.innerHTML = renderToString(createElement(App, null as any)).html
-        const span = container.querySelector('span')!
-        const em = container.querySelector('em')!
-        const root = hydrateRoot(container, createElement(App, null as any))
-        expect(container.querySelector('span')).toBe(span)
-        expect(container.querySelector('em')).toBe(em)
-        expect(span.textContent).toBe('1')
-        expect(em.textContent).toBe('a!')
-        count(2)
-        label('b')
-        await settle()
-        expect(span.textContent).toBe('2')
-        expect(em.textContent).toBe('b!')
-        root.destroy()
-        expect(container.querySelector('p')).toBe(null)
     })
 })
 
