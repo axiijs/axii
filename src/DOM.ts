@@ -59,6 +59,7 @@ import {
     HYDRATION_MODE_LEGACY,
     HYDRATION_MODE_TOP_DOWN,
     isHydrating,
+    isTopDownDevProxy,
     markHydrateReclaimPayload,
     peekAxii0,
     peekHydrateDeferredPayload,
@@ -72,7 +73,7 @@ import {
     tryClaimElement,
     unclaimHydrateElement,
 } from "./hydration";
-import {HydrationElement, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
+import {createHydrationElementDevProxy, HydrationElement, isHydrationElement, TEXT_SLOT, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
 import {
     claimTopDownElement,
     claimTopDownEmptyTextPlaceholder,
@@ -1424,7 +1425,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     // content evaluated under the main tree (§3.3.d).
     const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || EMPTY_CHILDREN)
     if (hydrationMode === HYDRATION_MODE_TOP_DOWN) {
-        return new HydrationElement(type as string | typeof Fragment, rawProps, children, _isSVG) as unknown as HTMLElement
+        const desc = new HydrationElement(type as string | typeof Fragment, rawProps, children, _isSVG)
+        // 诊断开启时（激活开始时定一次）返回开发期 Proxy：被当作节点读写时报告（§3.4）
+        return (isTopDownDevProxy() ? createHydrationElementDevProxy(desc) : desc) as unknown as HTMLElement
     }
     // Hydrate（旧模型）：认领已有元素（§3.1）
     const hydrating = hydrationMode === HYDRATION_MODE_LEGACY

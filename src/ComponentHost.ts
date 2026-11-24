@@ -1212,11 +1212,16 @@ export class ReusableHost implements Host{
         // 可能没有真正被渲染过
         if (!this.rendered) {
             this.innerPlaceholder.remove()
+            // 从未渲染的 innerHost 没有订阅、没有 DOM，只撤销它在构造时登记的计数
+            trackHostDestroyed(this.innerHost)
         } else {
             this.innerHost.destroy(false)
         }
         if (this.reusePlaceholder) {
             this.reusePlaceholder.remove()
         }
+        // CAUTION ReusableHost 在放进树时由 createHost 登记（retainedObjectDiagnostics），它真正的销毁在这里（destroy 只把内容
+        //  搬出、留待复用）。之前没有登记，CSR 渲染再销毁之后它一直算作活跃（#55 B4 验收「计数归零」时发现）
+        trackHostDestroyed(this)
     }
 }

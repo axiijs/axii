@@ -4,7 +4,7 @@
  */
 
 import {isAtom, Notifier, RxList} from "data0"
-import {reportAxiiError} from "./diagnostics"
+import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
 import {RAWTEXT_TAGS, RCDATA_TAGS, svgHtmlSharedElementNames, tableSectionElementNames} from "./markupNames"
 import {isDomNode, isElementNode, isFragmentNode} from "./nodeType"
 
@@ -208,17 +208,30 @@ export function beginHydration(container: ParentNode, portals?: Record<string, H
  * 产物里也就没有任何代码把模式置为 TOP_DOWN（§7.1 第 4 点）。
  * 返回之前的状态交给 endTopDownHydration 恢复（回调里嵌套的激活返回后，外层照常继续）。
  */
-export function beginTopDownHydration(): {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined} {
-    const saved = {mode: hydrationMode, rollingStyleBases: claimedRollingStyleBases}
+type TopDownHydrationState = {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined, devProxy: boolean}
+
+// 新模型激活期间 createElement 返回开发期 Proxy 还是描述本身（§3.4）：激活开始时按 isAxiiDiagnosticsEnabled() 定一次，
+//  同一次激活内不变
+let topDownDevProxy = false
+
+export function beginTopDownHydration(): TopDownHydrationState {
+    const saved = {mode: hydrationMode, rollingStyleBases: claimedRollingStyleBases, devProxy: topDownDevProxy}
     hydrationMode = HYDRATION_MODE_TOP_DOWN
     claimedRollingStyleBases = undefined
+    topDownDevProxy = isAxiiDiagnosticsEnabled()
     return saved
 }
 
 /** @internal 见 beginTopDownHydration。 */
-export function endTopDownHydration(saved: {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined}): void {
+export function endTopDownHydration(saved: TopDownHydrationState): void {
     hydrationMode = saved.mode
     claimedRollingStyleBases = saved.rollingStyleBases
+    topDownDevProxy = saved.devProxy
+}
+
+/** @internal 这次新模型激活里 createElement 是否返回开发期 Proxy（只在 createElement 的新模型分支里读）。 */
+export function isTopDownDevProxy(): boolean {
+    return topDownDevProxy
 }
 
 export function endHydration(): void {
