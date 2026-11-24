@@ -6,7 +6,6 @@
 import {
     createElement,
     createRoot,
-    hydrateRoot,
     Fragment,
     createContext,
     ContextProvider,
@@ -15,6 +14,7 @@ import {
 import {atom} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {createElement as ssrCreateElement, renderToString} from '../src/ssr.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 function hasAxiiMarkers(root: Node): boolean {
     const walk = (n: Node): boolean => {
@@ -72,7 +72,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         rootEl.innerHTML = html
         const btnBefore = rootEl.querySelector('#btn') as HTMLButtonElement
         expect(btnBefore.getAttribute('data-x')).toBe('1')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#btn')).toBe(btnBefore)
         btnBefore.click()
         expect(clicked).toBe(1)
@@ -106,7 +106,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         expect(rk.checked).toBe(true)
         expect(rk.getAttribute('value')).toBe(null)
         expect(iv.value).toBe('hello')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(cb.value).toBe('true')
         expect(cb.checked).toBe(true)
         expect(rk.checked).toBe(true)
@@ -128,11 +128,11 @@ describe('M-02 hydrateRoot attrs/components', () => {
         const sel = rootEl.querySelector('#s') as HTMLSelectElement
         expect(sel.value).toBe('b')
         expect(sel.options[1].selected).toBe(true)
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(sel.value).toBe('b')
     })
 
-    test('SO: options from map/array under select — parse IDL before hydrate', () => {
+    test.skipIf(pendingTopDown('B2'))('SO: options from map/array under select — parse IDL before hydrate', () => {
         // CSR path (__tests__/fatalBugs11): select children = options.map(...).
         // k3 left selectSo unthreaded through StaticArrayHost → no selected → .value stays first option.
         const options = ['a', 'b', 'c']
@@ -146,7 +146,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         rootEl.innerHTML = html
         const sel = rootEl.querySelector('#s') as HTMLSelectElement
         expect(sel.value).toBe('b')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(sel.value).toBe('b')
     })
     test('textarea value from child text; no axii markers', () => {
@@ -158,7 +158,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         rootEl.innerHTML = html
         const ta = rootEl.querySelector('#ta') as HTMLTextAreaElement
         expect(ta.value).toBe('hello & <world>')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(ta.value).toBe('hello & <world>')
         expect(hasAxiiMarkers(rootEl)).toBe(false)
     })
@@ -172,7 +172,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         expect(html).toContain('<!--computed node--><!--axii:0-->')
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('#s')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#s')).toBe(spanBefore)
         expect(hasAxiiMarkers(rootEl)).toBe(false)
 
@@ -202,7 +202,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         rootEl.innerHTML = html
         const textBefore = Array.from(rootEl.querySelector('#box')!.childNodes)
             .find(n => n.nodeType === Node.TEXT_NODE && n.nodeValue === 'world') as Text
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         const fh = findHostByName((root as any).host, 'FunctionHost')
         expect(fh.textNode).toBeNull()
         expect(fh.placeholder.nodeType).toBe(Node.TEXT_NODE)
@@ -224,7 +224,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         const bBefore = rootEl.querySelector('#b')!
         const fragStart = Array.from(rootEl.querySelector('#box')!.childNodes)
             .find(n => n.nodeType === Node.COMMENT_NODE && (n as Comment).data === 'fragment start')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#a')).toBe(aBefore)
         expect(rootEl.querySelector('#b')).toBe(bBefore)
         expect(
@@ -242,7 +242,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         const divBefore = rootEl.querySelector('#r')!
         const rootComment = Array.from(rootEl.childNodes)
             .find(n => n.nodeType === Node.COMMENT_NODE && (n as Comment).data === 'root')
-        hydrateRoot(rootEl, () => <div id="r">hi</div>)
+        hydrate(rootEl, () => <div id="r">hi</div>)
         expect(rootEl.querySelector('#r')).toBe(divBefore)
         expect(
             Array.from(rootEl.childNodes)
@@ -253,7 +253,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
             .find(n => n.nodeType === Node.COMMENT_NODE && (n as Comment).data === 'computed node')!
         expect(computed.nextSibling).toBe(rootComment)
     })
-    test('FCS: StaticArray function item uses array item not rx list item', () => {
+    test.skipIf(pendingTopDown('B2'))('FCS: StaticArray function item uses array item not rx list item', () => {
         function App({}, {createElement}: RenderContext) {
             return <div id="box">{[() => <span id="s">x</span>]}</div>
         }
@@ -264,7 +264,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         const spanBefore = rootEl.querySelector('#s')!
         const itemPh = Array.from(rootEl.querySelector('#box')!.childNodes)
             .find(n => n.nodeType === Node.COMMENT_NODE && (n as Comment).data === 'array item')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#s')).toBe(spanBefore)
         expect(
             Array.from(rootEl.querySelector('#box')!.childNodes)
@@ -282,7 +282,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
             .filter(n => n.nodeType === Node.TEXT_NODE) as Text[]
         const before = texts()
         expect(before.length).toBe(2)
-        hydrateRoot(rootEl, createElement(Multi, null as any))
+        hydrate(rootEl, createElement(Multi, null as any))
         const after = texts()
         expect(after[0]).toBe(before[0])
         expect(after[1]).toBe(before[1])
@@ -294,7 +294,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         }
         const {html: h2} = renderToString(createElement(EmptySib, null as any))
         rootEl.innerHTML = h2
-        hydrateRoot(rootEl, createElement(EmptySib, null as any))
+        hydrate(rootEl, createElement(EmptySib, null as any))
         const eTexts = Array.from(rootEl.querySelector('#e')!.childNodes)
             .filter(n => n.nodeType === Node.TEXT_NODE) as Text[]
         expect(eTexts.length).toBe(2)
@@ -308,11 +308,11 @@ describe('M-02 hydrateRoot attrs/components', () => {
         const {html: h3} = renderToString(createElement(SingleEmpty, null as any))
         expect(h3).toBe('<div id="s"></div><!--root-->')
         rootEl.innerHTML = h3
-        hydrateRoot(rootEl, createElement(SingleEmpty, null as any))
+        hydrate(rootEl, createElement(SingleEmpty, null as any))
         expect(rootEl.querySelector('#s')!.childNodes.length).toBe(0)
     })
 
-    test('DirectNodes adjacent + empty', () => {
+    test.skipIf(pendingTopDown('B2'))('DirectNodes adjacent + empty', () => {
         function App({}, {createElement}: RenderContext) {
             return <div id="d">{['hello', 'world']}</div>
         }
@@ -321,7 +321,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         rootEl.innerHTML = html
         const textsBefore = Array.from(rootEl.querySelector('#d')!.childNodes)
             .filter(n => n.nodeType === Node.TEXT_NODE) as Text[]
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         const sah = findHostByName((root as any).host, 'StaticArrayHost')
         expect(sah.directNodes.length).toBe(2)
         expect(sah.directNodes[0]).toBe(textsBefore[0])
@@ -334,13 +334,13 @@ describe('M-02 hydrateRoot attrs/components', () => {
         }
         const {html: h2} = renderToString(createElement(EmptyArr, null as any))
         rootEl.innerHTML = h2
-        const root2 = hydrateRoot(rootEl, createElement(EmptyArr, null as any))
+        const root2 = hydrate(rootEl, createElement(EmptyArr, null as any))
         const sah2 = findHostByName((root2 as any).host, 'StaticArrayHost')
         expect(sah2.directNodes[0].nodeValue).toBe('')
         expect(sah2.directNodes[1].nodeValue).toBe('x')
     })
 
-    test('context + component nesting hydrate', () => {
+    test.skipIf(pendingTopDown('B2'))('context + component nesting hydrate', () => {
         const Ctx = createContext<string>('m2')
         function Child({}, {createElement, context}: RenderContext) {
             return <span id="c">{context.get(Ctx)}</span>
@@ -354,7 +354,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         expect(html).toContain('v1')
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('#c')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#c')).toBe(spanBefore)
         expect(spanBefore.textContent).toBe('v1')
     })
@@ -367,7 +367,7 @@ describe('M-02 hydrateRoot attrs/components', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--axii:0-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         flag(true as any)
         await Promise.resolve()

@@ -22,6 +22,7 @@ import {
     svgHtmlSharedElementNames,
     svgOnlyElementNames,
     svgPresentationAttributeNames,
+    tableSectionElementNames,
     textareaContentProp,
 } from './markupNames'
 import {
@@ -43,6 +44,9 @@ import {
     isHydrateDeferredElement,
     isHydrateOnMainRoot,
     isClaimStoppedAtSvgCounterpart,
+    getHydrationMode,
+    HYDRATION_MODE_LEGACY,
+    HYDRATION_MODE_TOP_DOWN,
     isHydrating,
     markHydrateReclaimPayload,
     peekAxii0,
@@ -50,11 +54,22 @@ import {
     reconcileFlattenedFragmentHydrateChildren,
     resolveHydrateChildParent,
     rememberHydrateRollingStyleBase,
+    staticAttrId,
     takeHydrateDeferredPayload,
     takeHydrateReclaimPayload,
     tryClaimElement,
     unclaimHydrateElement,
 } from "./hydration";
+import {HydrationElement, isHydrationElement, TEXT_SLOT, throwTopDownPending, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
+import {
+    claimTopDownElement,
+    claimTopDownEmptyTextPlaceholder,
+    claimTopDownText,
+    enterTopDownElement,
+    exitTopDownElement,
+    insertTopDownEmptyText,
+} from "./hydrationCursor";
+import type {Host} from "./Host";
 
 export const AUTO_ADD_UNIT_ATTR = /^(width|height|top|left|right|bottom|margin|marginTop|marginRight|marginBottom|marginLeft|padding|paddingTop|paddingRight|paddingBottom|paddingLeft|borderWidth|borderTopWidth|borderRightWidth|borderBottomWidth|borderLeftWidth|outlineWidth|borderRadius|fontSize|letterSpacing|wordSpacing|textIndent|maxWidth|maxHeight|minHeight|minWidth|gap|flexBasis|columnGap|rowGap|columnWidth)$/
 // CAUTION 单位状态与 autoUnit 的实现只在 styleSerialize 里有一份（stylesheet / SSR 与行内样式共用），
@@ -1346,6 +1361,48 @@ function applyElementProps(
     if (detachStyledChildren) containerElement.detachStyledChildren = detachStyledChildren
 }
 
+// 下面两个是激活时认领元素的元素级处理（#55 B1 收成函数）：旧模型（createElement 的激活分支）与新模型
+//  （hydrateElementDescription）共用，只有这一份。
+
+/**
+ * CAUTION textarea 的 value 在 HTML 里只能写成子文本（§3.6.2 TA 通道），CSR 则是纯 IDL 赋值、没有子节点。
+ *  这段子文本是 value 的编码，不是哪个 child 单元的节点：认领时直接拿掉（value 由之后延后处理的 value prop 写回），
+ *  否则它会被当成「尾部孤儿」报一条假的失配。defaultValue 同理（#51）：服务端把它写成子文本，
+ *  之后的 props 循环再把它赋给 defaultValue。判定用 textareaContentProp（与服务端同一份），调用方保证标签是 textarea。
+ */
+function clearHydratedTextareaValueText(el: Element, rawProps: AttributesArg | null | undefined): void {
+    if (textareaContentProp(rawProps) !== undefined) el.textContent = ''
+}
+
+/**
+ * 认领到的服务端元素上的样式类（data-axii-ssr）：在应用客户端 props 之前清掉服务端生成的类（客户端 props 里可能有
+ * 一份作者写的同名类），记下滚动样式的基名，留给之后的滚动样式绑定回收（StaticHost getStyleSheetId）。
+ */
+function reclaimSsrStyleClasses(el: Element): void {
+    const ssrStyleClasses = el.getAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
+    if (ssrStyleClasses === null) return
+    // Clear generated classes before installing client props, which may include an
+    // authored copy. Remember the server base for the later rolling style binding.
+    if (ssrStyleClasses) {
+        const classes = ssrStyleClasses.split(' ')
+        let ownedClassCount = 0
+        let rollingBase: string | undefined
+        for (const id of classes) {
+            if (id[0] === '!') continue // Pending CSS tokens are not classes.
+            const authored = id[0] === '+'
+            if (!rollingBase && id.endsWith('I0')) {
+                rollingBase = id.slice(authored ? 1 : 0, id.lastIndexOf('F'))
+            }
+            if (!authored) classes[ownedClassCount++] = id
+        }
+        if (rollingBase) rememberHydrateRollingStyleBase(el, rollingBase)
+        classes.length = ownedClassCount
+        if (ownedClassCount) el.classList.remove(...classes)
+        if (el.classList.length === 0) el.removeAttribute('class')
+    }
+    el.removeAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
+}
+
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     // CAUTION __source/__self 既可能来自 jsxDEV，也可能来自 Babel classic dev transform，
@@ -1379,11 +1436,18 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     //  元素升级只发生在创建时刻，事后 setAttribute('is') 不会触发升级——元素静默缺少
     //  自定义行为。attribute 本身仍由下面的 props 循环写上（序列化/CSS 选择器语义）。
     //  热路径成本：仅在 rawProps 存在时多一次属性读。
-    // Hydrate：认领已有元素（§3.1）；CSR 稳态只多一次 isHydrating 布尔读。
-    const hydrating = isHydrating()
+    // CAUTION 激活模式只在这里读一次（#55 §7.3）。新模型（内部入口）激活时返回延迟描述，不碰 DOM：
+    //  元素由消费它的 Host 在自己的位置认领（hydrateElementDescription）。CSR 稳态比原来多一次整数比较，
+    //  旧模型的 hydrating 由同一次读得出。不要把这个判定挪进 applyElementProps（见它的 CAUTION）。
+    const hydrationMode = getHydrationMode()
     // Children list early: hydrate claim rejects EmptyHost false-positives for eager Portal
     // content evaluated under the main tree (§3.3.d).
     const children: any[] = rawChildren.length ? rawChildren : (rawProps?.children || EMPTY_CHILDREN)
+    if (hydrationMode === HYDRATION_MODE_TOP_DOWN) {
+        return new HydrationElement(type as string | typeof Fragment, rawProps, children, _isSVG) as unknown as HTMLElement
+    }
+    // Hydrate（旧模型）：认领已有元素（§3.1）
+    const hydrating = hydrationMode === HYDRATION_MODE_LEGACY
 
     let container: HTMLElement | DocumentFragment | SVGElement
     // 激活时元素是认领来的（服务端节点）还是失配后就地新建的
@@ -1448,13 +1512,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     }
 
     if (hydrating && type !== Fragment) {
-        // CAUTION textarea 的 value 在 HTML 里只能写成子文本（§3.6.2 TA 通道），CSR 则是纯 IDL 赋值、
-        //  没有子节点。这段子文本是 value 的编码，不是哪个 child 单元的节点：在这里直接拿掉
-        //  （value 由下面延后处理的 value prop 写回），否则它会被当成「尾部孤儿」报一条假的失配。
-        //  defaultValue 同理（#51）：服务端把它写成子文本，下面的 props 循环再把它赋给 defaultValue。
-        if (type === 'textarea' && textareaContentProp(rawProps) !== undefined) {
-            container.textContent = ''
-        }
+        if (type === 'textarea') clearHydratedTextareaValueText(container as Element, rawProps)
         enterElementChildCursor(resolveHydrateChildParent(container as Element, children))
     }
 
@@ -1548,6 +1606,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 }
 
                 // Handle extended element properties：提升子元素的元数据，路径规则见 liftElementMetadata
+                // CAUTION 新激活模型的认领步骤（hydrateDescriptionChildren）有同样的一段提升，改这里时那里一起改（#55 B1）
                 const childElement = nodeChild as ExtendedElement
                 // 动态节点自身没有 JSX source 时，继承最近的父元素 source。
                 // CAUTION 只在真的提升 children / attr 元数据时才读 __axiiSource：每个节点子元素都读一次的话，
@@ -1704,30 +1763,7 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         //  又跳过 innerHTML 赋值（保留服务端节点），结果元素永久为空。
         //  「内容是原始标记」按解包后的值判定（#50）：{__html: null} 与 null 一样不是原始标记。
         exitElementChildCursor(!!rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null)
-        const el = container as Element
-        const ssrStyleClasses = el.getAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
-        if (ssrStyleClasses !== null) {
-            // Clear generated classes before installing client props, which may include an
-            // authored copy. Remember the server base for the later rolling style binding.
-            if (ssrStyleClasses) {
-                const classes = ssrStyleClasses.split(' ')
-                let ownedClassCount = 0
-                let rollingBase: string | undefined
-                for (const id of classes) {
-                    if (id[0] === '!') continue // Pending CSS tokens are not classes.
-                    const authored = id[0] === '+'
-                    if (!rollingBase && id.endsWith('I0')) {
-                        rollingBase = id.slice(authored ? 1 : 0, id.lastIndexOf('F'))
-                    }
-                    if (!authored) classes[ownedClassCount++] = id
-                }
-                if (rollingBase) rememberHydrateRollingStyleBase(el, rollingBase)
-                classes.length = ownedClassCount
-                if (ownedClassCount) el.classList.remove(...classes)
-                if (el.classList.length === 0) el.removeAttribute('class')
-            }
-            el.removeAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
-        }
+        reclaimSsrStyleClasses(container as Element)
     }
 
     // Process props after children for proper Select/Option behavior（见 applyElementProps）
@@ -1737,6 +1773,222 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     // 失配后新建的元素此时子节点和 props 都已应用，才插入文档（#73）。游标已由 exitElementChildCursor 恢复到父节点。
     if (hydrateRebuilt) insertHydrateMismatchElement(container as Element)
     return container as (HTMLElement | DocumentFragment | SVGElement)
+}
+
+
+// ───────────────────────── #55 新激活模型：认领元素描述（§2.6.1） ─────────────────────────
+
+/**
+ * @internal
+ * 新模型里一个 StaticHost 的静态子树中、按文档顺序排好的子 Host（≡ CSR collectInnerHost 的构造顺序，§2.4）。
+ * StaticHost.hydrate 先构造好它们，hydrateElementDescription 在遍历到对应的动态 child 时依次取出、调用 hydrate(slot)。
+ */
+export type TopDownInnerHosts = {hosts: Host[], next: number}
+
+/**
+ * @internal
+ * 认领一个元素描述（或在同一层消费一个 Fragment 描述的子节点），返回带元数据的节点——与 CSR 的 createElement
+ * 返回值同形：元素，或者 Fragment 的 DocumentFragment（内容已经在服务端节点里，它是空的，只挂元数据）。
+ * 调用方是 StaticHost.hydrate；Fragment 的 `fragment start` 由它先认领。设计 §2.6.1：
+ *  1. 按位置认领元素（标签、命名空间、静态 id；hydrationCursor.claimTopDownElement）；
+ *  2. data-axii-ssr 样式类（reclaimSsrStyleClasses，与旧模型共用）；
+ *  3. 有 value / defaultValue 的 textarea 清空子文本（clearHydratedTextareaValueText，与旧模型共用）；
+ *  4. table 的隐含 tbody：游标下沉到 tbody（resolveTopDownChildParent）；
+ *  5. 按文档顺序消费子节点：静态文本、子描述（递归）、动态 child（取出预先构造的 Host，hydrate(slot)）；
+ *     内容是原始标记（dangerouslySetInnerHTML）的元素不进入，内容整体不透明（§2.6.2，F1j）；
+ *  6. 子节点之后应用 props（applyElementProps，与 CSR 同一份；claimed = true）；
+ *  7. 转交 listenerBoundArgs，写 desc.node，瘦身描述。
+ * 元数据（unhandledAttr / refHandles / detachStyledChildren）的提升与 CSR createElement 的循环逐项相同
+ * （liftElementMetadata，path 是 JSX children 下标，Fragment 多一级），样式 id 与 ref / 属性绑定的顺序因此与 CSR 一致。
+ * unhandledChildren 不建立：子 Host 已由 StaticHost 预先构造。
+ */
+export function hydrateElementDescription(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined): HTMLElement | SVGElement | DocumentFragment {
+    if (desc.node !== null) throwConsumedDescription()
+    return desc.tag === Fragment ?
+        hydrateFragmentDescriptionChildren(desc, innerHosts, false) :
+        hydrateElementDescriptionAt(desc, innerHosts, false)
+}
+
+// 同一个描述在一次激活里第二次出现（const s = <span/>; <div>{s}{s}</div>，或激活中存下的 JSX 再次渲染，C6）：
+//  CSR 第二次插入时把节点挪走，服务端写两份；描述已经瘦身，「已有 node 就当作那个元素」的分支在 B4 落地，之前显式抛错。
+function throwConsumedDescription(): never {
+    throwTopDownPending('the same JSX element rendered more than once (C6)', 'B4')
+}
+
+// parentAdoptsSvg：父元素是 SVG 元素且不是 HTML integration point。HTML / SVG 同名的标签（a / title / style / script）
+//  作为它的静态子元素（含 Fragment 展开的）时按 SVG 认领与应用属性，≡ CSR 里 SVG 父元素的改建（adoptSvgChildren，#56）。
+//  Host 稍后渲染的内容不经过这里（parentAdoptsSvg 为 false），与 CSR 相同仍是 HTML 元素。
+function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined, parentAdoptsSvg: boolean): HTMLElement | SVGElement {
+    const tag = desc.tag as string
+    const rawProps = desc.rawProps
+    if (parentAdoptsSvg && !desc.isSVG && svgHtmlSharedElementNames.has(tag)) desc.isSVG = true
+    const isSVG = desc.isSVG
+    const el = claimTopDownElement(tag, isSVG, staticAttrId(rawProps)) as HTMLElement
+    const children = desc.rawChildren!
+    const debugSource = rawProps ? rawProps.__source as AxiiSource | undefined : undefined
+    let unhandledAttr: UnhandledAttrInfo[] | undefined
+    let refHandles: RefHandleInfo[] | undefined
+    let detachStyledChildren: DetachStyledInfo[] | undefined
+    // 「内容是原始标记」与旧模型同一判定（#50：按解包后的值，{__html: null} 不是原始标记）。原始元素不进入：
+    //  它的 JSX children 在 CSR 里被 innerHTML 覆盖（开发期警告 I66），服务端也只写原始标记，这里不消费它们
+    //  （StaticHost.hydrate 也不为它们构造 Host）。
+    if (!(rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null)) {
+        if (tag === 'textarea') clearHydratedTextareaValueText(el, rawProps)
+        enterTopDownElement(resolveTopDownChildParent(el, tag, children))
+        const childrenLength = children.length
+        const firstChildType = childrenLength === 1 ? typeof children[0] : undefined
+        if (childrenLength === 1 && (firstChildType === 'string' || firstChildType === 'number' || firstChildType === 'bigint')) {
+            // ≡ CSR textContent：唯一的文本 child 为空时没有节点（EE0）
+            const text = children[0].toString()
+            if (text !== '') claimTopDownText(text)
+        } else if (childrenLength) {
+            const childAdoptsSvg = isSVG && !isSvgHtmlIntegrationPoint(tag)
+            const lifted = hydrateDescriptionChildren(children, innerHosts, childAdoptsSvg, debugSource)
+            if (lifted !== undefined) {
+                unhandledAttr = lifted.unhandledAttr
+                refHandles = lifted.refHandles
+                detachStyledChildren = lifted.detachStyledChildren
+            }
+        }
+        exitTopDownElement()
+    }
+    reclaimSsrStyleClasses(el)
+    applyElementProps(el, rawProps, isSVG, true, children.length, debugSource,
+        undefined, unhandledAttr, refHandles, detachStyledChildren)
+    // ≡ ComponentHost.createHTMLOrSVGElement 在 CSR 里写在 createElement 返回值上的字段（写入顺序也相同）
+    if (desc.listenerBoundArgs !== undefined) (el as ExtendedElement).listenerBoundArgs = desc.listenerBoundArgs
+    desc.node = el
+    desc.rawProps = undefined
+    desc.rawChildren = undefined
+    return el
+}
+
+// Fragment 描述：在同一层消费子节点（没有 fragment start；作为 Host 的 source 时由 StaticHost 先认领它）。
+//  ≡ CSR createElement(Fragment)：元数据挂在一个 DocumentFragment 上（它是空的，内容已在服务端节点里），
+//  父级随后按 Fragment 在 children 里的下标提升，path 因此多一级。
+function hydrateFragmentDescriptionChildren(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined, parentAdoptsSvg: boolean): DocumentFragment {
+    const rawProps = desc.rawProps
+    const children = desc.rawChildren!
+    const debugSource = rawProps ? rawProps.__source as AxiiSource | undefined : undefined
+    const lifted = children.length ? hydrateDescriptionChildren(children, innerHosts, parentAdoptsSvg, debugSource) : undefined
+    const carrier = document.createDocumentFragment()
+    applyElementProps(carrier, rawProps, desc.isSVG, false, children.length, debugSource,
+        undefined, lifted?.unhandledAttr, lifted?.refHandles, lifted?.detachStyledChildren)
+    desc.node = carrier
+    desc.rawProps = undefined
+    desc.rawChildren = undefined
+    return carrier
+}
+
+type TopDownLiftedMetadata = {
+    unhandledAttr: UnhandledAttrInfo[] | undefined,
+    refHandles: RefHandleInfo[] | undefined,
+    detachStyledChildren: DetachStyledInfo[] | undefined,
+}
+
+/**
+ * 子节点的消费（≡ CSR createElement 的 child 循环，§2.5 第一张表），返回从子描述提升上来的元数据（没有时 undefined）。
+ * CAUTION child 的分类必须与 CSR 的循环、StaticHost.collectTopDownInnerHosts 的预先构造逐项一致：
+ *  null / undefined 跳过；字符串 / 数字 / bigint 是文本单元；描述递归（Fragment 展开）；其余是动态 child，
+ *  函数（含 atom）用 TEXT_SLOT，其余用 'unhandledChild'。
+ * CAUTION 提升的写法与 createElement 循环里那一段相同（liftElementMetadata；ref / detachStyle 的项不继承 source）。
+ *  CSR 的那一段没有收进共用函数：那个循环是 CSR 热路径，共用函数要返回三个累加值，只能分配或者借模块状态，
+ *  而旧模型的 materializeHydrateDeferred 会在循环中途重入 createElement。改其中一处时两处一起改。
+ *  unhandledChildren 在新模型里不提升：子 Host 由 StaticHost 预先构造（见 hydrateElementDescription）。
+ */
+function hydrateDescriptionChildren(
+    children: any[],
+    innerHosts: TopDownInnerHosts | undefined,
+    childAdoptsSvg: boolean,
+    debugSource: AxiiSource | undefined,
+): TopDownLiftedMetadata | undefined {
+    let lifted: TopDownLiftedMetadata | undefined
+    // 空字符串 child：服务端写 <!--axii:0-->，只有它是 null / undefined 之外唯一的 child 时什么都不写
+    //  （ssr.serializeChildren 的 isSingleEmptyString / soleChild，元素与 Fragment 的 children 各自判定）。
+    //  按同一条规则决定认领哨兵还是插入，不能见到 axii:0 就拿：它可能是后面单元（atom、函数）的哨兵。
+    let soleChild: boolean | undefined
+    for (let index = 0; index < children.length; index++) {
+        const child = children[index]
+        if (child == null) continue
+        const childType = typeof child
+        if (childType === 'string' || childType === 'number' || childType === 'bigint') {
+            const text = child.toString()
+            if (text === '') {
+                if (soleChild === undefined) {
+                    let nonNull = 0
+                    for (let i = 0; i < children.length; i++) if (children[i] != null) nonNull++
+                    soleChild = nonNull === 1
+                }
+                if (soleChild) {
+                    insertTopDownEmptyText()
+                } else {
+                    claimTopDownEmptyTextPlaceholder()
+                }
+            } else {
+                claimTopDownText(text)
+            }
+        } else if (isHydrationElement(child)) {
+            if (child.node !== null) throwConsumedDescription()
+            const node = child.tag === Fragment ?
+                hydrateFragmentDescriptionChildren(child, innerHosts, childAdoptsSvg) :
+                hydrateElementDescriptionAt(child, innerHosts, childAdoptsSvg)
+            const childElement = node as ExtendedElement
+            const inheritedSource = childElement.__axiiSource ?? debugSource
+            const childUnhandledAttr = childElement.unhandledAttr
+            if (childUnhandledAttr?.length) {
+                lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
+                lifted.unhandledAttr = liftElementMetadata(childUnhandledAttr, index, lifted.unhandledAttr, inheritedSource)
+                childElement.unhandledAttr = undefined
+            }
+            const childRefHandles = childElement.refHandles
+            if (childRefHandles?.length) {
+                lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
+                lifted.refHandles = liftElementMetadata(childRefHandles, index, lifted.refHandles, undefined)
+                childElement.refHandles = undefined
+            }
+            const childDetachStyled = childElement.detachStyledChildren
+            if (childDetachStyled?.length) {
+                lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
+                lifted.detachStyledChildren = liftElementMetadata(childDetachStyled, index, lifted.detachStyledChildren, undefined)
+                childElement.detachStyledChildren = undefined
+            }
+        } else if (isDomNode(child)) {
+            // 激活之外创建的现成节点（§2.6.8）
+            throwTopDownPending('a DOM node created outside hydration used as a JSX child', 'B4')
+        } else {
+            // 动态 child：取出 StaticHost 预先构造的 Host，在游标处认领它的区域与 placeholder
+            innerHosts!.hosts[innerHosts!.next++].hydrate!(childType === 'function' ? TEXT_SLOT : UNHANDLED_CHILD_SLOT)
+        }
+    }
+    return lifted
+}
+
+/**
+ * CAUTION table 的隐含 tbody（§2.6.7，旧模型 hydration.impliedTableBody 的新模型版本）：服务端给直接写出裸 <tr>、
+ *  没有写出分区元素的 table 补一层 <tbody>（ssr.serializeTableContent），客户端的 children 里没有这一层。
+ *  判定两头都看：客户端 children 里没有显式的分区元素描述（markupNames.tableSectionElementNames，与服务端同一张表；
+ *  Fragment 在 table 这一层展开，服务端也把其中的分区元素算作 table 层，所以进入 Fragment 描述），
+ *  且 DOM 里 table 唯一的子节点是 TBODY。组件、函数、列表子节点渲染的内容后面跟着它们的 placeholder 注释，
+ *  不满足「唯一子节点」。
+ */
+function resolveTopDownChildParent(el: Element, tag: string, children: any[]): ParentNode {
+    if (tag !== 'table' && tag !== 'TABLE') return el
+    const only = el.firstChild
+    if (!only || only !== el.lastChild || !isElementNode(only) || only.localName !== 'tbody') return el
+    return hasTableSectionDescription(children) ? el : only
+}
+
+function hasTableSectionDescription(children: any[]): boolean {
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i]
+        if (!isHydrationElement(child)) continue
+        if (child.tag === Fragment) {
+            if (hasTableSectionDescription(child.rawChildren!)) return true
+        } else if (tableSectionElementNames.has((child.tag as string).toLowerCase())) {
+            return true
+        }
+    }
+    return false
 }
 
 

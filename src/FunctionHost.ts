@@ -1,13 +1,21 @@
 import {Notifier, ReactiveEffect} from "data0";
 import {Host, PathContext} from "./Host";
-import {createHost, HostPosition} from "./createHost";
+import {createHost, createHydrateHost, HostPosition} from "./createHost";
 import {insertBefore, resetOptionOwnerSelect} from './DOM'
 import {createLinkedNode} from "./LinkedList";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {DeferredBindingEffect} from "./LightBindingEffect.js";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
-import {claimComputedNodeBefore, claimTextBeforeCommentPlaceholder, isHydrating} from "./hydration";
+import {
+    claimComputedNodeBefore,
+    claimTextBeforeCommentPlaceholder,
+    getHydrationMode,
+    HYDRATION_MODE_LEGACY,
+    HYDRATION_MODE_TOP_DOWN,
+} from "./hydration";
 import {isTextNode} from "./nodeType";
+import {COMPUTED_NODE_SLOT, HydrationSlot, isHydrationSlot, TEXT_SLOT} from "./hydrationElement";
+import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -109,6 +117,11 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         trackLightBindingCreated(this, 'FunctionNodeBinding')
         this.run()
     }
+    // #55 新模型（§2.4、§2.5）：与 render 相同——首次运行在这里同步发生，认领在 renderSourceWithoutTrace 里按模式分流
+    //  （文本快速返回之后）。slot 在构造时就是 placeholder，认领前 placeholder 不是节点。
+    hydrate(_slot: HydrationSlot): void {
+        this.render()
+    }
     // 是否已经完成过一次渲染，诊断 trace 用它区分初次 render 和 recompute
     renderedOnce = false
     // DeferredBindingEffect 触发时的回调（以原型方法提供，替代构造器闭包）
@@ -202,14 +215,26 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             //  下面的 insertBefore 会 TypeError（见 destroyInnerHost 之后结构路径的同一检查）。
             if (this.destroyedWith !== undefined) return
             // 按 nodeType 判断：激活时认领到的占位符可能来自另一个 realm（见 nodeType.ts）
-            if (isTextNode(this.placeholder)) {
+            // CAUTION 激活模式在文本快速返回之后才读（#55 §7.1）：文本更新的热路径上没有这次读取
+            const mode = isTextNode(this.placeholder) ? undefined : getHydrationMode()
+            if (mode === undefined) {
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
-                this.placeholder.nodeValue = text
-                this.textNode = this.placeholder
-            } else if (isHydrating()) {
+                ;(this.placeholder as Text).nodeValue = text
+                this.textNode = this.placeholder as Text
+            } else if (mode === HYDRATION_MODE_LEGACY) {
                 // Comment-ph（G4-F / H3）：认领 placeholder 前 Text（含 axii:t），或插入空 Text
                 // §3.7 / D12: pass expected so drift reports + rebuilds (aligned with Text-ph)
                 this.textNode = claimTextBeforeCommentPlaceholder(this.placeholder as Comment, text)
+            } else if (mode === HYDRATION_MODE_TOP_DOWN && isHydrationSlot(this.placeholder)) {
+                // #55 新模型的首次运行（文本态）：TEXT_SLOT 认领文本单元（空：axii:0），这个 Text 同时是 placeholder；
+                //  Comment slot 认领文本单元（空：插入 Text('')），然后认领 slot（§2.5 FunctionHost 行）
+                const slot = this.placeholder as HydrationSlot
+                if (slot === TEXT_SLOT) {
+                    this.placeholder = this.textNode = text === '' ? claimTopDownEmptyTextPlaceholder() : claimTopDownText(text)
+                } else {
+                    this.textNode = text === '' ? insertTopDownEmptyText() : claimTopDownText(text)
+                    this.placeholder = claimTopDownComment(slot)
+                }
             } else {
                 this.textNode = document.createTextNode(text)
                 // CAUTION 保留 placeholder 在 DOM 中，外层（列表 reorder/anchor 查找等）依赖它。
@@ -237,12 +262,20 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         //  建新内容（insertBefore 会 TypeError；就算没被摘掉，新内容也没有人销毁）。
         if (this.destroyedWith !== undefined) return
         // Hydrate FTS/FCS：认领已有 <!--computed node-->，禁止新建（§3.2.4 FS2 / §3.2.5）
-        const hydrating = isHydrating()
-        const newPlaceholder = hydrating
-            ? claimComputedNodeBefore(this.placeholder)
-            : document.createComment('computed node')
-        if (!hydrating) {
-            insertBefore(newPlaceholder, this.placeholder)
+        const mode = getHydrationMode()
+        // #55 新模型的首次运行（结构态）：内容与 <!--computed node--> 由内层 Host 从游标处消费，之后再认领自己的 slot
+        const topDownSlot = mode === HYDRATION_MODE_TOP_DOWN && isHydrationSlot(this.placeholder) ?
+            this.placeholder as HydrationSlot :
+            undefined
+        const hydrating = mode === HYDRATION_MODE_LEGACY
+        let newPlaceholder: Comment | undefined
+        if (topDownSlot === undefined) {
+            newPlaceholder = hydrating
+                ? claimComputedNodeBefore(this.placeholder)
+                : document.createComment('computed node')
+            if (!hydrating) {
+                insertBefore(newPlaceholder, this.placeholder)
+            }
         }
         // CAUTION 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
         //  否则内层的响应式内容变化会导致整个函数节点重算。
@@ -252,8 +285,13 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         effect.pauseCollectChild()
         let host: Host | undefined
         try {
-            host = createHost(node, newPlaceholder, this.childPathContext())
-            host.render()
+            if (topDownSlot !== undefined) {
+                host = createHydrateHost(node, COMPUTED_NODE_SLOT, this.childPathContext())
+                host.hydrate!(COMPUTED_NODE_SLOT)
+            } else {
+                host = createHost(node, newPlaceholder!, this.childPathContext())
+                host.render()
+            }
         } catch (e) {
             // CAUTION 结构重建抛错（unknown child type 断言等）：重算发生在微任务里，
             //  向上抛只会变成 uncaught error。注册了 root error 钩子时报告错误并把该区域
@@ -262,9 +300,11 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             if (host) {
                 // render 中途抛错：部分渲染的子树交给下一次重建/销毁做尽力清理
                 this.innerHost = host
-            } else if (!hydrating) {
+            } else if (!hydrating && newPlaceholder !== undefined) {
                 newPlaceholder.remove()
             }
+            // #55 新模型的激活中：「渲染为空」接不上游标（服务端节点没有被消费，自己的 slot 也还没认领），向上抛出、中止激活
+            if (topDownSlot !== undefined) throw e
             // 本节点在新内容渲染到一半时已被销毁：这棵子树马上丢弃，它的错误没有归属，
             //  不交给 root 的监听器（监听器在 destroy 之后保留，属于 root 之后的内容），
             //  经 reportAxiiError 报告，不抛出、也不静默丢弃（#58）。先报告再销毁子树：
@@ -283,6 +323,10 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             Notifier.instance.resetTracking()
         }
         this.innerHost = host
+        if (topDownSlot !== undefined) {
+            // 内层已消费 [内容…, <!--computed node-->]；FTS 的尾是 <!--axii:0-->（插入 Text('')），FCS 认领 slot
+            this.placeholder = topDownSlot === TEXT_SLOT ? claimTopDownEmptyTextPlaceholder() : claimTopDownComment(topDownSlot)
+        }
         // CAUTION 重入销毁之二：新内容渲染到一半时本节点被同步销毁（内容里的组件在 effect 里删掉了
         //  自己所在的列表行 / 关掉了所在的 root，或 error 监听器调用了 root.destroy()）。
         //  那一刻 innerHost 还没有赋值（新 host 只在局部变量里），destroy 够不到新内容；

@@ -7,7 +7,6 @@ import {
     createElement,
     createRoot,
     Fragment,
-    hydrateRoot,
     RenderContext,
     RxList,
 } from '@framework'
@@ -15,6 +14,7 @@ import {atom, RxMap} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {CompactElementHost} from '../src/StaticHost.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 function shapeOf(el: Node): string[] {
     return Array.from(el.childNodes).map(n => {
@@ -71,7 +71,7 @@ describe('M-03 hydrateRoot RxList', () => {
         document.body.appendChild(rootEl)
     })
 
-    test('G1 Compact: claim identity, no row comments; move matches CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G1 Compact: claim identity, no row comments; move matches CSR', () => {
         const list = new RxList([1, 2, 3])
         function App({}, {createElement}: RenderContext) {
             return <div id="t">{list.map((i: number) => <span data-i={i}>{i}</span>)}</div>
@@ -82,7 +82,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const spansBefore = Array.from(rootEl.querySelectorAll('span'))
         expect(spansBefore.map(s => s.textContent)).toEqual(['1', '2', '3'])
 
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         const box = rootEl.querySelector('#t')!
         expect(shapeOf(box).filter(s => s === '<!--rx list item-->')).toEqual([])
@@ -108,7 +108,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(shapeOf(csr.querySelector('#c')!)).toEqual(shapeOf(box))
     })
 
-    test('G2 detachStyle: has rx list item (non-Compact)', () => {
+    test.skipIf(pendingTopDown('B2'))('G2 detachStyle: has rx list item (non-Compact)', () => {
         const list = new RxList([1])
         function App({}, {createElement}: RenderContext) {
             return <div id="t">{list.map((i: number) =>
@@ -117,7 +117,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--rx list item-->')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!).includes('<!--rx list item-->')).toBe(true)
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -126,7 +126,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect((lh.hosts[0].placeholder as Comment).data).toBe('rx list item')
     })
 
-    test('G4 atom Comment-ph: empty/non-empty; splice; no marker residue', () => {
+    test.skipIf(pendingTopDown('B2'))('G4 atom Comment-ph: empty/non-empty; splice; no marker residue', () => {
         const a = atom('')
         const b = atom('hi')
         const list = new RxList([a, b])
@@ -135,7 +135,7 @@ describe('M-03 hydrateRoot RxList', () => {
         }
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         const box = rootEl.querySelector('#t')!
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -154,7 +154,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect((lh.hosts[0].element as Text).nodeValue).toBe('Z')
     })
 
-    test('G4-F Function→null: only rx list item; ≠ G3-E / G3-F', () => {
+    test.skipIf(pendingTopDown('B2'))('G4-F Function→null: only rx list item; ≠ G3-E / G3-F', () => {
         function App({}, {createElement}: RenderContext) {
             const list = new RxList([() => null])
             return <div id="t">{list}</div>
@@ -163,7 +163,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toContain('<!--empty-->')
         expect(html).not.toContain('computed')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         const lh = findHostByName((r as any).host, 'RxListHost')
         expect(lh.hosts[0].constructor.name).toBe('FunctionHost')
         expect((lh.hosts[0].placeholder as Comment).data).toBe('rx list item')
@@ -174,7 +174,7 @@ describe('M-03 hydrateRoot RxList', () => {
         ])
     })
 
-    test('G3-E null row vs G4-F', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-E null row vs G4-F', () => {
         const list = new RxList<any>([null])
         function App({}, {createElement}: RenderContext) {
             return <div id="t">{list}</div>
@@ -182,7 +182,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--empty--><!--rx list item-->')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual([
             '<!--empty-->',
             '<!--rx list item-->',
@@ -192,7 +192,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(lh.hosts[0].constructor.name).toBe('EmptyHost')
     })
 
-    test('G3-F Function→element has computed; Function→atom not G4-F', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-F Function→element has computed; Function→atom not G4-F', () => {
         const name = atom('world')
         // Closures must be created inside App so JSX createElement resolves to context (SSR/DOM).
         function App({}, {createElement}: RenderContext) {
@@ -203,7 +203,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html.match(/computed node/g)?.length).toBe(2)
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -213,7 +213,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(rootEl.textContent).toContain('Y')
     })
 
-    test('G3-C Component row: no computed', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-C Component row: no computed', () => {
         function Row({}, {createElement}: RenderContext) {
             return <span>r</span>
         }
@@ -224,12 +224,12 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('computed')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toBe('r')
         expect(shapeOf(rootEl.querySelector('#t')!).includes('<!--rx list item-->')).toBe(true)
     })
 
-    test('G3-Fr Fragment row: fragment start', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-Fr Fragment row: fragment start', () => {
         function App({}, {createElement, Fragment: F}: RenderContext) {
             const list = new RxList([1])
             return <div id="t">{list.map(() =>
@@ -240,12 +240,12 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!).includes('<!--fragment start-->')).toBe(true)
         expect(rootEl.querySelector('#t')!.textContent).toBe('ab')
     })
 
-    test('G3-RL nested RxList: outer anchor; inner splice', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-RL nested RxList: outer anchor; inner splice', () => {
         const inner = new RxList([1, 2])
         const outer = new RxList([inner])
         function App({}, {createElement}: RenderContext) {
@@ -255,7 +255,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toContain('computed')
         expect(html).not.toContain('<!--empty-->')
         rootEl.innerHTML = html
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         const box = rootEl.querySelector('#t')!
         expect(shapeOf(box).filter(s => s === '<!--rx list item-->').length).toBe(3)
         const lh = findHostByName((r as any).host, 'RxListHost')
@@ -271,7 +271,7 @@ describe('M-03 hydrateRoot RxList', () => {
         ])
     })
 
-    test('G3-RU reusable row', () => {
+    test.skipIf(pendingTopDown('B4'))('G3-RU reusable row', () => {
         function App({}, {createElement, reusable}: RenderContext) {
             const reused = reusable(<div id="reused">R</div>)
             return <div id="t">{new RxList([reused])}</div>
@@ -279,7 +279,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--reusable-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(rootEl.querySelector('#reused')!.textContent).toBe('R')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual([
@@ -290,7 +290,7 @@ describe('M-03 hydrateRoot RxList', () => {
         ])
     })
 
-    test('table tbody + Compact rows', () => {
+    test.skipIf(pendingTopDown('B2'))('table tbody + Compact rows', () => {
         const list = new RxList([1, 2])
         function App({}, {createElement}: RenderContext) {
             return <table id="t"><tbody>{list.map((i: number) =>
@@ -299,7 +299,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const trsBefore = Array.from(rootEl.querySelectorAll('tr'))
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         const trsAfter = Array.from(rootEl.querySelectorAll('tr'))
         expect(trsAfter[0]).toBe(trsBefore[0])
         expect(trsAfter[1]).toBe(trsBefore[1])
@@ -309,14 +309,14 @@ describe('M-03 hydrateRoot RxList', () => {
 
     // --- G3-A row hydrate (audit k5): DirectNodes / multi-atom must claim without createElement stash ---
 
-    test('G3-A string DirectNodes row: hydrate + CSR shape', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A string DirectNodes row: hydrate + CSR shape', () => {
         function App({}, {createElement}: RenderContext) {
             return <div id="t">{new RxList([['x', 'y'] as any])}</div>
         }
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--axii:t-->x<!--axii:/t--><!--axii:t-->y<!--axii:/t--><!--rx list item-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('xy')
         const csr = document.createElement('div')
         document.body.appendChild(csr)
@@ -324,17 +324,17 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(shapeOf(csr.querySelector('#t')!)).toEqual(shapeOf(rootEl.querySelector('#t')!))
     })
 
-    test('G3-A number DirectNodes row hydrate', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A number DirectNodes row hydrate', () => {
         function App({}, {createElement}: RenderContext) {
             return <div id="t">{new RxList([[1, 2] as any])}</div>
         }
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('12')
     })
 
-    test('G3-A multi-atom array row: each AtomHost updates independently', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A multi-atom array row: each AtomHost updates independently', () => {
         const a = atom('A')
         const b = atom('B')
         function App({}, {createElement}: RenderContext) {
@@ -343,7 +343,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--array item-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('AB')
         a('X')
         expect(rootEl.querySelector('#t')!.textContent).toContain('XB')
@@ -351,7 +351,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(rootEl.querySelector('#t')!.textContent).toContain('XY')
     })
 
-    test('G3-A mixed DirectNodes + element row hydrate', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A mixed DirectNodes + element row hydrate', () => {
         function App({}, {createElement}: RenderContext) {
             const rows = new RxList([1])
             return <div id="t">{rows.map(() => ['pre', <span>mid</span>, 'post'] as any)}</div>
@@ -359,12 +359,12 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(rootEl.querySelector('#t')!.textContent).toBe('premidpost')
     })
 
-    test('G3-A element-only array row still claims (control)', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A element-only array row still claims (control)', () => {
         function App({}, {createElement}: RenderContext) {
             const rows = new RxList([1])
             return <div id="t">{rows.map(() => [<span>a</span>, <span>b</span>] as any)}</div>
@@ -372,7 +372,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const spansBefore = Array.from(rootEl.querySelectorAll('span'))
-        const r = hydrateRoot(rootEl, createElement(App, null as any))
+        const r = hydrate(rootEl, createElement(App, null as any))
         expect(Array.from(rootEl.querySelectorAll('span'))[0]).toBe(spansBefore[0])
         const lh = findHostByName((r as any).host, 'RxListHost')
         expect(lh.hosts[0].constructor.name).toBe('StaticArrayHost')
@@ -381,7 +381,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
     // --- G3-A nested items (audit k6): SSR must match CSR placeholders for Array/Fragment items ---
 
-    test('G3-A nested array item: no spurious unhandledChild; hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A nested array item: no spurious unhandledChild; hydrate ≡ CSR', () => {
         function App({}, {createElement}: RenderContext) {
             return <div id="t">{new RxList([[[1, 2], 'x'] as any])}</div>
         }
@@ -397,12 +397,12 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toMatch(/<!--unhandledChild--><!--array item-->/)
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#t')!.textContent).toContain('12x')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-A Fragment item: fragment start + hydrate identity ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A Fragment item: fragment start + hydrate identity ≡ CSR', () => {
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return <div id="t">{new RxList([[
                 createElement(F as any, null, 'a', createElement('span', null, 'b')),
@@ -419,12 +419,12 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-A Component item: no orphan unhandledChild; shape ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A Component item: no orphan unhandledChild; shape ≡ CSR', () => {
         function Child({}, {createElement}: RenderContext) {
             return <span>c</span>
         }
@@ -442,12 +442,12 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('span')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('span')).toBe(spanBefore)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-A RxList item: nested rows + array item (no nested unhandledChild)', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A RxList item: nested rows + array item (no nested unhandledChild)', () => {
         const inner = new RxList([1, 2])
         function App({}, {createElement}: RenderContext) {
             return <div id="t">{new RxList([[inner, 'z'] as any])}</div>
@@ -462,11 +462,11 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toMatch(/<!--unhandledChild--><!--array item-->/)
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-A Reusable item: reusable + array item (no nested unhandledChild)', () => {
+    test.skipIf(pendingTopDown('B4'))('G3-A Reusable item: reusable + array item (no nested unhandledChild)', () => {
         function App({}, {createElement, reusable}: RenderContext) {
             const reused = reusable(<div id="reused">R</div>)
             return <div id="t">{new RxList([[reused, 'z'] as any])}</div>
@@ -484,7 +484,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const before = rootEl.querySelector('#reused')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#reused')).toBe(before)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
@@ -494,7 +494,7 @@ describe('M-03 hydrateRoot RxList', () => {
     // StaticArrayHost/RxListHost left the region cursor active; intended path is leave
     // content for StaticHost(DocumentFragment) + claimFragmentStartBefore(placeholder).
 
-    test('G3-A Component→Fragment item: hydrate ≡ CSR (fragment under array cursor)', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A Component→Fragment item: hydrate ≡ CSR (fragment under array cursor)', () => {
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null, 'p', createElement('em', null, 'q'))
         }
@@ -513,12 +513,12 @@ describe('M-03 hydrateRoot RxList', () => {
 
         rootEl.innerHTML = html
         const emBefore = rootEl.querySelector('em')!
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('em')).toBe(emBefore)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-A Function→Fragment item: FCS + array item hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A Function→Fragment item: FCS + array item hydrate ≡ CSR', () => {
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return <div id="t">{new RxList([[
                 () => createElement(F as any, null, 'p', createElement('em', null, 'q')),
@@ -535,11 +535,11 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--computed node--><!--array item-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-C Component→Fragment row: hydrate ≡ CSR (fragment under list cursor)', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-C Component→Fragment row: hydrate ≡ CSR (fragment under list cursor)', () => {
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null, 'p', createElement('em', null, 'q'))
         }
@@ -557,11 +557,11 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).not.toContain('<!--computed node-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-F Function→Fragment row: hydrate ≡ CSR (fragment under list cursor)', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-F Function→Fragment row: hydrate ≡ CSR (fragment under list cursor)', () => {
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return <div id="t">{new RxList([
                 () => createElement(F as any, null, 'a', createElement('i', null, 'b')),
@@ -579,11 +579,11 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--computed node-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-A nested Component→Fragment item: hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A nested Component→Fragment item: hydrate ≡ CSR', () => {
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null, 'x', createElement('b', null, 'y'))
         }
@@ -599,7 +599,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--fragment start-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -607,7 +607,7 @@ describe('M-03 hydrateRoot RxList', () => {
     // k8 only skipped static text + Node advancePastNode for Fragment; atom / function /
     // array children still call claim* via parent cursor (or throw with no cursor).
 
-    test('G3-C Component→Fragment with atom child: hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-C Component→Fragment with atom child: hydrate ≡ CSR', () => {
         const a = atom('hello')
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null, a, createElement('em', null, 'q'))
@@ -624,13 +624,13 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--fragment start-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('world')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
     })
 
-    test('G3-A Component→Fragment with atom child (array item): hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-A Component→Fragment with atom child (array item): hydrate ≡ CSR', () => {
         const a = atom('hello')
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null, a, createElement('em', null, 'q'))
@@ -645,11 +645,11 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-F Function→Fragment with nested function text: hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-F Function→Fragment with nested function text: hydrate ≡ CSR', () => {
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return <div id="t">{new RxList([
                 () => createElement(F as any, null, () => 'dyn', createElement('i', null, 'b')),
@@ -665,11 +665,11 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--computed node-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
-    test('G3-C Component→Fragment with array child: hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-C Component→Fragment with array child: hydrate ≡ CSR', () => {
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null, ['a', 'b'] as any, createElement('em', null, 'q'))
         }
@@ -686,7 +686,7 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--unhandledChild-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -705,7 +705,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('world')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -715,7 +715,7 @@ describe('M-03 hydrateRoot RxList', () => {
     // k9 reconciled top-level Fragment atom/fn/array/RxList; nested DocumentFragment dynamic
     // children stay unbound (stub placeholder); boolean is CSR Comment-ph but SSR omits + hydrate wrong.
 
-    test('G3-C nested Fragment with atom: hydrate update ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-C nested Fragment with atom: hydrate update ≡ CSR', () => {
         const a = atom('inner')
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null,
@@ -734,13 +734,13 @@ describe('M-03 hydrateRoot RxList', () => {
         expect(html).toContain('<!--fragment start-->')
 
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('changed')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
     })
 
-    test('G3-C Fragment with boolean false: SSR+hydrate ≡ CSR Comment-ph', () => {
+    test.skipIf(pendingTopDown('B2'))('G3-C Fragment with boolean false: SSR+hydrate ≡ CSR Comment-ph', () => {
         function Child({}, {createElement, Fragment: F}: RenderContext) {
             return createElement(F as any, null, false, createElement('em', null, 'q'))
         }
@@ -756,7 +756,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -781,7 +781,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('up')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -802,7 +802,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('up')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -821,7 +821,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
     })
 
@@ -838,13 +838,13 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('changed')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
     })
 
-    test('element-child Fragment + array atom: hydrate update ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('element-child Fragment + array atom: hydrate update ≡ CSR', () => {
         const a = atom('arr')
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return createElement('div', {id: 't'},
@@ -857,7 +857,7 @@ describe('M-03 hydrateRoot RxList', () => {
 
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('z')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
@@ -882,14 +882,14 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('up')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
     })
 
-    test('element-child Fragment + RxList Compact: push ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('element-child Fragment + RxList Compact: push ≡ CSR', () => {
         const list = new RxList([1, 2])
         function App({}, {createElement, Fragment: F}: RenderContext) {
             return createElement('div', {id: 't'},
@@ -904,7 +904,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).not.toContain('<!--fragment start-->')
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         list.push(3)
@@ -924,7 +924,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toMatch(/axii:t/)
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('X')
@@ -946,7 +946,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const csrShape = shapeOf(csr.querySelector('#t')!)
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('A')
@@ -969,7 +969,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
         const spanBefore = rootEl.querySelector('#s')
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#s')).toBe(spanBefore)
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
@@ -992,14 +992,14 @@ describe('M-03 hydrateRoot RxList', () => {
         const csrShape = shapeOf(csr.querySelector('#t')!)
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         a('M')
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(shapeOf(csr.querySelector('#t')!))
     })
 
-    test('RxMap.keys().map Compact hydrate ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B2'))('RxMap.keys().map Compact hydrate ≡ CSR', () => {
         const map = new RxMap<string, number>([['a', 1], ['b', 2]])
         function App({}, {createElement}: RenderContext) {
             return createElement('div', {id: 't'},
@@ -1011,7 +1011,7 @@ describe('M-03 hydrateRoot RxList', () => {
         const csrShape = shapeOf(csr.querySelector('#t')!)
         const {html} = renderToString(createElement(App, null as any))
         rootEl.innerHTML = html
-        hydrateRoot(rootEl, createElement(App, null as any))
+        hydrate(rootEl, createElement(App, null as any))
         expect(hasAxiiMarkers(rootEl)).toBe(false)
         expect(shapeOf(rootEl.querySelector('#t')!)).toEqual(csrShape)
         map.set('c', 3)

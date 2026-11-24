@@ -11,10 +11,11 @@
  * after the reactive data changes the hydrated DOM ≡ a CSR root given the same change.
  * Run: npx vitest run __tests__/ssrHydrate.shapes.spec.tsx
  */
-import {createElement, createRoot, hydrateRoot, configureDiagnostics, RenderContext} from '@framework'
+import {createElement, createRoot, configureDiagnostics, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -72,13 +73,13 @@ function setup<S extends {App: any}>(make: () => S) {
     createRoot(client).render(createElement(c.App, null as any))
     const before = elementsOf(hyd)
     const h = make()
-    if (ssrError === undefined) hydrateRoot(hyd, createElement(h.App, null as any))
+    if (ssrError === undefined) hydrate(hyd, createElement(h.App, null as any))
     return {ssrError: ssrError === undefined ? undefined : String(ssrError), parsed, hyd, client, c, h, before}
 }
 
 // ───────────────────────── 1. table sections rendered by dynamic children ─────────────────────────
 describe('#56-1 <table> sections from a list / function / fragment: no extra empty <tbody>', () => {
-    test('list of <tbody>, function returning <tbody>, fragment of sections: parse ≡ CSR, in place, updates ≡ CSR', async () => {
+    test.skipIf(pendingTopDown('B2'))('list of <tbody>, function returning <tbody>, fragment of sections: parse ≡ CSR, in place, updates ≡ CSR', async () => {
         const make = () => {
             const groups = new RxList([1, 2])
             const empty = new RxList<number>([])
@@ -115,7 +116,7 @@ describe('#56-1 <table> sections from a list / function / fragment: no extra emp
             .toEqual({dom: kids(client), tbodies: client.querySelectorAll('tbody').length, reports: []})
     })
 
-    test('bare rows (list / function / component) still get one explicit <tbody> and stay live', async () => {
+    test.skipIf(pendingTopDown('B2'))('bare rows (list / function / component) still get one explicit <tbody> and stay live', async () => {
         const make = () => {
             const rows = new RxList([1, 2])
             const more = atom(true)
@@ -147,7 +148,7 @@ describe('#56-1 <table> sections from a list / function / fragment: no extra emp
 
 // ───────────────────────── 2. HTML / SVG shared tag names under <svg> ─────────────────────────
 describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG elements on both ends', () => {
-    test('static children, nested and array items: parse ≡ CSR, in place, listeners and reactive attrs work', async () => {
+    test.skipIf(pendingTopDown('B2'))('static children, nested and array items: parse ≡ CSR, in place, listeners and reactive attrs work', async () => {
         const clicks: string[] = []
         const make = () => {
             const tip = atom('tip')
@@ -220,7 +221,7 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
     // The whole icon (svg + its <title>) rendered later is fine: the svg and its static children come from the same render.
     // On 3ea5b96 these reported and rebuilt every <title> / <a>; the component inside a list row made hydrateRoot throw.
     // One root per shape: same-tag content rendered later before same-tag static content is the known #55 defect.
-    test.each([
+    const iconsRenderedLater: [string, (state: any, createElement: any) => any][] = [
         ['function child', ({show}: any, createElement: any) =>
             <p>{() => show() ? <svg><title>fn</title><a href="#fn"><path d="M0"/></a></svg> : null}<span>s</span></p>],
         ['list rows', ({rows}: any, createElement: any) =>
@@ -233,7 +234,8 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
         }],
         ['array items', (_: any, createElement: any) =>
             <div>{[1, 2].map(i => <svg><title>{'a' + i}</title><path d={'M' + i}/></svg>)}</div>],
-    ])('whole icons rendered later (%s): in place, no report, updates ≡ CSR', async (_name, body) => {
+    ]
+    const iconsRenderedLaterCase = async (_name: string, body: (state: any, createElement: any) => any) => {
         const make = () => {
             const state = {show: atom(true), rows: new RxList([1, 2])}
             function App({}: any, {createElement}: RenderContext) { return body(state, createElement) }
@@ -248,7 +250,10 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
         for (const s of [c, h]) s.show(true)
         await tick()
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(client), reports: []})
-    })
+    }
+    test.each(iconsRenderedLater.slice(0, 1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
+    // 内部入口那一遍：列表行与数组项的激活在 #55 B2
+    test.skipIf(pendingTopDown('B2')).each(iconsRenderedLater.slice(1))('whole icons rendered later (%s): in place, no report, updates ≡ CSR', iconsRenderedLaterCase)
 
     // Known limit (documented at DOM.adoptSvgChild): tags a function / list renders later are inserted by a Host,
     // CSR keeps them HTML while the parser makes them SVG. Hydration should then report and rebuild them ≡ CSR
@@ -256,7 +261,8 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
     // the function leaves the server SVG <title> next to a new empty HTML one, the list row keeps the SVG <a>.
     // Kept executable as test.fails; it flips once hydration claims top-down (#55). A throw from hydrateRoot is not
     // this defect: it is logged and the body returns normally, so test.fails reports it instead of swallowing it.
-    test.fails('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
+    // 内部入口那一遍（#55 §7.2）：新模型在认领处看到命名空间不符，按 R1 报告并重建（B3），之前待实现
+    ;(pendingTopDown('B3') ? test.skip : test.fails)('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
         const make = () => {
             const tip = atom('d1')
             const rows = new RxList(['r1'])

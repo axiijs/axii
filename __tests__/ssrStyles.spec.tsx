@@ -6,7 +6,6 @@
 import {
     createElement,
     createRoot,
-    hydrateRoot,
     getAxiiRetainedObjectDiagnosticsSnapshot,
     enableAxiiRetainedObjectDiagnostics,
     disableAxiiRetainedObjectDiagnostics,
@@ -17,6 +16,7 @@ import {atom} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString, isAcceptableSingleCssRule} from '../src/ssr.js'
 import {markBoundProp} from '../src/StaticHost.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 // Content-addressed stylesheet class: `axs-<hash>F<entryIndex>` (see contentAddressedStyles.spec.tsx)
 const CONTENT_ID = /^axs-[0-9a-z]+F\d+$/
@@ -64,7 +64,7 @@ describe('M-04 SSR styles', () => {
         expect(colorBefore).toBe('rgb(1, 2, 3)')
 
         const sheetsBefore = document.adoptedStyleSheets.length
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         // SSR style tag removed after adopt
         expect(rootEl.querySelector('style[data-axii-ssr]')).toBeNull()
@@ -90,7 +90,7 @@ describe('M-04 SSR styles', () => {
         const el = rootEl.querySelector('#c') as HTMLElement
         const samples: string[] = []
         samples.push(getComputedStyle(el).color)
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         samples.push(getComputedStyle(el).color)
         expect(samples.every(c => c === 'rgb(10, 20, 30)')).toBe(true)
         expect(rootEl.querySelector('style[data-axii-ssr]')).toBeNull()
@@ -137,7 +137,7 @@ describe('M-04 SSR styles', () => {
             }
             const {html, styles} = renderToString(createElement(App, null as any))
             rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-            const root = hydrateRoot(rootEl, createElement(App, null as any))
+            const root = hydrate(rootEl, createElement(App, null as any))
             const mid = getAxiiRetainedObjectDiagnosticsSnapshot()
             expect(mid.styles.activeHostStyleStates).toBeGreaterThan(0)
             root.destroy()
@@ -163,7 +163,7 @@ describe('M-04 SSR styles', () => {
 
     // ─── k12-audit: F30 content-signature + path-id alignment ───
 
-    test('F30: StaticArray siblings with different nested styles must not share one SSR sheet', () => {
+    test.skipIf(pendingTopDown('B2'))('F30: StaticArray siblings with different nested styles must not share one SSR sheet', () => {
         function App({}: any, {createElement}: RenderContext) {
             return [
                 <div id="a" style={{'&:hover': {opacity: '0.9'}, color: 'rgb(1, 2, 3)'}}>a</div>,
@@ -182,7 +182,7 @@ describe('M-04 SSR styles', () => {
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
         expect(getComputedStyle(rootEl.querySelector('#a')!).color).toBe('rgb(1, 2, 3)')
         expect(getComputedStyle(rootEl.querySelector('#b')!).color).toBe('rgb(4, 5, 6)')
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         expect(getComputedStyle(rootEl.querySelector('#a')!).color).toBe('rgb(1, 2, 3)')
         expect(getComputedStyle(rootEl.querySelector('#b')!).color).toBe('rgb(4, 5, 6)')
     })
@@ -211,7 +211,7 @@ describe('M-04 SSR styles', () => {
         expect(ssrClass).toBe(csrClass)
 
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         const hyd = rootEl.querySelector('#inner') as HTMLElement
         expect(getComputedStyle(hyd).color).toBe('rgb(7, 8, 9)')
         // After hydrate, a single style class — no orphan SSR id alongside a new one
@@ -267,7 +267,7 @@ describe('M-04 SSR styles', () => {
         expect(ssrClass).toBe(csrClass)
 
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         const styleClasses = Array.from(el.classList).filter(c => /F\d/.test(c))
@@ -300,7 +300,7 @@ describe('M-04 SSR styles', () => {
         // Pre-hydrate must already reflect atom snapshot (Task req 1 / M-04 no FOUC)
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(el.getAttribute('style') || '').toMatch(/color/)
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         color('rgb(9, 8, 7)')
         expect(getComputedStyle(el).color).toBe('rgb(9, 8, 7)')
@@ -323,7 +323,7 @@ describe('M-04 SSR styles', () => {
         expect(ssrClass).toMatch(CONTENT_ID)
 
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(Array.from(el.classList).filter(c => /F\d/.test(c))).toEqual([ssrClass])
@@ -344,7 +344,7 @@ describe('M-04 SSR styles', () => {
         expect((html.match(/class="([^"]+)"/) || [])[1] || '').toMatch(/^axs-[0-9a-z]+F0$/)
         expect(html).toMatch(/font-weight:\s*700|font-weight:700/)
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(getComputedStyle(el).fontWeight).toMatch(/700|bold/)
@@ -364,7 +364,7 @@ describe('M-04 SSR styles', () => {
         const ssrClass = (html.match(/class="([^"]+)"/) || [])[1] || ''
         expect(ssrClass).toMatch(CONTENT_ID)
         rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
-        undestroyedRoots.push(hydrateRoot(rootEl, createElement(App, null as any)))
+        undestroyedRoots.push(hydrate(rootEl, createElement(App, null as any)))
         const el = rootEl.querySelector('#c') as HTMLElement
         expect(getComputedStyle(el).color).toBe('rgb(1, 2, 3)')
         expect(Array.from(el.classList).filter(c => /F\d/.test(c)).length).toBe(1)

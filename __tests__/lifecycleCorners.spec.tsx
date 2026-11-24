@@ -16,11 +16,11 @@ import {
     createElement,
     createHost,
     createRoot,
-    hydrateRoot,
     RenderContext,
     RxList,
 } from "@framework";
 import {renderToString} from '../src/ssr.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 async function settle() {
@@ -448,7 +448,7 @@ describe('#58-4: nodes from another realm (same-origin iframe)', () => {
 
     // 激活 iframe 文档里的服务端标记：认领到的节点（<!--root-->、元素、atom / 函数文本的 Text 占位符）
     //  都来自 iframe 的 realm，节点种类同样按 nodeType 判断。
-    test('hydrating a container inside an iframe document', async () => {
+    test.skipIf(pendingTopDown('B2'))('hydrating a container inside an iframe document', async () => {
         const count = atom(1)
         const label = atom('a')
         const items = new RxList(['x', 'y'])
@@ -469,7 +469,7 @@ describe('#58-4: nodes from another realm (same-origin iframe)', () => {
         const span = container.querySelector('span')!
         const em = container.querySelector('em')!
         const firstLi = container.querySelector('li')!
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
         expect(container.querySelector('span')).toBe(span)
         expect(container.querySelector('em')).toBe(em)
         expect(container.querySelector('li')).toBe(firstLi)

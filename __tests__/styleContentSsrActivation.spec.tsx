@@ -2,6 +2,7 @@
 import {createElement, hydrateRoot, type RenderContext} from '@framework'
 import {renderToString} from '../src/ssr.js'
 import {expect, test} from 'vitest'
+import {hydrate} from './helpers/hydrate'
 
 test('hydrating one root preserves the stylesheet of another pending server root', () => {
     function App({color}: {color: string}, {createElement}: RenderContext) {
@@ -16,9 +17,9 @@ test('hydrating one root preserves the stylesheet of another pending server root
     })
     const roots = []
     try {
-        roots.push(hydrateRoot(containers[0], <App color="red"/>))
+        roots.push(hydrate(containers[0], <App color="red"/>))
         expect(getComputedStyle(containers[1].querySelector('span')!).color).toBe('rgb(0, 0, 255)')
-        roots.push(hydrateRoot(containers[1], <App color="blue"/>))
+        roots.push(hydrate(containers[1], <App color="blue"/>))
         for (const container of containers) expect(container.querySelector('style')).toBeNull()
     } finally {
         for (const root of roots) root.destroy()
@@ -43,7 +44,7 @@ test.each([[0, 1], [1, 0]])('pending rolling CSS stays isolated when hydrating r
         const nodes = containers.map(container => container.querySelector('div')!)
         expect(nodes.map(node => getComputedStyle(node).zIndex)).toEqual(['1', '2'])
         for (const i of [first, second]) {
-            roots.push(hydrateRoot(containers[i], <App index={indexes[i]}/>))
+            roots.push(hydrate(containers[i], <App index={indexes[i]}/>))
             expect(nodes.map(node => getComputedStyle(node).zIndex)).toEqual(['1', '2'])
         }
     } finally {
@@ -71,7 +72,7 @@ test.each([
     container.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
     const span = container.querySelector('span')!
     const serverName = getComputedStyle(span).animationName
-    const root = hydrateRoot(container, <App/>)
+    const root = hydrate(container, <App/>)
     try {
         expect(serverName).toMatch(/^animation-/)
         expect(getComputedStyle(span).animationName).toBe(serverName)

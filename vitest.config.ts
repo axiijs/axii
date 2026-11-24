@@ -10,6 +10,31 @@ const siblingData0 = fileURLToPath(new URL('../data0/src/index.ts', import.meta.
 const forceNpmData0 = process.env.AXII_DATA0_FORCE_NPM === '1'
 const useSiblingData0 = !forceNpmData0 && existsSync(siblingData0)
 
+// #55（设计 docs/ssr-support/hydration-top-down.md §7.2）：调用激活的 spec 文件都经 __tests__/helpers/hydrate.ts 激活。
+//  下面的「top-down」项目把它们再跑一遍，走不导出的内部入口（新模型）；「default」项目照旧跑全部用例、走公开的 hydrateRoot。
+//  一条 `npx vitest run` 跑完两遍，门禁命令不变。新增调用激活的 spec 文件时加进这张表；#55 S 删除入口切换时一并删除它。
+const TOP_DOWN_HYDRATE_SPECS = [
+  '__tests__/auditSsrCsrAttributeParity.spec.tsx',
+  '__tests__/auditSsrHydrate.spec.tsx',
+  '__tests__/auditStylesFormsState.spec.tsx',
+  '__tests__/contentAddressedStyles.spec.tsx',
+  '__tests__/lifecycleCorners.spec.tsx',
+  '__tests__/ssrCompactRow.spec.tsx',
+  '__tests__/ssrHydrate.attrs-components.spec.tsx',
+  '__tests__/ssrHydrate.claimCorners.spec.tsx',
+  '__tests__/ssrHydrate.lifecycle.spec.tsx',
+  '__tests__/ssrHydrate.lists.spec.tsx',
+  '__tests__/ssrHydrate.mismatch.spec.tsx',
+  '__tests__/ssrHydrate.mismatchRebuild.spec.tsx',
+  '__tests__/ssrHydrate.shapes.spec.tsx',
+  '__tests__/ssrHydrate.smoke.spec.tsx',
+  '__tests__/ssrStyles.spec.tsx',
+  '__tests__/styleContentCascade.spec.tsx',
+  '__tests__/styleContentIdentity.spec.tsx',
+  '__tests__/styleContentLifecycle.spec.tsx',
+  '__tests__/styleContentSsrActivation.spec.tsx',
+]
+
 export default {
   esbuild: {
     jsxFactory: 'createElement',
@@ -47,6 +72,14 @@ export default {
       provider: 'playwright',
       headless: true,
     },
+    projects: [
+      {extends: true, test: {name: 'default'}},
+      {
+        extends: true,
+        define: {__AXII_HYDRATE_TOP_DOWN__: true},
+        test: {name: 'top-down', include: TOP_DOWN_HYDRATE_SPECS},
+      },
+    ],
     coverage: {
       enabled: true,
       all: true,

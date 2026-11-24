@@ -6,7 +6,6 @@
 import {
     createElement,
     createRoot,
-    hydrateRoot,
     configureDiagnostics,
     enableAxiiRetainedObjectDiagnostics,
     disableAxiiRetainedObjectDiagnostics,
@@ -18,6 +17,7 @@ import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 describe('M-06 hydration mismatch (§3.7)', () => {
     let rootEl: HTMLElement
@@ -28,7 +28,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('tampered ElementChildText: diagnostics + new text identity; matched sibling preserved', () => {
+    test.skipIf(pendingTopDown('B3'))('tampered ElementChildText: diagnostics + new text identity; matched sibling preserved', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -55,7 +55,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         // Tamper SSR text (version/data drift)
         aTextBefore.nodeValue = 'TAMPERED'
 
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const mismatch = errors.find(e => e instanceof HydrationMismatchError) as HydrationMismatchError | undefined
         expect(mismatch).toBeTruthy()
@@ -80,7 +80,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('tampered atom Text-ph: rebuild then reactive updates on new Text', () => {
+    test.skipIf(pendingTopDown('B3'))('tampered atom Text-ph: rebuild then reactive updates on new Text', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -98,7 +98,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         expect(before.nodeValue).toBe('client')
         before.nodeValue = 'stale-ssr'
 
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(errors.some(e => e instanceof HydrationMismatchError)).toBe(true)
         const after = Array.from(div.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
         expect(after.nodeValue).toBe('client')
@@ -123,7 +123,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const before = Array.from(rootEl.querySelector('#ok')!.childNodes)
             .find(n => n.nodeType === Node.TEXT_NODE) as Text
         expect(before.nodeValue).toBe('same')
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(errors.filter(e => e instanceof HydrationMismatchError)).toHaveLength(0)
         const after = Array.from(rootEl.querySelector('#ok')!.childNodes)
             .find(n => n.nodeType === Node.TEXT_NODE) as Text
@@ -134,7 +134,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k21-audit: §3.7 claim-miss / marker-miss must not leave silent unbound DOM ---
 
-    test('wrong child tag: no leftover axii markers; client tag bound and updates', () => {
+    test.skipIf(pendingTopDown('B3'))('wrong child tag: no leftover axii markers; client tag bound and updates', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -147,7 +147,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const {html} = renderToString(createElement(App, null as any))
         // Tamper: span → p (structure / tag mismatch)
         rootEl.innerHTML = html.replace('<span id="s">', '<p id="s">').replace('</span>', '</p>')
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         expect(rootEl.innerHTML).not.toMatch(/<!--axii:t-->/)
         const span = rootEl.querySelector('span#s')
@@ -162,7 +162,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('id attribute drift: client id/title applied; no orphan SSR sibling', () => {
+    test.skipIf(pendingTopDown('B3'))('id attribute drift: client id/title applied; no orphan SSR sibling', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="ok" title="t">{'x'}</div>
@@ -172,7 +172,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const el = rootEl.querySelector('#ok') as HTMLElement
         el.id = 'WRONG'
         el.setAttribute('title', 'HACK')
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         expect(rootEl.querySelector('#ok')).toBeTruthy()
         expect(rootEl.querySelector('#ok')!.getAttribute('title')).toBe('t')
@@ -183,7 +183,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('missing axii:0: mismatch report + empty Text-ph bound for atom updates', () => {
+    test.skipIf(pendingTopDown('B3'))('missing axii:0: mismatch report + empty Text-ph bound for atom updates', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -196,7 +196,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const {html} = renderToString(createElement(App, null as any))
         expect(html).toContain('<!--axii:0-->')
         rootEl.innerHTML = html.replace(/<!--axii:0-->/g, '')
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         expect(errors.some(e => e instanceof HydrationMismatchError)).toBe(true)
         const host = rootEl.querySelector('#e')!
@@ -211,7 +211,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k22-audit: tryClaimElement must not steal same-tag siblings when cursor unit is wrong tag ---
 
-    test('wrong-tag child with id: must not steal next same-tag sibling; orphan removed', () => {
+    test.skipIf(pendingTopDown('B3'))('wrong-tag child with id: must not steal next same-tag sibling; orphan removed', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -235,7 +235,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         while (aEl.firstChild) em.appendChild(aEl.firstChild)
         aEl.replaceWith(em)
         const bBefore = rootEl.querySelector('#b')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         expect(rootEl.querySelector('em#a')).toBeFalsy()
         expect(rootEl.querySelector('span#a')).toBeTruthy()
@@ -250,7 +250,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('wrong-tag child without id: must not steal next same-tag sibling; orphan removed', () => {
+    test.skipIf(pendingTopDown('B3'))('wrong-tag child without id: must not steal next same-tag sibling; orphan removed', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -270,7 +270,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         while (first.firstChild) em.appendChild(first.firstChild)
         first.replaceWith(em)
         const secondBefore = rootEl.querySelector('#d')!.querySelector('span')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         expect(rootEl.querySelector('em')).toBeFalsy()
         expect(rootEl.querySelectorAll('#d > span').length).toBe(2)
@@ -287,7 +287,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k23-audit: interstitial extra node / swapped tags (domain-review → milestone-review) ---
 
-    test('interstitial extra element: remove junk, claim next same-tag; no orphan axii:t', () => {
+    test.skipIf(pendingTopDown('B3'))('interstitial extra element: remove junk, claim next same-tag; no orphan axii:t', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -307,7 +307,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         extra.textContent = 'junk'
         aEl.after(extra)
         const bBefore = rootEl.querySelector('#b')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}`).join(',')
@@ -323,7 +323,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('multiple interstitial junk nodes: remove all; claim next exact id', () => {
+    test.skipIf(pendingTopDown('B3'))('multiple interstitial junk nodes: remove all; claim next exact id', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -345,7 +345,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         aEl.after(j1)
         j1.after(j2)
         const bBefore = rootEl.querySelector('#b')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}`).join(',')
@@ -360,7 +360,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('swapped sibling tags: must not wrongIdMiss-claim earlier wrong role; restore span then p', () => {
+    test.skipIf(pendingTopDown('B3'))('swapped sibling tags: must not wrongIdMiss-claim earlier wrong role; restore span then p', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -388,7 +388,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         while (bEl.firstChild) s.appendChild(bEl.firstChild)
         aEl.replaceWith(p)
         bEl.replaceWith(s)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}:${k.textContent}`).join(' | ')
@@ -405,7 +405,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('middle wrong-tag between correct siblings: rebuild middle only', () => {
+    test.skipIf(pendingTopDown('B3'))('middle wrong-tag between correct siblings: rebuild middle only', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -428,7 +428,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         bEl.replaceWith(em)
         const aBefore = rootEl.querySelector('#a')!
         const cBefore = rootEl.querySelector('#c')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         expect(rootEl.querySelector('em')).toBeFalsy()
         expect(rootEl.querySelector('#a')).toBe(aBefore)
@@ -445,7 +445,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k24-audit: same-tag interstitial / swapped ids (deep-walk bypasses D6 cursor cleanup) ---
 
-    test('same-tag interstitial wrong-id: remove junk; claim next exact id; no orphan', () => {
+    test.skipIf(pendingTopDown('B3'))('same-tag interstitial wrong-id: remove junk; claim next exact id; no orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -465,7 +465,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         junk.textContent = 'junk'
         aEl.after(junk)
         const bBefore = rootEl.querySelector('#b')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}:${k.textContent}`).join(' | ')
@@ -481,7 +481,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('swapped same-tag ids: preserve client order roles; no cross-wired bindings', () => {
+    test.skipIf(pendingTopDown('B3'))('swapped same-tag ids: preserve client order roles; no cross-wired bindings', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -499,7 +499,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const bEl = rootEl.querySelector('#b') as HTMLElement
         aEl.id = 'b'
         bEl.id = 'a'
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}:${k.textContent}`).join(' | ')
@@ -517,7 +517,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k25-audit: multi same-tag interstitial (green strengthen) + trailing orphans (red) ---
 
-    test('multiple same-tag interstitial junk: remove all; claim exact id', () => {
+    test.skipIf(pendingTopDown('B3'))('multiple same-tag interstitial junk: remove all; claim exact id', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -541,7 +541,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         aEl.after(j1)
         j1.after(j2)
         const bBefore = rootEl.querySelector('#b')!
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}`).join('|')
@@ -556,7 +556,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('trailing same-tag junk: must not leave orphan after hydrate', () => {
+    test.skipIf(pendingTopDown('B3'))('trailing same-tag junk: must not leave orphan after hydrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -575,7 +575,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         junk.id = 'x'
         junk.textContent = 'junk'
         d.appendChild(junk)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}`).join('|')
@@ -588,7 +588,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('trailing different-tag junk: must not leave orphan after hydrate', () => {
+    test.skipIf(pendingTopDown('B3'))('trailing different-tag junk: must not leave orphan after hydrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -607,7 +607,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         junk.id = 'x'
         junk.textContent = 'junk'
         d.appendChild(junk)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const kids = Array.from(rootEl.querySelector('#d')!.children)
         const dump = kids.map(k => `${k.tagName}#${(k as HTMLElement).id}`).join('|')
@@ -620,7 +620,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('trailing text junk: must not leave orphan after hydrate', () => {
+    test.skipIf(pendingTopDown('B3'))('trailing text junk: must not leave orphan after hydrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         function App({}: any, {createElement}: RenderContext) {
@@ -634,7 +634,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         rootEl.innerHTML = html
         const d = rootEl.querySelector('#d')!
         d.appendChild(document.createTextNode('TRAILING'))
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const dump = Array.from(d.childNodes).map(n =>
             n.nodeType === Node.TEXT_NODE ? `T(${n.nodeValue})` : (n as Element).tagName,
@@ -649,7 +649,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k26-audit: element-child trailing strengthen + hydrate-root container orphans (D11) ---
 
-    test('multiple mixed trailing junk: remove all element+text orphans', () => {
+    test.skipIf(pendingTopDown('B3'))('multiple mixed trailing junk: remove all element+text orphans', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -673,7 +673,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         d.appendChild(j1)
         d.appendChild(document.createTextNode('TAIL'))
         d.appendChild(j2)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const dump = Array.from(d.childNodes).map(n =>
             n.nodeType === Node.TEXT_NODE ? `T(${n.nodeValue})` : `${(n as Element).tagName}#${(n as HTMLElement).id}`,
@@ -688,7 +688,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('trailing junk after RxList: must not leave orphan', () => {
+    test.skipIf(pendingTopDown('B2'))('trailing junk after RxList: must not leave orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const items = new RxList(['a', 'b'])
         function App({}: any, {createElement}: RenderContext) {
@@ -705,7 +705,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         junk.id = 'x'
         junk.textContent = 'junk'
         d.appendChild(junk)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const dump = Array.from(d.childNodes).map(n =>
             n.nodeType === Node.COMMENT_NODE ? `C(${(n as Comment).data})` : (n as Element).tagName,
@@ -717,7 +717,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('hydrate-root trailing junk after <!--root-->: must not leave orphan', () => {
+    test.skipIf(pendingTopDown('B3'))('hydrate-root trailing junk after <!--root-->: must not leave orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         function App({}: any, {createElement}: RenderContext) {
@@ -733,7 +733,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         junk.id = 'root-x'
         junk.textContent = 'root junk'
         rootEl.appendChild(junk)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const dump = Array.from(rootEl.childNodes).map(n => {
             if (n.nodeType === Node.COMMENT_NODE) return `C(${(n as Comment).data})`
@@ -747,7 +747,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('hydrate-root junk before <!--root-->: must not leave orphan sibling', () => {
+    test.skipIf(pendingTopDown('B3'))('hydrate-root junk before <!--root-->: must not leave orphan sibling', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         function App({}: any, {createElement}: RenderContext) {
@@ -769,7 +769,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const lead = document.createElement('div')
         lead.id = 'lead-x'
         rootEl.insertBefore(lead, rootEl.firstChild)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const dump = Array.from(rootEl.childNodes).map(n => {
             if (n.nodeType === Node.COMMENT_NODE) return `C(${(n as Comment).data})`
@@ -786,7 +786,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k27/k28-audit: Comment-ph text drift (D12) + container leading STYLE/SCRIPT/LINK (D13) ---
 
-    test('Comment-ph atom text drift: must report HydrationMismatchError (not silent run() fix)', () => {
+    test.skipIf(pendingTopDown('B2'))('Comment-ph atom text drift: must report HydrationMismatchError (not silent run() fix)', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -803,7 +803,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const textBefore = Array.from(d.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
         expect(textBefore.nodeValue).toBe('A')
         textBefore.nodeValue = 'STALE'
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const mismatch = errors.find(e => e instanceof HydrationMismatchError) as HydrationMismatchError | undefined
         expect(
@@ -820,7 +820,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('matched Comment-ph: no mismatch; text identity reused', () => {
+    test.skipIf(pendingTopDown('B2'))('matched Comment-ph: no mismatch; text identity reused', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -834,7 +834,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         rootEl.innerHTML = html
         const d = rootEl.querySelector('#d')!
         const textBefore = Array.from(d.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(errors.filter(e => e instanceof HydrationMismatchError)).toHaveLength(0)
         const textAfter = Array.from(d.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
         expect(textAfter).toBe(textBefore)
@@ -843,7 +843,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('G4-F Function→string Comment-ph text drift: report + identity rebuild', () => {
+    test.skipIf(pendingTopDown('B2'))('G4-F Function→string Comment-ph text drift: report + identity rebuild', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -859,7 +859,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const textBefore = Array.from(d.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
         expect(textBefore.nodeValue).toBe('A')
         textBefore.nodeValue = 'STALE'
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         const mismatch = errors.find(e => e instanceof HydrationMismatchError) as HydrationMismatchError | undefined
         expect(mismatch, `errors=${errors.map(e => (e as Error).message).join('; ')}`).toBeTruthy()
         const textAfter = Array.from(d.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
@@ -869,7 +869,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('PrimitiveHost Comment-ph string drift: report + identity rebuild', () => {
+    test.skipIf(pendingTopDown('B2'))('PrimitiveHost Comment-ph string drift: report + identity rebuild', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -885,7 +885,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const textBefore = Array.from(d.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
         expect(textBefore.nodeValue).toBe('A')
         textBefore.nodeValue = 'STALE'
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         const mismatch = errors.find(e => e instanceof HydrationMismatchError) as HydrationMismatchError | undefined
         expect(mismatch, `errors=${errors.map(e => (e as Error).message).join('; ')}`).toBeTruthy()
         const textAfter = Array.from(d.childNodes).find(n => n.nodeType === Node.TEXT_NODE) as Text
@@ -895,7 +895,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('hydrate-root leading non-ssr STYLE: must not remain after migrate (CSR shape)', () => {
+    test.skipIf(pendingTopDown('B3'))('hydrate-root leading non-ssr STYLE: must not remain after migrate (CSR shape)', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="d">ok</div>
@@ -907,7 +907,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         style.id = 'evil'
         style.textContent = 'body{outline:1px solid red}'
         rootEl.insertBefore(style, rootEl.firstChild)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
 
         const dump = Array.from(rootEl.childNodes).map(n => {
             if (n.nodeType === Node.COMMENT_NODE) return `C(${(n as Comment).data})`
@@ -923,7 +923,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('hydrate-root leading SCRIPT orphan: must not remain after migrate', () => {
+    test.skipIf(pendingTopDown('B3'))('hydrate-root leading SCRIPT orphan: must not remain after migrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="d">ok</div>
@@ -934,14 +934,14 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         script.id = 'evil-js'
         script.textContent = 'window.__axiiEvil=1'
         rootEl.insertBefore(script, rootEl.firstChild)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#evil-js')).toBeFalsy()
         expect(rootEl.querySelector('#d')).toBeTruthy()
         root.destroy()
         configureDiagnostics({})
     })
 
-    test('hydrate-root leading LINK orphan: must not remain after migrate', () => {
+    test.skipIf(pendingTopDown('B3'))('hydrate-root leading LINK orphan: must not remain after migrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="d">ok</div>
@@ -953,14 +953,14 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         link.rel = 'stylesheet'
         link.href = 'data:text/css,body{color:red}'
         rootEl.insertBefore(link, rootEl.firstChild)
-        const root = hydrateRoot(rootEl, createElement(App, null as any))
+        const root = hydrate(rootEl, createElement(App, null as any))
         expect(rootEl.querySelector('#evil-link')).toBeFalsy()
         expect(rootEl.querySelector('#d')).toBeTruthy()
         root.destroy()
         configureDiagnostics({})
     })
 
-    test('portal container trailing junk after <!--root-->: must not leave orphan', () => {
+    test.skipIf(pendingTopDown('B4'))('portal container trailing junk after <!--root-->: must not leave orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}, {createElement, createPortal}: RenderContext) {
             return <div>
@@ -976,7 +976,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         const junk = document.createElement('div')
         junk.id = 'pj'
         portalEl.appendChild(junk)
-        const root = hydrateRoot(rootEl, createElement(App, null as any), {
+        const root = hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#pj')).toBeFalsy()
@@ -986,7 +986,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test('portal container leading STYLE orphan: must not remain after migrate', () => {
+    test.skipIf(pendingTopDown('B4'))('portal container leading STYLE orphan: must not remain after migrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}, {createElement, createPortal}: RenderContext) {
             return <div>
@@ -1003,7 +1003,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         style.id = 'evil-p'
         style.textContent = 'body{outline:1px solid red}'
         portalEl.insertBefore(style, portalEl.firstChild)
-        const root = hydrateRoot(rootEl, createElement(App, null as any), {
+        const root = hydrate(rootEl, createElement(App, null as any), {
             portals: {'portal-target': portalEl},
         })
         expect(portalEl.querySelector('#evil-p')).toBeFalsy()
@@ -1022,7 +1022,7 @@ describe('M-06 retained after hydrate+destroy', () => {
         document.body.appendChild(rootEl)
     })
 
-    test('hydrate+destroy returns host/binding/style retained counters to zero', () => {
+    test.skipIf(pendingTopDown('B2'))('hydrate+destroy returns host/binding/style retained counters to zero', () => {
         enableAxiiRetainedObjectDiagnostics({reset: true})
         try {
             const label = atom('x')
@@ -1037,7 +1037,7 @@ describe('M-06 retained after hydrate+destroy', () => {
             }
             const {html, styles} = renderToString(createElement(App, null as any))
             rootEl.innerHTML = styles ? `<style data-axii-ssr>${styles}</style>${html}` : html
-            const root = hydrateRoot(rootEl, createElement(App, null as any))
+            const root = hydrate(rootEl, createElement(App, null as any))
             const mid = getAxiiRetainedObjectDiagnosticsSnapshot()
             expect(mid.hosts.totalActive).toBeGreaterThan(0)
             expect(mid.lightBindings.totalActive).toBeGreaterThan(0)

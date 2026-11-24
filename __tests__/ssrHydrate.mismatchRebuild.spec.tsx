@@ -13,11 +13,12 @@
  * DOM must equal a CSR root of the same tree.
  * Run: npx vitest run __tests__/ssrHydrate.mismatchRebuild.spec.tsx
  */
-import {createElement, createRoot, hydrateRoot, configureDiagnostics, RenderContext} from '@framework'
+import {createElement, createRoot, configureDiagnostics, RenderContext} from '@framework'
 import {atom} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
+import {hydrate, pendingTopDown} from './helpers/hydrate'
 
 type ProbeWindow = Window & {__axiiI73Probe?: string[]}
 const probeWindow = window as ProbeWindow
@@ -111,7 +112,7 @@ function loadOutcome(el: HTMLLinkElement | HTMLScriptElement): Promise<'load' | 
 }
 
 describe('#73 elements rebuilt on a hydration mismatch are finished before they are inserted', () => {
-    test('inline data scripts (application/json, text/plain, text/template) do not run; DOM ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B3'))('inline data scripts (application/json, text/plain, text/template) do not run; DOM ≡ CSR', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -126,7 +127,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         expect(probe(), 'CSR does not run data scripts').toEqual([])
 
         const container = serverHtmlWithSwapped(App, 'script')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
 
         expect(reportedMismatch()).toBe(true)
         expect(probe()).toEqual([])
@@ -134,7 +135,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('a data script nested in a rebuilt parent does not run; DOM ≡ CSR', () => {
+    test.skipIf(pendingTopDown('B3'))('a data script nested in a rebuilt parent does not run; DOM ≡ CSR', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -148,7 +149,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
 
         // The whole <section> (and its <script>) is swapped, so both are rebuilt: the script inside the section.
         const container = serverHtmlWithSwapped(App, 'section')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
 
         expect(reportedMismatch()).toBe(true)
         expect(probe()).toEqual([])
@@ -156,7 +157,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('an external script with a non-JavaScript type (src written before type) is not fetched or run', async () => {
+    test.skipIf(pendingTopDown('B3'))('an external script with a non-JavaScript type (src written before type) is not fetched or run', async () => {
         const src = `data:text/javascript,${encodeURIComponent(run('src'))}`
         function App({}: any, {createElement}: RenderContext) {
             return (
@@ -172,7 +173,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         probeWindow.__axiiI73Probe = []
 
         const container = serverHtmlWithSwapped(App, 'script')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
         const rebuilt = container.querySelector('script')!
         let settled = false
         rebuilt.addEventListener('load', () => { settled = true })
@@ -186,7 +187,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('a plain <script> (no type) behaves as in CSR: the rebuilt one runs exactly once', () => {
+    test.skipIf(pendingTopDown('B3'))('a plain <script> (no type) behaves as in CSR: the rebuilt one runs exactly once', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -200,7 +201,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         probeWindow.__axiiI73Probe = []
 
         const container = serverHtmlWithSwapped(App, 'script')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
 
         expect(reportedMismatch()).toBe(true)
         expect(probe()).toEqual(['js'])
@@ -208,7 +209,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('a claimed (not rebuilt) server script is not run again', () => {
+    test.skipIf(pendingTopDown('B3'))('a claimed (not rebuilt) server script is not run again', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -224,7 +225,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         // Only the <b> is swapped; the <script> is claimed as the server parsed it.
         const container = serverHtmlWithSwapped(App, 'b')
         const serverScript = container.querySelector('script')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
 
         expect(reportedMismatch()).toBe(true)
         expect(container.querySelector('script')).toBe(serverScript)
@@ -233,7 +234,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('<link rel="stylesheet"> with integrity: the rebuilt link enforces integrity like CSR', async () => {
+    test.skipIf(pendingTopDown('B3'))('<link rel="stylesheet"> with integrity: the rebuilt link enforces integrity like CSR', async () => {
         const href = `data:text/css,${encodeURIComponent('#d{color:rgb(1, 2, 3)}')}`
         const integrity = 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
         function App({}: any, {createElement}: RenderContext) {
@@ -254,7 +255,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         csrContainer.remove()
 
         const container = serverHtmlWithSwapped(App, 'link')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
         const outcome = await loadOutcome(container.querySelector('link')!)
 
         expect(reportedMismatch()).toBe(true)
@@ -263,7 +264,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('customized built-in element (is=): the rebuilt element is created upgraded, like CSR', () => {
+    test.skipIf(pendingTopDown('B3'))('customized built-in element (is=): the rebuilt element is created upgraded, like CSR', () => {
         class I73Button extends HTMLButtonElement {}
         if (!customElements.get('i73-rebuild-button')) {
             customElements.define('i73-rebuild-button', I73Button, {extends: 'button'})
@@ -286,7 +287,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         csrContainer.remove()
 
         const container = serverHtmlWithSwapped(App, 'button')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
 
         expect(reportedMismatch()).toBe(true)
         expect(container.querySelector('button')).toBeInstanceOf(Ctor)
@@ -294,7 +295,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('<select multiple> rebuilt with its options: every selected option stays selected, like CSR', () => {
+    test.skipIf(pendingTopDown('B3'))('<select multiple> rebuilt with its options: every selected option stays selected, like CSR', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -317,7 +318,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
 
         // The whole <select> (with its options) is swapped, so the select and its options are rebuilt.
         const container = serverHtmlWithSwapped(App, 'select')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
 
         expect(reportedMismatch()).toBe(true)
         expect(selectedOf(container)).toEqual(['a', 'b'])
@@ -325,7 +326,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test('the rebuilt element keeps its position and later siblings are still claimed', () => {
+    test.skipIf(pendingTopDown('B3'))('the rebuilt element keeps its position and later siblings are still claimed', () => {
         const text = atom('t')
         function App({}: any, {createElement}: RenderContext) {
             return (
@@ -339,7 +340,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         const expected = csrShape(App)
         const container = serverHtmlWithSwapped(App, 'script')
         const serverAfter = container.querySelector('#after')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
 
         expect(reportedMismatch()).toBe(true)
         expect(probe()).toEqual([])
@@ -372,7 +373,7 @@ describe('#73 known limit: reactive attributes of a rebuilt element', () => {
         expect(probe(), 'CSR binds the reactive type before the script is inserted').toEqual([])
 
         const container = serverHtmlWithSwapped(App, 'script')
-        const root = hydrateRoot(container, createElement(App, null as any))
+        const root = hydrate(container, createElement(App, null as any))
         try {
             expect(reportedMismatch()).toBe(true)
             expect(contentShape(container)).toBe(expected)
