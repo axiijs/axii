@@ -94,7 +94,8 @@ export function throwConsumedDescription(): never {
 }
 
 /**
- * 新模型激活的中止：失配（B1 / B2 报告 HydrationMismatchError 并抛出，修复在 B3）与未实现的形态。
+ * 新模型激活的中止：未实现的形态（B4 之前）。B1 / B2 的失配也报告并抛出 HydrationMismatchError；B3 起失配按 R1–R5
+ * 修复、不再抛出，这里仍把它算作中止（新模型里没有地方再抛出它，万一有，也不能被组件的监听器吞掉）。
  * root.dispatch('error') 在激活期间不把它们当作已消费：注册了 root.on('error') 也不能让激活在错位的游标上继续。
  */
 export function isTopDownAbort(error: unknown): boolean {

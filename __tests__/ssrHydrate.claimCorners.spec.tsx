@@ -518,7 +518,7 @@ describe('hydrateRoot end-to-end claim corners', () => {
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('Comment-ph drift: SSR text missing while expected non-empty reports + inserts fresh Text', () => {
+    test('Comment-ph drift: SSR text missing while expected non-empty reports + inserts fresh Text', () => {
         const name = atom('x')
         const {html} = renderToString(name)
         rootEl.innerHTML = html.replace('<!--axii:t-->x<!--axii:/t-->', '')
@@ -534,10 +534,25 @@ describe('hydrateRoot end-to-end claim corners', () => {
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('root atom hydrate throws when an Element sits before <!--root-->', () => {
+    // 旧模型（公开的 hydrateRoot）在这里抛错；新模型按 R2 替换这个单元并报告（#55 B3，设计 §8「元素紧挨在 placeholder
+    //  前面时抛错」→ R2），内部入口那一遍的期望见下一条。#55 S 删除旧模型时删除这一条
+    test.skipIf(TOP_DOWN_PASS)('root atom hydrate throws when an Element sits before <!--root-->', () => {
         const name = atom('x')
         rootEl.innerHTML = '<span></span><!--root-->'
         expect(() => hydrate(rootEl, name)).toThrow('expected Text before Comment placeholder')
+    })
+
+    test.skipIf(!TOP_DOWN_PASS)('root atom: an Element before <!--root--> is replaced by the Text and reported (R2, #55 B3)', () => {
+        const name = atom('x')
+        rootEl.innerHTML = '<span></span><!--root-->'
+        const errors = captureMismatches()
+        const root = hydrate(rootEl, name)
+        expect(Array.from(rootEl.childNodes).map(n => n.nodeType === Node.TEXT_NODE ? `"${n.nodeValue}"` : n.nodeName))
+            .toEqual(['"x"', '#comment'])
+        expect(errors.filter(e => e instanceof HydrationMismatchError).length).toBe(1)
+        name('y')
+        expect((rootEl.firstChild as Text).nodeValue).toBe('y')
+        root.destroy()
     })
 
     test.skipIf(pendingTopDown('B4'))('hydrateRoot throws when the container is missing <!--root-->', () => {

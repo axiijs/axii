@@ -213,7 +213,7 @@ describe('server forms that are easy to misread (review findings)', () => {
         expect(hyd.querySelector('title')!.childNodes[2]).toBe(title)
     })
 
-    test('a root destroyed and re-rendered by an error listener during the activation renders with CSR; the discarded tree raises no second error', () => {
+    test('a root destroyed and re-rendered by an error listener during the activation renders with CSR; the discarded tree raises nothing beyond its own mismatches', () => {
         const make = (clientThrows: boolean) => function App({}: any, {createElement, pathContext}: RenderContext) {
             if (pathContext) {
                 pathContext.root.on('error', () => {
@@ -226,8 +226,12 @@ describe('server forms that are easy to misread (review findings)', () => {
         }
         const hyd = ssrInto(createElement(make(false), null))
         const root = hydrateRootTopDown(hyd, createElement(make(true), null))
-        // 被丢弃的激活树里的失配只报告一次（认领处），没有容器检查等后续报告
-        expect(reports.map(e => (e as Error).message)).toEqual(['[axii] hydration mismatch: expected Comment("empty"), got Element(<b>)'])
+        // 被丢弃的激活树（B3 起不中止）按 R3 修复完自己的失配：出错的组件渲染为空（<!--empty--> 插入），它的 slot 之前的服务端
+        //  <b> 删除。只有这两条认领处的报告，没有容器清扫等后续报告，也没有别的错误
+        expect(reports.map(e => (e as Error).message)).toEqual([
+            '[axii] hydration mismatch: expected Comment("empty"), got Element(<b>)',
+            '[axii] hydration mismatch: expected Comment("unhandledChild"), got Element(<b>)',
+        ])
         expect(hyd.querySelector('p')?.textContent).toBe('fallback')
         // 之后 destroy + render 仍是 CSR
         root.destroy()
@@ -432,8 +436,9 @@ describe('root sources (§2.5 「根」)', () => {
     })
 })
 
-describe('aborting the activation (§6: B1 reports and throws on a mismatch)', () => {
-    test('a mismatch is reported once and thrown; an error listener registered by a component does not swallow it', () => {
+describe('mismatches do not abort the activation (B3: §4.2); other errors still do', () => {
+    // B1 / B2 在失配处报告并抛出；B3 起失配按 R1–R5 修复、不中止（这两条由「报告并抛出」改成「报告并修复」）
+    test('a mismatch is reported once and repaired; an error listener registered by a component does not receive it', () => {
         const caught: unknown[] = []
         const make = (text: string) => function App({}: any, {createElement, pathContext}: RenderContext) {
             // 服务端的 RenderContext 没有 pathContext
@@ -441,20 +446,16 @@ describe('aborting the activation (§6: B1 reports and throws on a mismatch)', (
             return <div><p>{() => text}</p></div>
         }
         const hyd = ssrInto(createElement(make('server'), null))
-        let thrown: unknown
-        try {
-            hydrateRootTopDown(hyd, createElement(make('client'), null))
-        } catch (e) {
-            thrown = e
-        }
-        expect(thrown).toBeInstanceOf(HydrationMismatchError)
-        expect(reports).toEqual([thrown])
-        expect(caught).toEqual([])
+        hydrateRootTopDown(hyd, createElement(make('client'), null))
+        expect(reports.length).toBe(1)
+        expect(reports[0]).toBeInstanceOf(HydrationMismatchError)
+        expect({dom: kids(hyd), caught}).toEqual({dom: '<div><p>"client"</p></div><!--root-->', caught: []})
     })
 
-    test('the activation state is restored after an abort: CSR and the next activation work', () => {
+    test('the activation state is restored after an abort (an error nobody handles): CSR and the next activation work', () => {
+        function Throws(): any { throw new Error('render failed') }
         const hyd = ssrInto('server')
-        expect(() => hydrateRootTopDown(hyd, 'client')).toThrow(HydrationMismatchError)
+        expect(() => hydrateRootTopDown(hyd, createElement(Throws, null))).toThrow('render failed')
         const el = createElement('div', null) as HTMLElement
         expect(el instanceof HTMLDivElement).toBe(true)
         const again = ssrInto('ok')
@@ -600,9 +601,9 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
     })
 
-    test('an array under an element that only became SVG keeps HTML items like CSR: the parser\'s SVG <title> is reported, not claimed silently', () => {
+    test('an array under an element that only became SVG keeps HTML items like CSR: the parser\'s SVG <title> is reported and rebuilt, not claimed silently', () => {
         // CSR 的 adoptSvgChildren 只在创建时就是 SVG 的元素上改建数组项；被父元素改建、或作为数组项被改建的 <a> 不改建它的数组项，
-        //  其中的 <title> 是 HTML 元素，解析器却按 SVG 解析。激活与 CSR 一致按 HTML 认领，在认领处报告失配（B3 修复）
+        //  其中的 <title> 是 HTML 元素，解析器却按 SVG 解析。激活与 CSR 一致按 HTML 认领，在认领处报告失配，按 R1 新建（B3）
         const ns = (root: Element) => Array.from(root.querySelectorAll('title')).map(n => n.namespaceURI === 'http://www.w3.org/2000/svg' ? 'svg' : 'html')
         const shapes = [
             function App({}: any, {createElement}: RenderContext) { return <svg><a>{[<title>t</title>]}</a></svg> },
@@ -614,10 +615,9 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
             createRoot(csrEl).render(createElement(App, null))
             expect(ns(csrEl)).toEqual(['html'])
             const hyd = ssrInto(createElement(App, null))
-            let thrown: unknown
-            try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
-            expect(thrown).toBeInstanceOf(HydrationMismatchError)
-            expect(reports.length).toBe(1)
+            hydrateRootTopDown(hyd, createElement(App, null))
+            expect({ns: ns(hyd), dom: kids(hyd), reports: reports.length, mismatch: reports[0] instanceof HydrationMismatchError})
+                .toEqual({ns: ['html'], dom: kids(csrEl), reports: 1, mismatch: true})
         }
         // 对照：创建时就是 SVG 的元素（<g>）改建它的数组项，激活 ≡ CSR、不报告
         reports = []
@@ -863,16 +863,17 @@ describe('server / CSR agreement found in B2 (fixed in #82)', () => {
 
 describe('a hole in a sparse static array (pre-existing server / CSR disagreement)', () => {
     // CSR 的 StaticArrayHost.render 用 forEach，跳过空位；服务端 serializeStaticArray 用 for…of，为空位写 <!--empty--><!--array item-->。
-    //  激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复），不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
-    test('the activation follows CSR (the hole is skipped) and reports the extra server markup', () => {
+    //  激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配、按 R2 / R3 修复（B3），不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
+    test('the activation follows CSR (the hole is skipped), reports the extra server markup and removes it', () => {
         // eslint-disable-next-line no-sparse-arrays
         function App({}: any, {createElement}: RenderContext) { return <p>{['a', , 'b']}</p> }
         const hyd = ssrInto(createElement(App, null))
         expect(hyd.innerHTML).toContain('<!--empty--><!--array item-->')
-        let thrown: unknown
-        try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
-        expect(thrown).toBeInstanceOf(HydrationMismatchError)
-        expect(reports.length).toBe(1)
+        hydrateRootTopDown(hyd, createElement(App, null))
+        const csrEl = mount()
+        createRoot(csrEl).render(createElement(App, null))
+        expect({dom: kids(hyd), reported: reports.length > 0, all: reports.every(e => e instanceof HydrationMismatchError)})
+            .toEqual({dom: kids(csrEl), reported: true, all: true})
     })
 })
 

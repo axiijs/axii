@@ -18,7 +18,7 @@ import {atom} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
-import {hydrate, pendingTopDown} from './helpers/hydrate'
+import {hydrate, pendingTopDown, TOP_DOWN_PASS} from './helpers/hydrate'
 
 type ProbeWindow = Window & {__axiiI73Probe?: string[]}
 const probeWindow = window as ProbeWindow
@@ -112,7 +112,7 @@ function loadOutcome(el: HTMLLinkElement | HTMLScriptElement): Promise<'load' | 
 }
 
 describe('#73 elements rebuilt on a hydration mismatch are finished before they are inserted', () => {
-    test.skipIf(pendingTopDown('B3'))('inline data scripts (application/json, text/plain, text/template) do not run; DOM ≡ CSR', () => {
+    test('inline data scripts (application/json, text/plain, text/template) do not run; DOM ≡ CSR', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -135,7 +135,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('a data script nested in a rebuilt parent does not run; DOM ≡ CSR', () => {
+    test('a data script nested in a rebuilt parent does not run; DOM ≡ CSR', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -157,7 +157,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('an external script with a non-JavaScript type (src written before type) is not fetched or run', async () => {
+    test('an external script with a non-JavaScript type (src written before type) is not fetched or run', async () => {
         const src = `data:text/javascript,${encodeURIComponent(run('src'))}`
         function App({}: any, {createElement}: RenderContext) {
             return (
@@ -187,7 +187,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('a plain <script> (no type) behaves as in CSR: the rebuilt one runs exactly once', () => {
+    test('a plain <script> (no type) behaves as in CSR: the rebuilt one runs exactly once', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -209,7 +209,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('a claimed (not rebuilt) server script is not run again', () => {
+    test('a claimed (not rebuilt) server script is not run again', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -234,7 +234,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('<link rel="stylesheet"> with integrity: the rebuilt link enforces integrity like CSR', async () => {
+    test('<link rel="stylesheet"> with integrity: the rebuilt link enforces integrity like CSR', async () => {
         const href = `data:text/css,${encodeURIComponent('#d{color:rgb(1, 2, 3)}')}`
         const integrity = 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
         function App({}: any, {createElement}: RenderContext) {
@@ -264,7 +264,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('customized built-in element (is=): the rebuilt element is created upgraded, like CSR', () => {
+    test('customized built-in element (is=): the rebuilt element is created upgraded, like CSR', () => {
         class I73Button extends HTMLButtonElement {}
         if (!customElements.get('i73-rebuild-button')) {
             customElements.define('i73-rebuild-button', I73Button, {extends: 'button'})
@@ -295,7 +295,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('<select multiple> rebuilt with its options: every selected option stays selected, like CSR', () => {
+    test('<select multiple> rebuilt with its options: every selected option stays selected, like CSR', () => {
         function App({}: any, {createElement}: RenderContext) {
             return (
                 <div id="d">
@@ -326,7 +326,7 @@ describe('#73 elements rebuilt on a hydration mismatch are finished before they 
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B3'))('the rebuilt element keeps its position and later siblings are still claimed', () => {
+    test('the rebuilt element keeps its position and later siblings are still claimed', () => {
         const text = atom('t')
         function App({}: any, {createElement}: RenderContext) {
             return (
@@ -359,7 +359,9 @@ describe('#73 known limit: reactive attributes of a rebuilt element', () => {
     // the end of its createElement — static props and children applied, reactive ones not yet — so its script still
     // runs as JavaScript. Deferring the insertion until the owning host has bound the attributes belongs to the
     // top-down claim model (#55, hydration-top-down.md §4.2 R1). Kept executable as test.fails: it flips once fixed.
-    test.fails('a rebuilt <script> with a reactive data type does not run, like CSR (#55)', () => {
+    // 内部入口那一遍（#55 B3）：失配新建的元素在所属 StaticHost 绑定响应式属性之后才插入，这条是普通 test；
+    //  旧入口那一遍仍是 test.fails，#55 S 切换 hydrateRoot 时改成 test。
+    ;(TOP_DOWN_PASS ? test : test.fails)('a rebuilt <script> with a reactive data type does not run, like CSR (#55)', () => {
         const type = atom('application/json')
         function App({}: any, {createElement}: RenderContext) {
             return (

@@ -1,6 +1,6 @@
 # hydration 自顶向下认领 — 设计（#55）
 
-- 实现进度：PR-A（#75）、B1（#80）、B2 已合入；B1、B2 与上文的差别分别记在 §7.6、§7.7。
+- 实现进度：PR-A（#75）、B1（#80）、B2（#84）、B3 已合入；B1、B2、B3 与上文的差别分别记在 §7.6、§7.7、§7.8。
 - 状态：设计稿，按第一轮审阅（PR #67「设计审阅（第一轮）」）修订：补了被捕获描述的生命周期（§3.1.1）与迁移面（§3.1.2）、诊断开关两遍验收（§3.4）、`createHydrateHost` 防分叉机制（§2.4.1），按「内部入口分步落地、最后切换」重写了实现拆分（§7），§12 改为已定。本文只定方案，不含实现。
 - 关联：#55（本设计）、#54（实验性标注与低成本缓解，PR #62 已合入）、#68（服务端 Compact 判定，排在实现 PR 之前修）；相邻但不归本设计：#50（`dangerouslySetInnerHTML` 的 `{__html}` 形式，已合入）、#52（复选框 value / checked，已合入）、#56（table 隐含 tbody、`<svg>` 内的同名标签、`<textarea>` / `<title>` 的函数子节点）。
 - 上位文档：[`ssr-support.md`](./ssr-support.md)。本文改变的是它的 §3.1「客户端」一段与 §3.7 的修复粒度；§3.2 的服务端标记契约**不变**。
@@ -127,7 +127,7 @@ export function isHydrationElement(v: unknown): v is HydrationElement   // 判�
 - **何时产生：** 新模型激活期间，对字符串标签与 `Fragment` 调用 `createElement` 和 `createSVGElement` 时。组件仍然返回 `ComponentNode`，不变。
 - **不碰 DOM：** 不创建元素，不认领，不应用 props，不提升元数据。`unhandledChildren`、`unhandledAttr`、`refHandles`、`detachStyledChildren` 都由消费它的 Host 在认领时按 CSR 的同一规则建立（§2.4）。
 - **字段预置：** 全部字段在构造器里预置，然后 `Object.preventExtensions`。这样形状单态，用户写入未知属性在严格模式下抛错（§3.4）。只在激活路径上分配。
-- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChildren`。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 `adoptSvgChildren` 的数组分支：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 处理（B3 之前报告并抛出）。
+- **isSVG（B1 按 #56 落地）：** 创建时按 CSR 的规则（显式 `_isSVG`，否则 SVG 专有标签）。HTML / SVG 同名的标签（`a` / `title` / `style` / `script`）的命名空间要看父元素，`createElement` 时还不知道父元素，所以在认领时补：父描述是 SVG 元素、且不是 HTML integration point 时，它的静态子描述（含 Fragment 展开的）按 SVG 认领、按 SVG 的规则写属性，≡ CSR 的 `adoptSvgChildren`。Host 稍后渲染的内容不在其列（CSR 同样是 HTML 元素，与解析器不同时按 R1 处理，§2.6.7）。B2 补上 `adoptSvgChildren` 的数组分支：**创建时就是 SVG** 的元素（≡ `createElement` 的 `_isSVG`）自己的 children 里的数组 child，其中直接是同名标签的元素描述项也按 SVG 认领（数组项由 StaticArrayHost 稍后认领，认领步骤先改描述的 `isSVG`）。Fragment 里的数组、嵌套数组、Fragment 项不在其列；被改建成 SVG 的同名标签（`<svg><a>{[<title/>]}</a></svg>`）也不改建它的数组项——CSR 的改建只遍历已有的 DOM 子节点，数组项稍后由 Host 插入，是 HTML 元素，与解析器不同，按 R1 报告并新建为 HTML 元素（B3；之前报告并抛出）。
 - **字段命名规则：** 预置字段名不得出现在任何元素接口上，否则用户读 `el.<名字>` 拿到的是描述的内部数据，开发期也不会报告（§3.4 的规则跳过预置字段）。第一版草稿里的 `children` 与 `Element.children` 重名，已改为 `rawChildren`，`props` 一并改为 `rawProps`。在 chromium 上对 `window` 上全部 145 个 `*Element.prototype`（含 `Element`）检查过：`tag`、`rawProps`、`rawChildren`、`isSVG`、`node`、`listenerBoundArgs` 都不在其中，旧名里只有 `children` 命中。B1 用一条用例钉住：遍历预置字段名，断言它们不在 `window` 上任何 `*Element.prototype` 里。
 - **两种对象：** 开发期返回包着描述的 Proxy，生产返回描述本身（§3.4）。用哪一种在 `beginHydration` 时按 `isAxiiDiagnosticsEnabled()` 定一次，同一次激活内不变。
 - **消费后瘦身：** 被认领或新建后，`rawProps` 和 `rawChildren` 置为 `undefined`，只保留 `node`。仍被引用的描述只是一个小壳（§3.3、§5.2）。瘦身不会把描述变成节点：被闭包捕获的描述永远是描述（§3.1.1）。
@@ -560,6 +560,8 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **开发期报告：** 诊断开启时，每次认领比较服务端属性名与客户端 props 会写的属性名，报告独有属性（`AXII_HYDRATION_ATTRIBUTE_RESIDUE`），残留不会静默。
 - B3 漂移 fuzz 的判定与这条边界一致（§7.4）。
 
+**原始标记的内容（B3 补充）。** 原始元素（§2.6.2）的内容不透明、不递归对齐，上面第 2 条对它不成立：别处失配造成角色错位时（列表少一行、后面的行整体前移），按位置干净认领的原始元素里是另一段标记。原始标记是客户端 props（`dangerouslySetInnerHTML`）写下的内容，属于「节点结构、文本」，所以激活报告过失配时要核对：入口在激活结束时把每个干净认领的静态原始元素的客户端标记在同一种元素里解析（≡ CSR 的 `innerHTML` 赋值），与认领到的子节点逐节点比较，不同就报告并改写。没有失配的激活不核对（匹配路径上不多解析一遍，服务端与客户端标记本身不同的情形与现在一样不检测）。见 §7.8。
+
 现在最危险的形态（监听器绑到另一个位置的元素上、内容被挪进别的元素）在新模型下不可能出现：不存在跨位置的认领。
 
 ### 4.2 局部规则（按「游标处期望什么」分类）
@@ -854,6 +856,25 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **扩展后的 F1i**（`auditSsrHydrate`，只在内部入口那一遍）：300 棵，§2.4.1 的种类计数逐树相等，已落地的 9 种（含 `CompactElementHost`）两边都出现。不生成：reusable、现成节点、Portal、lazy（B4），同一个描述两次（C6，B4）。函数的值是函数或 RxList 在 #82 修好服务端之后照常生成。
 - **F1d：** 内部入口那一遍按线性判定（上界 8，线性与平方的几何平均）；150 / 600 行的激活只有 0.1–0.4 ms，落在计时分辨率上，这一遍改用 3000 / 12000 行。
 
+### 7.8 B3 落地记录（与上文不同或上文没有写到的）
+
+- **失配不中止：** 新模型里的失配一律经 `reportHydrationMismatch` 报告（交给 onError，不抛出），然后在游标处按 R1–R5 修复（`hydrationCursor.ts`）。内部入口上剩下的中止只有 B4「待实现」与没人处理的渲染错误（组件抛错且没有 error 监听器、函数结构态渲染抛错）。`isTopDownAbort` 仍包含 `HydrationMismatchError`，新模型里已没有地方抛出它。
+- **R1 的新建（与 §4.2「`runOutsideHydration` + 物化描述」不同）：** 不重放 `createElement`，而是在一个「新建的层」（`enterTopDownFreshElement`）里走同一条认领路径：这一层没有服务端节点，每个单元直接新建、插到末尾，不报告（失配在新建处报告过一次）。理由：`StaticHost.hydrate` 已经按 CSR 的顺序为整棵描述子树（包括要新建的这部分）预先构造了子 Host，placeholder 是 slot 常量，它们必须被消费；物化描述会让 CSR 的 `createHost` 再构造一份（组件类型 id、种类计数都会多出来）。新建的层让这些 Host 照常 `hydrate(slot)`，各单元的插入顺序 ≡ CSR `createElement` 的 child 循环与各 Host 的 `render`，元数据经同一段 `liftElementMetadata` 按 CSR 的路径并入所属 StaticHost。元素节点的创建与旧模型共用 `hydration.createHydrateMismatchElementNode`（命名空间、`is`）；`<select multiple>` 先预应用 `multiple`；`applyElementProps` 按 `claimed = false` 写入（含 `dangerouslySetInnerHTML`）。
+- **建好、绑定之后再插入（#73，追加项 1）：** 父节点在文档里时，新建的元素先在游标处放一个占位注释（`axii:fresh`），所属 `StaticHost` / `CompactElementHost` 在 `hydrate` 收集完响应式属性、ref、detachStyle 之后把占位换成元素（`insertTopDownFreshElements`）。嵌套的 Host 先完成，各自只处理自己 mark 之后的那些；父节点也是新建的，直接插入，随父节点一起连入。用占位而不是记下游标处的节点：游标之后的节点在所属 Host 完成之前可能被 R3 / R5 删除，游标之前的节点不会再动。`ssrHydrate.mismatchRebuild`「a rebuilt `<script>` with a reactive data type does not run」在内部入口那一遍翻转为 `test`。
+- **追加项 2：** 新模型在 JSX 求值时不认领任何节点，新建元素的子描述在新建的层里按 CSR 建好：`<span><b>x</b><i>y</i></span>` 新建后子元素都在。
+- **§4.1 近似认领：** `claimTopDownElement` 记下这次认领是不是近似认领（id 漂移、D6 / D8 向前查找，或者这一层已经报告过失配；`isTopDownClaimApproximate`）。认领步骤在消费子节点之前读走 `data-axii-ssr` 样式类、清空全部属性（`<select multiple>` 与新建一样预应用 `multiple`），`applyElementProps` 按 `claimed = false` 写入，原始标记按客户端重写。失配标记按层（每个 DOM 父节点）记：进入子元素时清零，返回时恢复外层的。
+- **D6 也用于文本单元：** §4.2 的表写的是「文本单元 → 替换这一个单元」。实现按 §4.5「原样移植 `tryClaimElementAtCursor` 的游标规则」：客户端有静态 id 时，游标处是不同标签的元素或文本单元都先向前找 id 相符的同标签元素（D6），找不到才替换这一个单元；游标处是结构 Comment / eof 时不向前找、直接新建（§4.5 唯一的细化）。
+- **「结构 Comment」的判定：** `axii:t` / `axii:/t` / `axii:0` 之外的全部 Comment，包括来历不明的注释。R1 / R2 不消费它们，它们最后由 R3 的向前查找或 R5 删除。
+- **容器层：** 认领、R3 的向前查找与 R5 都跳过 STYLE / SCRIPT / LINK（留给 `migrateSsrStyleTags` 与容器清扫，D13）。入口在根认领 `<!--root-->` 之后做容器层的 R5，迁移服务端样式之后调用与旧模型同一个 `removeHydrateContainerOrphans` 删除区间前后剩下的节点。区间内部、容器层的 STYLE / SCRIPT / LINK（只可能来自篡改过的 HTML）留下，与旧模型相同。
+- **原始标记的内容（漂移 fuzz 发现，§4.1 末段）：** 认领步骤记下干净认领的静态原始元素（`rememberTopDownRawElement`）；入口在激活结束时，如果这次激活报告过失配（`getTopDownMismatchCount` 前后不同），逐个核对内容，不同就报告并改写（`verifyTopDownRawElements`）。响应式的原始标记不记，它的绑定在激活时按客户端的值写入。
+- **字符数据父节点的 R2：** 各单元首尾相接，不是剩余文本的前缀时分不出这一段的边界：剩余的整段换成本单元，后面的单元在末尾插入（各自报告）。
+- **激活中 root 被 error 监听器销毁（B1 的风险点）：** 被丢弃的树不再中止，按 R1–R5 修复完自己的失配，所有 Host 都拿到真实的 placeholder，由 `root.render` 在渲染栈退出时整体销毁；`hydrateTopDownMismatch.spec` 确认销毁不抛错、计数归零。丢弃的树里的失配照常在认领处报告，容器清扫与不变量检查不做。
+- **B2 交接的形态：** #82 / #85 之前的服务端 HTML（atom 数组项空值前多的 `axii:0`、函数返回 RxList 时行后多的 `unhandledChild`、稀疏数组空位的 `<!--empty--><!--array item-->`）由 R2 / R3 / R5 报告并删除，≡ CSR；被改建成 SVG 的 `<a>` 里的数组项按 R1 新建为 HTML 元素；修复过的列表（多一行、少一行、行间杂节点，Compact 与 Fragment 行）销毁后 Host / 绑定 / 样式计数归零；行组件改动列表见 §11。这些用例用手写的服务端 HTML，不随 #85 等服务端修复变成匹配路径。
+- **滚动样式 id：** 被另一角色认领的行与新建的行各自分配滚动样式基名（`allocateRollingStyleId` 跳过已被占用的基名），没有共用；用例按 `getComputedStyle` 核对每一行。
+- **性能：** 只改激活路径（`hydrationCursor.ts`、认领步骤、`StaticHost.hydrate` / `CompactElementHost.hydrate`、内部入口），CSR 的 `createElement` / `createHost` / Host `render` 零改动；旧模型的 `createElementForHydrateMismatch` 只把建元素的三行收进 `createHydrateMismatchElementNode`。匹配路径上新增的只有：每层两个布尔量（`cursorFresh` / `cursorMismatched`）的压栈、每次元素认领一次布尔读，每个静态原始元素一次数组 push。
+- **用例：** 去掉 45 处 `pendingTopDown('B3')`：`ssrHydrate.mismatch` 27、`mismatchRebuild` 9、`auditSsrHydrate` 6（F4a–F4d、F7g、I50g）、`claimCorners` 2、`shapes` 1。`auditSsrHydrate` 的 F4a–F4d、`shapes`「shared-name tags rendered later…」与 `mismatchRebuild`「reactive data type」在内部入口那一遍是普通 `test`，旧入口那一遍仍是 `test.fails`。既有用例的期望改动（都是「报告并抛出」→「报告并修复」，§7.2）：`hydrationCursor.spec` 的失配用例换成 R1–R5 的规则用例；`hydrateTopDown.spec` 的「aborting the activation」两条（中止改用没人处理的渲染错误）、SVG 数组项、稀疏数组空位、error 监听器销毁 root（报告从一条变为认领处的两条）；`claimCorners`「root atom hydrate throws when an Element sits before `<!--root-->`」只在旧入口那一遍运行，内部入口那一遍加一条「按 R2 替换并报告」。新增 `hydrateTopDownMismatch.spec.tsx`（R1 新建、#73、§4.1、R2–R5 黑盒、B2 交接形态）。
+- **漂移 fuzz**（`auditSsrHydrate` 扩展生成器，只在内部入口那一遍）：300 棵树 × 7 种注入——客户端一侧的行增、行减、元素 ↔ 文本，服务端 DOM 上的标签替换、插入杂节点（元素 / Text / Comment）、删除一个标记注释、文本篡改；原始标记的内容不动（不透明）。每次断言：不抛错；节点结构、文本、结构 Comment 与客户端 props 写下的属性 ≡ CSR（CSR 元素上的每个属性都在、值相同，多出来的是服务端独有属性）；漂移改变了服务端输出时至少一条失配报告、否则没有（从不静默）；没有开发期不变量报告；每个元素的监听器在自己的位置；全部 atom 改值之后 ≡ CSR；两个 root 销毁后 Host 与绑定计数归零；服务端独有属性只出现在报告过失配的树里。每种注入至少 100 棵树（需要列表 / 文本的几种不是每棵树都有），残留路径至少出现一次。
+
 ---
 
 ## 8. 既有用例的预期变化（逐条）
@@ -977,7 +998,8 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
   
   激活时这一行的结构对不上。按 §2.6.4，两边应共用一个判定。协调者已单独开 #68，排在实现 PR 之前修；B2 直接使用 #68 落地的判定。
 - **函数结构态的值是 RxList（B2 发现，服务端缺陷，与上面第一条同类；#82 已修复）。** `{() => list.map(…)}`：CSR 里 RxListHost 的 placeholder 就是 FunctionHost 的 `<!--computed node-->`，服务端曾经经 `serializeChild` 按元素 child 写这个列表，行之后多一个 `<!--unhandledChild-->`。旧模型激活后把它留在 DOM 里，之后 push 的行插在它后面（DOM 与 CSR 不同，不报告）；新模型报告并抛出。#82 的修复（`serializeStructureResult` → `serialize`）一并覆盖了它；B2 写下的 `test.fails` 在合并 #82 之后翻转为 `test`，扩展后的 F1i 也生成这种形态。
-- **稀疏数组的空位（B2 发现，服务端与 CSR 不一致）。** `[a, , b]`：CSR 的 `StaticArrayHost.render` 用 `forEach`，跳过空位；服务端 `serializeStaticArray` 用 `for…of`，为空位写 `<!--empty--><!--array item-->`。激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复）。根治在服务端（跳过空位）。`hydrateTopDown.spec`「a hole in a sparse static array」钉住。
+- **稀疏数组的空位（B2 发现，服务端与 CSR 不一致）。** `[a, , b]`：CSR 的 `StaticArrayHost.render` 用 `forEach`，跳过空位；服务端 `serializeStaticArray` 用 `for…of`，为空位写 `<!--empty--><!--array item-->`。激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配，B3 起按 R2 / R3 删除，≡ CSR。根治在服务端（跳过空位，#85）；#85 之前的服务端 HTML 仍按失配修复（`hydrateTopDownMismatch.spec` 用 `null` 项的服务端输出手写这种 HTML）。`hydrateTopDown.spec`「a hole in a sparse static array」钉住。
+- **激活中行组件同步改动列表（B2 交接，B3 确认）。** 行组件在 `useEffect` 里同步 `list.push(…)`：CSR 本身被 data0 拒绝（「detect recompute triggerred in sync recompute」），激活时行在 computed 之外认领、computed 在全部行认领之后才建立，这次改动不被追踪，也不报告。下一个 tick 的改动两边都被追踪、≡ CSR（`hydrateTopDownMismatch.spec` 钉住）。同步改动的检测不在 B3 范围。
 - **#54 报告的疑点不再存在。** 疑点是 `createElementForHydrateMismatch` 新建的元素没有登记为已认领，之后的无游标认领可能拿到它。新模型没有无游标认领，S 之后不再成立，无需单独处理。
 
 ---

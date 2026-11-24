@@ -33,7 +33,7 @@ import {claimFragmentStartBefore, getHydrateRollingStyleBase, isAnyHydrating, is
 import {hydrateElementDescription, rematerializeDeferredFragmentChildren, type TopDownInnerHosts} from "./DOM";
 import {createHydrateHost} from "./createHost";
 import {HydrationElement, HydrationSlot, isHydrationElement, TEXT_SLOT, throwConsumedDescription, UNHANDLED_CHILD_SLOT} from "./hydrationElement";
-import {claimTopDownComment} from "./hydrationCursor";
+import {claimTopDownComment, insertTopDownFreshElements, markTopDownFreshElements} from "./hydrationCursor";
 import {innerHTMLOf} from "./markupNames";
 import {isDomNode} from "./nodeType";
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from "./styleCascade";
@@ -1129,11 +1129,13 @@ export class StaticHost implements Host {
      *  2. 认领：元素描述按位置认领元素并递归，Fragment 描述先认领 `fragment start`、在同一层消费子节点；
      *     遍历到动态 child 时依次取出第 1 步的 Host，hydrate(slot)（DOM.hydrateElementDescription）；
      *  3. 认领自己的 slot；
-     *  4. 与 render 相同地收集响应式属性、ref、detachStyle（元数据由认领步骤按 CSR 的规则提升到 source 上）。
+     *  4. 与 render 相同地收集响应式属性、ref、detachStyle（元数据由认领步骤按 CSR 的规则提升到 source 上）；
+     *  5. 静态子树里失配新建的元素（§4.2 R1，含 source 自己）这时才连入文档：≡ CSR 在插入之前绑定响应式属性（#73）。
      * 与 CSR 的差别只在先后（§2.9，D5 已接受）：后代子 Host 的激活先于祖先元素的响应式属性绑定。
      * 认领后 source 换成认领到的元素（Fragment 换成一个空的 DocumentFragment，destroy / forceHandleElement 按它判断 fragment）。
      */
     hydrate(slot: HydrationSlot): void {
+        const freshMark = markTopDownFreshElements()
         this.hydrateSource()
         // 3. 自己的 slot
         this.placeholder = claimTopDownComment(slot)
@@ -1141,6 +1143,8 @@ export class StaticHost implements Host {
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.collectDetachStyledChildren()
+        // 5. 失配新建的元素在响应式属性绑定之后连入文档（#73）
+        insertTopDownFreshElements(freshMark)
         // ≡ render 的尾部
         this.setupRefHandles()
         if (this.usesStyleManager) {
@@ -1612,12 +1616,15 @@ export class CompactElementHost extends StaticHost {
      * 行的元素描述。≡ render：在游标处认领行元素（与 StaticHost.hydrate 共用 hydrateSource，子 Host 先构造再认领），
      * 然后收集响应式属性、ref、detachStyle。Compact 行没有行级 Comment（服务端也不写，ssr.serializeRxListRow），
      * slot 不认领；placeholder 仍是共享的 COMPACT_SHARED_PLACEHOLDER。layoutEffect / ref 的 flush 由 RxListHost 统一触发。
+     * 失配新建的行元素（§4.2 R1）与 StaticHost.hydrate 一样在响应式属性绑定之后才连入文档（#73）。
      */
     hydrate(_slot?: HydrationSlot): void {
+        const freshMark = markTopDownFreshElements()
         this.hydrateSource()
         this.collectReactiveAttr()
         this.collectRefHandles()
         this.collectDetachStyledChildren()
+        insertTopDownFreshElements(freshMark)
         this.setupRefHandles()
         if (this.usesStyleManager) {
             StaticHost.styleManager.mount(this)
