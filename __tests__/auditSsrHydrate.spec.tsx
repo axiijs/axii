@@ -823,3 +823,44 @@ describe('X extra confirmed defects', () => {
         expect(read(ssrInto(App))).toEqual(read(csr(App)))
     })
 })
+
+// ───────────────── Follow-up review of #48: RAWTEXT elements inside foreign content ─────────────────
+describe('F9 <style> / <script> under <svg> / <math> are parsed as foreign elements (text is normal data)', () => {
+    // (a literal </style> / <!--<script> is covered by the Node spec; here the unfixed serializer must not throw first)
+    const hostile = 'a>b{} <img src=x onerror="window.__axiiF9=1"> &amp; <p>'
+    test('F9c the parsed server HTML contains no element made from the text, and the text round-trips', () => {
+        function App({}: any, {createElement, createSVGElement}: RenderContext) {
+            return <div>
+                <svg id="a"><style>{hostile}</style></svg>
+                <svg id="b">{createSVGElement('style', null as any, hostile)}{createSVGElement('script', {type: 'text/plain'}, hostile)}</svg>
+                <math id="c"><style>{hostile}</style></math>
+            </div>
+        }
+        const ssr = ssrInto(App)
+        expect({
+            img: ssr.querySelectorAll('img').length,
+            texts: Array.from(ssr.querySelectorAll('style, script')).map(n => n.textContent),
+        }).toEqual({img: 0, texts: [hostile, hostile, hostile, hostile]})
+    })
+
+    test('F9d createSVGElement("style") with several text units hydrates in place, stays bound, reports nothing', () => {
+        const make = () => {
+            const color = atom('red')
+            function App({}: any, {createElement, createSVGElement}: RenderContext) {
+                return <svg>{createSVGElement('style', null as any, 'a>b{fill:', color, '} & <x>')}<circle r="1"/></svg>
+            }
+            return {App, color}
+        }
+        const hyd = mount()
+        hyd.innerHTML = renderToString(createElement(make().App, null as any)).html
+        const styleBefore = hyd.querySelector('style')
+        const h = make(), c = make()
+        const client = mount()
+        createRoot(client).render(createElement(c.App, null as any))
+        hydrateRoot(hyd, createElement(h.App, null as any))
+        const first = {text: hyd.querySelector('style')!.textContent, same: hyd.querySelector('style') === styleBefore}
+        h.color('blue'); c.color('blue')
+        expect({first, after: kids(hyd), reports})
+            .toEqual({first: {text: 'a>b{fill:red} & <x>', same: true}, after: kids(client), reports: []})
+    })
+})

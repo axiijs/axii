@@ -425,11 +425,60 @@ function emitElementChildText(text: string, out: string[]): void {
     }
 }
 
+// CAUTION 「style / script 的内容是原文（RAWTEXT）」只在 HTML 内容里成立。解析器在 <svg> / <math> 之下
+//  （外来内容，foreign content）创建的是 SVG / MathML 元素，tokenizer 不切换状态：其中的文本是普通数据，
+//  `&` 解码、`<` 开始标签，而且 <img> / <p> 这类开始标签会跳出外来内容、成为真正的 HTML 元素。
+//  按标签名一律原样写出的话，<svg><style>{userCss}</style></svg> 里的 `<img src=x onerror=…>`
+//  在解析后就是一个会执行的 <img>（CSR 下同样的 JSX 只是一段文本）。
+//  所以序列化时跟踪「当前元素被插入到哪种内容里」，按 HTML 解析器的规则（tree construction 的
+//  foreign content 与 integration point）推导：
+//   - HTML 内容里只有标签名 svg / math 开启外来内容（_isSVG 不算：createSVGElement('style') 在 HTML
+//     内容里解析出来仍是 HTML 的 style，元素是否为外来元素由解析器按祖先决定，不由我们的标记决定）；
+//   - SVG 的 foreignObject / desc / title 是 HTML integration point，子内容回到 HTML；
+//   - MathML 的 mi / mo / mn / ms / mtext 是 text integration point（子内容按 HTML 规则，mglyph /
+//     malignmark 除外）；annotation-xml 的 encoding 为 text/html / application/xhtml+xml 时回到 HTML。
+//  外来元素上的 RAWTEXT 标签按 RCDATA 写（转义 & < >、不写 axii:* 标记——hydration 按 localName
+//  把它当字符数据父节点，结构不变）。
+//  没有建模「跳出外来内容」（<svg><p> 让解析器弹出 svg）：那是无效的嵌套，按外来内容转义只会让文本
+//  多出字面实体，不会产生标签——方向是安全的。
+type MarkupContext = 'html' | 'svg' | 'math' | 'mathText'
+/** 下一个元素被插入到的内容类型（随 serializeSsrElement 的子内容进出而保存 / 恢复） */
+let insertionContext: MarkupContext = 'html'
+/** 正在序列化子内容的那个元素本身是不是外来元素（决定 style / script 等的文本按哪种规则写） */
+let parentIsForeignElement = false
+
+function isForeignInsertion(context: MarkupContext, tagLower: string): boolean {
+    if (context === 'svg' || context === 'math') return true
+    return context === 'mathText' && (tagLower === 'mglyph' || tagLower === 'malignmark')
+}
+
+function childContextOf(context: MarkupContext, tagLower: string, props: AttributesLike | null): MarkupContext {
+    if (context === 'html' || (context === 'mathText' && !isForeignInsertion(context, tagLower))) {
+        if (tagLower === 'svg') return 'svg'
+        if (tagLower === 'math') return 'math'
+        return 'html'
+    }
+    if (context === 'svg') {
+        return (tagLower === 'foreignobject' || tagLower === 'desc' || tagLower === 'title') ? 'html' : 'svg'
+    }
+    // MathML（含 text integration point 里的 mglyph / malignmark）
+    if (tagLower === 'mi' || tagLower === 'mo' || tagLower === 'mn' || tagLower === 'ms' || tagLower === 'mtext') {
+        return 'mathText'
+    }
+    if (tagLower === 'annotation-xml') {
+        const encoding = snapshotAttrValue(props?.encoding)
+        const lower = typeof encoding === 'string' ? encoding.toLowerCase() : ''
+        if (lower === 'text/html' || lower === 'application/xhtml+xml') return 'html'
+    }
+    return 'math'
+}
+
 function parentTextMode(tag?: string): 'normal' | 'rcdata' | 'rawtext' {
     if (!tag) return 'normal'
     const t = tag.toLowerCase()
     if (RCDATA_TAGS.has(t)) return 'rcdata'
-    if (RAWTEXT_TAGS.has(t)) return 'rawtext'
+    // 外来元素不切换 tokenizer 状态：文本是普通数据，按 RCDATA 规则转义（见 insertionContext）
+    if (RAWTEXT_TAGS.has(t)) return parentIsForeignElement ? 'rcdata' : 'rawtext'
     return 'normal'
 }
 
@@ -1208,6 +1257,14 @@ function serializeSsrElement(
     const tag = el.type as string
     assertTagName(tag)
     const tagLower = tag.toLowerCase()
+    const outerContext = insertionContext
+    const elementIsForeign = isForeignInsertion(outerContext, tagLower)
+    // CAUTION HTML 内容里的 <plaintext> 把 tokenizer 永久切到 PLAINTEXT：它自己的结束标签和之后整页的
+    //  标记都变成文本（<!--root-->、后面的兄弟、页面其余部分），没有任何写法能关上它。
+    //  与 RAWTEXT 终止序列同一策略（§3.6.1）：无法安全序列化时抛错。外来内容里它只是普通元素。
+    if (tagLower === 'plaintext' && !elementIsForeign) {
+        throw new Error('[axii/ssr] <plaintext> cannot be serialized: the parser would treat the rest of the page as text')
+    }
 
     let optionSelectedBySo: boolean | null = null
     if (tagLower === 'option' && selectSo) {
@@ -1231,6 +1288,36 @@ function serializeSsrElement(
 
     out.push('<', tag, attrs, '>')
     const contentStart = out.length
+    const outerParentIsForeign = parentIsForeignElement
+    insertionContext = childContextOf(outerContext, tagLower, el.props)
+    parentIsForeignElement = elementIsForeign
+    try {
+        serializeElementContent(el, tag, tagLower, out, selectSo, elementPath, hasDangerously, dangerously)
+    } finally {
+        insertionContext = outerContext
+        parentIsForeignElement = outerParentIsForeign
+    }
+    // 外来内容里的 textarea 是普通的外来元素，解析器不吞开始标签后的换行
+    if (LEADING_NEWLINE_TAGS.has(tagLower) && !(elementIsForeign && tagLower === 'textarea')) {
+        for (let i = contentStart; i < out.length; i++) {
+            if (out[i] === '') continue
+            if (out[i][0] === '\n') out.splice(i, 0, '\n')
+            break
+        }
+    }
+    out.push('</', tag, '>')
+}
+
+function serializeElementContent(
+    el: SsrElement,
+    tag: string,
+    tagLower: string,
+    out: string[],
+    selectSo: SelectSoCtx | null,
+    elementPath: number[],
+    hasDangerously: boolean,
+    dangerously: any,
+): void {
     if (dangerously && typeof dangerously === 'object' && '__html' in dangerously) {
         out.push(String((dangerously as {__html: string}).__html))
     } else if (hasDangerously) {
@@ -1258,14 +1345,6 @@ function serializeSsrElement(
             serializeChildren(children, out, tag, childSo, elementPath)
         }
     }
-    if (LEADING_NEWLINE_TAGS.has(tagLower)) {
-        for (let i = contentStart; i < out.length; i++) {
-            if (out[i] === '') continue
-            if (out[i][0] === '\n') out.splice(i, 0, '\n')
-            break
-        }
-    }
-    out.push('</', tag, '>')
 }
 
 /** True when table children would rely on browser-implied tbody (bare tr / dynamic rows). */
@@ -1452,6 +1531,11 @@ function serializePortal(
     state.sheets = portalSheets
     pushSsrComponent(node.type as Function)
     const portalOut: string[] = []
+    // Portal 内容进入独立的容器（HTML 元素），与主树里 Portal 所在位置的 svg / math 祖先无关
+    const outerContext = insertionContext
+    const outerParentIsForeign = parentIsForeignElement
+    insertionContext = 'html'
+    parentIsForeignElement = false
     try {
         const content = props.content
         if (isSsrElement(content) && content.type === Fragment) {
@@ -1462,6 +1546,8 @@ function serializePortal(
         }
         portalOut.push('<!--root-->')
     } finally {
+        insertionContext = outerContext
+        parentIsForeignElement = outerParentIsForeign
         popSsrComponent()
         state.sheets = parentSheets
     }
@@ -1563,6 +1649,8 @@ export function renderToString(
     contextStack.length = 0
     const portals: Record<string, {html: string, styles: string}> = {}
     ssrPortals = portals
+    insertionContext = 'html'
+    parentIsForeignElement = false
     beginSsrStyles()
     beginSsrPass()
     try {

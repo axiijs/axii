@@ -274,3 +274,57 @@ describe('F8 names are emitted verbatim (Node)', () => {
         expect(html).not.toContain('<script>')
     })
 })
+
+// Follow-up review of #48: style / script text is RAWTEXT only in HTML content. Under <svg> / <math> the
+// parser creates foreign elements and tokenizes their text as normal data — `<img …>` becomes an element.
+describe('F9 raw-text elements inside foreign content (Node)', () => {
+    const hostile = 'a>b{} <img src=x onerror=alert(1)> &amp;'
+    const escaped = 'a&gt;b{} &lt;img src=x onerror=alert(1)&gt; &amp;amp;'
+    const h = createElement as any
+    const html = (el: any) => renderToString(el).html
+
+    test('F9a <svg><style> / <svg><script> / <math><style> text is escaped, without axii:* markers', () => {
+        expect(html(h('svg', null, h('style', null, hostile))))
+            .toBe(`<svg><style>${escaped}</style></svg><!--root-->`)
+        expect(html(h('svg', null, h('g', null, h('script', {_isSVG: true}, hostile, '</script>')))))
+            .toBe(`<svg><g><script>${escaped}&lt;/script&gt;</script></g></svg><!--root-->`)
+        expect(html(h('math', null, h('style', null, hostile))))
+            .toBe(`<math><style>${escaped}</style></math><!--root-->`)
+        // a component rendered inside <svg> inherits the context
+        function Icon(_: any, {createElement}: RenderContext) {
+            return createElement('style', null as any, hostile)
+        }
+        expect(html(h('svg', null, h(Icon, {}))))
+            .toBe(`<svg><style>${escaped}</style><!--unhandledChild--></svg><!--root-->`)
+    })
+
+    test('F9 regression: HTML integration points and HTML content keep RAWTEXT (and its gate)', () => {
+        const css = 'a>b{}'
+        // (SVG <title> is also an integration point, but its own text is RCDATA-escaped by tag name either way)
+        for (const point of ['foreignObject', 'desc']) {
+            expect(html(h('svg', null, h(point, null, h('div', null, h('style', null, css))))))
+                .toBe(`<svg><${point}><div><style>${css}</style></div></${point}></svg><!--root-->`)
+        }
+        expect(html(h('math', null, h('mi', null, h('style', null, css)))))
+            .toBe(`<math><mi><style>${css}</style></mi></math><!--root-->`)
+        expect(html(h('math', null, h('annotation-xml', {encoding: 'text/html'}, h('style', null, css)))))
+            .toBe(`<math><annotation-xml encoding="text/html"><style>${css}</style></annotation-xml></math><!--root-->`)
+        // createSVGElement('style') outside <svg> is parsed as an HTML <style>: still RAWTEXT
+        expect(html(h('div', null, h('style', {_isSVG: true}, css)))).toBe(`<div><style>${css}</style></div><!--root-->`)
+        expect(() => html(h('svg', null, h('foreignObject', null, h('style', null, '</style><b>')))))
+            .toThrow('RAWTEXT termination sequence')
+        // back in HTML after the svg closes; a nested <svg> inside foreignObject is foreign again
+        expect(html(h('div', null, h('svg', null, h('foreignObject', null, h('svg', null, h('style', null, '<x>')))), h('style', null, css))))
+            .toBe(`<div><svg><foreignObject><svg><style>&lt;x&gt;</style></svg></foreignObject></svg><style>${css}</style></div><!--root-->`)
+        // MathML text integration point: mglyph stays MathML
+        expect(html(h('math', null, h('mi', null, h('mglyph', null, h('style', null, '<x>'))))))
+            .toBe('<math><mi><mglyph><style>&lt;x&gt;</style></mglyph></mi></math><!--root-->')
+    })
+
+    test('F9b <plaintext> in HTML content is refused; inside <svg> it is an ordinary element', () => {
+        expect(() => html(h('div', null, h('plaintext', null, 'x'), h('p', null, 'after'))))
+            .toThrow('<plaintext> cannot be serialized')
+        expect(html(h('svg', null, h('plaintext', null, '<x>'))))
+            .toBe('<svg><plaintext><!--axii:t-->&lt;x&gt;<!--axii:/t--></plaintext></svg><!--root-->')
+    })
+})

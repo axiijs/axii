@@ -367,7 +367,7 @@ function isFunctionHostTextSnapshot(node: unknown): boolean {
 | RCDATA | 0 | **不发出**任何节点（见 d3 `textareaEmpty`） | `axii:*` |
 | RCDATA | >0 | **按 §3.6.1 RCDATA 行**转义后的字符数据 | `axii:*`；≥2 文本单元见 R3 |
 | RAWTEXT | 0 | **不发出** | `axii:*` |
-| RAWTEXT | >0 | **按 §3.6.1 RAWTEXT 行**：原文写入（不做 `& < >` 实体转义）；若命中终止序列门闩 → **SSR 抛错** | `axii:*`；用实体「假装」安全同时保留字面 `</style>`（F15：不可能） |
+| RAWTEXT | >0 | **按 §3.6.1 RAWTEXT 行**：原文写入（不做 `& < >` 实体转义）；若命中终止序列门闩 → **SSR 抛错**。父节点是外来元素（`<svg>`/`<math>` 之下）时按 RCDATA 行转义（§3.6.1 外来内容行） | `axii:*`；用实体「假装」安全同时保留字面 `</style>`（F15：不可能） |
 
 **同一 RCDATA/RAWTEXT 父下的文本单元数量（有限）**
 
@@ -1088,6 +1088,8 @@ type PortalContainerRef = HTMLElement | string | { id: string }
 | 布尔属性 | 真：`name="true"`；假：不输出 |
 | RCDATA 子文本（`textarea`/`title`） | 转义 `& < >`（实体会被解码；可安全承载字面 `</textarea>` 等，d4）；**禁止**暗示与 RAWTEXT 相同 |
 | RAWTEXT 子文本（`style`/`script`/…） | **不做** `& < >` 实体转义（F15：不解码）。序列化前做**终止序列门闩**（见下）；命中则 **SSR 抛错**，禁止静默截断 DOM |
+| 外来内容里的 RAWTEXT 标签（`<svg>` / `<math>` 之下、不在 integration point 里的 `style`/`script`/…） | 解析器在外来内容里创建 SVG / MathML 元素，**不切换** tokenizer 状态：文本是普通数据（实体解码、`<` 开始标签，`<img>`/`<p>` 等还会跳出外来内容成为 HTML 元素）。按 **RCDATA 行**转义，不写 `axii:*`（hydration 仍按 localName 视为字符数据父节点）；**禁止**按标签名原样写出（`<svg><style>{userCss}</style></svg>` 会注入元素）。上下文按解析器规则推导：HTML 内容里只有标签名 `svg`/`math` 开启外来内容（`_isSVG` 不算）；SVG `foreignObject`/`desc`/`title` 与 MathML `mi`/`mo`/`mn`/`ms`/`mtext`（`mglyph`/`malignmark` 除外）、`annotation-xml`（encoding 为 HTML）回到 HTML；Portal 内容从 HTML 开始。不建模「跳出外来内容」（无效嵌套，按外来转义只多出字面实体，方向安全） |
+| HTML 内容里的 `<plaintext>` | tokenizer 进入 PLAINTEXT 后不再退出：结束标签与之后整页都成为文本。无安全写法 → **SSR 抛错**；外来内容里是普通元素 |
 | §3.5 `styles` → `<style data-axii-ssr>` 载荷（及 Portal `styles`） | ① **CSS 规则逃逸门闩**（见下）：对 `generateStyleContent` 每条规则，不合格则 **omit**，不得进入载荷；② 不对作者 CSS 做 HTML 级 `& < >` 转义（以免破坏 CSS）；③ 适用**同一** `</style` 终止序列门闩，命中则 **抛错**。**禁止**仅依赖 `</style` 门闩声称注入面已覆盖（d5） |
 | `dangerouslySetInnerHTML` | **不转义**，原样嵌入（与 CSR `innerHTML` 一致）；与 children 并存时与 CSR 相同（innerHTML 胜出）；测试覆盖脚本/事件处理器注入字符串仍按「作者信任输入」语义，并文档化为调用方责任 |
 
