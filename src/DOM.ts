@@ -5,7 +5,7 @@ import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 import {SSR_STYLE_CLASSES_ATTRIBUTE, autoUnit, getAutoUnitType, setAutoUnitType} from './styleSerialize'
-import {hasOnPrefix, isAriaReflectionProperty, isEventName, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
+import {hasOnPrefix, innerHTMLOf, isAriaReflectionProperty, isEventName, isInnerHTMLObject, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
 import {
     advanceCursorUntilComment,
     advanceCursorUntilRxListHostPlaceholder,
@@ -610,17 +610,22 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             }
         } else if (node.tagName === 'INPUT' && (node as HTMLObjectElement).type === 'checkbox') {
             // checkbox 也支持用 value ，这样容易统一 api
-            // CAUTION 只有 boolean/nullish 的 value 才是「勾选状态」。string/number 是 checkbox 的
-            //  表单提交值（<input type="checkbox" name="color" value="red" checked={isRed}/> 是标准的
-            //  checkbox 组写法）：按 truthy 当成勾选的话，带提交值的 checkbox 一律渲染成勾选，
-            //  而且 value 与 checked 按书写顺序应用——checked={false} 写在 value 前面时被 value 顶掉，
-            //  响应式的提交值每次变化还会把用户取消的勾选重新勾上。
-            if (value == null || typeof value === 'boolean') {
+            // CAUTION 只有 boolean 的 value 才是「勾选状态」（旧的勾选通道），而且只在元素没有 checked prop 时生效
+            //  （ssr.ts serializeAttrs 的 CB 通道用同一条规则，§3.6.2）：
+            //  - string/number 是 checkbox 的表单提交值（<input type="checkbox" name="color" value="red" checked={isRed}/>
+            //    是标准的 checkbox 组写法），按 truthy 当成勾选的话，带提交值的 checkbox 一律渲染成勾选（#48）。
+            //  - null/undefined 表示「没有 value」，不触碰勾选状态（#52）：转发组件 Check({checked, value}) 里
+            //    调用方不传的 value 就是 undefined，按「未勾选」处理会清掉显式的 checked={true}；
+            //    响应式提交值变成 undefined 也会取消勾选。
+            //  - 显式的 checked 永远决定勾选状态，与书写顺序无关（#52）：value 与 checked 的首次应用按 rawProps 键序
+            //    （静态的 null 值还会落进 unhandledAttr、排到静态属性之后），响应式 value 之后的每次更新、
+            //    type 翻转后的重放也都只经过这里——不能靠应用顺序，只能看元素有没有 checked prop。
+            //    这个事实由 createElement 在元素同时带 value 和 checked 时记下（只有这类元素多一个字段）。
+            if (typeof value === 'boolean' && !(node as InputWithAxiiValue).__axiiInputHasCheckedProp__) {
+                (node as HTMLInputElement).checked = value
                 if (value) {
-                    (node as HTMLInputElement).checked = true
                     node.setAttribute('checked', 'true')
                 } else {
-                    (node as HTMLInputElement).checked = false
                     node.removeAttribute('checked')
                 }
             }
@@ -655,7 +660,7 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         } else {
             node.setAttribute('type', value)
         }
-        // CAUTION 目标 type 会改变 value 的解释（checkbox/radio 的 value 即 checked 语义、
+        // CAUTION 目标 type 会改变 value 的解释（checkbox 的 boolean value 是勾选通道、
         //  range 按 min/max 截断）时，存过 value 的 input 按新 type 重放一次。
         //  text/password 这类翻转（密码可见性切换是自然写法）不重放，
         //  否则用户已输入的内容会被初始 value 覆盖。
@@ -669,7 +674,10 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         // CAUTION nullish 表示清空：innerHTML 的 IDL 对 null 走 LegacyNullToEmptyString，
         //  但 undefined 会被字符串化成字面 "undefined" 渲染到页面上
         //  （dangerouslySetInnerHTML={() => maybeHtml()} 的条件写法会产出 undefined）。
-        node.innerHTML = value ?? ''
+        // CAUTION React 形状的 {__html} 在这里解包（#50）：曾经原样赋给 innerHTML，渲染成字面
+        //  "[object Object]"，而 axii/ssr 一直解包——激活时服务端的标记被静默替换。静态值与
+        //  函数 / atom 求值得到的值都经过这里；{__html: nullish} 与 nullish 一样清空。
+        node.innerHTML = innerHTMLOf(value) ?? ''
     // CAUTION list/type/form 是「与只读（或行为特殊的）DOM property 同名的合法 HTML attribute」：
     //  input.list / select.type / *.form 都是 readonly accessor，走 property 赋值在严格模式下
     //  直接 TypeError（sloppy 模式下静默无效），属性永远设不上去——
@@ -1366,7 +1374,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         // CAUTION dangerouslySetInnerHTML 的内容由服务端原样写出，客户端 children 里没有对应单元。
         //  按「尾部孤儿」清理的话会报一条假的失配并把这段标记删掉；而下面的 props 循环在激活时
         //  又跳过 innerHTML 赋值（保留服务端节点），结果元素永久为空。
-        exitElementChildCursor(!!rawProps && rawProps.dangerouslySetInnerHTML != null)
+        //  「内容是原始标记」按解包后的值判定（#50）：{__html: null} 与 null 一样不是原始标记。
+        exitElementChildCursor(!!rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null)
         const el = container as Element
         const ssrStyleClasses = el.getAttribute(SSR_STYLE_CLASSES_ATTRIBUTE)
         if (ssrStyleClasses !== null) {
@@ -1412,13 +1421,19 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         //  input 的 value/checked 解释依赖 type（value={true} type="checkbox" 是 checked 语义），
         //  range 的 value 会被 min/max 截断。JSX 属性顺序是用户的书写顺序，不能要求用户
         //  把 value 写在最后——这两个 key 统一延后到其余 prop 全部应用之后再处理。
-        let hasDeferredFormProps = false
+        //  value 与 checked 之间的先后不决定勾选状态（#52）：见下面的 __axiiInputHasCheckedProp__。
+        // 1：有 value，2：有 checked
+        let deferredFormProps = 0
         for (const key in rawProps) {
             // key 目前不参与运行时逻辑（保留给未来的 diff），直接跳过；
             // __source/__self 是开发期元数据，绝不能作为普通 attr 落到 DOM 上
             if (key === '_isSVG' || key === 'children' || key === 'key' || key === '__source' || key === '__self') continue
-            if (key === 'value' || key === 'checked') {
-                hasDeferredFormProps = true
+            if (key === 'value') {
+                deferredFormProps |= 1
+                continue
+            }
+            if (key === 'checked') {
+                deferredFormProps |= 2
                 continue
             }
             const value = rawProps[key]
@@ -1449,7 +1464,14 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                 setAttribute(container as ExtendedElement, key, value, _isSVG)
             }
         }
-        if (hasDeferredFormProps) {
+        if (deferredFormProps) {
+            // CAUTION 显式的 checked 永远决定勾选状态，与书写顺序无关（#52，规则见 setAttribute 的 checkbox 分支）：
+            //  同时带 value 和 checked 的 input 在应用这两个 key 之前记下这个事实，之后每一次 value 写入
+            //  （首帧按键序或经 unhandledAttr 延后、响应式更新、type 翻转后的重放）都只读这一个标记。
+            //  只带其中一个 key 的元素（列表行里常见的 <input type="checkbox" checked={done}/>）不多字段。
+            if (deferredFormProps === 3 && (container as HTMLElement).tagName === 'INPUT') {
+                (container as InputWithAxiiValue).__axiiInputHasCheckedProp__ = true
+            }
             for (const key in rawProps) {
                 if (key !== 'value' && key !== 'checked') continue
                 const value = rawProps[key]
@@ -1511,6 +1533,10 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
     if (name === 'style' && (isSimpleStyleObject(value) || valueType === 'string')) return true
     // 默认支持 className/class 的对象形式
     if ((name === 'className' || name === 'class') && isPlainObject(value)) return true
+    // CAUTION dangerouslySetInnerHTML 的 {__html} 是静态值（#50），不能落进响应式属性路径：
+    //  激活时那条路径会重新赋值 innerHTML，替换掉已认领的服务端标记（静态路径在已认领元素上跳过赋值）。
+    //  先比较名字：其余属性只多一次常量字符串比较，而且只有走到这里的对象值（随后就要建立响应式绑定）才付。
+    if (name === 'dangerouslySetInnerHTML' && isInnerHTMLObject(value)) return true
 
     return false
 }
@@ -1591,6 +1617,8 @@ type SelectWithAxiiValue = HTMLElement & { __axiiSelectValue__?: string | any[] 
 type InputWithAxiiValue = HTMLElement & {
     __axiiInputValue__?: any
     __axiiInputAppliedValue__?: string
+    // 同时带 value 和 checked prop（createElement 设置）：checkbox 的 boolean value 不再碰勾选状态（#52）
+    __axiiInputHasCheckedProp__?: true
 }
 
 /**

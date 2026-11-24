@@ -32,7 +32,7 @@ import {
     toCssSafeComponentName,
 } from './styleSerialize'
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from './styleCascade'
-import {RAWTEXT_TAGS, RCDATA_TAGS, hasOnPrefix, isAriaReflectionProperty, svgAttributeName, svgOnlyElementNames} from './markupNames'
+import {RAWTEXT_TAGS, RCDATA_TAGS, hasOnPrefix, innerHTMLOf, isAriaReflectionProperty, svgAttributeName, svgOnlyElementNames} from './markupNames'
 import {warnInvalidOnProp} from './diagnostics'
 
 /**
@@ -736,7 +736,8 @@ function serializeAttrs(
     // SO-driven option: selected comes from match, not prop
     if (optionSelectedBySo != null && tagLower === 'option') skip.add('selected')
 
-    // Deferred value/checked for checkbox CB/CK ordering
+    // Deferred value/checked (§3.6.2 IV / CK / CB). Key order only fixes the attribute order of the IV
+    // output; the checkbox checked state does not depend on it (#52).
     const deferredKeys: string[] = []
     if (tagLower === 'input' && (hasValue || hasChecked)) {
         skip.add('value')
@@ -854,22 +855,14 @@ function serializeAttrs(
         const checkedSnapshot = hasChecked ? snapshotAttrValue(props.checked) : undefined
         if (isCheckbox && hasValue) {
             // CB channel
-            // CAUTION 只有 boolean / nullish 的 value 才是「勾选状态」（≡ DOM.setAttribute 的 checkbox 分支）。
-            //  string / number 是 checkbox 的表单提交值（<input type="checkbox" value="red" checked={isRed}/>
-            //  是标准的 checkbox 组写法），不参与 checked 的判定。
-            let finalChecked = false
-            let appliedValue: any = valueSnapshot
-            for (const key of deferredKeys) {
-                if (key === 'value') {
-                    appliedValue = valueSnapshot
-                    if (valueSnapshot == null || typeof valueSnapshot === 'boolean') finalChecked = !!valueSnapshot
-                } else if (key === 'checked') {
-                    finalChecked = !!checkedSnapshot
-                }
-            }
-            const applied = appliedValue == null ? '' : appliedValue
+            // CAUTION 勾选状态与 value / checked 的书写顺序无关（≡ DOM.setAttribute 的 checkbox 分支 +
+            //  createElement 的 __axiiInputHasCheckedProp__，#52）：有 checked prop 时只由它决定；
+            //  没有时只有 boolean 的 value 是勾选状态（旧的勾选通道）。string / number 是表单提交值
+            //  （<input type="checkbox" value="red" checked={isRed}/> 是标准的 checkbox 组写法，#48），
+            //  null / undefined 表示「没有 value」，都不参与判定。
+            const applied = valueSnapshot == null ? '' : valueSnapshot
             s += ` value="${escapeAttr(String(applied))}"`
-            if (finalChecked) s += ` checked="true"`
+            if (hasChecked ? checkedSnapshot : valueSnapshot === true) s += ` checked="true"`
         } else if ((isCheckbox || isRadio) && hasChecked && !hasValue) {
             // CK-only
             if (checkedSnapshot) s += ` checked="true"`
@@ -1359,10 +1352,10 @@ function serializeSsrElement(
     // ≡ DOM.createElement：显式 _isSVG（createSVGElement）优先，否则按 svg 专有标签名兜底
     const isSVG = el.props?._isSVG ?? svgOnlyElementNames.has(tag)
     const attrs = serializeAttrs(el.props, tag, optionSelectedBySo, elementPath, isSVG)
-    // CAUTION CSR 的契约是 node.innerHTML = value ?? ''（DOM.setAttribute）：value 是字符串，
-    //  或求值得到字符串的函数 / atom；只要这个 key 出现，children 就被 innerHTML 覆盖（含 nullish = 清空）。
-    //  这里曾经只认 React 形状的 {__html}（CSR 下它渲染成字面 "[object Object]"），
-    //  真正的 CSR 写法在服务端输出为空。{__html} 的透传保持不变。
+    // CAUTION CSR 的契约是 node.innerHTML = innerHTMLOf(value) ?? ''（DOM.setAttribute）：value 是字符串、
+    //  React 形状的 {__html}（#50 起两端都解包，判定共用 markupNames.isInnerHTMLObject），
+    //  或求值得到这两者的函数 / atom；只要这个 key 出现，children 就被 innerHTML 覆盖（含 nullish = 清空，
+    //  {__html: null} / {__html: undefined} 同样清空，曾经写出字面 "null" / "undefined"）。
     const hasDangerously = !!el.props && hasOwnProp(el.props, 'dangerouslySetInnerHTML')
     const dangerously = hasDangerously ? snapshotAttrValue(el.props!.dangerouslySetInnerHTML) : undefined
 
@@ -1403,10 +1396,9 @@ function serializeElementContent(
     hasDangerously: boolean,
     dangerously: any,
 ): void {
-    if (dangerously && typeof dangerously === 'object' && '__html' in dangerously) {
-        out.push(String((dangerously as {__html: string}).__html))
-    } else if (hasDangerously) {
-        out.push(dangerously == null ? '' : String(dangerously))
+    if (hasDangerously) {
+        const html = innerHTMLOf(dangerously)
+        out.push(html == null ? '' : String(html))
     } else if (tagLower === 'textarea' && !!el.props && hasOwnProp(el.props, 'value')) {
         // TA 通道（§3.6.2）：value 写成子文本。没有 value prop 的 textarea 走下面的通用 children 路径，
         //  与 title 一样按 RCDATA 首尾相接——曾经只认「恰好一个 child」，

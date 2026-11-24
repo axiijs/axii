@@ -48,7 +48,7 @@ next-action: 无
 | `disabled="true"\|""\|presence` | `.disabled===true` | SSR 与 CSR 对齐写出 `disabled="true"` |
 | 表单 IDL → HTML（有限表，见 §3.6.2） | input value 属性；textarea **子文本**；option `selected`；checkbox/radio `checked`；**checkbox `value={v}` 双通道** | 见 §3.6.2；**不得**对 checkbox `value` 只发 `checked`；**不得**对 textarea 写 value 属性冒充 |
 | checkbox `value={true}` vs 仅 `checked` | CSR outer 含 `value="true" checked="true"`；仅 `checked="true"` 解析后 `.value==="on"` ≠ CSR | d8 / review-d8；§3.6.2 CB 表 |
-| checkbox `value`+`checked` 同元素 | deferred 按 props 键序先后应用；后者覆盖 `.checked`；有 `value` 时始终发 value 属性 | d8 `orderWins` |
+| checkbox `value`+`checked` 同元素 | 勾选状态只由 `checked` 决定，与 props 键序无关（boolean `value` 不再参与；d8 `orderWins` 的「后者覆盖」被 #52 取代）；有 `value` 时始终发 value 属性 | #52；§3.6.2 CB 组合 |
 | FunctionHost Text-ph 结构态 CSR | `[内容…, <!--computed node-->, Text('')]`；`innerHTML` **丢失**尾空 Text | review-d9 / d9 |
 | 结构后发 `<!--axii:0-->` 再 hydrate 插入 Text | 与 CSR 同形；`Text===FunctionHost.placeholder`；可切回文本；destroy 无孤儿 | d9 |
 | 省略尾 `axii:0` | 解析后无 Text placeholder 位点 | d9 `omitSentinel` |
@@ -1130,11 +1130,11 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 | # | 事实 | 证据 |
 |---|---|---|
 | F-F1 | 一般 `input`/`textarea`/`option` 的 `value`：`setProperty('value', v == null ? '' : v)`；text 等类型的 `.value` **常不**进入 content attribute | 源码；d1 |
-| F-F2 | `INPUT type=checkbox` 且 prop `value`：先 F-F1 的 value 写入；**仅当** `v` 为 boolean / nullish 时再按其真假写/清 `checked` 属性与 property——**双通道**，不是「仅 checked」。string / number 的 `v` 是表单提交值（`<input type="checkbox" value="red" checked={isRed}/>`），不影响勾选（`DOM.ts` `setAttribute` 的 checkbox 分支，#48） | 源码；d8 / review-d8；#48 |
+| F-F2 | `INPUT type=checkbox` 且 prop `value`：先 F-F1 的 value 写入；**仅当** `v` 为 boolean、且元素**没有** `checked` prop 时再按其真假写/清 `checked` 属性与 property——**双通道**，不是「仅 checked」。string / number 的 `v` 是表单提交值（`<input type="checkbox" value="red" checked={isRed}/>`），不影响勾选（#48）；`null` / `undefined` 表示「没有 value」，不触碰勾选状态（#52）。「有 `checked` prop」由 `createElement` 在元素同时带 `value` 与 `checked` 时记在元素上（`__axiiInputHasCheckedProp__`），首帧、响应式更新、`type` 翻转后的重放都读它（`DOM.ts` `setAttribute` 的 checkbox 分支） | 源码；d8 / review-d8；#48；#52 |
 | F-F3 | 仅 `checked="true"`、无 `value` 属性的 checkbox：解析后 `.value === 'on'`（缺省），与 `value={true}` 的 CSR `.value === 'true'` **不等** | d8 `idlMismatchIfFollowDesign` |
 | F-F4 | `value={true}` 正确 SSR：`value="true" checked="true"` → 解析 IDL 与 CSR 对齐 | d8 `idlMatchIfBoth` |
 | F-F5 | `checked` 专用分支**仅** checkbox（~462–471）；radio 的 `checked` 走通用 property 路径；radio 的 `value` **不**触发 checked 语义 | 源码；d8 `radioValueTrue.checked===false` |
-| F-F6 | `createElement` 将 `value`/`checked` **延后**到其余 prop（含 `type`）之后，并按 `rawProps` **键枚举序**依次 `setAttribute`（~752–802） | 源码；d8 `orderWins` |
+| F-F6 | `createElement` 将 `value`/`checked` **延后**到其余 prop（含 `type`）之后，并按 `rawProps` **键枚举序**依次 `setAttribute`（静态的 `null` 值不是合法的静态属性，落进 `unhandledAttr`，实际在静态属性之后才写）。这个顺序**不**决定 checkbox 的勾选状态（F-F2，#52；d8 `orderWins` 的「后者覆盖」已被取代） | 源码；d8；#52 |
 | F-F7 | `textarea`：CSR `.value` 不进入 `outerHTML` 子节点；解析后 `.value` 来自**子文本**；仅 `value` 属性 → `.value===''` | d1 |
 | F-F8 | `select`/`option`：CSR 设 `select.value` 后 option 可无 `selected` attr；解析需 `selected="true"` | d1 |
 
@@ -1160,23 +1160,24 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 |---|---|---|---|
 | `true` | `value="true" checked="true"` | `'true'` | `true` |
 | `false` | `value="false"`（无 checked） | `'false'` | `false` |
-| `null` / `undefined` | `value=""`（无 checked） | `''` | `false` |
+| `null` / `undefined` | `value=""`（无 checked；nullish 不触碰勾选状态，首帧即未勾选） | `''` | `false` |
 | `''` | `value=""`（无 checked） | `''` | `false` |
 | `0` | `value="0"`（无 checked） | `'0'` | `false` |
 | `1` | `value="1"`（无 checked） | `'1'` | `false` |
 | 非空字符串 `s`（如 `'hello'`） | `value="{escape(s)}"`（无 checked） | `s` | `false` |
 
-通则：`checked` 属性 **当且仅当** `v === true`（boolean / nullish 的 `v` 是勾选状态，string / number 是提交值，不参与勾选）；`value` 属性 **始终**发出（含空串）。
+通则：`checked` 属性 **当且仅当** `v === true`（只有 boolean 的 `v` 是勾选状态；string / number 是提交值，nullish 是「没有 value」，都不参与勾选）；`value` 属性 **始终**发出（含空串）。
 
 **`value` 与 `checked` 同元素（组合；有限）**
 
 1. 若存在 `value` prop：按 CB **始终**发出 `value="{escape(String(applied))}"`（与是否另有 `checked` 无关）。
-2. 最终是否发出 `checked="true"`：按 CSR deferred 序模拟——对 `rawProps` 中键序遍历，仅处理 `value` 与 `checked`：
-   - 遇 `value`：**仅当** `v` 为 boolean / nullish 时令 `finalChecked = !!v`；string / number 的 `v` 不改变 `finalChecked`（`value="red"` 后的 `checked={false}`、`checked={false}` 后的 `value="red"` 都是未选中）；
-   - 遇 `checked`：令 `finalChecked = !!checkedProp`；
-   - **后者覆盖前者**（d8：`value` 后 `checked={false}` → 未选中但仍有 `value="true"`；`checked={false}` 后 `value={true}` → 选中）。
+2. 最终是否发出 `checked="true"`（#52：**与键序无关**，显式的 `checked` 永远生效）：
+   - 存在 `checked` prop（含 `checked={undefined}` / `checked={null}`）：`finalChecked = !!checkedProp`，`value` 不论取什么都不参与；
+   - 不存在 `checked` prop：`finalChecked = (v === true)`（只有 boolean 的 `v` 是旧的勾选通道）。
+   - 例：`value={true} checked={false}` 与 `checked={false} value={true}` 都是未选中、仍有 `value="true"`；`checked={true} value={undefined}` 与 `value={undefined} checked={true}` 都是选中、`value=""`；`value="red" checked={false}` 未选中。（d8 的「后者覆盖前者」已被取代。）
 3. 若 `finalChecked`：发 `checked="true"`；否则不输出 `checked`。
-4. **禁止**在「仅 CK、无 value prop」时套用本表去写 `value="true"`。
+4. CSR 的响应式更新同样遵守第 2 条：带 `checked` prop 的元素上，响应式 `value` 的任何变化（含 `true` / `false` 之间翻转、变成 `null` / `undefined`）、`type` 翻转成 checkbox 后的 value 重放都不改勾选状态；没有 `checked` prop 时，响应式 `value` 变成 boolean 照旧写勾选状态，变成 `null` / `undefined` 则保留当前勾选状态（含用户的勾选）。
+5. **禁止**在「仅 CK、无 value prop」时套用本表去写 `value="true"`。
 
 **否决**：把 CB 折叠为「同 CK 行」（仅 `checked="true"`）——F-F3，已否决（评审 P1 / d8）。
 
@@ -1186,8 +1187,8 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 |---|---|---|---|
 | IV：非 CB 的 input `value` | `setProperty('value')` | `value="…"`（转义） | `.value` 匹配 |
 | CK：仅 `checked`（checkbox/radio） | property ± attr | `checked="true"` 或省略 | `.checked` 匹配；checkbox 无 value 属性时 `.value==='on'` 可接受 |
-| CB：checkbox `value`（± `checked`） | 双通道 ± deferred 覆盖 | 上表 / 组合算法 | `.value` **与** `.checked` 均匹配 |
-| radio 的 `value` | 仅 value（F-F5） | 按 IV；**不**因 value 发 checked | `.checked` 不被 value 置位 |
+| CB：checkbox `value`（± `checked`） | 双通道；有 `checked` prop 时勾选只由它决定 | 上表 / 组合算法 | `.value` **与** `.checked` 均匹配 |
+| radio 的 `value` | 仅 value（F-F5） | 按 IV；**不**因 value 发 checked | `.checked` 不被 value 置位或清除（nullish 同样不触碰，#52） |
 | TA：textarea value | `setProperty('value')` | 子文本（RCDATA）；禁 value 属性冒充；禁 `axii:*` | `.value` 来自子文本 |
 | SO：select / option | IDL / `__axiiSelectValue__` | `selected="true"` 于对应 option | `.value` / `selectedOptions` / `.selected` 匹配 |
 
@@ -1372,7 +1373,7 @@ function hydrateRoot(
 - SSR `<style>` 载荷：`insertRule` 拒绝的多规则逃逸串写入 textContent 会注入全局规则 → **per-rule omit 门闩**（d5）；不得只靠 `</style`
 - `Text+Comment+Text` 往返不合并 → 已有 CSR 结构 Comment 或 `axii:0` 分隔处可省略非空边界（发出表 A2）
 - table 注释位置敏感；createElement vs 解析树在 table 上不等价 → 规范化 + SSR 显式 tbody
-- 表单 IDL 完整有限契约（§3.6.2）：IV/CK/CB/TA/SO 通道拆分；checkbox `value` **双通道**（禁「同 checked 行」）；deferred `value`+`checked` 键序覆盖；textarea 必须子文本；select/option 必须 selected 属性（d1/d8）
+- 表单 IDL 完整有限契约（§3.6.2）：IV/CK/CB/TA/SO 通道拆分；checkbox `value` **双通道**（禁「同 checked 行」）；显式 `checked` 永远决定勾选、与键序无关（#52）；textarea 必须子文本；select/option 必须 selected 属性（d1/d8）
 - 样式 tag ↔ adopted 可无闪变迁移
 
 ### 5.2 实现期验证

@@ -60,7 +60,7 @@ describe('server markup parses to the attributes a client render writes', () => 
             </div>
         })
     })
-    test('checkbox: only a boolean or nullish value is a checked state', () => {
+    test('checkbox: only a boolean value is a checked state, and only without a checked prop (#52)', () => {
         const checkedOf = (root: Element) => Array.from(root.querySelectorAll('input')).map(i => [i.value, i.checked])
         function App({}: any, {createElement}: RenderContext) {
             return <div>
@@ -443,5 +443,189 @@ describe('#49 on* props that are not event handlers are written on neither side'
             configureDiagnostics({})
             consoleError.mockRestore()
         }
+    })
+})
+
+/**
+ * #52：复选框 / 单选框上 nullish 的 value 不触碰勾选状态；只有 boolean 的 value 仍是复选框旧的勾选通道；
+ * 显式的 checked 永远生效，与书写顺序无关（value 在前或在后、静态或响应式都一样）。
+ * 静态矩阵同时比对三份结果：客户端渲染、解析服务端 HTML、在服务端 HTML 上 hydrate。
+ * 单选框的 value 从来不是勾选通道（§3.6.2 F-F5），同一组场景在单选框上作对照。
+ */
+describe('#52 checkbox / radio: a nullish value never touches the checked state, an explicit checked always wins', () => {
+    async function settle() { for (let i = 0; i < 100; i++) await Promise.resolve() }
+    const stateOf = (root: Element) => Object.fromEntries(
+        Array.from(root.querySelectorAll('input')).map(i => [i.id, [i.value, i.checked]]))
+    // 失败时直接列出哪个 id 的 [.value, .checked] 不对
+    function expectMatrix(root: Element) {
+        const actual = stateOf(root)
+        expect(Object.keys(actual).sort()).toEqual(Object.keys(EXPECTED).sort())
+        expect(Object.keys(EXPECTED)
+            .filter(id => JSON.stringify(actual[id]) !== JSON.stringify(EXPECTED[id]))
+            .map(id => `${id}: ${JSON.stringify(actual[id])}, expected ${JSON.stringify(EXPECTED[id])}`)).toEqual([])
+    }
+
+    // [id 后缀, props（键序即书写顺序）, 复选框的 .checked, 单选框的 .checked, .value]
+    const MATRIX: [string, any, boolean, boolean, string][] = [
+        ['ck1-vu', {checked: true, value: undefined}, true, true, ''],
+        ['vu-ck1', {value: undefined, checked: true}, true, true, ''],
+        ['ck1-vn', {checked: true, value: null}, true, true, ''],
+        ['vn-ck1', {value: null, checked: true}, true, true, ''],
+        ['ck0-vu', {checked: false, value: undefined}, false, false, ''],
+        ['vu-ck0', {value: undefined, checked: false}, false, false, ''],
+        ['ckU-vu', {checked: undefined, value: undefined}, false, false, ''],
+        // 显式 checked 与 boolean value 冲突：checked 胜出，与书写顺序无关
+        ['ck0-v1', {checked: false, value: true}, false, false, 'true'],
+        ['v1-ck0', {value: true, checked: false}, false, false, 'true'],
+        ['ck1-v0', {checked: true, value: false}, true, true, 'false'],
+        ['v0-ck1', {value: false, checked: true}, true, true, 'false'],
+        // checked={undefined} 也是显式的 checked prop：boolean value 不再参与（转发组件 <Check value={true}/> 是未勾选）
+        ['ckU-v1', {checked: undefined, value: true}, false, false, 'true'],
+        ['v1-ckU', {value: true, checked: undefined}, false, false, 'true'],
+        // 只有 value：boolean 是复选框旧的勾选通道（行为不变），nullish 不勾选
+        ['v1', {value: true}, true, false, 'true'],
+        ['v0', {value: false}, false, false, 'false'],
+        ['vu', {value: undefined}, false, false, ''],
+        ['vn', {value: null}, false, false, ''],
+        ['red-ck1', {value: 'red', checked: true}, true, true, 'red'],
+        // 响应式值的首帧（服务端取快照，客户端是绑定的初始求值）
+        ['rck1-rvu', {checked: atom(true), value: atom(undefined)}, true, true, ''],
+        ['rvu-rck1', {value: () => undefined, checked: () => true}, true, true, ''],
+        ['rck0-rv1', {checked: atom(false), value: atom(true)}, false, false, 'true'],
+        ['rv1-rck0', {value: atom(true), checked: atom(false)}, false, false, 'true'],
+    ]
+    // 组件把 checked / value 原样转发给 input：调用方不传的那个就是 undefined（issue 的场景 2）
+    function CheckedFirst({id, type, checked, value}: any, {createElement}: RenderContext) {
+        return <input id={id} type={type} checked={checked} value={value}/>
+    }
+    function ValueFirst({id, type, checked, value}: any, {createElement}: RenderContext) {
+        return <input id={id} type={type} value={value} checked={checked}/>
+    }
+    function App({}: any, {createElement}: RenderContext) {
+        return <div>
+            {MATRIX.map(([id, props]) => <input id={`cb-${id}`} type="checkbox" {...props}/>)}
+            {MATRIX.map(([id, props]) => <input id={`ra-${id}`} type="radio" {...props}/>)}
+            <CheckedFirst id="cb-fwd-ck-first" type="checkbox" checked={true}/>
+            <ValueFirst id="cb-fwd-v-first" type="checkbox" checked={true}/>
+            <CheckedFirst id="ra-fwd-ck-first" type="radio" checked={true}/>
+            <ValueFirst id="ra-fwd-v-first" type="radio" checked={true}/>
+        </div>
+    }
+    const EXPECTED: Record<string, any> = {
+        ...Object.fromEntries(MATRIX.map(([id, , cb, , value]) => [`cb-${id}`, [value, cb]])),
+        ...Object.fromEntries(MATRIX.map(([id, , , ra, value]) => [`ra-${id}`, [value, ra]])),
+        'cb-fwd-ck-first': ['', true], 'cb-fwd-v-first': ['', true],
+        'ra-fwd-ck-first': ['', true], 'ra-fwd-v-first': ['', true],
+    }
+
+    test('client render', () => {
+        const client = document.createElement('div')
+        document.body.appendChild(client)
+        const root = createRoot(client)
+        root.render(<App/>)
+        expectMatrix(client)
+        root.destroy()
+        client.remove()
+    })
+
+    test('server HTML parsed by the browser', () => {
+        const server = document.createElement('div')
+        server.innerHTML = renderToString(<App/>).html
+        expectMatrix(server)
+    })
+
+    test('hydrateRoot over the server HTML', () => {
+        const container = document.createElement('div')
+        container.innerHTML = renderToString(<App/>).html
+        document.body.appendChild(container)
+        const root = hydrateRoot(container, <App/>)
+        expectMatrix(container)
+        root.destroy()
+        container.remove()
+    })
+
+    test('reactive submit value going nullish keeps the tick: explicit checked, user tick, after hydration', async () => {
+        const values = {a: atom<any>('red'), b: atom<any>('red'), c: atom<any>('red'), r: atom<any>('red'), h: atom<any>('red')}
+        const client = document.createElement('div')
+        document.body.appendChild(client)
+        const root = createRoot(client)
+        root.render(<div>
+            <input id="a" type="checkbox" checked={true} value={values.a}/>
+            <input id="b" type="checkbox" value={values.b} checked={true}/>
+            <input id="c" type="checkbox" value={values.c}/>
+            <input id="r" type="radio" checked={true} value={values.r}/>
+        </div>)
+        ;(client.querySelector('#c') as HTMLInputElement).checked = true
+        values.a(undefined)
+        values.b(null)
+        values.c(undefined)
+        values.r(undefined)
+        await settle()
+        expect(stateOf(client)).toEqual({a: ['', true], b: ['', true], c: ['', true], r: ['', true]})
+        root.destroy()
+        client.remove()
+
+        function Hydrated({}: any, {createElement}: RenderContext) {
+            return <div><input id="h" type="checkbox" value={values.h} checked={true}/></div>
+        }
+        const container = document.createElement('div')
+        container.innerHTML = renderToString(<Hydrated/>).html
+        document.body.appendChild(container)
+        const hydrated = hydrateRoot(container, <Hydrated/>)
+        values.h(undefined)
+        await settle()
+        expect(stateOf(container)).toEqual({h: ['', true]})
+        hydrated.destroy()
+        container.remove()
+    })
+
+    test('reactive boolean value never overrides an explicit checked, in either order or after a type flip', async () => {
+        const b1 = atom(true), b2 = atom(true), b3 = atom(false)
+        const ck = atom(false)
+        const type = atom('text')
+        const client = document.createElement('div')
+        document.body.appendChild(client)
+        const root = createRoot(client)
+        root.render(<div>
+            <input id="a" type="checkbox" checked={false} value={b1}/>
+            <input id="b" type="checkbox" value={b2} checked={false}/>
+            <input id="c" type="checkbox" checked={true} value={b3}/>
+            <input id="d" type="checkbox" value={true} checked={ck}/>
+            <input id="e" type={type} checked={false} value={true}/>
+        </div>)
+        const checkedOf = () => Object.fromEntries(Object.entries(stateOf(client)).map(([id, [, c]]) => [id, c]))
+        expect(checkedOf()).toEqual({a: false, b: false, c: true, d: false, e: false})
+        b1(false); b2(false); b3(true)
+        await settle()
+        b1(true); b2(true); b3(false)
+        await settle()
+        ck(true)
+        await settle()
+        expect(checkedOf()).toEqual({a: false, b: false, c: true, d: true, e: false})
+        ck(false)
+        // type 翻转成 checkbox 会按新 type 重放存下的 value（true）：显式 checked={false} 仍然胜出
+        type('checkbox')
+        await settle()
+        expect(checkedOf()).toEqual({a: false, b: false, c: true, d: false, e: false})
+        root.destroy()
+        client.remove()
+    })
+
+    test('boolean value as the only checked channel: unchanged, except that going nullish leaves the tick alone', async () => {
+        const on = atom<boolean | null | undefined>(true)
+        const client = document.createElement('div')
+        document.body.appendChild(client)
+        const root = createRoot(client)
+        root.render(<div><input id="a" type="checkbox" value={on}/></div>)
+        const checked = () => (client.querySelector('#a') as HTMLInputElement).checked
+        const seen = [checked()]
+        on(false); await settle(); seen.push(checked())
+        on(true); await settle(); seen.push(checked())
+        on(null); await settle(); seen.push(checked())
+        on(undefined); await settle(); seen.push(checked())
+        on(false); await settle(); seen.push(checked())
+        expect(seen).toEqual([true, false, true, true, true, false])
+        root.destroy()
+        client.remove()
     })
 })
