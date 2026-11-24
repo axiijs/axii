@@ -35,6 +35,7 @@ import {
     claimFunctionTextPlaceholder,
     claimTextUnit,
     createElementForHydrateMismatch,
+    createHydrateMismatchElementNode,
     createHydrateDeferredElement,
     enterElementChildCursor,
     exitElementChildCursor,
@@ -66,8 +67,12 @@ import {
     claimTopDownEmptyTextPlaceholder,
     claimTopDownText,
     enterTopDownElement,
+    enterTopDownFreshElement,
     exitTopDownElement,
     insertTopDownEmptyText,
+    isTopDownClaimApproximate,
+    placeTopDownFreshElement,
+    rememberTopDownRawElement,
 } from "./hydrationCursor";
 import type {Host} from "./Host";
 
@@ -1807,15 +1812,16 @@ export type TopDownInnerHosts = {hosts: Host[], next: number}
  * @internal
  * 认领一个元素描述（或在同一层消费一个 Fragment 描述的子节点），返回带元数据的节点——与 CSR 的 createElement
  * 返回值同形：元素，或者 Fragment 的 DocumentFragment（内容已经在服务端节点里，它是空的，只挂元数据）。
- * 调用方是 StaticHost.hydrate；Fragment 的 `fragment start` 由它先认领。设计 §2.6.1：
- *  1. 按位置认领元素（标签、命名空间、静态 id；hydrationCursor.claimTopDownElement）；
+ * 调用方是 StaticHost.hydrate；Fragment 的 `fragment start` 由它先认领。设计 §2.6.1、§4：
+ *  1. 按位置认领元素（标签、命名空间、静态 id；hydrationCursor.claimTopDownElement 按 R1 处理失配）。没有可认领的元素时
+ *     按 CSR 新建（R1），子节点在「新建的层」里消费；近似认领（§4.1）先清空服务端写下的属性；
  *  2. data-axii-ssr 样式类（reclaimSsrStyleClasses，与旧模型共用）；
  *  3. 有 value / defaultValue 的 textarea 清空子文本（clearHydratedTextareaValueText，与旧模型共用）；
  *  4. table 的隐含 tbody：游标下沉到 tbody（resolveTopDownChildParent）；
  *  5. 按文档顺序消费子节点：静态文本、子描述（递归）、动态 child（取出预先构造的 Host，hydrate(slot)）；
  *     内容是原始标记（dangerouslySetInnerHTML）的元素不进入，内容整体不透明（§2.6.2，F1j）；
- *  6. 子节点之后应用 props（applyElementProps，与 CSR 同一份；claimed = true）；
- *  7. 转交 listenerBoundArgs，写 desc.node，瘦身描述。
+ *  6. 子节点之后应用 props（applyElementProps，与 CSR 同一份；干净认领时 claimed = true）；
+ *  7. 转交 listenerBoundArgs，写 desc.node，瘦身描述；新建的元素放到游标处（所属 StaticHost 绑定响应式属性之后才连入，#73）。
  * 元数据（unhandledAttr / refHandles / detachStyledChildren）的提升与 CSR createElement 的循环逐项相同
  * （liftElementMetadata，path 是 JSX children 下标，Fragment 多一级），样式 id 与 ref / 属性绑定的顺序因此与 CSR 一致。
  * unhandledChildren 不建立：子 Host 已由 StaticHost 预先构造。
@@ -1838,7 +1844,21 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     const createdSVG = (rawProps ? rawProps._isSVG : undefined) ?? svgOnlyElementNames.has(tag)
     if (parentAdoptsSvg && isSharedNameHtmlDescription(desc)) desc.isSVG = true
     const isSVG = desc.isSVG
-    const el = claimTopDownElement(tag, isSVG, staticAttrId(rawProps)) as HTMLElement
+    const claimed = claimTopDownElement(tag, isSVG, staticAttrId(rawProps))
+    // R1（§4.2）：游标处没有可以认领的元素（已经报告过）。按 CSR 新建，子节点在新建的层里消费（各单元直接新建、插入，
+    //  子描述与预先构造的子 Host 经同一条路径落到新元素里），props 按 CSR 应用，建好之后才放到游标处（#73）
+    const fresh = claimed === null
+    // §4.1：近似认领（id 漂移、向前查找），或者同一父节点已经报告过失配之后的认领——这次认领可能跨了角色。
+    //  先读走 data-axii-ssr 样式类（滚动样式基名），再清空全部属性，之后按客户端 props 应用，结果与 CSR 新建相同。
+    //  在子节点之前清：<select multiple> 的 multiple 要在它的 option 被认领之前就位（与新建一样预应用，见下面）
+    const approximate = !fresh && isTopDownClaimApproximate()
+    const el = (fresh ?
+        createHydrateMismatchElementNode(tag, isSVG, rawProps && typeof rawProps.is === 'string' ? rawProps.is : undefined) :
+        claimed) as HTMLElement
+    if (approximate) {
+        reclaimSsrStyleClasses(el)
+        clearHydratedElementAttributes(el)
+    }
     const children = desc.rawChildren!
     const debugSource = rawProps ? rawProps.__source as AxiiSource | undefined : undefined
     let unhandledAttr: UnhandledAttrInfo[] | undefined
@@ -1846,10 +1866,25 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     let detachStyledChildren: DetachStyledInfo[] | undefined
     // 「内容是原始标记」与旧模型同一判定（#50：按解包后的值，{__html: null} 不是原始标记）。原始元素不进入：
     //  它的 JSX children 在 CSR 里被 innerHTML 覆盖（开发期警告 I66），服务端也只写原始标记，这里不消费它们
-    //  （StaticHost.hydrate 也不为它们构造 Host）。
-    if (!(rawProps && innerHTMLOf(rawProps.dangerouslySetInnerHTML) != null)) {
-        if (tag === 'textarea') clearHydratedTextareaValueText(el, rawProps)
-        enterTopDownElement(resolveTopDownChildParent(el, tag, children))
+    //  （StaticHost.hydrate 也不为它们构造 Host）。新建、近似认领的原始元素由下面的 applyElementProps 写入客户端的标记；
+    //  干净认领的保留服务端的节点，记下来：这次激活有失配时由入口在结束时核对内容（hydrationCursor.verifyTopDownRawElements）。
+    //  响应式的标记（函数 / atom）不记：它的绑定在激活时按客户端的值写入 innerHTML（StaticHost.collectReactiveAttr）
+    const rawMarkup = rawProps ? innerHTMLOf(rawProps.dangerouslySetInnerHTML) : undefined
+    if (rawMarkup != null) {
+        if (!fresh && !approximate && typeof rawMarkup !== 'function') rememberTopDownRawElement(el, rawMarkup)
+    } else {
+        if (fresh || approximate) {
+            // ≡ createElement：select 的静态 multiple 先于 option children 应用（见 createElement 里同一段的 CAUTION）
+            if (tag === 'select' && rawProps?.multiple && typeof rawProps.multiple !== 'function') {
+                setAttribute(el as ExtendedElement, 'multiple', rawProps.multiple, isSVG)
+            }
+        }
+        if (!fresh && tag === 'textarea') clearHydratedTextareaValueText(el, rawProps)
+        if (fresh) {
+            enterTopDownFreshElement(el)
+        } else {
+            enterTopDownElement(resolveTopDownChildParent(el, tag, children), approximate)
+        }
         const childrenLength = children.length
         const firstChildType = childrenLength === 1 ? typeof children[0] : undefined
         if (childrenLength === 1 && (firstChildType === 'string' || firstChildType === 'number' || firstChildType === 'bigint')) {
@@ -1868,15 +1903,25 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
         }
         exitTopDownElement()
     }
-    reclaimSsrStyleClasses(el)
-    applyElementProps(el, rawProps, isSVG, true, children.length, debugSource,
+    if (!fresh && !approximate) reclaimSsrStyleClasses(el)
+    // claimed 为 false（新建、近似认领）时与 CSR 相同写入 dangerouslySetInnerHTML；干净认领保留服务端的标记
+    applyElementProps(el, rawProps, isSVG, !fresh && !approximate, children.length, debugSource,
         undefined, unhandledAttr, refHandles, detachStyledChildren)
     // ≡ ComponentHost.createHTMLOrSVGElement 在 CSR 里写在 createElement 返回值上的字段（写入顺序也相同）
     if (desc.listenerBoundArgs !== undefined) (el as ExtendedElement).listenerBoundArgs = desc.listenerBoundArgs
     desc.node = el
     desc.rawProps = undefined
     desc.rawChildren = undefined
+    // 子节点、props 都已应用：放到游标处。父节点在文档里时等所属 StaticHost 绑定了响应式属性之后才连入（#73）
+    if (fresh) placeTopDownFreshElement(el)
     return el
+}
+
+// §4.1：近似认领的元素先清空服务端写下的全部属性（data-axii-ssr 样式类已由 reclaimSsrStyleClasses 读走），
+//  之后的 applyElementProps 只写客户端 props 的属性，结果与 CSR 新建的元素相同。只在失配路径上执行。
+function clearHydratedElementAttributes(el: Element): void {
+    const attributes = el.attributes
+    while (attributes.length) el.removeAttributeNode(attributes[attributes.length - 1])
 }
 
 // ≡ CSR 的数组项改建（adoptSvgArrayItems，#56）：创建时就是 SVG 的元素（不是 HTML integration point）的数组 child，其中直接是

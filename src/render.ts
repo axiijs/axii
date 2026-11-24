@@ -138,8 +138,9 @@ function addRootCallback(
  * hydratePlaceholder：旧模型激活（hydrateRoot）时已有的 <!--root-->。
  * topDown：#55 新模型激活（只由内部入口 hydrateRootTopDown 传 true）——根 Host 由 createHydrateHost(source, 'root') 创建，
  *  hydrate('root') 从容器的游标处消费内容，最后认领 <!--root-->（§2.5「根」）；不新建 placeholder、不建 fragment。
+ * afterTopDownHydrate：新模型激活的树完整、没有被丢弃时，在派发 attach（ref / layoutEffect）之前调用一次（内部入口的收尾，#55 B3）。
  */
-export function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment, topDown?: boolean): Root {
+export function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment, topDown?: boolean, afterTopDownHydrate?: () => void): Root {
     // 用户监听器与每次渲染的内部 attach 回调共用这张表（派发顺序就是登记顺序）
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     // CAUTION 当前这次渲染登记在 eventCallbacks 里的内部 attach 回调（layoutEffect / ref / Portal 桥接）。
@@ -201,6 +202,8 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
                 //  销毁 root、渲染错误提示）都是 CSR
                 const hydrateTopDown = topDown
                 topDown = false
+                const afterHydrate = afterTopDownHydrate
+                afterTopDownHydrate = undefined
                 if (hydrateTopDown) {
                     root.host = host = createHydrateHost(componentOrEl, ROOT_SLOT, pathContext)
                 } else {
@@ -256,6 +259,8 @@ export function createRootInternal(element: HTMLElement, parentContext?:PathCont
                 } finally {
                     renderingHost = outerRenderingHost
                 }
+                // #55 新模型激活：内部入口在激活的树完整之后、派发 attach（ref / layoutEffect）之前的收尾（hydrateTopDown.ts）
+                if (afterHydrate !== undefined) afterHydrate()
                 if (frag) element.appendChild(frag)
                 // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
                 if(element.isConnected) {

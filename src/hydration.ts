@@ -930,6 +930,15 @@ export function createElementForHydrateMismatch(tagName: string, isSVG?: boolean
         // Drop one mismatched unit at cursor (wrong tag shell + leftover axii:t, etc.)
         node.remove()
     }
+    return createHydrateMismatchElementNode(tagName, isSVG, is)
+}
+
+/**
+ * 失配时按 CSR 新建的元素节点（旧模型的 createElementForHydrateMismatch 与新模型 R1 的新建共用，#55 B3）。
+ * CAUTION 与 CSR createElement 建元素的分支同一规则：SVG 用 createElementNS；is（customized built-in，I64）只在创建时
+ *  以选项生效，事后 setAttribute('is') 不会升级元素。
+ */
+export function createHydrateMismatchElementNode(tagName: string, isSVG: boolean | undefined, is: string | undefined): Element {
     return isSVG
         ? document.createElementNS('http://www.w3.org/2000/svg', tagName)
         : is === undefined ? document.createElement(tagName) : document.createElement(tagName, {is})

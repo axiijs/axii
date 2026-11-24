@@ -111,11 +111,10 @@ function hydrateKnownDefect(container: HTMLElement, source: any, reason?: RegExp
 
 /**
  * #55 的 11 条（§6）：旧入口那一遍是 test.fails + hydrateKnownDefect 守卫；内部入口那一遍是普通 test（§7.2）。
- * F1b、F1f–F1h、F1j、F3a、F3b 从 B1 起在内部入口上通过；F4a–F4d 要等失配规则（B3），这一遍在那之前标为待实现。
+ * F1b、F1f–F1h、F1j、F3a、F3b 从 B1 起、F4a–F4d 从 B3（失配规则 R1–R5）起在内部入口上通过。
  * #55 S 把公开的 hydrateRoot 切到新模型时，两者都改成 test。
  */
 const knownDefect = TOP_DOWN_PASS ? test : test.fails
-const knownDefectUntilB3 = pendingTopDown('B3') ? test.skip : test.fails
 
 // ───────────────────────── Finding 1: element claim order ─────────────────────────
 // v4.8.1 claimed the deepest same-tag element of the whole root (F1a / F1c / F1e). #54 claims the first
@@ -460,7 +459,8 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
         return element(0, 'div')
     }
 
-    function appOf(spec: Gen, log: string[]) {
+    // atoms：渲染时创建的 atom 按创建顺序记下（漂移 fuzz 激活后改它们的值，比较更新后的 DOM）
+    function appOf(spec: Gen, log: string[], atoms?: ReturnType<typeof atom>[]) {
         // createElement / Fragment come from the render context (the server passes its own)
         type Ctx = {h: RenderContext['createElement'], F: RenderContext['Fragment']}
         function render(g: Gen, c: Ctx): any {
@@ -479,7 +479,11 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                 }
                 case 'frag': return h(F, null, ...g.kids.map(k => render(k, c)))
                 case 'text': case 'bool': case 'nil': return g.v
-                case 'atom': return atom(g.v)
+                case 'atom': {
+                    const a = atom(g.v)
+                    atoms?.push(a)
+                    return a
+                }
                 case 'fn': return () => render(g.body, c)
                 case 'arr': return g.items.map(item => render(item, c))
                 case 'list': return new RxList(g.rows.map((_, i) => i)).map(i => render(g.rows[i], c))
@@ -556,6 +560,224 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
         console.log(`[F1i extended] shapes ${JSON.stringify(shapes)} | host kinds (CSR = hydrate) ${JSON.stringify(totals.hydrate)}`)
         // §2.4.1 coverage: every landed kind is created on both sides somewhere in the 300 trees
         expect(LANDED_KINDS.filter(k => !(totals.csr[k] > 0 && totals.hydrate[k] > 0))).toEqual([])
+    })
+
+    // #55 B3 (design §7.4 B3 row, §4.1, §4.2): drift fuzz on the extended trees. The server renders the tree, then one drift is
+    // injected — on the client side (a list / array row added or removed, an element swapped for text or back) or into the parsed
+    // server DOM (an element's tag replaced, a junk element / Text / Comment inserted, an axii marker or structure Comment
+    // removed, a Text value tampered). Raw markup (dangerouslySetInnerHTML) is opaque and never touched. Every activation:
+    //  - does not throw; the node structure, text, structure Comments and the attributes the client props write equal CSR
+    //    (server-only attributes may remain only on clean claims — D4 — and only in trees that reported a mismatch);
+    //  - reports at least one HydrationMismatchError when the drift changed the server output, none otherwise (never silent);
+    //    no development invariant (§4.4) is broken;
+    //  - each element's listener is at its own position; after every atom changes, DOM ≡ CSR again; destroying both roots
+    //    returns the retained Host / binding counters to zero.
+    const INJECTIONS = ['row+', 'row-', 'el↔text', 'tag', 'junk', 'marker-', 'text~'] as const
+    type Injection = typeof INJECTIONS[number]
+    type Slot = {value: Gen, set: (g: Gen) => void}
+    function slotsOf(g: Gen, out: Slot[]) {
+        const arrays = g.k === 'el' || g.k === 'frag' ? [g.kids] : g.k === 'arr' ? [g.items] : g.k === 'list' ? [g.rows] : []
+        for (const arr of arrays) {
+            arr.forEach((child, i) => {
+                out.push({value: child, set: v => { arr[i] = v }})
+                slotsOf(child, out)
+            })
+        }
+        if (g.k === 'fn' || g.k === 'comp') {
+            const owner = g
+            out.push({value: owner.body, set: v => { owner.body = v }})
+            slotsOf(owner.body, out)
+        }
+        return out
+    }
+    function rawKeysOf(g: Gen, into: Set<string>) {
+        if (g.k === 'el' && g.raw !== undefined) into.add(g.key)
+        const nested = g.k === 'el' || g.k === 'frag' ? g.kids : g.k === 'arr' ? g.items : g.k === 'list' ? g.rows
+            : g.k === 'fn' || g.k === 'comp' ? [g.body] : []
+        nested.forEach(c => rawKeysOf(c, into))
+        return into
+    }
+    /** Mutate the client spec; false when the tree has nothing to apply it to. */
+    function injectClient(spec: Gen, kind: Injection, rnd: () => number): boolean {
+        const pick = <T,>(xs: T[]) => xs[Math.floor(rnd() * xs.length)]
+        const slots = slotsOf(spec, [])
+        if (kind === 'row+' || kind === 'row-') {
+            const owners = slots.map(s => s.value).filter((g): g is Extract<Gen, {k: 'list' | 'arr'}> => g.k === 'list' || g.k === 'arr')
+                .filter(g => kind === 'row+' || (g.k === 'list' ? g.rows : g.items).length > 0)
+            if (!owners.length) return false
+            const owner = pick(owners)
+            const rows = owner.k === 'list' ? owner.rows : owner.items
+            const at = Math.floor(rnd() * (rows.length + (kind === 'row+' ? 1 : 0)))
+            if (kind === 'row-') rows.splice(at, 1)
+            else rows.splice(at, 0, rnd() < 0.5 ? {k: 'el', tag: pick(TAGS), key: 'kins', kids: [{k: 'atom', v: 'ins'}]} : {k: 'text', v: 'ins'})
+            return true
+        }
+        const swappable = slots.filter(s => s.value.k === 'el' || (s.value.k === 'text' && s.value.v !== ''))
+        if (!swappable.length) return false
+        const slot = pick(swappable)
+        slot.set(slot.value.k === 'el' ? {k: 'text', v: 'swapped'} : {k: 'el', tag: 'b', key: 'kswap', kids: [{k: 'text', v: 'sw'}]})
+        return true
+    }
+    /** Drift in the parsed server DOM; false when there is no target. */
+    function injectServer(container: HTMLElement, rawKeys: Set<string>, kind: Injection, rnd: () => number): boolean {
+        const pick = <T,>(xs: T[]) => xs[Math.floor(rnd() * xs.length)]
+        const isRaw = (n: Node) => n.nodeType === Node.ELEMENT_NODE && rawKeys.has((n as Element).getAttribute('data-k') ?? '')
+        const inRaw = (n: Node) => {
+            for (let p = n.parentNode; p && p !== container; p = p.parentNode) if (isRaw(p)) return true
+            return false
+        }
+        const all: Node[] = []
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_ALL)
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) if (!inRaw(n)) all.push(n)
+        if (kind === 'tag') {
+            const els = all.filter(n => n.nodeType === Node.ELEMENT_NODE && TAGS.includes((n as Element).localName)) as Element[]
+            if (!els.length) return false
+            const el = pick(els)
+            const other = document.createElement(pick(TAGS.filter(t => t !== el.localName)))
+            for (const a of Array.from(el.attributes)) other.setAttribute(a.name, a.value)
+            while (el.firstChild) other.appendChild(el.firstChild)
+            el.replaceWith(other)
+            return true
+        }
+        if (kind === 'junk') {
+            const parents = [container, ...all.filter(n => n.nodeType === Node.ELEMENT_NODE && !isRaw(n))] as Element[]
+            const parent = pick(parents)
+            const r = rnd()
+            // 杂元素用生成器自己的标签：后面同标签的角色可能干净地认领它，它的 data-junk 就是服务端独有属性的残留（§4.1 D4）
+            const junk = r < 0.4 ? Object.assign(document.createElement(pick(TAGS)), {textContent: 'junk'}) : r < 0.7 ? document.createTextNode('junk') : document.createComment('junk')
+            if (junk instanceof Element) junk.setAttribute('data-junk', '1')
+            parent.insertBefore(junk, parent.childNodes[Math.floor(rnd() * (parent.childNodes.length + 1))] ?? null)
+            return true
+        }
+        if (kind === 'marker-') {
+            const comments = all.filter(n => n.nodeType === Node.COMMENT_NODE)
+            if (!comments.length) return false
+            ;(pick(comments) as Comment).remove()
+            return true
+        }
+        const texts = all.filter(n => n.nodeType === Node.TEXT_NODE && n.nodeValue !== '') as Text[]
+        if (!texts.length) return false
+        pick(texts).nodeValue += '~'
+        return true
+    }
+    /** Serialize like kids(), keeping only the attributes the CSR twin has; `residue` records any server-only attribute. */
+    function significant(parent: Node): Node[] {
+        return Array.from(parent.childNodes).filter(n => shape(n) !== '')
+    }
+    function alignedKids(node: Node, twin: Node | undefined, residue: {found: boolean}): string {
+        const twins = twin ? significant(twin) : []
+        return significant(node).map((n, i) => alignedShape(n, twins[i], residue)).join('')
+    }
+    function alignedShape(node: Node, twin: Node | undefined, residue: {found: boolean}): string {
+        if (node.nodeType !== Node.ELEMENT_NODE) return shape(node)
+        const el = node as Element
+        const twinEl = twin && twin.nodeType === Node.ELEMENT_NODE && (twin as Element).tagName === el.tagName ? twin as Element : undefined
+        const attrs = Array.from(el.attributes).filter(a => {
+            if (twinEl && !twinEl.hasAttribute(a.name)) {
+                residue.found = true
+                return false
+            }
+            return true
+        }).map(a => `${a.name}=${JSON.stringify(a.value)}`).sort().join(' ')
+        const tag = el.tagName.toLowerCase()
+        return `<${tag}${attrs ? ' ' + attrs : ''}>${alignedKids(el, twinEl, residue)}</${tag}>`
+    }
+
+    test('drift fuzz (#55 B3): 300 trees × 7 injections — repaired ≡ CSR, reported, never silent, listeners in place, updates ≡ CSR, destroy clean', () => {
+        const applied: {[k: string]: number} = {}
+        let withResidue = 0
+        let unchanged = 0
+        configureDiagnostics({enabled: true, onError: (e: unknown) => { reports.push((e as any)?.message ?? String(e)) }})
+        const errors: unknown[] = []
+        try {
+            for (let seed = 1; seed <= 300; seed++) {
+                for (let k = 0; k < INJECTIONS.length; k++) {
+                    const kind = INJECTIONS[k]
+                    const rnd = mulberry32(seed * 7919 + k)
+                    const serverSpec = generate(seed)
+                    const clientSpec = generate(seed)
+                    const clientSide = kind === 'row+' || kind === 'row-' || kind === 'el↔text'
+                    if (clientSide && !injectClient(clientSpec, kind, rnd)) continue
+                    const serverHtml = renderToString(createElement(appOf(serverSpec, []), null as any)).html
+                    const hyd = mount()
+                    hyd.innerHTML = serverHtml
+                    if (!clientSide && !injectServer(hyd, rawKeysOf(serverSpec, new Set()), kind, rnd)) {
+                        document.body.innerHTML = ''
+                        continue
+                    }
+                    applied[kind] = (applied[kind] ?? 0) + 1
+                    const changed = !clientSide || renderToString(createElement(appOf(clientSpec, []), null as any)).html !== serverHtml
+                    if (!changed) unchanged++
+                    enableAxiiRetainedObjectDiagnostics({reset: true})
+                    const csrAtoms: ReturnType<typeof atom>[] = []
+                    const csrEl = mount()
+                    const csrRoot = createRoot(csrEl)
+                    csrRoot.render(createElement(appOf(clientSpec, [], csrAtoms), null as any))
+                    const log: string[] = []
+                    const atoms: ReturnType<typeof atom>[] = []
+                    reports.length = 0
+                    let thrown: string | undefined
+                    let root: ReturnType<typeof hydrate> | undefined
+                    try {
+                        root = hydrate(hyd, createElement(appOf(clientSpec, log, atoms), null as any))
+                    } catch (e) {
+                        thrown = String((e as Error)?.stack ?? e)
+                    }
+                    const residue = {found: false}
+                    const dom = alignedKids(hyd, csrEl, residue)
+                    const csrDom = kids(csrEl)
+                    const hydrateReports = reports.slice()
+                    const mismatchCount = hydrateReports.filter(m => m.includes('hydration mismatch')).length
+                    const otherReports = hydrateReports.filter(m => !m.includes('hydration mismatch'))
+                    if (residue.found) withResidue++
+                    const clicked = (Array.from(hyd.querySelectorAll('[data-k]')) as HTMLElement[])
+                        .map(el => { log.length = 0; el.click(); return log.join(',') === el.getAttribute('data-k') })
+                    for (const list of [csrAtoms, atoms]) for (const a of list) a(String(a()) + '!')
+                    const updated = alignedKids(hyd, csrEl, {found: false})
+                    const csrUpdated = kids(csrEl)
+                    // 快照都在销毁之前取：detachStyle 的元素在离场时先写上样式
+                    root?.destroy()
+                    csrRoot.destroy()
+                    const after = getAxiiRetainedObjectDiagnosticsSnapshot()
+                    disableAxiiRetainedObjectDiagnostics()
+                    const actual = {
+                        seed, kind, thrown, dom, otherReports,
+                        reported: changed ? mismatchCount > 0 : mismatchCount === 0,
+                        residueOnlyWhenReported: !residue.found || mismatchCount > 0,
+                        listenersInPlace: clicked.every(Boolean),
+                        atoms: atoms.length === csrAtoms.length,
+                        updated,
+                        retained: [after.hosts.totalActive, after.lightBindings.totalActive],
+                    }
+                    const expected = {
+                        seed, kind, thrown: undefined, dom: csrDom, otherReports: [],
+                        reported: true,
+                        residueOnlyWhenReported: true,
+                        listenersInPlace: true,
+                        atoms: true,
+                        updated: csrUpdated,
+                        retained: [0, 0],
+                    }
+                    // `seed` / `kind` in the diff: rerun generate(seed) with mulberry32(seed * 7919 + INJECTIONS.indexOf(kind)) to replay
+                    try {
+                        expect(actual).toEqual(expected)
+                    } catch (e) {
+                        errors.push(e)
+                        if (errors.length >= 20) break
+                    }
+                    document.body.innerHTML = ''
+                }
+            }
+        } finally {
+            disableAxiiRetainedObjectDiagnostics()
+            resetAxiiRetainedObjectDiagnostics()
+        }
+        // eslint-disable-next-line no-console
+        console.log(`[drift fuzz] failures ${errors.length} | applied ${JSON.stringify(applied)} | unchanged client drifts ${unchanged} | trees with server-only attribute residue ${withResidue}`)
+        if (errors.length) throw errors[0]
+        // every kind of drift is exercised on at least a third of the trees (row± and el↔text need a list / an element or text
+        //  slot in the tree, text~ a non-empty Text outside raw markup), and the residue path of §4.1 is exercised
+        expect({kinds: INJECTIONS.filter(kind => !((applied[kind] ?? 0) >= 100)), residue: withResidue > 0}).toEqual({kinds: [], residue: true})
     })
 })
 
@@ -735,14 +957,14 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
             return <ul>{list.map(i => <li>{i}</li>)}</ul>
         }
     }
-    knownDefectUntilB3('F4a client list has one more row than the server HTML', () => {
+    knownDefect('F4a client list has one more row than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2]))
         if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2, 3]), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(listApp([1, 2, 3])))})
     })
 
-    knownDefectUntilB3('F4b client list has one row fewer than the server HTML', () => {
+    knownDefect('F4b client list has one row fewer than the server HTML', () => {
         const hyd = ssrInto(listApp([1, 2, 3]))
         if (!hydrateKnownDefect(hyd, createElement(listApp([1, 2]), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
@@ -752,14 +974,14 @@ describe('F4 §3.7 structural mismatch: must be reported and rebuilt to the CSR 
     const fnApp = (asElement: boolean) => function App({}: any, {createElement}: RenderContext) {
         return <div>{() => asElement ? <b>el</b> : 'text'}<i>tail</i></div>
     }
-    knownDefectUntilB3('F4c server rendered an element, client function returns text', () => {
+    knownDefect('F4c server rendered an element, client function returns text', () => {
         const hyd = ssrInto(fnApp(true))
         if (!hydrateKnownDefect(hyd, createElement(fnApp(false), null as any))) return
         expect({reported: reports.length > 0, dom: kids(hyd)})
             .toEqual({reported: true, dom: kids(csr(fnApp(false)))})
     })
 
-    knownDefectUntilB3('F4d server rendered text, client function returns an element', () => {
+    knownDefect('F4d server rendered text, client function returns an element', () => {
         const hyd = ssrInto(fnApp(false))
         // throws instead of rebuilding
         if (!hydrateKnownDefect(hyd, createElement(fnApp(true), null as any), /expected <!--computed node--> before FunctionHost placeholder/)) return
@@ -957,7 +1179,7 @@ describe('F7 regression: hydration of the new server output', () => {
 })
 
 describe('F7 regression: dangerouslySetInnerHTML on an element rebuilt after a tag mismatch', () => {
-    test.skipIf(pendingTopDown('B3'))('F7g the rebuilt element gets its raw markup', () => {
+    test('F7g the rebuilt element gets its raw markup', () => {
         const app = (tag: string) => function App({}: any, {createElement}: RenderContext) {
             return <section>{createElement(tag, {id: 'raw', dangerouslySetInnerHTML: '<em>raw</em>'})}</section>
         }
@@ -1369,7 +1591,7 @@ describe('I50 dangerouslySetInnerHTML={{__html}}: CSR, reactive form, hydration'
     // The raw-content decision of a claimed element (DOM.createElement → exitElementChildCursor) reads
     // the unwrapped value: a nullish {__html} is not raw markup, exactly like the nullish string form.
     // Undefined is the baseline (static path); a bare null goes through the reactive attribute path.
-    test.skipIf(pendingTopDown('B3'))('I50g drift: server markup, client nullish {__html} → handled exactly like client undefined', () => {
+    test('I50g drift: server markup, client nullish {__html} → handled exactly like client undefined', () => {
         const read = (client: any) => {
             const hyd = ssrInto(rawApp({__html: '<b>x</b>'}))
             reports.length = 0
