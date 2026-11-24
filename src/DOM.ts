@@ -1643,8 +1643,37 @@ export function setPendingStyleSheetFlush(flush: (() => void) | undefined) {
 export function restoreSelectValueAfterRemoval(parent: Node | null) {
     const ownerSelect = findOwnerSelect(parent as Element | null)
     if (ownerSelect) {
-        resetOptionParentSelectValue(ownerSelect)
+        if (selectReplaySuspended !== 0) {
+            (selectsToReplay ??= new Set()).add(ownerSelect)
+        } else {
+            resetOptionParentSelectValue(ownerSelect)
+        }
     }
+}
+
+// CAUTION 批量移除（列表整体销毁、一次 patch 逐行删除、数组内容逐项销毁）时，每一行自己的
+//  移除路径都会按存值重放一次 select，而 select.value 赋值要扫描剩下的全部 option：
+//  销毁 N 个 option 行是 O(N²)（4000 行 176 ms）。批量入口用 suspend/resume 包住，期间只记下
+//  涉及的 select，最外层 resume 时每个 select 重放一次。没有受控 select 时（findOwnerSelect
+//  直接返回 null）只多一次计数增减，不分配。
+let selectReplaySuspended = 0
+let selectsToReplay: Set<HTMLSelectElement> | undefined
+/**
+ * @internal
+ * 必须与 resumeSelectReplay 成对出现在 try/finally 里。
+ */
+export function suspendSelectReplay() {
+    selectReplaySuspended++
+}
+/**
+ * @internal
+ */
+export function resumeSelectReplay() {
+    if (--selectReplaySuspended !== 0) return
+    const selects = selectsToReplay
+    if (selects === undefined) return
+    selectsToReplay = undefined
+    selects.forEach(resetOptionParentSelectValue)
 }
 
 /**

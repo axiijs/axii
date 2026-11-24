@@ -1,4 +1,12 @@
-import {ExtendedElement, insertAfter, insertBefore, restoreSelectValueAfterRemoval, UnhandledPlaceholder} from './DOM'
+import {
+    ExtendedElement,
+    insertAfter,
+    insertBefore,
+    restoreSelectValueAfterRemoval,
+    resumeSelectReplay,
+    suspendSelectReplay,
+    UnhandledPlaceholder
+} from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed, TriggerInfo} from "data0";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
@@ -276,7 +284,13 @@ export class RxListHost implements Host{
                     //  旧实现假定 computation 只跑一次,重跑时残留 hosts 会让行组件撞上
                     //  "should never rerender" 断言,列表区域从此永久崩坏。
                     if (hosts.length) {
-                        for (const previous of hosts) previous.destroy()
+                        // 逐行移除时的 select 重放合并成一次（见 suspendSelectReplay）
+                        suspendSelectReplay()
+                        try {
+                            for (const previous of hosts) previous.destroy()
+                        } finally {
+                            resumeSelectReplay()
+                        }
                         hosts.length = 0
                     }
                     const data = source.data
@@ -553,6 +567,8 @@ export class RxListHost implements Host{
         if (!(canBulkRemove && firstNode!.parentNode && firstNode!.parentNode === lastNode!.parentNode)) {
             const parent = this.placeholder.parentNode
             let destroyed = 0
+            // 每一行自己摘 DOM，摘掉的可能是 select 里的 option：逐行重放合并成一次（见 suspendSelectReplay）
+            suspendSelectReplay()
             try {
                 for (; destroyed < deletedHosts.length; destroyed++) {
                     const deleted = deletedHosts[destroyed]
@@ -572,6 +588,7 @@ export class RxListHost implements Host{
                 // 某一行的清理函数抛错（没有 error 钩子）：剩下的行已经不在 hosts 里，
                 //  这里不拆就再也没有人拆了。
                 if (destroyed < deletedHosts.length) destroyRowsBestEffort(deletedHosts, destroyed + 1, false)
+                resumeSelectReplay()
             }
             return
         }
@@ -829,9 +846,12 @@ export class RxListHost implements Host{
         const styleManager = StaticHost.styleManager
         const root = this.pathContext.root
         const outerRoot = styleManager.beginBatch(root)
+        // 各行（destroy(false) 时各自摘 DOM）的 select 重放同样合并成一次（见 suspendSelectReplay）
+        suspendSelectReplay()
         try {
             this.destroyRows(fromParentDestroy)
         } finally {
+            resumeSelectReplay()
             styleManager.endBatch(root, outerRoot)
         }
         if (!fromParentDestroy) this.placeholder.remove()

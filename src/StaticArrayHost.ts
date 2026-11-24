@@ -1,4 +1,4 @@
-import { insertBefore, restoreSelectValueAfterRemoval} from "./DOM";
+import { insertBefore, restoreSelectValueAfterRemoval, resumeSelectReplay, suspendSelectReplay} from "./DOM";
 import {PathContext, Host} from "./Host";
 import {createHost} from "./createHost";
 import {removeNodesBetween} from "./util";
@@ -262,8 +262,14 @@ export class StaticArrayHost implements Host{
         //  （它们各自的 element..placeholder 区间可能要等动画结束才异步移除），
         //  自己只负责直接创建的 Text 节点和 placeholder。
         if (!parentHandle && this.forceHandleElement) {
-            this.childHosts!.forEach(host => host.destroy(false))
-            this.directNodes?.forEach(node => node.remove())
+            // 子 host 各自摘 DOM：select 重放合并成一次（见 suspendSelectReplay）
+            suspendSelectReplay()
+            try {
+                this.childHosts!.forEach(host => host.destroy(false))
+                this.directNodes?.forEach(node => node.remove())
+            } finally {
+                resumeSelectReplay()
+            }
             this.placeholder.remove()
             return
         }

@@ -1151,3 +1151,93 @@ describe('audit follow-up: rows that are still leaving are not retained by the l
         expect(listHost.leavingObserver).toBe(undefined)
     })
 })
+
+describe('audit follow-up: removing many options from a controlled select replays its value once, not per row', () => {
+    async function settleAll() {
+        for (let i = 0; i < 100; i++) await Promise.resolve()
+    }
+    // counts writes to select.value (what the stored-value replay does for a single select)
+    function countSelectValueWrites<T>(run: () => T): {result: T, writes: () => number} {
+        const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!
+        let writes = 0
+        Object.defineProperty(HTMLSelectElement.prototype, 'value', {
+            ...descriptor,
+            set(this: HTMLSelectElement, value: string) {
+                writes++
+                descriptor.set!.call(this, value)
+            },
+        })
+        const restore = () => Object.defineProperty(HTMLSelectElement.prototype, 'value', descriptor)
+        try {
+            const result = run()
+            if (result instanceof Promise) {
+                return {result: result.finally(restore) as any, writes: () => writes}
+            }
+            restore()
+            return {result, writes: () => writes}
+        } catch (e) {
+            restore()
+            throw e
+        }
+    }
+    beforeEach(() => { document.body.innerHTML = '' })
+
+    function Opt({v}: {v: number}) { return <option value={String(v)}>{v}</option> }
+    const rowKinds = {
+        'element rows': (o: number) => <option value={String(o)}>{o}</option>,
+        'component rows': (o: number) => <Opt v={o}/>,
+        'function rows': (o: number) => () => <option value={String(o)}>{o}</option>,
+    }
+    for (const [kind, makeRow] of Object.entries(rowKinds)) {
+        test(`O1: tearing down a list of 400 options (${kind}) inside a controlled select`, async () => {
+            const el = document.body.appendChild(document.createElement('div'))
+            const r = createRoot(el)
+            const show = atom(true)
+            const opts = new RxList<number>(Array.from({length: 400}, (_, i) => i))
+            r.render(<select value="none">{() => show() ? opts.map(makeRow as any) : null}</select>)
+            const select = el.querySelector('select')!
+            expect(select.options.length).toBe(400)
+            const {result, writes} = countSelectValueWrites(async () => {
+                show(false)
+                await settleAll()
+            })
+            await result
+            expect(select.options.length).toBe(0)
+            // one replay per bulk removal, not one per row (was 400)
+            expect(writes()).toBeLessThanOrEqual(2)
+            r.destroy()
+        })
+    }
+
+    test('O2: a patch that removes many rows one by one (a row is still leaving, so no bulk removal)', async () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        const r = createRoot(el)
+        const opts = new RxList<any>(['leave', ...Array.from({length: 200}, (_, i) => i)])
+        r.render(<select value="none">{opts.map(o => o === 'leave' ?
+            <option value="leave" style={{opacity: 1, transition: 'opacity 1s'}} detachStyle={{opacity: 0}}>leave</option> :
+            <option value={String(o)}>{o}</option>)}</select>)
+        const select = el.querySelector('select')!
+        opts.splice(0, 1)
+        // control: the leaving option is still there, so the next removal goes row by row
+        expect(select.options.length).toBe(201)
+        const {writes} = countSelectValueWrites(() => opts.splice(0, 200))
+        expect(select.options.length).toBe(1)
+        expect(writes()).toBeLessThanOrEqual(3)
+        r.destroy()
+    })
+
+    test('O3: guard: tearing down every option (the selected one included) still replays the stored value', async () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        const r = createRoot(el)
+        const show = atom(true)
+        const opts = new RxList<string>(['x', 'y'])
+        r.render(<select id="s" value="x"><option value="a">a</option>{() => show() ? opts.map(o => <option value={o}>{o}</option>) : null}</select>)
+        const s = el.querySelector('select')!
+        expect(s.value).toBe('x')
+        show(false)
+        await settleAll()
+        // same as a fresh render of the end state: the stored "x" matches nothing -> no selection
+        expect(s.selectedIndex).toBe(-1)
+        r.destroy()
+    })
+})
