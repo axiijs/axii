@@ -201,11 +201,15 @@ export function stringifyCssValue(k: string, v: any, state?: StylePreparationSta
     return (typeof v === 'number' && AUTO_ADD_UNIT_ATTR.test(k)) ? autoUnit(v) : String(v)
 }
 
-function stringifyDeclaration(key: string, value: any, state?: StylePreparationState): string {
-    const property = (key[0] === '-' && key[1] === '-')
+/** style 对象的 key → CSS 属性名（stylesheet 规则与 SSR 行内样式共用）。 */
+export function cssPropertyName(key: string): string {
+    return (key[0] === '-' && key[1] === '-')
         ? key
         : key.replace(/([A-Z])/g, '-$1').toLowerCase()
-    return `${property}:${stringifyCssValue(key, value, state)};`
+}
+
+function stringifyDeclaration(key: string, value: any, state?: StylePreparationState): string {
+    return `${cssPropertyName(key)}:${stringifyCssValue(key, value, state)};`
 }
 
 export function stringifyStyleObject(styleObject: StyleObject, state?: StylePreparationState): string {
@@ -243,35 +247,27 @@ export function splitStyleObject(styleObject: StyleObject): {simpleStyles: Style
 }
 
 /**
- * 条目数组里最后一个「必须走 stylesheet」（bound / 含嵌套 selector、at-rule、animation）的
- * 条目下标，没有则 -1。CSR（StyleManager.update）与 SSR 共用，两边对「谁被提升」的判断必须一致。
+ * stylesheet 条目在自己的主规则里真正写出的顶层声明的 key（原样，与 style 对象里写的一致），
+ * 没有则 undefined。CSR（StyleManager.update）与 SSR 共用：两边据此让排在它前面的行内声明
+ * 「让位」（见 StyleManager.update 的 CAUTION）。
  *
- * CAUTION 行内声明永远压过 stylesheet 规则，所以排在某个 stylesheet 条目**之前**的普通条目
- *  不能留在行内：style 数组的契约是「后面的条目覆盖前面的」（mergeProp 把 AOP/外部传入的
- *  style 放在后面正是为了覆写），留在行内的话 [{color:'blue'}, {color:'red', '&:hover':{…}}]
- *  得到的是 blue——外部覆盖一旦带上 &:hover，它的基础声明就静默失效。调用方把这些
- *  「在它之前」的普通条目也提升进 stylesheet（见 isPromotedStyleEntry），顺序统一由条目序号决定。
- * CAUTION 这是样式更新的热路径：只有一个条目（绝大多数）时调用方直接跳过；多个条目时
- *  从后往前扫，不分配任何对象。下标 0 之前没有条目，不需要看。
+ * 过滤规则必须与 prepareStyleNode 完全一致（同一个 declarationValueOf）：规则里没有写出的
+ *  声明（null / boolean / 空值）不能让位，否则前面的行内值被删掉、后面又没有值接手。
+ *  animation 简写写在紧随主规则的那条规则里，同样算作顶层声明。
+ * CAUTION 只在「前面确实有行内声明」时才调用（罕见路径）：值会被再求值一次。
  */
-export function lastStyleSheetEntryIndex(entries: EvaluatedStyleEntry[]): number {
-    for (let i = entries.length - 1; i > 0; i--) {
-        const {value, isBound} = entries[i]
-        if (!value || typeof value !== 'object') continue
-        if (isBound) return i
-        for (const key in value) {
-            if (key === '@keyframes' || key === 'animation' || isNestedStyleObject(key, value[key])) return i
+export function sheetDeclaredKeys(styleObject: StyleObject): string[] | undefined {
+    let keys: string[] | undefined
+    for (const key in styleObject) {
+        const value = styleObject[key]
+        if (key === '@keyframes') continue
+        if (key === 'animation') {
+            if (prepareAnimation(value) !== undefined) (keys ??= []).push(key)
+        } else if (!isNestedStyleObject(key, value) && declarationValueOf(key, value) !== undefined) {
+            (keys ??= []).push(key)
         }
     }
-    return -1
-}
-
-/** 自己不需要 stylesheet、但排在某个 stylesheet 条目之前的普通对象条目（见 lastStyleSheetEntryIndex）。 */
-export function isPromotedStyleEntry(value: any, index: number, lastSheetIndex: number, ownsStyleSheet: boolean): boolean {
-    if (ownsStyleSheet || index >= lastSheetIndex || !value || typeof value !== 'object') return false
-    // 空对象没有可提升的声明，不为它建一张空表
-    for (const _ in value) return true
-    return false
+    return keys
 }
 
 function splitSelectorList(input: string): string[] {
@@ -382,6 +378,14 @@ function isDeclarationValue(value: any): boolean {
     return value !== null && value !== undefined && typeof value !== 'boolean'
 }
 
+// 一条顶层/嵌套声明最终写进规则的值；不写出时为 undefined（prepareStyleNode 与 sheetDeclaredKeys 共用）。
+//  空值（'' / [null] 这类）写出来是 `prop:;`，浏览器整条丢弃，等同没写。
+function declarationValueOf(key: string, value: any, state?: StylePreparationState): string | undefined {
+    if (!isDeclarationValue(value)) return undefined
+    const css = stringifyCssValue(key, value, state)
+    return css === '' ? undefined : css
+}
+
 function prepareStyleNode(styleObject: StyleObject, state: StylePreparationState): PreparedStyleNode {
     const declarations: string[] = []
     // CAUTION animation 简写不在主规则里，而是由 renderStyleAnimation 输出在主规则**之后**的
@@ -404,8 +408,10 @@ function prepareStyleNode(styleObject: StyleObject, state: StylePreparationState
                 : splitSelectorList(key).map(part => splitNestingReferences(part.trim(), state))
             const nested = node.nested ??= []
             nested.push({scope: selectors ?? key, node: prepareStyleNode(value, state)})
-        } else if (isDeclarationValue(value)) {
-            const declaration = stringifyDeclaration(key, value, state)
+        } else {
+            const css = declarationValueOf(key, value, state)
+            if (css === undefined) continue
+            const declaration = `${cssPropertyName(key)}:${css};`
             declarations.push(declaration)
             if (animationTail && isAnimationLonghand(key)) animationTail.push(declaration)
         }

@@ -51,26 +51,37 @@ describe('audit: style serialization without a DOM', () => {
         expect(html).toContain('transition-duration:300ms;transition-delay:1s,2s;animation-iteration-count:1,infinite;padding:1px')
     })
 
-    test('SSR moves a plain entry that precedes a stylesheet entry into the stylesheet', () => {
+    // 「后写的条目赢」：stylesheet 条目把它的顶层属性从前面的行内声明里拿走，
+    //  前面的行内条目本身留在行内（不搬进 stylesheet，不为它建表）。
+    test('SSR: a stylesheet entry takes its top-level properties back from earlier inline entries', () => {
         const {html, styles} = renderToString(createElement('div', {style: [
             {color: 'blue', marginTop: 3},
             {color: 'red', '&:hover': {opacity: 0.8}},
             {paddingTop: 7},
         ]}))
-        // only the entry after the last stylesheet entry is inline
-        expect(html).toMatch(/ style="padding-top:7px"/)
-        expect(html).not.toContain('color:blue')
+        expect(html).toMatch(/ style="margin-top:3px;padding-top:7px"/)
         const classes = /class="([^"]+)"/.exec(html)![1].split(' ')
-        expect(classes.length).toBe(2)
-        expect(classes.some(id => /^axs-[0-9a-z]+F0$/.test(id))).toBe(true)
-        // entry 0 comes before entry 1 in the emitted CSS
-        const first = styles.indexOf('color:blue')
-        expect(first).toBeGreaterThanOrEqual(0)
-        expect(styles.indexOf('color:red')).toBeGreaterThan(first)
-        expect(styles).toContain('margin-top:3px;')
+        expect(classes.length).toBe(1)
+        expect(styles).toContain('color:red;')
+        expect(styles).not.toContain('color:blue')
+        expect(styles).not.toContain('margin-top')
     })
 
-    test('without a later stylesheet entry nothing is promoted', () => {
+    test('SSR inline composition: same property updated in place, empty values remove, shorthand yields its longhands', () => {
+        const render = (style: any) => /style="([^"]*)"/.exec(renderToString(createElement('div', {style})).html)?.[1]
+        expect(render([{color: 'blue', marginTop: 1}, () => ({color: 'red'})])).toBe('color:red;margin-top:1px')
+        expect(render([{color: 'blue', marginTop: 1}, () => ({color: null})])).toBe('margin-top:1px')
+        // a later inline entry writes the property back
+        expect(render([{color: 'blue'}, {color: 'red', '&:hover': {opacity: 1}}, {color: 'green'}])).toBe('color:green')
+        // removing a shorthand removes the longhands written inline before it
+        expect(render([{marginTop: 1, marginLeft: 2, padding: 3}, {margin: 0, '&:hover': {opacity: 1}}])).toBe('padding:3px')
+        // a declaration the stylesheet does not write does not take anything back
+        expect(render([{color: 'blue'}, {color: null, '&:hover': {opacity: 1}}])).toBe('color:blue')
+        // custom properties only remove themselves
+        expect(render([{'--a': '1', '--a-b': '2'}, {'--a': '3', '&:hover': {opacity: 1}}])).toBe('--a-b:2')
+    })
+
+    test('without a later stylesheet entry nothing is taken back', () => {
         const plain = renderToString(createElement('div', {style: [{color: 'blue'}, {paddingTop: 7}]}))
         expect(plain.html).toBe('<div style="color:blue;padding-top:7px"></div><!--root-->')
         expect(plain.styles).toBe('')
@@ -78,6 +89,10 @@ describe('audit: style serialization without a DOM', () => {
         const sheetFirst = renderToString(createElement('div', {style: [{'&:hover': {opacity: 0.8}}, {color: 'blue'}]}))
         expect(sheetFirst.html).toMatch(/ style="color:blue"/)
         expect(sheetFirst.styles).not.toContain('color:blue')
+        // only nested rules after an inline entry: nothing to take back (known limitation: the hover rule
+        //  does not beat the earlier inline value, same as v4.8.1)
+        const nestedOnly = renderToString(createElement('div', {style: [{color: 'blue'}, {'&:hover': {color: 'red'}}]}))
+        expect(nestedOnly.html).toMatch(/ style="color:blue"/)
     })
 
     test('the auto unit set through the public entry reaches SSR inline styles and rules', async () => {

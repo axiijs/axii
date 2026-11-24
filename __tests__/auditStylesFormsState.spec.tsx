@@ -403,14 +403,17 @@ describe('audit attrs: regressions for the fixes', () => {
             return Array.from(el.classList).filter(c => /F\d+/.test(c)).sort()
         }
 
-        test('a later nested rule beats an earlier plain declaration', () => {
+        // 「后写的条目赢」只对顶层声明成立：stylesheet 条目把它顶层声明的属性从前面的行内样式里拿走。
+        //  更早的行内值 vs 后面条目里的**嵌套**规则仍是行内赢——已知局限，与 v4.8.1 相同
+        //  （修它需要把前面的行内条目搬进 stylesheet，代价是每行/每帧一张表，见下面的计数用例）。
+        test.fails('known limitation: a later nested rule does not beat an earlier plain declaration', () => {
             root.render(
                 <div className="on" style={[{color: 'rgb(0, 0, 255)'}, {'&.on': {color: 'rgb(255, 0, 0)'}}]}>x</div>
             )
             expect(getComputedStyle(rootEl.firstElementChild!).color).toBe('rgb(255, 0, 0)')
         })
 
-        test('entries after the last stylesheet entry stay inline and still win', () => {
+        test('a stylesheet entry takes its own properties back from earlier inline entries; later inline entries win again', () => {
             root.render(
                 <div style={[
                     {color: 'rgb(0, 0, 255)', marginTop: 1, paddingTop: 1},
@@ -423,9 +426,44 @@ describe('audit attrs: regressions for the fixes', () => {
             expect(computed.color).toBe('rgb(0, 0, 255)')
             expect(computed.marginTop).toBe('2px')
             expect(computed.paddingTop).toBe('3px')
-            expect(el.style.paddingTop).toBe('3px')
-            expect(el.style.color).toBe('')
-            expect(styleClassesOf(el).length).toBe(2)
+            // the earlier plain entry stays inline, minus what the stylesheet entry declares
+            expect(el.style.cssText).toBe('color: rgb(0, 0, 255); padding-top: 3px;')
+            expect(styleClassesOf(el).length).toBe(1)
+        })
+
+        test('shorthands and longhands: the browser decides what is taken back', () => {
+            root.render(<div>
+                <p id="a" style={[{margin: 4}, {marginTop: 5, '&:hover': {opacity: 0.8}}]}>a</p>
+                <p id="b" style={[{marginTop: 7, marginLeft: 7}, {margin: 1, '&:hover': {opacity: 0.8}}]}>b</p>
+                <p id="c" style={[{border: '2px solid rgb(255, 0, 0)'}, {borderColor: 'rgb(0, 0, 255)', '&:hover': {opacity: 0.8}}]}>c</p>
+            </div>)
+            const a = getComputedStyle(rootEl.querySelector('#a')!)
+            expect([a.marginTop, a.marginRight, a.marginBottom, a.marginLeft]).toEqual(['5px', '4px', '4px', '4px'])
+            const b = getComputedStyle(rootEl.querySelector('#b')!)
+            expect([b.marginTop, b.marginLeft]).toEqual(['1px', '1px'])
+            const c = getComputedStyle(rootEl.querySelector('#c')!)
+            expect([c.borderTopWidth, c.borderTopStyle, c.borderTopColor]).toEqual(['2px', 'solid', 'rgb(0, 0, 255)'])
+        })
+
+        test('a declaration the stylesheet does not write does not take the inline value away', async () => {
+            const on = atom(false)
+            // (opacity 0.61: content-addressed sheets are shared across tests that are not destroyed)
+            root.render(<div style={[{color: 'rgb(0, 0, 255)'}, () => ({color: on() ? 'rgb(255, 0, 0)' : null, '&:hover': {opacity: 0.61}})]}>x</div>)
+            const el = rootEl.firstElementChild as HTMLElement
+            expect(getComputedStyle(el).color).toBe('rgb(0, 0, 255)')
+            on(true)
+            await settle()
+            expect(getComputedStyle(el).color).toBe('rgb(255, 0, 0)')
+            on(false)
+            await settle()
+            expect(getComputedStyle(el).color).toBe('rgb(0, 0, 255)')
+        })
+
+        test('a string entry before a stylesheet entry yields too', () => {
+            root.render(<div style={['color: rgb(0, 0, 255); margin-top: 3px', {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.8}}]}>x</div>)
+            const el = rootEl.firstElementChild as HTMLElement
+            expect(getComputedStyle(el).color).toBe('rgb(255, 0, 0)')
+            expect(getComputedStyle(el).marginTop).toBe('3px')
         })
 
         // Chain on one element: inner JSX style < bound `$name:style` < the caller's `$name:style`.
@@ -449,43 +487,59 @@ describe('audit attrs: regressions for the fixes', () => {
                 expect(computed.marginTop).toBe('2px')
                 expect(computed.paddingTop).toBe('3px')
             }
-            // reactive chain: inner + bound are stylesheet entries, the caller's entry after them is inline
-            expect(reactive.style.cssText).toBe('padding-top: 3px;')
-            expect(styleClassesOf(reactive).length).toBe(2)
+            // reactive chain: inner entry inline minus what the bound entry declares, the caller's entry after it
+            expect(reactive.style.cssText).toBe('color: rgb(0, 0, 255); padding-top: 3px;')
+            expect(styleClassesOf(reactive).length).toBe(1)
         })
 
-        test('a reactive array flips promotion on and off without leaving classes, sheets or inline keys', async () => {
+        test('app CSS and ancestor rules keep losing to the inline value when a nested entry follows it', () => {
+            const css = document.createElement('style')
+            css.textContent = '.card .title { color: rgb(0, 128, 0) }'
+            document.head.appendChild(css)
+            try {
+                root.render(<div class="card" style={{'& .t': {color: 'rgb(0, 128, 0)'}}}>
+                    <div id="a" class="title" style={[{color: 'rgb(255, 0, 0)'}, {'&:hover': {opacity: 0.8}}]}>x</div>
+                    <div id="b" class="t" style={[{color: 'rgb(255, 0, 0)'}, {'&:hover': {opacity: 0.8}}]}>x</div>
+                </div>)
+                expect(getComputedStyle(rootEl.querySelector('#a')!).color).toBe('rgb(255, 0, 0)')
+                expect(getComputedStyle(rootEl.querySelector('#b')!).color).toBe('rgb(255, 0, 0)')
+            } finally {
+                css.remove()
+            }
+        })
+
+        test('a reactive array flips between yielding and not without leaving classes, sheets or inline keys', async () => {
             const baseline = document.adoptedStyleSheets.length
             const nested = atom(true)
             root.render(
                 <div style={[
                     {color: 'rgb(0, 0, 255)', marginTop: 3},
-                    () => nested() ? {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.8}} : {paddingTop: 4},
+                    () => nested() ? {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.79}} : {paddingTop: 4},
                 ]}>x</div>
             )
             const el = rootEl.firstElementChild as HTMLElement
-            const expectPromoted = () => {
+            const expectYielded = () => {
                 expect(getComputedStyle(el).color).toBe('rgb(255, 0, 0)')
                 expect(getComputedStyle(el).marginTop).toBe('3px')
                 expect(getComputedStyle(el).paddingTop).toBe('0px')
-                expect(el.style.cssText).toBe('')
-                expect(styleClassesOf(el).length).toBe(2)
-                expect(document.adoptedStyleSheets.length - baseline).toBe(2)
+                expect(el.style.cssText).toBe('margin-top: 3px;')
+                expect(styleClassesOf(el).length).toBe(1)
+                expect(document.adoptedStyleSheets.length - baseline).toBe(1)
             }
             const expectInline = () => {
                 expect(styleClassesOf(el)).toEqual([])
                 expect(document.adoptedStyleSheets.length - baseline).toBe(0)
-                expect(el.style.color).toBe('rgb(0, 0, 255)')
-                expect(el.style.marginTop).toBe('3px')
-                expect(el.style.paddingTop).toBe('4px')
+                // (order inside cssText is CSSOM's: a property taken away and written again goes last)
+                expect([el.style.color, el.style.marginTop, el.style.paddingTop]).toEqual(['rgb(0, 0, 255)', '3px', '4px'])
+                expect(el.style.length).toBe(3)
             }
-            expectPromoted()
+            expectYielded()
             nested(false)
             await settle()
             expectInline()
             nested(true)
             await settle()
-            expectPromoted()
+            expectYielded()
             nested(false)
             await settle()
             expectInline()
@@ -495,20 +549,21 @@ describe('audit attrs: regressions for the fixes', () => {
             expect(document.adoptedStyleSheets.length - baseline).toBe(0)
         })
 
-        test('a promoted entry with a reactive value follows the value', async () => {
+        test('an earlier inline entry with a reactive value stays inline and follows the value', async () => {
             const color = atom('rgb(0, 0, 255)')
             root.render(
                 <div style={[{backgroundColor: color}, {'&:hover': {opacity: 0.8}}]}>x</div>
             )
             const el = rootEl.firstElementChild as HTMLElement
-            expect(getComputedStyle(el).backgroundColor).toBe('rgb(0, 0, 255)')
+            expect(el.style.backgroundColor).toBe('rgb(0, 0, 255)')
             color('rgb(0, 128, 0)')
             await settle()
             expect(getComputedStyle(el).backgroundColor).toBe('rgb(0, 128, 0)')
-            expect(styleClassesOf(el).length).toBe(2)
+            expect(el.style.backgroundColor).toBe('rgb(0, 128, 0)')
+            expect(styleClassesOf(el).length).toBe(1)
         })
 
-        test('SSR emits the same classes and inline style as CSR for a promoted entry; hydration claims them', () => {
+        test('SSR emits the same classes and inline style as CSR when a stylesheet entry yields; hydration claims them', () => {
             const saved = document.adoptedStyleSheets
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
@@ -516,7 +571,7 @@ describe('audit attrs: regressions for the fixes', () => {
                 function App({}: any, {createElement}: RenderContext) {
                     return <div id="t" style={[
                         {color: 'rgb(0, 0, 255)', marginTop: 3},
-                        {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.8}},
+                        {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.78}},
                         {paddingTop: 7},
                     ]}>x</div>
                 }
@@ -524,7 +579,8 @@ describe('audit attrs: regressions for the fixes', () => {
                 const csr = rootEl.querySelector('#t')!
                 const csrClasses = styleClassesOf(csr)
                 const csrInline = (csr as HTMLElement).style.cssText
-                expect(csrClasses.length).toBe(2)
+                expect(csrClasses.length).toBe(1)
+                expect(csrInline).toBe('margin-top: 3px; padding-top: 7px;')
                 root.destroy()
 
                 const {html, styles} = renderToString(createElement(App, null as any))
@@ -544,14 +600,34 @@ describe('audit attrs: regressions for the fixes', () => {
                 expect(getComputedStyle(el).color).toBe('rgb(255, 0, 0)')
                 expect(getComputedStyle(el).marginTop).toBe('3px')
                 expect(getComputedStyle(el).paddingTop).toBe('7px')
-                expect(document.adoptedStyleSheets.length).toBe(2)
+                expect(document.adoptedStyleSheets.length).toBe(1)
             } finally {
                 hydrated?.destroy()
                 document.adoptedStyleSheets = saved
             }
         })
 
-        test('a promoted entry that was hydrated flips back to inline and forth again', async () => {
+        // 服务端不解析简写：删分项时保留简写（激活前这一个分项不对），激活后 CSR 重写行内样式，与纯 CSR 一致
+        test('shorthand/longhand corners the server cannot resolve are corrected by hydration', () => {
+            const saved = document.adoptedStyleSheets
+            document.adoptedStyleSheets = []
+            let hydrated: ReturnType<typeof hydrateRoot> | undefined
+            try {
+                function App({}: any, {createElement}: RenderContext) {
+                    return <p id="t" style={[{margin: 4}, {marginTop: 5, '&:hover': {opacity: 0.76}}]}>x</p>
+                }
+                const {html, styles} = renderToString(createElement(App, null as any))
+                rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
+                hydrated = hydrateRoot(rootEl, createElement(App, null as any))
+                const computed = getComputedStyle(rootEl.querySelector('#t')!)
+                expect([computed.marginTop, computed.marginRight, computed.marginBottom, computed.marginLeft]).toEqual(['5px', '4px', '4px', '4px'])
+            } finally {
+                hydrated?.destroy()
+                document.adoptedStyleSheets = saved
+            }
+        })
+
+        test('a hydrated element flips between yielding and plain inline and back', async () => {
             const saved = document.adoptedStyleSheets
             document.adoptedStyleSheets = []
             let hydrated: ReturnType<typeof hydrateRoot> | undefined
@@ -560,30 +636,28 @@ describe('audit attrs: regressions for the fixes', () => {
                 function App({}: any, {createElement}: RenderContext) {
                     return <div id="t" style={[
                         {color: 'rgb(0, 0, 255)', marginTop: 3},
-                        () => nested() ? {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.8}} : {paddingTop: 4},
+                        () => nested() ? {color: 'rgb(255, 0, 0)', '&:hover': {opacity: 0.77}} : {paddingTop: 4},
                     ]}>x</div>
                 }
                 const {html, styles} = renderToString(createElement(App, null as any))
                 rootEl.innerHTML = `<style data-axii-ssr>${styles}</style>${html}`
                 hydrated = hydrateRoot(rootEl, createElement(App, null as any))
                 const el = rootEl.querySelector('#t') as HTMLElement
-                expect(styleClassesOf(el).length).toBe(2)
-                expect(el.style.cssText).toBe('')
+                expect(styleClassesOf(el).length).toBe(1)
+                expect(el.style.cssText).toBe('margin-top: 3px;')
                 expect(getComputedStyle(el).color).toBe('rgb(255, 0, 0)')
-                expect(getComputedStyle(el).marginTop).toBe('3px')
 
                 nested(false)
                 await settle()
                 expect(styleClassesOf(el)).toEqual([])
                 expect(document.adoptedStyleSheets.length).toBe(0)
-                expect(el.style.color).toBe('rgb(0, 0, 255)')
-                expect(el.style.marginTop).toBe('3px')
-                expect(el.style.paddingTop).toBe('4px')
+                expect([el.style.color, el.style.marginTop, el.style.paddingTop]).toEqual(['rgb(0, 0, 255)', '3px', '4px'])
+                expect(el.style.length).toBe(3)
 
                 nested(true)
                 await settle()
-                expect(el.style.cssText).toBe('')
-                expect(styleClassesOf(el).length).toBe(2)
+                expect(el.style.cssText).toBe('margin-top: 3px;')
+                expect(styleClassesOf(el).length).toBe(1)
                 expect(getComputedStyle(el).color).toBe('rgb(255, 0, 0)')
             } finally {
                 hydrated?.destroy()
@@ -1301,5 +1375,96 @@ describe('audit attrs: regressions for the fixes', () => {
             root.render(<div style={{width: 200}}><p style={{width}}>x</p></div>)
             expect(getComputedStyle(rootEl.querySelector('p')!).width).toBe('112px')
         })
+    })
+})
+
+// 一个行内条目后面跟着 stylesheet 条目时，行内条目不能被搬进 stylesheet：每行/每帧不同的值会各自
+//  建一张表，响应式更新在批次外逐张写 adoptedStyleSheets（O(表数)），2000 行的一次更新从 ~20ms
+//  变成 ~1s。这里断言表的数量与 adoptedStyleSheets 的赋值次数，不断言耗时。
+describe('style entry order: no stylesheet per inline value', () => {
+    const N = 200
+    // unique content: stylesheets of earlier (not destroyed) roots in this file must not be reused
+    const hover = {'&:hover': {opacity: 0.42}}
+    let setterCalls = 0
+    let sheetsCreated = 0
+    let restore: (() => void) | undefined
+    beforeEach(() => {
+        const accessor = Object.getOwnPropertyDescriptor(Document.prototype, 'adoptedStyleSheets')!
+        Object.defineProperty(document, 'adoptedStyleSheets', {
+            configurable: true,
+            get() { return accessor.get!.call(this) },
+            set(v) { setterCalls++; accessor.set!.call(this, v) },
+        })
+        const Original = window.CSSStyleSheet
+        ;(window as any).CSSStyleSheet = class extends Original {
+            constructor(...args: any[]) { super(...args); sheetsCreated++ }
+        }
+        restore = () => {
+            delete (document as any).adoptedStyleSheets
+            ;(window as any).CSSStyleSheet = Original
+        }
+        setterCalls = 0
+        sheetsCreated = 0
+    })
+    afterEach(() => {
+        root.destroy()
+        restore?.()
+    })
+    const counts = () => {
+        const result = {setterCalls, sheetsCreated}
+        setterCalls = 0
+        sheetsCreated = 0
+        return result
+    }
+
+    test('one element: reactive updates of the inline entry create no stylesheet', async () => {
+        const x = atom(0)
+        root.render(<div style={[() => ({transform: `translateX(${x()}px)`}), hover]}>x</div>)
+        const el = rootEl.firstElementChild as HTMLElement
+        expect(counts().sheetsCreated).toBeLessThanOrEqual(1)
+        for (let i = 1; i <= 20; i++) {
+            x(i)
+            await settle()
+        }
+        expect(counts()).toEqual({setterCalls: 0, sheetsCreated: 0})
+        expect(el.style.transform).toBe('translateX(20px)')
+    })
+
+    test('list rows with per-row reactive inline values share one stylesheet and update without new ones', async () => {
+        const y = atom(0)
+        const list = new RxList<number>(Array.from({length: N}, (_, i) => i))
+        root.render(<div>{list.map(i => <div class="row" style={[() => ({top: y() * 10000 + i, position: 'relative'}), hover]}>{i}</div>)}</div>)
+        expect(counts().sheetsCreated).toBeLessThanOrEqual(1)
+        for (let k = 1; k <= 3; k++) {
+            y(k)
+            await settle()
+        }
+        expect(counts()).toEqual({setterCalls: 0, sheetsCreated: 0})
+        expect((rootEl.querySelectorAll('.row')[N - 1] as HTMLElement).style.top).toBe(`${3 * 10000 + N - 1}px`)
+    })
+
+    test('list rows with per-row static inline values share one stylesheet', () => {
+        const list = new RxList<number>(Array.from({length: N}, (_, i) => i))
+        root.render(<div>{list.map(i => <div class="row" style={[{top: i, position: 'relative'}, hover]}>{i}</div>)}</div>)
+        expect(counts().sheetsCreated).toBeLessThanOrEqual(1)
+    })
+
+    test('bindProps style after a reactive inner style: one stylesheet, updates create none', async () => {
+        const y = atom(0)
+        function Row({i}: any, {createElement}: RenderContext) {
+            return <div as="root" class="row" style={() => ({top: y() * 10000 + i, position: 'relative', paddingTop: 1})}>{i}</div>
+        }
+        const Styled = bindProps(Row, {'$root:style': {paddingTop: 2}})
+        const list = new RxList<number>(Array.from({length: N}, (_, i) => i))
+        root.render(<div>{list.map(i => <Styled i={i}/>)}</div>)
+        expect(counts().sheetsCreated).toBeLessThanOrEqual(1)
+        for (let k = 1; k <= 3; k++) {
+            y(k)
+            await settle()
+        }
+        expect(counts()).toEqual({setterCalls: 0, sheetsCreated: 0})
+        const last = rootEl.querySelectorAll('.row')[N - 1] as HTMLElement
+        expect(getComputedStyle(last).paddingTop).toBe('2px')
+        expect(last.style.top).toBe(`${3 * 10000 + N - 1}px`)
     })
 })

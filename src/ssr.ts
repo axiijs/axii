@@ -21,8 +21,8 @@ import {
     hashStyleContent,
     isAcceptableInlineDeclaration,
     isAcceptableSingleCssRule,
-    isPromotedStyleEntry,
-    lastStyleSheetEntryIndex,
+    cssPropertyName,
+    sheetDeclaredKeys,
     prepareStyleContent,
     renderPreparedStyle,
     serializePreparedStyle,
@@ -334,46 +334,52 @@ function collectElementStyles(
     const classIds: string[] = []
     let styleMarkers: string[] | undefined
     let rollingBaseId: string | undefined
-    const inlinePatches: string[] = []
     const staticBase = currentStyleStaticId(elementPath)
     const sharedStaticBaseId = state.functionHostDepth > 0 ? null : staticBase
 
-    // 与 CSR 同一条规则：排在 stylesheet 条目之前的普通条目一起进 stylesheet（见 lastStyleSheetEntryIndex）
-    const lastSheetIndex = entries.length > 1 ? lastStyleSheetEntryIndex(entries) : -1
+    // 行内样式按条目顺序合成，≡ CSR StyleManager.update 逐条写 el.style（见那里的 CAUTION）：
+    //  对象条目逐个属性写入（同名属性原位更新），空值删除该属性；stylesheet 条目把它顶层声明的
+    //  属性从前面的行内声明里删掉（让位给它的规则）。字符串条目按原样依次拼接（不解析）：
+    //  写到它之前的声明先落成文本，之后不再参与让位。
+    let inline = ''
+    let inlineDecls: Map<string, string> | undefined
 
     entries.forEach(({value: item, entryIsDynamic, isBound}, index) => {
         if (item == null || typeof item === 'boolean') return
         if (typeof item === 'string') {
-            inlinePatches.push(item)
+            inline = joinInline(joinInline(inline, serializeInlineDeclarations(inlineDecls)), item)
+            inlineDecls = undefined
             return
         }
         if (typeof item !== 'object') return
 
         const {simpleStyles, nestedStyles} = splitStyleObject(item)
-        const ownsSheet = isBound || Object.keys(nestedStyles).length > 0
-        const promoted = lastSheetIndex > 0 && isPromotedStyleEntry(item, index, lastSheetIndex, ownsSheet)
-        const usesSheet = ownsSheet || promoted
+        const usesSheet = isBound || Object.keys(nestedStyles).length > 0
         if (!usesSheet) {
             // Pure inline (no nested/bound): snapshot atom/function values (no FOUC)
-            const parts: string[] = []
             for (const sk in simpleStyles) {
                 const sv = (simpleStyles as any)[sk]
-                if (sv == null || sv === false || sv === '') continue
-                const cssVal = stringifyCssValue(sk, sv)
-                if (!cssVal || !isAcceptableInlineDeclaration(sk, cssVal)) continue
-                const cssKey = (sk[0] === '-' && sk[1] === '-')
-                    ? sk
-                    : sk.replace(/([A-Z])/g, '-$1').toLowerCase()
-                parts.push(`${cssKey}:${cssVal}`)
+                const cssKey = cssPropertyName(sk)
+                const cssVal = (sv == null || typeof sv === 'boolean' || sv === '') ? '' : stringifyCssValue(sk, sv)
+                if (!cssVal) {
+                    // CSR: el.style[k] = '' 删除前面条目写过的同名属性
+                    inlineDecls?.delete(cssKey)
+                    continue
+                }
+                // CSR 里不合格的值整次赋值被拒绝，前面的值保留
+                if (!isAcceptableInlineDeclaration(cssKey, cssVal)) continue
+                ;(inlineDecls ??= new Map()).set(cssKey, cssVal)
             }
-            if (parts.length) inlinePatches.push(parts.join(';'))
             return
+        }
+        if (inlineDecls) {
+            const yielded = sheetDeclaredKeys(item)
+            if (yielded) for (const key of yielded) removeInlineDeclaration(inlineDecls, cssPropertyName(key))
         }
 
         const prepared = prepareStyleContent(item)
         const signature = prepared.shareable ? serializePreparedStyle(prepared) : undefined
-        // 被提升的条目与 CSR 一样按动态处理（内容 id），两边 class 才能对齐
-        let isDynamic = entryIsDynamic || promoted || prepared.isReactive || !prepared.shareable
+        let isDynamic = entryIsDynamic || prepared.isReactive || !prepared.shareable
         if (signature !== undefined && !isDynamic && sharedStaticBaseId) {
             const sharedIdWithIndex = `${sharedStaticBaseId}F${index}`
             const existingSignature = state.idToStaticStyleSignature.get(sharedIdWithIndex)
@@ -408,7 +414,31 @@ function collectElementStyles(
         else if (contentId !== undefined) (styleMarkers ??= []).push(finalId)
     })
 
-    return {classIds, styleMarkers, inline: inlinePatches.join(';')}
+    return {classIds, styleMarkers, inline: joinInline(inline, serializeInlineDeclarations(inlineDecls))}
+}
+
+function joinInline(a: string, b: string): string {
+    return a && b ? `${a};${b}` : (a || b)
+}
+
+function serializeInlineDeclarations(decls: Map<string, string> | undefined): string {
+    let text = ''
+    if (decls) for (const [name, value] of decls) text += `${text ? ';' : ''}${name}:${value}`
+    return text
+}
+
+// CSR 用 CSSOM 删除（el.style[k] = ''），简写与分项由浏览器展开。服务端不解析简写，尽力而为：
+//  - 删除简写（margin）时连同已写入的分项（margin-top …）一起删；自定义属性只删同名。
+//  - 删除分项（margin-top）而行内写的是简写（margin）时保留简写：激活前这一个分项显示为行内值，
+//    其余分项正确；激活时 CSR 按同样的顺序重写行内样式，结果与纯 CSR 一致。
+//  - 字符串条目里的声明不解析、不删除，同样由激活时的 CSR 重写修正。
+function removeInlineDeclaration(decls: Map<string, string>, name: string) {
+    decls.delete(name)
+    if (name[0] === '-' && name[1] === '-') return
+    const prefix = `${name}-`
+    for (const key of decls.keys()) {
+        if (key.startsWith(prefix)) decls.delete(key)
+    }
 }
 
 /** Emit one NORMAL non-empty text unit (always wrap — allowed by §3.2.1 A2). */

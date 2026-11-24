@@ -40,8 +40,7 @@ import {
     generateStyleContent as generateStyleContentShared,
     getComponentTypeId,
     isNestedStyleObject as isNestedStyleObjectShared,
-    isPromotedStyleEntry,
-    lastStyleSheetEntryIndex,
+    sheetDeclaredKeys,
     splitStyleObject as splitStyleObjectShared,
     prepareStyleContent,
     renderPreparedStyle,
@@ -587,21 +586,21 @@ class StyleManager {
         // 跨元素共享的静态 id 基础（路径含 FunctionHost 时不共享）
         const sharedStaticBaseId = hasFunctionHostInPath ? null : generateComponentElementStaticId(pathToLastComponent, elementPath)
         let rollingBaseId: string | undefined
-        // 排在 stylesheet 条目之前的普通条目要一起提升进 stylesheet，否则行内声明会压过后面的条目
-        //  （见 lastStyleSheetEntryIndex）。只有一个条目时没有「之前」，直接跳过。
-        const lastSheetIndex = evaluatedEntries.length > 1 ? lastStyleSheetEntryIndex(evaluatedEntries) : -1
+        // 前面是否已经有行内声明：之后的 stylesheet 条目要让它们让位（见下面 stylePatches 的 CAUTION）
+        let sawInline = false
         const splitStyleObjects = evaluatedEntries.map(({value: evaluatedStyleObject, entryIsDynamic, isBound}, index) => {
             // 分离普通和嵌套样式
             const { simpleStyles, nestedStyles } = this.splitStyleObject(evaluatedStyleObject)
-            const ownsStyleSheet = isBound || Object.keys(nestedStyles).length > 0
-            // CAUTION 被提升的条目一律按动态处理（走内容 id）：它是否被提升取决于**后面**的条目，
-            //  响应式数组重算时会来回翻转。共享静态 id 的 class 只在首次应用时挂、之后不再摘，
-            //  翻转回行内时旧 class 会残留；内容 id 由 elToContentStyleIds 记账，翻转时自动摘除/释放。
-            const promoted = lastSheetIndex > 0 && isPromotedStyleEntry(evaluatedStyleObject, index, lastSheetIndex, ownsStyleSheet)
-            const usesStyleSheet = ownsStyleSheet || promoted
+            const usesStyleSheet = isBound || Object.keys(nestedStyles).length > 0
+            let yieldPatch: StyleObject | undefined
+            if (usesStyleSheet) {
+                if (sawInline) yieldPatch = inlineYieldPatchOf(evaluatedStyleObject, entryIsDynamic)
+            } else if (!sawInline) {
+                sawInline = hasInlineDeclarations(simpleStyles)
+            }
             const prepared = usesStyleSheet ? prepareStyleContent(evaluatedStyleObject) : undefined
             const signature = prepared?.shareable ? serializePreparedStyle(prepared) : undefined
-            let isDynamic = entryIsDynamic || promoted || !!prepared && (prepared.isReactive || !prepared.shareable)
+            let isDynamic = entryIsDynamic || !!prepared && (prepared.isReactive || !prepared.shareable)
 
             // A component path can produce different CSS for different instances (F30).
             if (signature !== undefined && !isDynamic && sharedStaticBaseId) {
@@ -635,6 +634,7 @@ class StyleManager {
               prepared,
               signature,
               simpleStyles,
+              yieldPatch,
             }
         })
         // 是否应该更新 itor？
@@ -645,6 +645,17 @@ class StyleManager {
         let activeRollingClassIds: Set<string>|undefined
         let contentIds = this.elToContentStyleIds.get(el)
         splitStyleObjects.forEach(so => {
+            // CAUTION style 数组的契约是「后写的条目赢」（mergeProp 把 AOP / bindProps / 外部传入的 style
+            //  放在后面正是为了覆写），但行内声明永远压过 stylesheet 规则：[{color:'blue'}, {color:'red',
+            //  '&:hover':{…}}] 里先写的 blue 会赢，外部覆盖一旦带上 &:hover（或来自 bindProps）就静默失效。
+            //  这里按条目顺序写行内样式，stylesheet 条目在自己的位置上把它顶层声明的属性从行内删掉
+            //  （值为 '' 的 patch，el.style[k] = '' 即 removeProperty），交给它的规则；更靠后的行内条目
+            //  还能再写回来。删除由 CSSOM 完成，简写/分项天然正确（{margin: 0} 之后的 {marginTop: 5}
+            //  只删 margin-top）。不把前面的行内条目搬进 stylesheet：那会让每行/每帧不同的行内值各自
+            //  建一张表（列表里 O(N) 张表、每次更新都换表），也会改变它们与外部 CSS 的特异性关系。
+            //  已知局限（与 v4.8.1 相同）：更早的行内值仍然压过后面条目里的**嵌套**规则
+            //  （[{color:'red'}, {'&:hover': {color:'blue'}}] 的 hover 不生效）。
+            if (so.yieldPatch) stylePatches.push(so.yieldPatch)
             // 如果是 boundProps，优先使用 stylesheet，因为 boundProps 通常是组件级别的基础样式
             // 如果包含 nested style，只能使用 stylesheet，因为依赖于 CSS selector
             if (so.contentId !== undefined) {
@@ -796,6 +807,45 @@ type StyleObject = { [k: string]: any }
 // elToInlineStyleKeys 里的哨兵 key：标记「上一轮 inline 样式是字符串 cssText 整体覆写」，
 //  翻转回对象/null 形态时必须整体清除 cssText（字符串里写过哪些 key 无从得知）。
 const CSS_TEXT_SENTINEL = '__cssText__'
+
+function hasInlineDeclarations(simpleStyles: StyleObject | string): boolean {
+    if (typeof simpleStyles === 'string') return true
+    for (const _ in simpleStyles) return true
+    return false
+}
+
+// 静态（非 dynamic、值里没有函数/atom）的 stylesheet 条目对象 → 它的让位 patch（null 表示无需让位）。
+//  bindProps 的样式对象被一个组件的所有实例共用：列表里每行每次更新都不必重新求值、分配。
+const staticYieldPatches = new WeakMap<object, StyleObject | null>()
+
+// stylesheet 条目把它顶层声明的属性从前面的行内样式里删掉（见 StyleManager.update 的 CAUTION）
+function inlineYieldPatchOf(styleObject: StyleObject, entryIsDynamic: boolean): StyleObject | undefined {
+    if (!styleObject || typeof styleObject !== 'object') return undefined
+    const cacheable = !entryIsDynamic && !hasFunctionValue(styleObject)
+    if (cacheable) {
+        const cached = staticYieldPatches.get(styleObject)
+        if (cached !== undefined) return cached ?? undefined
+    }
+    const keys = sheetDeclaredKeys(styleObject)
+    let patch: StyleObject | undefined
+    if (keys) {
+        patch = {}
+        for (const key of keys) patch[key] = ''
+    }
+    if (cacheable) staticYieldPatches.set(styleObject, patch ?? null)
+    return patch
+}
+
+function hasFunctionValue(styleObject: StyleObject): boolean {
+    for (const key in styleObject) {
+        const value = styleObject[key]
+        if (typeof value === 'function') return true
+        if (Array.isArray(value)) {
+            for (const item of value) if (typeof item === 'function') return true
+        }
+    }
+    return false
+}
 
 // 添加全局配置对象
 export const StaticHostConfig = {
