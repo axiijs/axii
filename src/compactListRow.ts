@@ -1,6 +1,6 @@
 /**
- * RxList 的 Compact 行判定（#68）。唯一定义处：CSR（RxListHost.createChildHost）、服务端（axii/ssr 的
- * serializeRxListRow）与激活（#55 B2 的 RxListHost.hydrate）都从这里取，不另写一份。
+ * RxList 的 Compact 行判定（#68）。规则只在这里定义：服务端（axii/ssr 的 serializeRxListRow）与激活
+ * （#55 B2 的 RxListHost.hydrate）对描述的判定都从这里取，不另写一份。
  *
  * 规则：行是元素（不是 Fragment），并且它的**静态子树**里没有任何生效的 detachStyle。
  *  - 静态子树：行元素自己，加上经元素 / Fragment 子节点递归可达的元素与 Fragment。不进入 Host child
@@ -12,25 +12,15 @@
  *
  * 同一条规则有两种输入形态：
  *  - 已创建的节点（CSR、激活后的 patch 新行）：createElement 已经把静态子树里生效的 detachStyle 提升进
- *    detachStyledChildren（DOM.ts 的 child 循环与 props 循环），这里只读这一个字段，不遍历子树。
- *  - 描述（服务端的 SsrElement；#55 B2 的 HydrationElement）：没有提升结果，按同一规则遍历描述的静态子树。
- *    描述的形状由调用方用访问器给出。
+ *    detachStyledChildren（DOM.ts 的 child 循环与 props 循环），判定是「元素且 detachStyledChildren 为空」。
+ *    这个形态内联在 RxListHost.createChildHost 里（列表 patch 的热路径，不经函数调用、不遍历子树）；
+ *    改那里的条件要同步这里的规则。
+ *  - 描述（服务端的 SsrElement；#55 B2 的 HydrationElement）：没有提升结果，按同一规则遍历描述的静态子树，
+ *    即下面的 isCompactListRowDescriptor。描述的形状由调用方用访问器给出。
+ *  两种形态的结果一致由 __tests__/ssrCompactRow.spec.tsx（服务端 HTML ≡ CSR、激活不报告、行 Host 种类 ≡ CSR）守住。
  *
- * CAUTION 本模块会在 Node 里加载（axii/ssr 直接引入）：模块顶层不能访问 document / window / Node
- *  （nodeType.ts 同样只在调用时才碰 Node）。
+ * CAUTION 本模块在 Node 里加载（axii/ssr 直接引入）：不能访问 document / window / Node。
  */
-import type {ExtendedElement} from './DOM'
-import {isElementNode} from './nodeType'
-
-/**
- * 已创建的行节点是不是 Compact 行。元素按 nodeType 判断（另一个 realm 的元素也是元素，见 nodeType.ts，#58）。
- *
- * CAUTION RxListHost.createChildHost（列表 patch 的热路径）每行调用一次：这里只能是一次 nodeType 判断
- *  加一次字段读，不分配、不遍历子树。静态子树里有没有 detachStyle 由 createElement 在创建时提升好。
- */
-export function isCompactListRowNode(item: unknown): item is HTMLElement | SVGElement {
-    return isElementNode(item) && !(item as ExtendedElement).detachStyledChildren
-}
 
 /**
  * 描述形态的访问器。实现要做成模块级常量，不要每行分配。

@@ -1,14 +1,15 @@
 /** @jsx createElement */
 /**
- * #68: RxList Compact 行判定，服务端与客户端共用一处定义（src/listRowShape.ts）。
+ * #68: RxList Compact 行判定，规则定义在 src/compactListRow.ts。
  *
  * Compact 行：行是元素（不是 Fragment），并且它的**静态子树**（元素 / Fragment 子节点，
  * 不进入 Host child：函数、atom、数组、RxList、组件、reusable）里没有任何生效的 detachStyle。
- * CSR 由 createElement 把静态子树里的 detachStyle 提升进 detachStyledChildren；
- * 服务端（以及 #55 B2 的激活描述）对描述的静态子树做同一判断。
+ * CSR 由 createElement 把静态子树里的 detachStyle 提升进 detachStyledChildren，createChildHost 读这个字段；
+ * 服务端（以及 #55 B2 的激活描述）用 isCompactListRowDescriptor 对描述的静态子树做同一判断。
+ * 本文件守住两种形态的结果一致：服务端 HTML ≡ CSR、激活不报告不重建、行 Host 种类 ≡ CSR。
  *
  * 曾经服务端只看行元素**自己**的 detachStyle：后代带 detachStyle 时少写一个 <!--rx list item-->，
- * 激活时这一行对不上（报告失配 / 重建 / 错位）。
+ * 激活时找不到行级 Comment 而抛错。
  *
  * Run: npx vitest run __tests__/ssrCompactRow.spec.tsx
  */
