@@ -189,13 +189,15 @@ describe('#78 differential fuzz: a declaration the gate accepts parses as exactl
             return ((t ^ (t >>> 14)) >>> 0) / 4294967296
         }
     }
-    const NAMES = ['color', 'background-image', 'font-family', 'content', 'width', '--x', '--']
+    const NAMES = ['color', 'background-image', 'font-family', 'content', 'width', 'list-style-image', '--x', '--']
     const FRAGMENTS = [
-        'url(', 'URL(', 'url(a', 'url( a', '\\75rl(', 'u\\72 l(', 'u\\72\r\nl(', '\\55 RL(', 'f(', 'calc(', 'var(--a, ',
-        '(', ')', '[', ']', '{', '}', '"', "'", '"a"', ';', '!', ':', ',', '&', '#', '@', '-', '.', '+',
-        '\\', '\\\n', '\\29 ', '\\7d', '/*', '*/', '\r', '\f', '\n', ' ', '\t', '\u0000', '\u0001', '\u007f',
-        'a', 'b', '1', '1px', 'a.png', 'red', 'rgb(1, 2, 3)', 'position:fixed',
+        'url(', 'URL(', 'url(a', 'url( a', '\\75rl(', 'u\\72 l(', 'u\\72\r\nl(', '\\55 RL(', '\\75 \\72 \\6c(', 'f(', 'calc(', 'var(--a, ',
+        '(', ')', ')', '[', ']', '{', '}', '"', "'", '"a"', ';', ';', '!', ':', ',', '&', '#', '@', '-', '.', '+', '%', 'e',
+        '\\', '\\\n', '\\\r\n', '\\29 ', '\\29', '\\7d', '\\7b ', '\\22', '/*', '*/', '\r', '\f', '\n', '\r\n', ' ', '\t',
+        '\u000b', '\u0000', '\u0001', '\u007f', '\u00e9', '<!--', '-->',
+        'a', 'b', '1', '1px', 'a.png', 'red', 'rgb(1, 2, 3)', 'position:fixed', 'x:', 'hover, & ',
     ]
+    const URL_OPENERS = ['url(', 'URL(', '\\75rl(', 'u\\72 l(', 'url( ']
     const reference = (name: string, value: string) => {
         const style = document.createElement('div').style
         style.setProperty(name, value)
@@ -231,29 +233,41 @@ describe('#78 differential fuzz: a declaration the gate accepts parses as exactl
     }
 
     test('seeded', () => {
-        const next = random(78)
         const sheet = new CSSStyleSheet()
         const failures: string[] = []
         let accepted = 0
-        for (let n = 0; n < 8000; n++) {
-            const name = NAMES[Math.floor(next() * NAMES.length)]
-            let value = ''
-            for (let count = 1 + Math.floor(next() * 8); count > 0; count--) value += FRAGMENTS[Math.floor(next() * FRAGMENTS.length)]
-            if (!isAcceptableInlineDeclaration(name, value)) continue
-            accepted++
-            const problem = problemOf(name, value, sheet)
-            if (problem) failures.push(`#${n} ${JSON.stringify(name)}: ${JSON.stringify(value)} → ${problem}`)
+        for (const seed of [1, 2, 3, 4, 5]) {
+            const next = random(seed * 7919)
+            const pick = () => FRAGMENTS[Math.floor(next() * FRAGMENTS.length)]
+            for (let n = 0; n < 40000; n++) {
+                const name = NAMES[Math.floor(next() * NAMES.length)]
+                let value = ''
+                if (next() < 0.5) {
+                    for (let count = 1 + Math.floor(next() * 10); count > 0; count--) value += pick()
+                } else {
+                    // url 形状：前缀 + url( + 内容 + ")" + 后缀（随机拼接很少凑出能让 url token 分界起作用的值）
+                    for (let count = Math.floor(next() * 3); count > 0; count--) value += pick()
+                    value += URL_OPENERS[Math.floor(next() * URL_OPENERS.length)]
+                    for (let count = Math.floor(next() * 6); count > 0; count--) value += pick()
+                    value += ')'
+                    for (let count = Math.floor(next() * 4); count > 0; count--) value += pick()
+                }
+                if (!isAcceptableInlineDeclaration(name, value)) continue
+                accepted++
+                const problem = problemOf(name, value, sheet)
+                if (problem) failures.push(`seed ${seed} #${n} ${JSON.stringify(name)}: ${JSON.stringify(value)} → ${problem}`)
+            }
         }
         expect(failures.slice(0, 8)).toEqual([])
         // 放行的值要足够多，否则这个不变量是空的
-        expect(accepted).toBeGreaterThan(1000)
+        expect(accepted).toBeGreaterThan(20000)
     })
 
     test('the rule gate accepts only what the browser parses as exactly one rule', () => {
         const next = random(7878)
         const failures: string[] = []
         let accepted = 0
-        for (let n = 0; n < 8000; n++) {
+        for (let n = 0; n < 20000; n++) {
             let body = ''
             for (let count = Math.floor(next() * 8); count > 0; count--) body += FRAGMENTS[Math.floor(next() * FRAGMENTS.length)]
             const rule = `.p {${body}}`
