@@ -371,16 +371,18 @@ function collectElementStyles(
     const sharedStaticBaseId = state.functionHostDepth > 0 ? null : staticBase
 
     // 行内样式按条目顺序合成，≡ CSR StyleManager.update 逐条写 el.style（见那里的 CAUTION）：
-    //  对象条目逐个属性写入（同名属性原位更新），空值删除该属性；stylesheet 条目把它顶层声明的
-    //  属性从前面的行内声明里删掉（让位给它的规则）。字符串条目按原样依次拼接（不解析）：
-    //  写到它之前的声明先落成文本，之后不再参与让位。
-    let inline = ''
+    //  对象条目逐个属性写入（同名属性在同一段里原位更新），空值删除该属性；stylesheet 条目把它
+    //  顶层声明的属性从前面的行内声明里删掉（让位给它的规则）。字符串条目按原样拼接在它的位置上，
+    //  之后的对象条目另起一段。删除（让位 / 空值）作用于前面的所有段，包括字符串条目里的声明
+    //  （CSR 的 el.style[k] = '' 同样删得掉，#57）：字符串在第一次需要删除时才拆成声明，拆不准的
+    //  （见 splitInlineDeclarations）保持原文、不参与删除，激活时由 CSR 重写修正。
+    let inlineSegments: InlineSegment[] | undefined
     let inlineDecls: Map<string, string> | undefined
 
     entries.forEach(({value: item, entryIsDynamic, isBound}, index) => {
         if (item == null || typeof item === 'boolean') return
         if (typeof item === 'string') {
-            inline = joinInline(joinInline(inline, serializeInlineDeclarations(inlineDecls)), item)
+            ;(inlineSegments ??= []).push({text: item, declarations: undefined, edited: false})
             inlineDecls = undefined
             return
         }
@@ -396,18 +398,19 @@ function collectElementStyles(
                 const cssVal = (sv == null || typeof sv === 'boolean' || sv === '') ? '' : stringifyCssValue(sk, sv)
                 if (!cssVal) {
                     // CSR: el.style[k] = '' 删除前面条目写过的同名属性
-                    inlineDecls?.delete(cssKey)
+                    if (inlineSegments) removeInlineDeclaration(inlineSegments, cssKey, false)
                     continue
                 }
                 // CSR 里不合格的值整次赋值被拒绝，前面的值保留
                 if (!isAcceptableInlineDeclaration(cssKey, cssVal)) continue
-                ;(inlineDecls ??= new Map()).set(cssKey, cssVal)
+                if (!inlineDecls) (inlineSegments ??= []).push(inlineDecls = new Map())
+                inlineDecls.set(cssKey, cssVal)
             }
             return
         }
-        if (inlineDecls) {
+        if (inlineSegments) {
             const yielded = sheetDeclaredKeys(item)
-            if (yielded) for (const key of yielded) removeInlineDeclaration(inlineDecls, cssPropertyName(key))
+            if (yielded) for (const key of yielded) removeInlineDeclaration(inlineSegments, cssPropertyName(key), true)
         }
 
         const prepared = prepareStyleContent(item)
@@ -447,29 +450,127 @@ function collectElementStyles(
         else if (contentId !== undefined) (styleMarkers ??= []).push(finalId)
     })
 
-    return {classIds, styleMarkers, inline: joinInline(inline, serializeInlineDeclarations(inlineDecls))}
+    return {classIds, styleMarkers, inline: serializeInlineSegments(inlineSegments)}
 }
+
+// 行内样式的一段：对象条目的声明（属性名 → 值，同一段里原位更新），或一个字符串条目。
+//  字符串条目的 declarations：undefined = 还没拆；null = 拆不准，保持原文；
+//  edited 之前输出原文，删过声明之后输出剩下的声明原文。
+type InlineStringSegment = {text: string, declarations: [name: string, text: string][] | null | undefined, edited: boolean}
+type InlineSegment = Map<string, string> | InlineStringSegment
 
 function joinInline(a: string, b: string): string {
     return a && b ? `${a};${b}` : (a || b)
 }
 
-function serializeInlineDeclarations(decls: Map<string, string> | undefined): string {
+function serializeInlineDeclarations(decls: Map<string, string>): string {
     let text = ''
-    if (decls) for (const [name, value] of decls) text += `${text ? ';' : ''}${name}:${value}`
+    for (const [name, value] of decls) text += `${text ? ';' : ''}${name}:${value}`
     return text
 }
 
-// CSR 用 CSSOM 删除（el.style[k] = ''），简写与分项由浏览器展开。服务端不解析简写，尽力而为：
-//  - 删除简写（margin）时连同已写入的分项（margin-top …）一起删，分项按 SHORTHAND_LONGHANDS 的显式表；
-//    不在表里的简写和自定义属性只删同名。
+function serializeInlineSegments(segments: InlineSegment[] | undefined): string {
+    let inline = ''
+    if (segments) for (const segment of segments) {
+        inline = joinInline(inline, segment instanceof Map ? serializeInlineDeclarations(segment) :
+            segment.edited ? segment.declarations!.map(declaration => declaration[1]).join(';') : segment.text)
+    }
+    return inline
+}
+
+// CSR 用 CSSOM 删除（el.style[k] = ''），删得掉前面任何条目写下的声明，简写与分项由浏览器展开。
+//  服务端在所有段里删同名声明（字符串条目也在内），不解析简写，尽力而为：
+//  - 让位时删除简写（margin）连同已写入的分项（margin-top …）一起删，分项按 SHORTHAND_LONGHANDS 的显式表；
+//    不在表里的简写和自定义属性只删同名。空值删除只删同名（withLonghands = false）。
 //  - 删除分项（margin-top）而行内写的是简写（margin）时保留简写：激活前这一个分项显示为行内值，
 //    其余分项正确；激活时 CSR 按同样的顺序重写行内样式，结果与纯 CSR 一致。
-//  - 字符串条目里的声明不解析、不删除，同样由激活时的 CSR 重写修正。
-function removeInlineDeclaration(decls: Map<string, string>, name: string) {
-    decls.delete(name)
-    const longhands = SHORTHAND_LONGHANDS[name]
-    if (longhands) for (const longhand of longhands) removeInlineDeclaration(decls, longhand)
+//  - 拆不准的字符串条目（见 splitInlineDeclarations）保持原文、不删除，同样由激活时的 CSR 重写修正。
+function removeInlineDeclaration(segments: InlineSegment[], name: string, withLonghands: boolean) {
+    for (const segment of segments) {
+        if (segment instanceof Map) {
+            segment.delete(name)
+            continue
+        }
+        if (segment.declarations === undefined) segment.declarations = splitInlineDeclarations(segment.text)
+        const declarations = segment.declarations
+        if (!declarations) continue
+        for (let i = declarations.length - 1; i >= 0; i--) {
+            if (declarations[i][0] !== name) continue
+            declarations.splice(i, 1)
+            segment.edited = true
+        }
+    }
+    const longhands = withLonghands ? SHORTHAND_LONGHANDS[name] : undefined
+    if (longhands) for (const longhand of longhands) removeInlineDeclaration(segments, longhand, true)
+}
+
+const INLINE_DECLARATION_NAME = /^(?:--|-?[_a-zA-Z -￿])[-_a-zA-Z0-9 -￿]*$/
+const CSS_NAME_CHAR = /[-_a-zA-Z0-9 -￿]/
+const CSS_WHITESPACE = /[ \t\n\r\f]/
+// 不带引号的 url( 里出现这些字符，浏览器得到的是 bad-url（吞到第一个 ")" 为止）
+const BAD_UNQUOTED_URL = /["'(\\\u0000-\u0008\u000B\u000E-\u001F\u007F]|[ \t\n\r\f][^ \t\n\r\f]/
+
+/**
+ * 把字符串条目拆成 [属性名, 声明原文]（属性名按 CSSOM 的认法：自定义属性区分大小写，其余转小写）。
+ *
+ * CAUTION 只在拆法与浏览器的 CSS 词法确定一致时返回，否则返回 null，由调用方保持原文：
+ *  浏览器里引号 / 括号 / 函数里的 ";" 不是分隔符，未闭合的引号 / 注释 / 括号一直吞到结尾，
+ *  不带引号的 url( 一旦含引号、"("、内部空白就成为 bad-url、在第一个 ")" 处结束——
+ *  一个朴素的扫描在这些地方与浏览器分界不同，删声明就会删错、或把后面的声明拼进前一条。
+ *  这里不复刻纠错规则：遇到反斜杠（转义）、花括号、未闭合或不配对的结构、bad-url、
+ *  不是属性名的段，整个字符串放弃拆分（与修复前一样不参与删除，激活时由 CSR 修正）。
+ */
+function splitInlineDeclarations(text: string): [string, string][] | null {
+    const declarations: [string, string][] = []
+    const closers: string[] = []
+    let start = 0
+    let colon = -1
+    for (let i = 0; i <= text.length; i++) {
+        const ch = text[i]
+        if (i === text.length || (ch === ';' && closers.length === 0)) {
+            const declaration = text.slice(start, i).trim()
+            if (declaration) {
+                if (colon < 0) return null
+                const name = text.slice(start, colon).trim()
+                if (!INLINE_DECLARATION_NAME.test(name)) return null
+                declarations.push([name.startsWith('--') ? name : name.toLowerCase(), declaration])
+            }
+            start = i + 1
+            colon = -1
+        } else if (ch === '\\' || ch === '{' || ch === '}') {
+            return null
+        } else if (ch === '"' || ch === "'") {
+            const end = text.indexOf(ch, i + 1)
+            if (end < 0 || /[\n\r\f\\]/.test(text.slice(i + 1, end))) return null
+            i = end
+        } else if (ch === '/' && text[i + 1] === '*') {
+            const end = text.indexOf('*/', i + 2)
+            if (end < 0) return null
+            i = end + 1
+        } else if (ch === '(' && isUrlFunctionName(text, i)) {
+            let j = i + 1
+            while (j < text.length && CSS_WHITESPACE.test(text[j])) j++
+            if (text[j] === '"' || text[j] === "'") {
+                closers.push(')')
+            } else {
+                const end = text.indexOf(')', j)
+                if (end < 0 || BAD_UNQUOTED_URL.test(text.slice(j, end))) return null
+                i = end
+            }
+        } else if (ch === '(' || ch === '[') {
+            closers.push(ch === '(' ? ')' : ']')
+        } else if (ch === ')' || ch === ']') {
+            if (closers.pop() !== ch) return null
+        } else if (ch === ':' && colon < 0 && closers.length === 0) {
+            colon = i
+        }
+    }
+    return closers.length === 0 ? declarations : null
+}
+
+// text[i] 是 "("：它前面是不是一个完整的标识符 url（不区分大小写；myurl( / -url( 是别的函数）
+function isUrlFunctionName(text: string, i: number): boolean {
+    return i >= 3 && text.slice(i - 3, i).toLowerCase() === 'url' && (i === 3 || !CSS_NAME_CHAR.test(text[i - 4]))
 }
 
 // CAUTION 删简写时连带删除的分项只能按显式的表，不能按名字前缀：前缀既会多删（flex 不重置

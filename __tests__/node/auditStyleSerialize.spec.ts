@@ -109,10 +109,56 @@ describe('audit: style serialization without a DOM', () => {
         const sheetFirst = renderToString(createElement('div', {style: [{'&:hover': {opacity: 0.8}}, {color: 'blue'}]}))
         expect(sheetFirst.html).toMatch(/ style="color:blue"/)
         expect(sheetFirst.styles).not.toContain('color:blue')
-        // only nested rules after an inline entry: nothing to take back (known limitation: the hover rule
-        //  does not beat the earlier inline value, same as v4.8.1)
+        // only nested rules after an inline entry: nothing to take back (known limitation, README
+        //  "Style arrays": the hover rule does not beat the earlier inline value, same as v4.8.1)
         const nestedOnly = renderToString(createElement('div', {style: [{color: 'blue'}, {'&:hover': {color: 'red'}}]}))
         expect(nestedOnly.html).toMatch(/ style="color:blue"/)
+    })
+
+    // #57：服务端把字符串条目当作不透明文本，后面条目的让位 / 空值删除够不到它里面的声明
+    //  （也够不到排在字符串条目之前、已经落成文本的对象条目）。CSR 经 CSSOM 删除，都能删掉。
+    test('SSR: later removals reach declarations written by string entries and by entries before them', () => {
+        const render = (style: any) => /style="([^"]*)"/.exec(renderToString(createElement('div', {style})).html)?.[1]
+        const hover = {'&:hover': {opacity: 1}}
+        // a stylesheet entry takes its property back from a string entry (names are case-insensitive)
+        expect(render(['color: blue; margin-top: 3px', {color: 'red', ...hover}])).toBe('margin-top: 3px')
+        expect(render(['COLOR: blue;margin-top:3px', {color: 'red', ...hover}])).toBe('margin-top:3px')
+        // !important in the string does not keep it (CSSOM el.style[k] = '' removes it too)
+        expect(render(['color: blue !important; margin-top: 3px', {color: 'red', ...hover}])).toBe('margin-top: 3px')
+        // a yielding shorthand removes the string's longhands, as for object entries
+        expect(render(['margin-top: 1px; padding: 2px', {margin: 0, ...hover}])).toBe('padding: 2px')
+        // an object entry before a string entry is reached too
+        expect(render([{color: 'blue', paddingTop: 1}, 'margin-top: 3px', {color: 'red', ...hover}]))
+            .toBe('padding-top:1px;margin-top: 3px')
+        // an empty value in a later plain entry removes the string's declaration
+        expect(render(['color: blue; margin-top: 3px', {color: null}])).toBe('margin-top: 3px')
+        expect(render(['--a: 1; --A: 2', {'--a': null}])).toBe('--A: 2')
+        // nothing removed: the string stays exactly as written
+        expect(render(['color: blue ;  margin-top:3px;', {paddingTop: 1, ...hover}])).toBe('color: blue ;  margin-top:3px;')
+    })
+
+    test('SSR: a string entry the server cannot split exactly stays as written', () => {
+        const render = (style: any) => /style="([^"]*)"/.exec(renderToString(createElement('div', {style})).html)?.[1]
+        const yieldColor = {color: 'red', '&:hover': {opacity: 1}}
+        // quoted and parenthesised separators are not declaration boundaries
+        expect(render(['font-family: "a;b"; color: blue; background: url(data:a;b)', yieldColor]))
+            .toBe('font-family: &quot;a;b&quot;;background: url(data:a;b)')
+        expect(render(['background: url( "x;y" ); color: blue', yieldColor])).toBe('background: url( &quot;x;y&quot; )')
+        // anything the browser tokenizes differently from a plain scan is left alone
+        for (const text of [
+            'content: "a\\"b"; color: blue',          // escape
+            'color: blue; content: "abc',              // unterminated string
+            'color: blue /* x',                        // unterminated comment
+            'color: blue; width: calc(1px',            // unclosed parenthesis
+            'color: blue; width: calc(1px]',           // mismatched bracket
+            'color: blue; background: url(a(b)',       // bad url: the browser ends it at the first ")"
+            'color: blue; background: url(a b)',       // bad url
+            'color: blue; --x: {a}',                   // block
+            'color: blue; 1x: y',                      // not a property name
+            'color: blue; /* only a comment */',
+        ]) {
+            expect(render([text, yieldColor])).toBe(text.replace(/"/g, '&quot;'))
+        }
     })
 
     test('stylesheet and SSR declarations pass the same gate as inline declarations', () => {

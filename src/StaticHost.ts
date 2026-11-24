@@ -657,8 +657,9 @@ class StyleManager {
             //  还能再写回来。删除由 CSSOM 完成，简写/分项天然正确（{margin: 0} 之后的 {marginTop: 5}
             //  只删 margin-top）。不把前面的行内条目搬进 stylesheet：那会让每行/每帧不同的行内值各自
             //  建一张表（列表里 O(N) 张表、每次更新都换表），也会改变它们与外部 CSS 的特异性关系。
-            //  已知局限（与 v4.8.1 相同）：更早的行内值仍然压过后面条目里的**嵌套**规则
-            //  （[{color:'red'}, {'&:hover': {color:'blue'}}] 的 hover 不生效）。
+            //  已知局限（与 v4.8.1 相同，#57）：更早的行内值仍然压过后面条目里的**嵌套**规则
+            //  （[{color:'red'}, {'&:hover': {color:'blue'}}] 的 hover 不生效）。用户文档与推荐写法见
+            //  README「Style arrays」；为什么不用 !important / var(--…) 绕过，见 auditStylesFormsState.spec 的 test.fails。
             if (so.yieldPatch) stylePatches.push(so.yieldPatch)
             // 如果是 boundProps，优先使用 stylesheet，因为 boundProps 通常是组件级别的基础样式
             // 如果包含 nested style，只能使用 stylesheet，因为依赖于 CSS selector
