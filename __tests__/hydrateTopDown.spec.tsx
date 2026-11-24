@@ -4,7 +4,7 @@
  * 激活相关的既有用例经 __tests__/helpers/hydrate.ts 在内部入口上再跑一遍（vitest.config.ts 的 top-down 项目）；
  * 这里补它们没有覆盖、只属于新模型的契约：元数据与 CSR 逐项相同（§2.6.1）、子 Host 的构造顺序（§2.4）、
  * 认领元素的转交字段（§3.2 B1 行）、激活中止不被 error 监听器吞掉、根的各种 source、开发期不变量（§4.4）、
- * 未实现的形态显式抛错（§7.2）。
+ * B4 之前显式抛错的形态（§7.2）现在 ≡ CSR。
  */
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {atom, RxList} from 'data0'
@@ -19,7 +19,7 @@ import {
 import {renderToString} from '../src/ssr.js'
 import {hydrateRootTopDown} from '../src/hydrateTopDown'
 import {HydrationMismatchError} from '../src/hydration'
-import {isHydrationElement, TopDownPendingError} from '../src/hydrationElement'
+import {isHydrationElement} from '../src/hydrationElement'
 import {componentTypeIds} from '../src/styleSerialize'
 import {
     disableAxiiRetainedObjectDiagnostics,
@@ -239,17 +239,18 @@ describe('server forms that are easy to misread (review findings)', () => {
         expect(hyd.querySelector('i')?.textContent).toBe('again')
     })
 
-    test('the same JSX element rendered twice in one activation throws TopDownPendingError (C6, B4) instead of a TypeError', () => {
+    test('the same JSX element rendered twice in one activation ≡ CSR (C6, #55 B4): the second occurrence moves the claimed node, the server copy goes', () => {
         const make = () => function App({}: any, {createElement}: RenderContext) {
             const s = <span>s</span>
             return <div>{s}{s}</div>
         }
+        const csr = mount()
+        createRoot(csr).render(createElement(make(), null))
         const hyd = mount()
         hyd.innerHTML = '<div><span>s</span><span>s</span></div><!--root-->'
-        let thrown: unknown
-        try { hydrateRootTopDown(hyd, createElement(make(), null)) } catch (e) { thrown = e }
-        expect(thrown).toBeInstanceOf(TopDownPendingError)
-        expect((thrown as Error).message).toContain('(#55 B4)')
+        const first = hyd.querySelector('span')!
+        hydrateRootTopDown(hyd, createElement(make(), null))
+        expect({dom: kids(hyd), first: hyd.querySelector('span') === first, reports}).toEqual({dom: kids(csr), first: true, reports: []})
     })
 })
 
@@ -657,39 +658,43 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
         expect({rows: hyd.querySelectorAll('i').length + hyd.querySelectorAll('b').length, reports}).toEqual({rows: 2 * N, reports: []})
     })
 
-    test('the same JSX element twice as array items / list rows throws TopDownPendingError (C6, B4) instead of a TypeError', () => {
+    test('the same JSX element twice as array items / list rows ≡ CSR (C6, #55 B4)', () => {
         const shapes = [
-            function App({}: any, {createElement}: RenderContext) { const s = <span>s</span>; return <div>{[s, s]}</div> },
-            function App({}: any, {createElement}: RenderContext) { const s = <span>s</span>; return <ul>{new RxList([1, 2]).map(() => s)}</ul> },
+            () => function App({}: any, {createElement}: RenderContext) { const s = <span>s</span>; return <div>{[s, s]}</div> },
+            () => {
+                const list = new RxList([1, 2])
+                return function App({}: any, {createElement}: RenderContext) { const s = <span>s</span>; return <ul>{list.map(() => s)}</ul> }
+            },
         ]
-        for (const App of shapes) {
+        for (const make of shapes) {
+            reports = []
+            const csr = mount()
+            createRoot(csr).render(createElement(make(), null))
             const hyd = mount()
             // 服务端写两份；CSR 第二次插入把同一个节点挪走
-            hyd.innerHTML = renderToString(createElement(App, null)).html
-            let thrown: unknown
-            try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
-            expect(thrown).toBeInstanceOf(TopDownPendingError)
-            expect((thrown as Error).message).toContain('(#55 B4)')
+            hyd.innerHTML = renderToString(createElement(make(), null)).html
+            hydrateRootTopDown(hyd, createElement(make(), null))
+            // 同一个元素渲染两次是误用：CSR 里第一个 Host 的区间也随之断开（它的元素被第二次插入挪走），CSR 不检查；
+            //  激活的开发期不变量（§4.4）把这个与 CSR 相同的状态报告出来，没有失配
+            expect({dom: kids(hyd), mismatches: reports.filter(e => e instanceof HydrationMismatchError)}).toEqual({dom: kids(csr), mismatches: []})
         }
     })
 
-    test('map(f).filter(p): a row the predicate admits again after the activation is a description of the upstream map (C10 / §3.3): TopDownPendingError (B4)', () => {
-        // 写回只覆盖被渲染的 filter 列表；上游 map 的 data 仍是（已认领、瘦身的）描述，谓词重新放行时插入的是它。
-        //  CSR / 旧模型插回同一批元素（ssrHydrate.lists 里 ≡ CSR 的那一条，内部入口那一遍标为 B4 待实现）。
-        //  B4 在 createHost 链尾的描述分支落地之前，内部入口显式抛错，不静默。
+    test('map(f).filter(p): rows the predicate admits again after the activation are the claimed elements, Compact like CSR (§3.3, #55 B4)', () => {
+        // 写回只覆盖被渲染的 filter 列表；上游 map 的 data 仍是（已认领、瘦身的）描述，谓词重新放行时插入的是它们。
+        //  RxListHost.createChildHost 按描述的 node 重新走 Compact 判定：行是同一批元素、没有 <!--rx list item-->，≡ CSR
         const list = new RxList([1, 2])
         const show = atom(true)
         function App({}: any, {createElement}: RenderContext) {
             return <ul>{list.map(i => <li>{i}</li>).filter(() => show())}</ul>
         }
         const hyd = ssrInto(createElement(App, null))
+        const rows = Array.from(hyd.querySelectorAll('li'))
         hydrateRootTopDown(hyd, createElement(App, null))
-        expect(reports).toEqual([])
         show(false)
-        let thrown: unknown
-        try { show(true) } catch (e) { thrown = e }
-        expect(thrown).toBeInstanceOf(TopDownPendingError)
-        expect((thrown as Error).message).toContain('(#55 B4)')
+        show(true)
+        expect({dom: kids(hyd), same: Array.from(hyd.querySelectorAll('li')).every((li, i) => li === rows[i]), reports})
+            .toEqual({dom: '<ul><li>"1"</li><li>"2"</li><!--unhandledChild--></ul><!--root-->', same: true, reports: []})
     })
 
     test('development invariants (§4.4) walk list rows and array items; Compact rows (no placeholder of their own) are not misreported', () => {
@@ -756,21 +761,34 @@ describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
     })
 })
 
-describe('not implemented yet on the internal entry: explicit throws (§7.2)', () => {
+describe('the shapes that were explicit throws until #55 B4 now hydrate ≡ CSR (§7.2)', () => {
     // 第四项：服务端 HTML（缺省时用 renderToString 生成）。现成节点在服务端没有对应的写法，给出它所在元素的形状
-    const shapes: [string, 'B4', () => any, string?][] = [
-        ['Portal', 'B4', () => function App({}: any, {createElement}: RenderContext) { return <div><Portal container="td-portal" content={<b>p</b>}/></div> }],
-        ['lazy', 'B4', () => { const L = lazy(() => new Promise(() => {}), () => 'loading'); return function App({}: any, {createElement}: RenderContext) { return <div><L/></div> } }],
-        ['reusable', 'B4', () => function App({}: any, {createElement, reusable}: RenderContext) { return <div>{reusable(<b>r</b>)}</div> }],
-        ['a live node', 'B4', () => { const live = document.createElement('b'); return function App({}: any, {createElement}: RenderContext) { return <div>{live}</div> } }, '<div></div><!--root-->'],
+    const shapes: [string, () => any, string?][] = [
+        ['Portal', () => function App({}: any, {createElement}: RenderContext) { return <div><Portal container="td-portal" content={<b>p</b>}/></div> }],
+        ['lazy', () => { const L = lazy(() => new Promise(() => {}), () => 'loading'); return function App({}: any, {createElement}: RenderContext) { return <div><L/></div> } }],
+        ['reusable', () => function App({}: any, {createElement, reusable}: RenderContext) { return <div>{reusable(<b>r</b>)}</div> }],
+        ['a live node', () => { const live = document.createElement('b'); return function App({}: any, {createElement}: RenderContext) { return <div>{live}</div> } }, '<div></div><!--root-->'],
     ]
-    test.each(shapes)('%s throws TopDownPendingError naming %s', (_name, pr, make, html) => {
+    test.each(shapes)('%s', (_name, make, html) => {
+        const portal = () => { const el = mount(); el.id = 'td-portal'; return el }
+        const csrPortal = portal()
+        const csr = mount()
+        createRoot(csr).render(createElement(make(), null))
+        const csrPortalDom = kids(csrPortal)
+        csrPortal.remove()
+        const hydPortal = portal()
         const hyd = mount()
-        hyd.innerHTML = html ?? renderToString(createElement(make(), null)).html
-        let thrown: unknown
-        try { hydrateRootTopDown(hyd, createElement(make(), null)) } catch (e) { thrown = e }
-        expect(thrown).toBeInstanceOf(TopDownPendingError)
-        expect((thrown as Error).message).toContain(`(#55 ${pr})`)
+        if (html !== undefined) {
+            hyd.innerHTML = html
+        } else {
+            const ssr = renderToString(createElement(make(), null))
+            hyd.innerHTML = ssr.html
+            if (ssr.portals['td-portal']) hydPortal.innerHTML = ssr.portals['td-portal'].html
+        }
+        const root = hydrateRootTopDown(hyd, createElement(make(), null))
+        expect({dom: kids(hyd), portal: kids(hydPortal), mismatches: reports.filter(e => e instanceof HydrationMismatchError)})
+            .toEqual({dom: kids(csr), portal: csrPortalDom, mismatches: []})
+        root.destroy()
     })
 })
 

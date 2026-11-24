@@ -5,7 +5,8 @@
  * CAUTION 这个模块在 axii/ssr 的导入链上（ssr.ts → ComponentHost → 这里）：模块顶层不能碰 document / Node。
  */
 import type {AttributesArg, Fragment} from "./DOM"
-import {HydrationMismatchError} from "./hydration"
+import {HydrationDevReport, HydrationMismatchError, runOutsideHydration} from "./hydration"
+import {reportAxiiError} from "./diagnostics"
 
 /**
  * 新模型激活期间，字符串标签与 Fragment 的 createElement / createSVGElement 返回它，而不是 DOM 节点（§2.2）。
@@ -40,8 +41,99 @@ export class HydrationElement {
     }
 }
 
-/** 描述的预置字段名（§2.2）。B4 的开发期 Proxy 跳过它们；用例断言它们不在任何元素接口上。 */
+/**
+ * 由 Host 认领的描述瘦身时 rawChildren 写成它（hydrationCursor.markTopDownHostPlaced）：与「作为静态 child 认领」区分开，
+ * 不多占字段、不分配。是空数组：读已认领描述的 children 的地方（Compact 判定的访问器、隐含 tbody 的判定）当作没有 children。
+ */
+export const HOST_PLACED_CHILDREN: any[] = Object.freeze([]) as unknown as any[]
+
+/** 描述的预置字段名（§2.2）。开发期 Proxy 跳过它们；用例断言它们不在任何元素接口上。 */
 export const HYDRATION_ELEMENT_FIELDS = ['tag', 'rawProps', 'rawChildren', 'isSVG', 'node', 'listenerBoundArgs'] as const
+
+// ───────────────────────── 开发期 Proxy（§3.4） ─────────────────────────
+
+const PRESET_FIELDS: ReadonlySet<string> = new Set<string>(HYDRATION_ELEMENT_FIELDS)
+/**
+ * 框架自己探测值的种类时读的名字，它们恰好也是元素接口名，读它们不报告（§3.4「框架探测名表」）：
+ *  - type：createHost / createHydrateHost 用 typeof source?.type === 'function' 判定 ComponentNode（<input> / <button> 的接口名）；
+ *  - nodeType：nodeType.ts 的 nodeTypeOf（createHost、RxListHost.createChildHost、createElement 的 child 循环按它分派；
+ *    设计稿写成时分派还是 instanceof，#58 之后改成了 nodeType，所以表里补上它）。
+ * 代价：开发期不报告用户读 el.type / el.nodeType，读到的仍是 undefined。
+ */
+const FRAMEWORK_PROBES: ReadonlySet<string> = new Set(['type', 'nodeType'])
+// 标签的元素接口：按命名空间与标签缓存一个实例的原型（只在开发期、第一次报告判断时创建）
+const elementInterfaces = new Map<string, object>()
+// 描述的 JSX source：瘦身之后 rawProps 没了，Proxy 创建时记下（只在开发期）
+const descriptionSources = new WeakMap<HydrationElement, {fileName: string, lineNumber: number, columnNumber: number}>()
+// 同一个 JSX 位置和属性名只报告一次；没有 JSX source（没有开发期 JSX 转换）时按描述去重
+const reportedAccesses = new Set<string>()
+const reportedAccessesWithoutSource = new WeakMap<HydrationElement, Set<string>>()
+
+function elementInterfaceOf(desc: HydrationElement): object {
+    const tag = desc.tag
+    if (typeof tag !== 'string') return DocumentFragment.prototype
+    const key = (desc.isSVG ? 'svg:' : 'html:') + tag
+    let proto = elementInterfaces.get(key)
+    if (proto === undefined) {
+        const probe = desc.isSVG ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag)
+        elementInterfaces.set(key, proto = Object.getPrototypeOf(probe) as object)
+    }
+    return proto
+}
+
+function reportAccess(desc: HydrationElement, key: string, write: boolean): void {
+    const source = descriptionSources.get(desc)
+    const where = source ? `${source.fileName}:${source.lineNumber}:${source.columnNumber}` : ''
+    const tag = typeof desc.tag === 'string' ? `<${desc.tag}>` : 'Fragment'
+    const access = `${key}#${write ? 'w' : 'r'}`
+    if (where) {
+        const dedupe = `${where}#${access}`
+        if (reportedAccesses.has(dedupe)) return
+        reportedAccesses.add(dedupe)
+    } else {
+        let seen = reportedAccessesWithoutSource.get(desc)
+        if (seen === undefined) reportedAccessesWithoutSource.set(desc, seen = new Set())
+        if (seen.has(access)) return
+        seen.add(access)
+    }
+    // onError 是用户代码，在激活上下文之外执行（同失配报告）
+    runOutsideHydration(() => reportAxiiError(new HydrationDevReport('AXII_HYDRATION_ELEMENT_ACCESS',
+        `"${key}" was ${write ? 'written to' : 'read from'} the result of JSX ${tag}${where ? ` at ${where}` : ''} created during hydration. ` +
+        'During hydration JSX returns a description, not a DOM node, and it stays a description afterwards. ' +
+        'Use a ref (ref={el => ...}) and work with the node in the ref callback or useLayoutEffect')))
+}
+
+/**
+ * 开发期 Proxy 的 trap：先判断要不要报告，再把操作原样交给目标（Reflect），开发期与生产的行为相同，只多一条报告。
+ *  - 读：属性名是字符串、不是预置字段、不在 Object.prototype 上、不在框架探测名表里，并且属于这个标签的元素接口时报告；
+ *  - 写：预置字段以外的写入都报告，然后写到同一个不可扩展的目标上，目标拒绝时返回 false（严格模式下调用方得到与生产相同的
+ *    TypeError，非严格模式静默丢失）。
+ * 共用一个 handler，不为每个描述分配闭包。
+ */
+const DEV_PROXY_HANDLER: ProxyHandler<HydrationElement> = {
+    get(target, key, receiver) {
+        // 以 __ 开头的名字（框架的私有字段，如 getAxiiSource 读的 __axiiSource）不是元素接口名：先排除，不为它创建探测元素
+        if (typeof key === 'string' && !PRESET_FIELDS.has(key) && !FRAMEWORK_PROBES.has(key) && !key.startsWith('__')
+            && !(key in Object.prototype) && key in elementInterfaceOf(target)) {
+            reportAccess(target, key, false)
+        }
+        return Reflect.get(target, key, receiver)
+    },
+    set(target, key, value) {
+        if (typeof key !== 'string' || !PRESET_FIELDS.has(key)) reportAccess(target, String(key), true)
+        return Reflect.set(target, key, value)
+    },
+}
+
+/**
+ * @internal 新模型激活期间、诊断开启时（beginTopDownHydration 定一次），createElement 返回包着描述的 Proxy（§3.4）。
+ * 框架对它的判定、读写与描述本身相同（isHydrationElement 经原型判断，预置字段不报告）。
+ */
+export function createHydrationElementDevProxy(desc: HydrationElement): HydrationElement {
+    const source = desc.rawProps?.__source
+    if (source) descriptionSources.set(desc, source as {fileName: string, lineNumber: number, columnNumber: number})
+    return new Proxy(desc, DEV_PROXY_HANDLER)
+}
 
 /** 「这个值是不是激活期间的描述」的唯一判定（§2.2）。 */
 export function isHydrationElement(value: unknown): value is HydrationElement {
@@ -61,8 +153,10 @@ export const ROOT_SLOT = 'root'
 export const RX_LIST_ITEM_SLOT = 'rx list item'
 /** StaticArrayHost 的非 DirectNodes 项（≡ StaticArrayHost.render 的 `<!--array item-->`）。 */
 export const ARRAY_ITEM_SLOT = 'array item'
+/** ReusableHost 的 innerHost（≡ reusable() 的 innerPlaceholder `<!--reusable-->`，服务端 ssr.serializeReusable）。 */
+export const REUSABLE_SLOT = 'reusable'
 export type HydrationSlot = typeof TEXT_SLOT | typeof UNHANDLED_CHILD_SLOT | typeof COMPUTED_NODE_SLOT | typeof ROOT_SLOT
-    | typeof RX_LIST_ITEM_SLOT | typeof ARRAY_ITEM_SLOT | 'reusable'
+    | typeof RX_LIST_ITEM_SLOT | typeof ARRAY_ITEM_SLOT | typeof REUSABLE_SLOT
 
 /** 值是不是还没有认领的 slot（placeholder 还不是节点）。开发期不变量用（§4.4）。 */
 export function isHydrationSlot(value: unknown): value is HydrationSlot {
@@ -70,36 +164,13 @@ export function isHydrationSlot(value: unknown): value is HydrationSlot {
 }
 
 /**
- * 内部入口上还没有实现的形态（§7.2）：显式抛错，不回退到旧模型，也不静默。参数是落地它的 PR。
- */
-export class TopDownPendingError extends Error {
-    constructor(kind: string, pr: 'B2' | 'B3' | 'B4') {
-        super(`[axii] top-down hydrate entry: ${kind} not implemented yet (#55 ${pr})`)
-        this.name = 'TopDownPendingError'
-    }
-}
-
-export function throwTopDownPending(kind: string, pr: 'B2' | 'B3' | 'B4'): never {
-    throw new TopDownPendingError(kind, pr)
-}
-
-/**
- * 同一个描述在一次激活里第二次被消费（const s = <span/>; <div>{s}{s}</div>、[s, s]，或激活中存下的 JSX 再次渲染，C6）：
- * CSR 第二次插入时把节点挪走，服务端写两份；描述已经瘦身（rawChildren 为 undefined），「已有 node 就当作那个元素」的分支
- * 在 B4 落地，之前显式抛错。消费描述的每个入口（认领步骤的子描述、StaticHost / CompactElementHost 的 source）在读
- * rawChildren 之前先判断 desc.node，不能在空的 rawChildren 上 TypeError。
- */
-export function throwConsumedDescription(): never {
-    throwTopDownPending('the same JSX element rendered more than once (C6)', 'B4')
-}
-
-/**
- * 新模型激活的中止：未实现的形态（B4 之前）。B1 / B2 的失配也报告并抛出 HydrationMismatchError；B3 起失配按 R1–R5
- * 修复、不再抛出，这里仍把它算作中止（新模型里没有地方再抛出它，万一有，也不能被组件的监听器吞掉）。
+ * 新模型激活的中止。B1 / B2 的失配报告并抛出 HydrationMismatchError，B4 之前未实现的形态抛出「待实现」错误；B3 起失配按
+ * R1–R5 修复，B4 起全部形态都已实现，这两种都不再抛出，这里仍把 HydrationMismatchError 算作中止（万一有，也不能被组件的
+ * 监听器吞掉）。剩下的中止是函数结构态的内容渲染抛错（markTopDownAbort）。
  * root.dispatch('error') 在激活期间不把它们当作已消费：注册了 root.on('error') 也不能让激活在错位的游标上继续。
  */
 export function isTopDownAbort(error: unknown): boolean {
-    return error instanceof HydrationMismatchError || error instanceof TopDownPendingError
+    return error instanceof HydrationMismatchError
         || (abortingError !== NOT_ABORTING && error === abortingError)
 }
 

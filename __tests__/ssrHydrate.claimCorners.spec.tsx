@@ -7,7 +7,6 @@
  */
 import {
     createElement,
-    configureDiagnostics,
     RenderContext,
 } from '@framework'
 import {atom, RxList} from 'data0'
@@ -37,7 +36,7 @@ import {
     stripAxiiTextBoundariesBetween,
     tryClaimElement,
 } from '../src/hydration.js'
-import {hydrate, TOP_DOWN_PASS, pendingTopDown} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
 
 function captureMismatches(): unknown[] {
     const errors: unknown[] = []
@@ -555,8 +554,23 @@ describe('hydrateRoot end-to-end claim corners', () => {
         root.destroy()
     })
 
-    test.skipIf(pendingTopDown('B4'))('hydrateRoot throws when the container is missing <!--root-->', () => {
+    // 旧模型（公开的 hydrateRoot）在这里抛错；新模型按 R3 插入 <!--root--> 并报告（#55 B3 起失配报告并修复，B3 的漂移 fuzz
+    //  「删除一个标记注释」也会删到它），内部入口那一遍的期望见下一条。#55 S 删除旧模型时删除这一条
+    test.skipIf(TOP_DOWN_PASS)('hydrateRoot throws when the container is missing <!--root-->', () => {
         rootEl.innerHTML = '<span></span>'
         expect(() => hydrate(rootEl, createElement('span', null))).toThrow('missing <!--root-->')
+    })
+
+    test.skipIf(!TOP_DOWN_PASS)('a container missing <!--root-->: the comment is inserted and reported (R3, #55 B4); a live root element replaces its server counterpart (§2.6.8)', () => {
+        rootEl.innerHTML = '<span>s</span>'
+        const errors = captureMismatches()
+        const live = createElement('span', null, 'c') as HTMLElement
+        const root = hydrate(rootEl, live)
+        expect(Array.from(rootEl.childNodes).map(n => n.nodeType === Node.COMMENT_NODE ? `<!--${(n as Comment).data}-->` : (n as Element).outerHTML))
+            .toEqual(['<span>c</span>', '<!--root-->'])
+        expect(rootEl.firstChild).toBe(live)
+        expect(errors.filter(e => e instanceof HydrationMismatchError).length).toBe(1)
+        root.destroy()
+        expect(rootEl.childNodes.length).toBe(0)
     })
 })

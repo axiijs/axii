@@ -32,14 +32,85 @@
  * CAUTION 这个模块在 axii/ssr 的导入链上（ssr.ts → ComponentHost → createHost → 这里）：模块顶层不能碰 document / Node。
  */
 import {
+    HydrationDevReport,
+    HydrationDevReportCode,
     isCharacterDataParent,
     isCommentData,
     reportHydrationMismatch,
+    resolvePortalHydrateTarget,
     runOutsideHydration,
     summarizeChild,
 } from "./hydration"
 import {COMMENT_NODE, ELEMENT_NODE, TEXT_NODE} from "./nodeType"
-import {ROOT_SLOT} from "./hydrationElement"
+import {HOST_PLACED_CHILDREN, isHydrationElement, ROOT_SLOT} from "./hydrationElement"
+import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
+import type {Host} from "./Host"
+
+// ───────────────────────── 一次激活的状态（入口与 Portal 共用，#55 B4） ─────────────────────────
+
+// 入口的 options.portals（Portal 按 key 找激活目标，§2.6.5）
+let activationPortals: Record<string, HTMLElement> | undefined
+// 这次激活开始时的失配条数：Portal 容器在自己的收尾里据此判断「这次激活有没有失配」（verifyTopDownRawElements）
+let activationMismatchBase = 0
+// 激活完的容器与根 Host（入口的根容器、各 Portal 容器）：[容器, Host] 平铺，入口在诊断开启时逐个检查开发期不变量（§4.4）
+const hydratedContainers: unknown[] = []
+
+export type TopDownActivationState = {
+    portals: Record<string, HTMLElement> | undefined, mismatchBase: number, containers: number, hostPlacedNodes: WeakSet<object> | undefined,
+}
+
+/** 入口开始一次激活：返回之前的状态交给 leaveTopDownActivation（回调里嵌套的激活返回后外层照常继续）。 */
+export function enterTopDownActivation(portals: Record<string, HTMLElement> | undefined): TopDownActivationState {
+    const saved = {portals: activationPortals, mismatchBase: activationMismatchBase, containers: hydratedContainers.length, hostPlacedNodes}
+    activationPortals = portals
+    activationMismatchBase = mismatchCount
+    hostPlacedNodes = undefined
+    return saved
+}
+
+export function leaveTopDownActivation(saved: TopDownActivationState): void {
+    activationPortals = saved.portals
+    activationMismatchBase = saved.mismatchBase
+    hydratedContainers.length = saved.containers
+    hostPlacedNodes = saved.hostPlacedNodes
+}
+
+/** 这次激活开始时的失配条数。 */
+export function getTopDownActivationMismatchBase(): number {
+    return activationMismatchBase
+}
+
+/** Portal 的激活目标：与旧模型同一条规则（options.portals[key]，再 getElementById）。 */
+export function resolveTopDownPortalContainer(key: string): HTMLElement {
+    return resolvePortalHydrateTarget(key, activationPortals)
+}
+
+/** 记下一个激活完、没有被丢弃的容器（开发期不变量用）。 */
+export function rememberTopDownContainer(container: ParentNode, host: Host): void {
+    hydratedContainers.push(container, host)
+}
+
+/** 从 mark 起记下的容器（mark 是 enterTopDownActivation 时的长度）。 */
+export function getTopDownContainers(saved: TopDownActivationState): unknown[] {
+    return hydratedContainers.slice(saved.containers)
+}
+
+/**
+ * 只在开发期出现的报告（HydrationDevReport）：交给 onError（runOutsideHydration：onError 是用户代码，见 report）。
+ * 调用方先判断 isAxiiDiagnosticsEnabled()，生产环境不拼消息、不分配。
+ */
+export function reportTopDownDevHint(code: HydrationDevReportCode, detail: string): void {
+    runOutsideHydration(() => reportAxiiError(new HydrationDevReport(code, detail)))
+}
+
+/** §2.6.8：激活之外创建的现成节点按 CSR 插入，服务端在这里的节点没有被复用（诊断开启时报告 AXII_HYDRATION_LIVE_NODE）。 */
+export function reportTopDownLiveNode(node: Node): void {
+    if (!isAxiiDiagnosticsEnabled()) return
+    const name = node.nodeType === ELEMENT_NODE ? `<${(node as Element).localName}>` : node.nodeName
+    reportTopDownDevHint('AXII_HYDRATION_LIVE_NODE',
+        `a DOM node created outside hydration (${name}) is inserted on the client: the server node at this position is not reused. ` +
+        'Write it as JSX in the component to reuse the server node')
+}
 
 // 当前层
 let cursorParent: ParentNode | null = null
@@ -310,7 +381,9 @@ export function insertTopDownFreshElements(mark: number, insert: (el: HTMLElemen
         // CAUTION 经调用方传入的 DOM.insertBefore 插入（≡ CSR 的 Host 插入）：插入之前写入待生效的 stylesheet；插进 <select> 的
         //  <option> 按 select 记下的值重放选中状态——裸 replaceChild 会让浏览器选中第一项（select 的 props 在新建的 option
         //  连入之前就应用了）。模块不直接导入 DOM.ts：DOM.ts 导入这里。
-        insert(pendingFresh[i + 1] as HTMLElement, anchor)
+        // 被之后的同一个节点的再次出现接管的（placeTopDownExistingNode）：只剩已经移除的占位
+        const el = pendingFresh[i + 1]
+        if (el !== null) insert(el as HTMLElement, anchor)
         anchor.remove()
     }
     pendingFresh.length = mark
@@ -468,6 +541,67 @@ export function claimTopDownComment(data: string): Comment {
     removeUntil(ahead)
     cursorNext = ahead.nextSibling
     return ahead
+}
+
+/**
+ * §2.6.8 现成的节点（激活之外创建的节点；或者这次激活里已经认领过、再次被渲染的描述的节点，C6）：服务端在 Node 里不可能产出它，
+ * 这个位置上服务端写的是同一内容的 JSX 版本。游标处是它的对应物时删除那个对应物：同标签的元素（标签比较同 claimTopDownElement，
+ * 大小写也区分了 HTML / SVG），或者（它是 Text 时）一个文本单元。其余节点不动，由之后的认领按 R1–R5 处理。不报告失配。
+ * 新建的层、字符数据父节点里没有可删的对应物。
+ */
+export function removeTopDownCounterpart(node: Node): void {
+    if (cursorFresh || cursorCharData) return
+    const nodeType = node.nodeType
+    if (nodeType === ELEMENT_NODE) {
+        const at = peek((node as Element).localName)
+        if (at !== null && at !== node && at.nodeType === ELEMENT_NODE && (at as Element).tagName === (node as Element).tagName) removeUnitAtCursor()
+    } else if (nodeType === TEXT_NODE) {
+        const at = peek()
+        if (at !== null && at !== node && (at.nodeType === TEXT_NODE || isTextUnitMarker(at))) removeUnitAtCursor()
+    }
+}
+
+// 由 Host 放置过的描述与现成节点（Host 的 source：StaticHost / CompactElementHost / 现成节点的 Host）。
+//  CSR 里静态 child 在 createElement 时就插入，Host 在之后渲染：同一个元素既是某个 Host 的 source、又是静态 child 时，
+//  最后落在 Host 那里。激活按文档顺序走，静态 child 晚于 Host 出现时不能再把它挪走（#55 B4 独立审查）。
+//  描述：认领后瘦身时 rawChildren 写成共享的 HOST_PLACED_CHILDREN（每个 Host 的认领只多一次字段写入，不分配）；
+//  现成节点（少见）：记在这次激活的 WeakSet 里（enterTopDownActivation 时换一个新的）。
+let hostPlacedNodes: WeakSet<object> | undefined
+
+/** Host 认领了这个描述、或放置了这个现成节点。 */
+export function markTopDownHostPlaced(value: object): void {
+    if (isHydrationElement(value)) {
+        value.rawChildren = HOST_PLACED_CHILDREN
+    } else {
+        (hostPlacedNodes ??= new WeakSet()).add(value)
+    }
+}
+
+/** 这个描述 / 现成节点由 Host 放置过（描述：任何一次激活里；现成节点：这次激活里）。 */
+export function isTopDownHostPlaced(value: object): boolean {
+    return isHydrationElement(value) ? value.rawChildren === HOST_PLACED_CHILDREN : hostPlacedNodes !== undefined && hostPlacedNodes.has(value)
+}
+
+/**
+ * 把现成的节点（§2.6.8 / C6，见 removeTopDownCounterpart）插在游标处：先删除它在服务端的对应物，再插入（≡ CSR createElement 的
+ * child 循环 appendChild：节点已经在别处时被挪过来；DocumentFragment 的子节点整体搬入）。游标不动，下一个单元仍从这里开始。
+ */
+export function placeTopDownExistingNode(node: Node): void {
+    removeTopDownCounterpart(node)
+    // 它是这次激活里失配新建、还在等所属 StaticHost 插入的元素（#73）：那次插入作废，以这里为准（≡ CSR 第二次插入把它挪走）
+    for (let i = 1; i < pendingFresh.length; i += 2) {
+        if (pendingFresh[i] === node) {
+            pendingFresh[i - 1].remove()
+            pendingFresh[i] = null as unknown as ChildNode
+        }
+    }
+    const next = peek()
+    // 节点恰好就在游标处（用户把服务端的节点本身传了进来）：留在原处，游标移到它之后
+    if (next === node) {
+        cursorNext = (node as ChildNode).nextSibling
+        return
+    }
+    cursorParent!.insertBefore(node, next)
 }
 
 function isWhitespaceText(node: ChildNode): boolean {

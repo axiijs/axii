@@ -245,13 +245,15 @@ describe('§4.1 attribute boundary: claims on the mismatch path clear server-onl
             .toEqual({dom: kids(csrEl), mismatches: 1, kept: [true, true]})
     })
 
-    test('a clean claim keeps a server-only attribute and reports nothing (D4)', () => {
+    // B4 起诊断开启时有开发期报告 AXII_HYDRATION_ATTRIBUTE_RESIDUE（§4.1「开发期报告」），不是失配；这里诊断开启
+    test('a clean claim keeps a server-only attribute: no mismatch, only the development report AXII_HYDRATION_ATTRIBUTE_RESIDUE (D4)', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <div><i>x</i></div>
         }
         const hyd = parse(htmlOf(App).replace('<i>', '<i data-junk="1">'))
         hydrateRootTopDown(hyd, createElement(App, null))
-        expect({junk: hyd.querySelector('i')!.getAttribute('data-junk'), reports}).toEqual({junk: '1', reports: []})
+        expect({junk: hyd.querySelector('i')!.getAttribute('data-junk'), reports: reports.map(e => (e as {code?: string}).code)})
+            .toEqual({junk: '1', reports: ['AXII_HYDRATION_ATTRIBUTE_RESIDUE']})
     })
 
     test('an approximate claim of a raw-markup element re-applies the client markup, like CSR', () => {

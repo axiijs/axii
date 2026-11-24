@@ -217,6 +217,39 @@ export function attributeNameOfProperty(name: string): string {
 
 /**
  * @internal
+ * #55 B4 开发期报告 AXII_HYDRATION_ATTRIBUTE_RESIDUE（设计 §4.1「属性的边界」）：元素上的这个 attribute 名可能由这组 props 写出
+ * （客户端的 DOM.setAttribute，或者服务端 ssr.serializeAttrs 为它们写的 HTML）。按名字判断、宁宽勿窄：同一个 prop 的所有可能写法
+ * （原名、property 的别名与 ARIA 反射名、SVG 的连字符名与 xlink:*）都算；className / style 生成的类名与样式标记、uuid 的 data-uuid、
+ * 受控输入的 value / checked 通道、select 的 value 驱动的 option selected 是服务端按 props 写的，同样算。
+ * 不在其中的名字是服务端独有的属性：干净认领不清理它（D4），开发期报告。名字比较不区分大小写（HTML attribute 名大小写不敏感）。
+ * 调用方在认领步骤读走服务端样式标记（data-axii-ssr-style-classes 与它生成的类名）之后再判断。
+ */
+export function isAttributeWrittenByProps(attributeName: string, props: {[key: string]: unknown} | null | undefined, tagLower: string, isSVG: boolean): boolean {
+    const name = attributeName.toLowerCase()
+    if (tagLower === 'option' && name === 'selected') return true
+    if (!props) return false
+    for (const key in props) {
+        if (key === 'className' || key === 'class' || key === 'style') {
+            if (name === 'class' || (key === 'style' && name === 'style')) return true
+            continue
+        }
+        if (key === 'uuid') {
+            if (name === 'data-uuid') return true
+            continue
+        }
+        if (tagLower === 'input' && key === 'value' && name === 'checked') return true
+        const lower = key.toLowerCase()
+        if (name === lower || name === attributeNameOfProperty(key).toLowerCase()) return true
+        if (isSVG) {
+            const xlinkName = key.replace(/^xlink\:?/, '')
+            if (xlinkName !== key ? name === `xlink:${xlinkName.toLowerCase()}` : name === svgAttributeName(key).toLowerCase()) return true
+        }
+    }
+    return false
+}
+
+/**
+ * @internal
  * boolean / undefined 原样赋给 property 的名字（不按 property 类型改写，见 emptyOrBooleanWrite）：
  *  - contentEditable / writingSuggestions / aria*：取值是 "true"/"false" 关键字的 string property，false 是有语义的值；
  *  - hidden：它的 getter 在 until-found 状态下返回字符串，类型不能代表写法。

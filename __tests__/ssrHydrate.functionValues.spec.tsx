@@ -13,11 +13,11 @@
  *  - 之后的更新（内层值在文本 / 空 / 元素 / atom / null 之间切换，外层函数换掉内层函数）每一步都 ≡ CSR。
  * Run: npx vitest run __tests__/ssrHydrate.functionValues.spec.tsx
  */
-import {createElement, createRoot, configureDiagnostics, RenderContext} from '@framework'
+import {createElement, createRoot, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {

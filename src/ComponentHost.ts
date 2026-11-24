@@ -37,8 +37,9 @@ import {createLinkedNode, LinkedNode} from "./LinkedList";
 import {markDynamicProp, isDynamicProp, markBoundProp, isBoundProp, markAopProp} from "./StaticHost";
 import {trackHostDestroyed} from "./retainedObjectDiagnostics.js";
 import {assertRangeReachable, isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
-import {isAnyHydrating, isHydrating, runOutsideHydration} from "./hydration";
-import {HydrationSlot, isHydrationElement, throwTopDownPending} from "./hydrationElement";
+import {getHydrationMode, HYDRATION_MODE_TOP_DOWN, isAnyHydrating, isHydrating, runOutsideHydration} from "./hydration";
+import {HydrationSlot, isHydrationElement, isHydrationSlot, REUSABLE_SLOT} from "./hydrationElement";
+import {claimTopDownComment} from "./hydrationCursor";
 import {getComponentTypeId, componentTypeIds} from "./styleSerialize";
 
 
@@ -120,9 +121,6 @@ const EMPTY_COMPONENT_PROP: Props = {}
 //  所以这类组件的 host 不捕获 ref、不解析 `$` 配置，合并后原样留在 props 里转发。
 //  用组件函数上的内部标记识别（同 Portal 的 __axiiPortal），不进公开类型。
 const FORWARD_PROPS_MARK = '__axiiForwardProps'
-// lazy() 的包装组件（lazy.ts 写同一个字面量）。只给 #55 新模型的激活用：lazy 的激活在 B4 落地，之前显式抛错。
-//  不导出：index.ts 是 export * from './ComponentHost.js'
-const LAZY_COMPONENT_MARK = '__axiiLazy'
 function forwardsProps(type: Component): boolean {
     return (type as any)[FORWARD_PROPS_MARK] === true
 }
@@ -751,9 +749,8 @@ export class ComponentHost implements Host{
     }
     // #55 新模型（§2.4「组件边界」）：调用组件，用 createHydrateHost(结果, 同一个 slot) 建 innerHost 并 hydrate(slot)；
     //  完成后组件与 innerHost 共享 placeholder（与 CSR 相同）。其余步骤（错误钩子、effect、layoutEffect / ref）与 render 共用。
+    //  lazy() 的包装组件也走这里（§2.6.9）：它返回函数子节点，服务端写的是 fallback，激活按 fallback 认领，加载完成后按 CSR 替换。
     hydrate(slot: HydrationSlot): void {
-        // lazy() 的激活（§2.6.9）在 B4 落地，之前显式抛错
-        if ((this.type as any)[LAZY_COMPONENT_MARK]) throwTopDownPending('lazy()', 'B4')
         this.renderOrHydrate(slot)
     }
     // render 与 hydrate 共用（§5.1）：slot 为 undefined 是 CSR
@@ -1089,7 +1086,12 @@ export class ReusableHost implements Host{
     public innerHost: Host
     reusePlaceholder?: Comment
     constructor(public source: any, public innerPlaceholder: UnhandledPlaceholder, public pathContext: PathContext) {
-        this.innerHost = createHost(source, innerPlaceholder, pathContext)
+        // #55 新模型激活中（§2.6.9）：reusable() 在组件函数体里调用，innerHost 按激活的分派在同一时刻构造（构造顺序与 CSR 相同：
+        //  组件类型 id、种类计数），placeholder 是 'reusable' slot，由 hydrate 认领。激活中没有被放进树、之后才由 CSR 第一次渲染的，
+        //  render 按 CSR 重建 innerHost（见 render）。reusable() 不在热路径上，构造时多一次模式读取。
+        this.innerHost = getHydrationMode() === HYDRATION_MODE_TOP_DOWN ?
+            createHydrateHost(source, REUSABLE_SLOT, pathContext) :
+            createHost(source, innerPlaceholder, pathContext)
     }
     // CAUTION Host 契约中的 placeholder 是「当前挂载点」（moveTo 传入的 reusePlaceholder），
     //  而不是 innerHost 的 placeholder：RxListHost 等父级用它插入/定位/判断是否已渲染。
@@ -1118,6 +1120,14 @@ export class ReusableHost implements Host{
         }
         // 第一次渲染
         if (!this.rendered) {
+            // #55：激活中构造（innerHost 的 placeholder 还是 slot）、激活中没有被放进树的：按 CSR 重建 innerHost。
+            //  旧的那个从未渲染（没有订阅、没有 DOM），只撤销它的计数；组件类型 id 按类型分配，重建不会再分配
+            if (isHydrationSlot(this.innerHost.placeholder)) {
+                trackHostDestroyed(this.innerHost)
+                // CAUTION 用旧 innerHost 的 context（reusable() 构造时所属组件的子 context），不用 this.pathContext：
+                //  放进树时 createHost 把后者改成了放置处的 context（见 reusable getter 的 CAUTION）
+                this.innerHost = createHost(this.source, this.innerPlaceholder, this.innerHost.pathContext)
+            }
             insertBefore(this.innerPlaceholder, this.reusePlaceholder!)
             // debugger
             this.innerHost.render()
@@ -1147,6 +1157,22 @@ export class ReusableHost implements Host{
     }
     moveTo(reusePlaceholder: Comment) {
         this.reusePlaceholder = reusePlaceholder
+    }
+    /**
+     * #55 新模型（§2.5 ReusableHost 行、§2.6.9）：innerHost 以 'reusable' 认领内容与 `<!--reusable-->`（服务端 ssr.serializeReusable），
+     * 然后认领外层 slot 作为 reusePlaceholder。innerHost 不是在激活中构造的（placeholder 已是节点），或者这次激活里已经渲染过
+     * （同一个 reusable 第二次放进树）：内容是仅客户端的 / 要从别处挪过来，与现成节点一样认领 slot 后按 CSR 渲染（§2.6.8）。
+     */
+    hydrate(slot: HydrationSlot): void {
+        if (this.rendered || !isHydrationSlot(this.innerHost.placeholder)) {
+            this.reusePlaceholder = claimTopDownComment(slot)
+            runOutsideHydration(() => this.render())
+            return
+        }
+        this.innerHost.hydrate!(REUSABLE_SLOT)
+        this.innerPlaceholder = this.innerHost.placeholder
+        this.reusePlaceholder = claimTopDownComment(slot)
+        this.rendered = true
     }
     destroy(parentHandle?: boolean) {
         // do nothing
@@ -1188,11 +1214,16 @@ export class ReusableHost implements Host{
         // 可能没有真正被渲染过
         if (!this.rendered) {
             this.innerPlaceholder.remove()
+            // 从未渲染的 innerHost 没有订阅、没有 DOM，只撤销它在构造时登记的计数
+            trackHostDestroyed(this.innerHost)
         } else {
             this.innerHost.destroy(false)
         }
         if (this.reusePlaceholder) {
             this.reusePlaceholder.remove()
         }
+        // CAUTION ReusableHost 在放进树时由 createHost 登记（retainedObjectDiagnostics），它真正的销毁在这里（destroy 只把内容
+        //  搬出、留待复用）。之前没有登记，CSR 渲染再销毁之后它一直算作活跃（#55 B4 验收「计数归零」时发现）
+        trackHostDestroyed(this)
     }
 }

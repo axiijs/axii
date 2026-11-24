@@ -4,7 +4,7 @@
  */
 
 import {isAtom, Notifier, RxList} from "data0"
-import {reportAxiiError} from "./diagnostics"
+import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics"
 import {RAWTEXT_TAGS, RCDATA_TAGS, svgHtmlSharedElementNames, tableSectionElementNames} from "./markupNames"
 import {isDomNode, isElementNode, isFragmentNode} from "./nodeType"
 
@@ -39,6 +39,29 @@ export class HydrationInvariantError extends Error {
         super(`[axii] hydration invariant broken: ${detail} (AXII_HYDRATION_INVARIANT)`)
         this.name = 'HydrationInvariantError'
         if (cause !== undefined) this.cause = cause
+    }
+}
+
+/**
+ * #55 B4 只在开发期（诊断开启时）出现的报告（设计 §3.4、§2.6.8、§4.1、C10）。它们不是失配：结构已经与 CSR 相同，
+ * 报告的是「这里的写法在激活中有代价或者有风险」。经 reportAxiiError 交给 onError，不抛出；生产环境不检测、不分配。
+ *  - AXII_HYDRATION_ELEMENT_ACCESS：激活期间的 JSX 结果（描述）被当作节点读写（§3.1.1）；
+ *  - AXII_HYDRATION_ELEMENT_LATE_RENDER：激活中建好、没有被渲染的描述在激活之后才第一次渲染，按 CSR 物化（C10）；
+ *  - AXII_HYDRATION_LIVE_NODE：激活之外创建的现成节点按 CSR 插入，这个位置的服务端节点没有被复用（§2.6.8）；
+ *  - AXII_HYDRATION_ATTRIBUTE_RESIDUE：干净认领的元素上有客户端 props 不写的服务端属性（§4.1「属性的边界」）。
+ */
+export type HydrationDevReportCode =
+    | 'AXII_HYDRATION_ELEMENT_ACCESS'
+    | 'AXII_HYDRATION_ELEMENT_LATE_RENDER'
+    | 'AXII_HYDRATION_LIVE_NODE'
+    | 'AXII_HYDRATION_ATTRIBUTE_RESIDUE'
+
+export class HydrationDevReport extends Error {
+    readonly code: HydrationDevReportCode
+    constructor(code: HydrationDevReportCode, detail: string) {
+        super(`[axii] ${detail} (${code})`)
+        this.name = 'HydrationDevReport'
+        this.code = code
     }
 }
 
@@ -185,17 +208,30 @@ export function beginHydration(container: ParentNode, portals?: Record<string, H
  * 产物里也就没有任何代码把模式置为 TOP_DOWN（§7.1 第 4 点）。
  * 返回之前的状态交给 endTopDownHydration 恢复（回调里嵌套的激活返回后，外层照常继续）。
  */
-export function beginTopDownHydration(): {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined} {
-    const saved = {mode: hydrationMode, rollingStyleBases: claimedRollingStyleBases}
+type TopDownHydrationState = {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined, devProxy: boolean}
+
+// 新模型激活期间 createElement 返回开发期 Proxy 还是描述本身（§3.4）：激活开始时按 isAxiiDiagnosticsEnabled() 定一次，
+//  同一次激活内不变
+let topDownDevProxy = false
+
+export function beginTopDownHydration(): TopDownHydrationState {
+    const saved = {mode: hydrationMode, rollingStyleBases: claimedRollingStyleBases, devProxy: topDownDevProxy}
     hydrationMode = HYDRATION_MODE_TOP_DOWN
     claimedRollingStyleBases = undefined
+    topDownDevProxy = isAxiiDiagnosticsEnabled()
     return saved
 }
 
 /** @internal 见 beginTopDownHydration。 */
-export function endTopDownHydration(saved: {mode: number, rollingStyleBases: WeakMap<Element, string> | undefined}): void {
+export function endTopDownHydration(saved: TopDownHydrationState): void {
     hydrationMode = saved.mode
     claimedRollingStyleBases = saved.rollingStyleBases
+    topDownDevProxy = saved.devProxy
+}
+
+/** @internal 这次新模型激活里 createElement 是否返回开发期 Proxy（只在 createElement 的新模型分支里读）。 */
+export function isTopDownDevProxy(): boolean {
+    return topDownDevProxy
 }
 
 export function endHydration(): void {
@@ -288,7 +324,14 @@ export function popHydrateRoot(): void {
  * Throws when still missing (§3.3.d).
  */
 export function resolveHydratePortalContainer(key: string): HTMLElement {
-    const fromOpt = hydratePortalEls?.[key]
+    return resolvePortalHydrateTarget(key, hydratePortalEls)
+}
+
+/**
+ * Portal 激活目标的唯一规则（两个模型共用，#55 B4）：先 options.portals[key]，再 document.getElementById(key)，都没有就抛错。
+ */
+export function resolvePortalHydrateTarget(key: string, portals: Record<string, HTMLElement> | undefined): HTMLElement {
+    const fromOpt = portals?.[key]
     if (fromOpt) return fromOpt
     const el = typeof document !== 'undefined' ? document.getElementById(key) : null
     if (!el) throw new Error(`[axii] hydrate Portal key "${key}" not found (pass options.portals or matching element id)`)

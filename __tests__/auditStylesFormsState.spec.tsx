@@ -18,7 +18,6 @@ import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {
     atom,
     bindProps,
-    configureDiagnostics,
     createElement,
     createRef,
     createRoot,
@@ -44,7 +43,7 @@ import {
     StyleSize,
 } from "@framework";
 import {renderToString} from "../src/ssr.js";
-import {hydrate} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 async function settle() {
     for (let i = 0; i < 100; i++) await Promise.resolve()

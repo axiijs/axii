@@ -21,7 +21,6 @@
 import {
     createElement,
     createRoot,
-    configureDiagnostics,
     bindProps,
     PropTypes,
     RenderContext,
@@ -29,13 +28,14 @@ import {
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {isSsrPass} from '../src/ssrContext.js'
 import {
     disableAxiiRetainedObjectDiagnostics,
     enableAxiiRetainedObjectDiagnostics,
     getAxiiRetainedObjectDiagnosticsSnapshot,
     resetAxiiRetainedObjectDiagnostics,
 } from '../src/retainedObjectDiagnostics'
-import {hydrate, pendingTopDown, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, HYDRATE_DIAGNOSTICS, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -367,16 +367,21 @@ describe('F1 regression: static trees hydrate in place (deterministic fuzz)', ()
 // own tag. Every tree: DOM ≡ CSR, no report, every server element kept, each listener at its own position, and the Host
 // kinds the activation creates equal the kinds a CSR render creates, kind by kind (§2.4.1: createHydrateHost and
 // createHost must not diverge; CompactElementHost included). Over the 300 trees each landed kind appears on both sides.
-// Not generated (not landed yet): reusable(), live DOM nodes, Portal, lazy (B4); the same JSX element twice (C6, B4).
+// Since #55 B4 it also generates reusable() (a component returning reusable(source)) and live DOM nodes — a live element or
+// Text as an element child, a live Text as a component's result (NodeHost). A live node is client-only content (§2.6.8):
+// the server renders the same content as JSX (marked data-live), the activation replaces that counterpart with the live node,
+// reports exactly one AXII_HYDRATION_LIVE_NODE per live node when diagnostics are on, and keeps every other server node.
+// Not generated: Portal (it needs containers outside the tree; ssrHydrate.lifecycle / hydrateTopDownForms cover it),
+// lazy (its loading is asynchronous), the same JSX element twice (C6; hydrateTopDown.spec).
 // A function child whose value is another function or an RxList is generated: the server writes it as a Comment-ph
 // since #82 (it used to fall back to the element-child writer).
 // Internal entry only until #55 S replaces the generator above with this one (the old model does not support these shapes).
 describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): every landed Host kind hydrates in place', () => {
     const TAGS = ['div', 'span', 'b', 'em', 'section']
     const OPACITY_0 = {opacity: 0}
-    // the Host kinds landed on the internal entry (§2.4.1; ReusableHost / NodeHost land in B4)
-    const LANDED_KINDS = ['StaticHost', 'PrimitiveHost', 'StaticArrayHost', 'EmptyHost', 'RxListHost', 'ComponentHost',
-        'AtomHost', 'FunctionHost', 'CompactElementHost']
+    // every Host kind of createHost's dispatch (HOST_TYPE_NAMES) and CompactElementHost: all landed since #55 B4 (§2.4.1)
+    const LANDED_KINDS = ['StaticHost', 'PrimitiveHost', 'StaticArrayHost', 'EmptyHost', 'RxListHost', 'ReusableHost',
+        'ComponentHost', 'AtomHost', 'FunctionHost', 'NodeHost', 'CompactElementHost']
     type Gen =
         | {k: 'el', tag: string, key: string, id?: string, raw?: string, detach?: boolean, kids: Gen[]}
         | {k: 'frag', kids: Gen[]}
@@ -388,6 +393,9 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
         | {k: 'arr', items: Gen[]}
         | {k: 'list', rows: Gen[]}
         | {k: 'comp', body: Gen}
+        | {k: 'reuse', body: Gen}
+        | {k: 'liveEl', tag: string, v: string}
+        | {k: 'liveText', v: string}
 
     function mulberry32(seed: number) {
         let a = seed >>> 0
@@ -429,6 +437,10 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
         // a child of an element / Fragment
         const child = (depth: number): Gen => {
             if (depth >= 5) return rnd() < 0.5 ? text() : {k: 'atom', v: rnd() < 0.2 ? '' : `a${n++}`}
+            // live nodes as element children (§2.6.8, B4)
+            const live = rnd()
+            if (live < 0.03) return {k: 'liveEl', tag: pick(TAGS), v: `l${n++}`}
+            if (live < 0.05) return {k: 'liveText', v: `l${n++}`}
             const r = rnd()
             if (r < 0.28) return element(depth)
             if (r < 0.38) return text()
@@ -444,6 +456,10 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
         // the source of a Host: a function's value, a component's result, a list row, an array item
         const source = (depth: number): Gen => {
             if (depth >= 5) return rnd() < 0.5 ? text() : element(depth)
+            // reusable() and a component whose result is a live Text (NodeHost) (B4)
+            const extra = rnd()
+            if (extra < 0.05) return {k: 'reuse', body: source(depth + 1)}
+            if (extra < 0.08) return {k: 'comp', body: {k: 'liveText', v: `l${n++}`}}
             const r = rnd()
             if (r < 0.3) return element(depth)
             if (r < 0.4) return {k: 'frag', kids: many(depth + 1, 3, child)}
@@ -460,7 +476,8 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
     }
 
     // atoms：渲染时创建的 atom 按创建顺序记下（漂移 fuzz 激活后改它们的值，比较更新后的 DOM）
-    function appOf(spec: Gen, log: string[], atoms?: ReturnType<typeof atom>[]) {
+    // lives：渲染时创建的现成节点按创建顺序记下（激活恰好为每个报告一条 AXII_HYDRATION_LIVE_NODE）
+    function appOf(spec: Gen, log: string[], atoms?: ReturnType<typeof atom>[], lives?: Node[]) {
         // createElement / Fragment come from the render context (the server passes its own)
         type Ctx = {h: RenderContext['createElement'], F: RenderContext['Fragment']}
         function render(g: Gen, c: Ctx): any {
@@ -491,6 +508,25 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                     const Comp = function Comp({}: any, {createElement: h, Fragment: F}: RenderContext) { return render(g.body, {h, F}) }
                     return h(Comp, null)
                 }
+                case 'reuse': {
+                    const Reuse = function Reuse({}: any, {createElement: h, Fragment: F, reusable}: RenderContext) { return reusable(render(g.body, {h, F})) }
+                    return h(Reuse, null)
+                }
+                // a live node is client-only: the server renders the same content as JSX
+                case 'liveEl': {
+                    if (isSsrPass()) return h(g.tag, {'data-live': ''}, g.v)
+                    const el = document.createElement(g.tag)
+                    el.setAttribute('data-live', '')
+                    el.textContent = g.v
+                    lives?.push(el)
+                    return el
+                }
+                case 'liveText': {
+                    if (isSsrPass()) return g.v
+                    const t = document.createTextNode(g.v)
+                    lives?.push(t)
+                    return t
+                }
             }
         }
         return function App({}: any, {createElement: h, Fragment: F}: RenderContext) { return render(spec, {h, F}) }
@@ -501,7 +537,7 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
         if (g.k === 'el' && g.raw !== undefined) into.raw = (into.raw ?? 0) + 1
         if (g.k === 'fn' && (g.body.k === 'fn' || g.body.k === 'list')) into[`fn→${g.body.k}`] = (into[`fn→${g.body.k}`] ?? 0) + 1
         const nested = g.k === 'el' || g.k === 'frag' ? g.kids : g.k === 'arr' ? g.items : g.k === 'list' ? g.rows
-            : g.k === 'fn' || g.k === 'comp' ? [g.body] : []
+            : g.k === 'fn' || g.k === 'comp' || g.k === 'reuse' ? [g.body] : []
         nested.forEach(c => countShapes(c, into))
     }
 
@@ -523,22 +559,27 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                 disableAxiiRetainedObjectDiagnostics()
                 const log: string[] = []
                 const hyd = ssrInto(appOf(spec, log))
-                const nodesBefore = Array.from(hyd.querySelectorAll('*'))
+                // 现成节点在服务端的对应物（data-live）由激活换成客户端的节点，其余服务端元素原地保留
+                const nodesBefore = Array.from(hyd.querySelectorAll('*:not([data-live])'))
                 const keyed = Array.from(hyd.querySelectorAll('[data-k]')) as HTMLElement[]
                 const keysBefore = keyed.map(el => el.getAttribute('data-k'))
                 reports.length = 0
+                const lives: Node[] = []
                 enableAxiiRetainedObjectDiagnostics({reset: true})
-                hydrate(hyd, createElement(appOf(spec, log), null as any))
+                hydrate(hyd, createElement(appOf(spec, log, undefined, lives), null as any))
                 const hydrateKinds = getAxiiRetainedObjectDiagnosticsSnapshot().hosts.createdByType
                 disableAxiiRetainedObjectDiagnostics()
-                const nodesAfter = Array.from(hyd.querySelectorAll('*'))
+                const nodesAfter = Array.from(hyd.querySelectorAll('*:not([data-live])'))
                 const clicked = keyed.map(el => { log.length = 0; el.click(); return log.join(',') })
                 addTo(totals.csr, csrKinds)
                 addTo(totals.hydrate, hydrateKinds)
+                const liveReports = reports.filter(m => m.includes('AXII_HYDRATION_LIVE_NODE')).length
                 expect({
                     seed,
                     dom: kids(hyd),
-                    reports: reports.slice(),
+                    reports: reports.filter(m => !m.includes('AXII_HYDRATION_LIVE_NODE')),
+                    liveReports,
+                    liveInPlace: lives.every(node => hyd.contains(node)),
                     serverNodesKept: nodesAfter.length === nodesBefore.length && nodesAfter.every((el, i) => el === nodesBefore[i]),
                     clicked,
                     kinds: hydrateKinds,
@@ -546,6 +587,8 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                     seed,
                     dom: csrDom,
                     reports: [],
+                    liveReports: HYDRATE_DIAGNOSTICS === true ? lives.length : 0,
+                    liveInPlace: true,
                     serverNodesKept: true,
                     clicked: keysBefore,
                     kinds: csrKinds,
@@ -567,7 +610,8 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
     // server DOM (an element's tag replaced, a junk element / Text / Comment inserted, an axii marker or structure Comment
     // removed, a Text value tampered). Raw markup (dangerouslySetInnerHTML) is opaque and never touched. Every activation:
     //  - does not throw; the node structure, text, structure Comments and the attributes the client props write equal CSR
-    //    (server-only attributes may remain only on clean claims — D4 — and only in trees that reported a mismatch);
+    //    (server-only attributes may remain only on clean claims — D4 — and only in trees that reported a mismatch; with
+    //    diagnostics on they are reported as AXII_HYDRATION_ATTRIBUTE_RESIDUE exactly in those trees, #55 B4);
     //  - reports at least one HydrationMismatchError when the drift changed the server output, none otherwise (never silent);
     //    no development invariant (§4.4) is broken;
     //  - each element's listener is at its own position; after every atom changes, DOM ≡ CSR again; destroying both roots
@@ -583,7 +627,7 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                 slotsOf(child, out)
             })
         }
-        if (g.k === 'fn' || g.k === 'comp') {
+        if (g.k === 'fn' || g.k === 'comp' || g.k === 'reuse') {
             const owner = g
             out.push({value: owner.body, set: v => { owner.body = v }})
             slotsOf(owner.body, out)
@@ -593,7 +637,7 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
     function rawKeysOf(g: Gen, into: Set<string>) {
         if (g.k === 'el' && g.raw !== undefined) into.add(g.key)
         const nested = g.k === 'el' || g.k === 'frag' ? g.kids : g.k === 'arr' ? g.items : g.k === 'list' ? g.rows
-            : g.k === 'fn' || g.k === 'comp' ? [g.body] : []
+            : g.k === 'fn' || g.k === 'comp' || g.k === 'reuse' ? [g.body] : []
         nested.forEach(c => rawKeysOf(c, into))
         return into
     }
@@ -621,14 +665,20 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
     /** Drift in the parsed server DOM; false when there is no target. */
     function injectServer(container: HTMLElement, rawKeys: Set<string>, kind: Injection, rnd: () => number): boolean {
         const pick = <T,>(xs: T[]) => xs[Math.floor(rnd() * xs.length)]
-        const isRaw = (n: Node) => n.nodeType === Node.ELEMENT_NODE && rawKeys.has((n as Element).getAttribute('data-k') ?? '')
+        // 现成节点在服务端的对应物（data-live）与原始标记一样不透明：激活把它整个换成客户端的节点，里面的漂移不可见也无影响
+        const isRaw = (n: Node) => n.nodeType === Node.ELEMENT_NODE
+            && (rawKeys.has((n as Element).getAttribute('data-k') ?? '') || (n as Element).hasAttribute('data-live'))
         const inRaw = (n: Node) => {
             for (let p = n.parentNode; p && p !== container; p = p.parentNode) if (isRaw(p)) return true
             return false
         }
+        // 现成 Text 在服务端的对应物是值为 l<n> 的文本单元（生成器只给它们用这种值），连同包边一样不透明
+        const isLiveText = (n: Node | null) => !!n && n.nodeType === Node.TEXT_NODE && /^l\d+$/.test(n.nodeValue!)
+        const isLiveTextUnit = (n: Node) => isLiveText(n)
+            || (n.nodeType === Node.COMMENT_NODE && ((n as Comment).data === 'axii:t' ? isLiveText(n.nextSibling) : (n as Comment).data === 'axii:/t' && isLiveText(n.previousSibling)))
         const all: Node[] = []
         const walker = document.createTreeWalker(container, NodeFilter.SHOW_ALL)
-        for (let n = walker.nextNode(); n; n = walker.nextNode()) if (!inRaw(n)) all.push(n)
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) if (!inRaw(n) && !isLiveTextUnit(n)) all.push(n)
         if (kind === 'tag') {
             const els = all.filter(n => n.nodeType === Node.ELEMENT_NODE && TAGS.includes((n as Element).localName)) as Element[]
             if (!els.length) return false
@@ -728,7 +778,11 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                     const csrDom = kids(csrEl)
                     const hydrateReports = reports.slice()
                     const mismatchCount = hydrateReports.filter(m => m.includes('hydration mismatch')).length
-                    const otherReports = hydrateReports.filter(m => !m.includes('hydration mismatch'))
+                    // 服务端独有属性的开发期报告（§4.1，B4）：诊断开启的那一遍里恰好在有残留的树上出现
+                    const residueReported = hydrateReports.some(m => m.includes('AXII_HYDRATION_ATTRIBUTE_RESIDUE'))
+                    // 现成节点的开发期提示（§2.6.8）不算在内
+                    const otherReports = hydrateReports.filter(m => !m.includes('hydration mismatch') && !m.includes('AXII_HYDRATION_ATTRIBUTE_RESIDUE')
+                        && !m.includes('AXII_HYDRATION_LIVE_NODE'))
                     if (residue.found) withResidue++
                     const clicked = (Array.from(hyd.querySelectorAll('[data-k]')) as HTMLElement[])
                         .map(el => { log.length = 0; el.click(); return log.join(',') === el.getAttribute('data-k') })
@@ -744,6 +798,7 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                         seed, kind, thrown, dom, otherReports,
                         reported: changed ? mismatchCount > 0 : mismatchCount === 0,
                         residueOnlyWhenReported: !residue.found || mismatchCount > 0,
+                        residueReported,
                         listenersInPlace: clicked.every(Boolean),
                         atoms: atoms.length === csrAtoms.length,
                         updated,
@@ -753,6 +808,7 @@ describe.skipIf(!TOP_DOWN_PASS)('F1 regression, extended generator (#55 B2): eve
                         seed, kind, thrown: undefined, dom: csrDom, otherReports: [],
                         reported: true,
                         residueOnlyWhenReported: true,
+                        residueReported: HYDRATE_DIAGNOSTICS === true && residue.found,
                         listenersInPlace: true,
                         atoms: true,
                         updated: csrUpdated,
