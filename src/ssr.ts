@@ -46,6 +46,7 @@ import {
     textareaContentProp,
 } from './markupNames'
 import {htmlPropertyType, reflectedPropertyAttributeValue} from './htmlPropertyTypes'
+import {isCompactListRowDescriptor, type ListRowDescriptorAccess} from './compactListRow'
 import {warnInvalidOnProp} from './diagnostics'
 
 /**
@@ -105,6 +106,24 @@ function isSsrReusable(v: any): v is SsrReusable {
 
 function isComponentNode(v: any): v is ComponentNode {
     return !!v && typeof v === 'object' && typeof v.type === 'function' && 'props' in v && 'children' in v && !isSsrElement(v)
+}
+
+// 冻结：共享的空数组被误改时直接抛错，而不是悄悄污染之后所有没有 children 的描述
+const NO_CHILDREN: any[] = Object.freeze([] as any[]) as any[]
+
+/** 描述实际的 children：显式 children 优先，否则 props.children（≡ createElement 的 children 来源）。序列化与 Compact 判定共用。 */
+function ssrElementChildren(el: SsrElement): any[] {
+    if (el.children.length) return el.children
+    const children = el.props?.children
+    return children ? (Array.isArray(children) ? children : [children]) : NO_CHILDREN
+}
+
+/** compactListRow 的描述访问器（服务端形态）。模块级常量：每行判定不分配。 */
+const SSR_LIST_ROW_ACCESS: ListRowDescriptorAccess<SsrElement> = {
+    asStaticNode: (value) => isSsrElement(value) ? value : undefined,
+    isFragment: (node) => node.type === Fragment,
+    props: (node) => node.props,
+    children: ssrElementChildren,
 }
 
 /** ≡ FunctionHost.ts text fast path (~144–145) */
@@ -1232,7 +1251,10 @@ function serializeRxListRow(item: any, out: string[], selectSo: SelectSoCtx | nu
     // G1 / G2: single-element row (SSR descriptor ≡ createElement element)
     if (isSsrElement(item) && typeof item.type === 'string') {
         serializeSsrElement(item, out, selectSo)
-        if (item.props?.detachStyle) {
+        // CAUTION Compact 判定与 CSR 共用 compactListRow.ts（#68）：行元素静态子树里任何一处生效的
+        //  detachStyle（不只是行元素自己的）都让这一行走非 Compact。曾经只看 item.props.detachStyle，
+        //  后代带 detachStyle 时少写行级 Comment，激活时这一行对不上。
+        if (!isCompactListRowDescriptor(item, SSR_LIST_ROW_ACCESS)) {
             out.push('<!--rx list item-->') // G2
         }
         // G1 Compact: no row-level comment
@@ -1449,9 +1471,7 @@ function serializeElementContent(
         //  激活前文本框是空的。
         out.push(escapeText(stringValue(snapshotAttrValue(el.props![textareaContentProp(el.props)!]))))
     } else {
-        const children = el.children.length
-            ? el.children
-            : (el.props?.children ? (Array.isArray(el.props.children) ? el.props.children : [el.props.children]) : [])
+        const children = ssrElementChildren(el)
         // SO: this select's value drives descendant options; nested select starts its own ctx
         const childSo = tagLower === 'select'
             ? extractSelectSo(el.props)
