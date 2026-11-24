@@ -81,6 +81,26 @@ describe('audit: style serialization without a DOM', () => {
         expect(render([{'--a': '1', '--a-b': '2'}, {'--a': '3', '&:hover': {opacity: 1}}])).toBe('--a-b:2')
     })
 
+    test('SSR inline composition: a yielding shorthand removes only its own longhands, never same-prefix properties', () => {
+        const render = (style: any) => /style="([^"]*)"/.exec(renderToString(createElement('div', {style})).html)?.[1]
+        const hover = {'&:hover': {opacity: 1}}
+        // flex resets flex-grow / flex-shrink / flex-basis, not flex-direction / flex-wrap
+        expect(render([{display: 'flex', flexDirection: 'column', flexGrow: 2}, {flex: 1, ...hover}]))
+            .toBe('display:flex;flex-direction:column')
+        // border resets the side / width / style / color / image longhands, not border-radius / border-collapse
+        expect(render([{borderRadius: 4, borderTopColor: 'red', borderCollapse: 'collapse'}, {border: '1px solid', ...hover}]))
+            .toBe('border-radius:4px;border-collapse:collapse')
+        // border-top resets its three longhands, not the corner radii that share its prefix
+        expect(render([{borderTopLeftRadius: '4px', borderTopWidth: 2}, {borderTop: '1px solid', ...hover}]))
+            .toBe('border-top-left-radius:4px')
+        // outline does not reset outline-offset; margin does not reset the logical margin-inline-start
+        expect(render([{outlineOffset: '2px', outlineColor: 'red'}, {outline: '1px solid', ...hover}])).toBe('outline-offset:2px')
+        expect(render([{marginInlineStart: '3px', marginTop: 1}, {margin: 0, ...hover}])).toBe('margin-inline-start:3px')
+        // shorthands whose longhands do not share their name
+        expect(render([{top: 1, left: 2, color: 'red'}, {inset: 0, ...hover}])).toBe('color:red')
+        expect(render([{rowGap: 1, columnGap: 2, color: 'red'}, {gap: 0, ...hover}])).toBe('color:red')
+    })
+
     test('without a later stylesheet entry nothing is taken back', () => {
         const plain = renderToString(createElement('div', {style: [{color: 'blue'}, {paddingTop: 7}]}))
         expect(plain.html).toBe('<div style="color:blue;padding-top:7px"></div><!--root-->')

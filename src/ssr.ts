@@ -428,18 +428,58 @@ function serializeInlineDeclarations(decls: Map<string, string> | undefined): st
 }
 
 // CSR 用 CSSOM 删除（el.style[k] = ''），简写与分项由浏览器展开。服务端不解析简写，尽力而为：
-//  - 删除简写（margin）时连同已写入的分项（margin-top …）一起删；自定义属性只删同名。
+//  - 删除简写（margin）时连同已写入的分项（margin-top …）一起删，分项按 SHORTHAND_LONGHANDS 的显式表；
+//    不在表里的简写和自定义属性只删同名。
 //  - 删除分项（margin-top）而行内写的是简写（margin）时保留简写：激活前这一个分项显示为行内值，
 //    其余分项正确；激活时 CSR 按同样的顺序重写行内样式，结果与纯 CSR 一致。
 //  - 字符串条目里的声明不解析、不删除，同样由激活时的 CSR 重写修正。
 function removeInlineDeclaration(decls: Map<string, string>, name: string) {
     decls.delete(name)
-    if (name[0] === '-' && name[1] === '-') return
-    const prefix = `${name}-`
-    for (const key of decls.keys()) {
-        if (key.startsWith(prefix)) decls.delete(key)
-    }
+    const longhands = SHORTHAND_LONGHANDS[name]
+    if (longhands) for (const longhand of longhands) removeInlineDeclaration(decls, longhand)
 }
+
+// CAUTION 删简写时连带删除的分项只能按显式的表，不能按名字前缀：前缀既会多删（flex 不重置
+//  flex-direction，border 不重置 border-radius / border-collapse，border-top 不重置
+//  border-top-left-radius，outline 不重置 outline-offset，margin 不重置 margin-inline-start），
+//  也会漏删（inset、gap、place-* 的分项不带简写的名字）。多删会让没有激活的纯 SSR 页面丢掉声明，
+//  漏删只是回到 v4.8.1 的「行内值压过 stylesheet」，激活时由 CSR 修正——所以表里只收确定会被
+//  简写重置的分项，嵌套简写（border → border-top → border-top-width）递归展开。不在表里的简写只删同名。
+const SHORTHAND_LONGHANDS: {[shorthand: string]: string[]} = Object.assign(Object.create(null), {
+    margin: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'],
+    padding: ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'],
+    inset: ['top', 'right', 'bottom', 'left'],
+    gap: ['row-gap', 'column-gap'],
+    flex: ['flex-grow', 'flex-shrink', 'flex-basis'],
+    'flex-flow': ['flex-direction', 'flex-wrap'],
+    overflow: ['overflow-x', 'overflow-y'],
+    outline: ['outline-color', 'outline-style', 'outline-width'],
+    'place-items': ['align-items', 'justify-items'],
+    'place-content': ['align-content', 'justify-content'],
+    'place-self': ['align-self', 'justify-self'],
+    'list-style': ['list-style-type', 'list-style-position', 'list-style-image'],
+    columns: ['column-width', 'column-count'],
+    'column-rule': ['column-rule-width', 'column-rule-style', 'column-rule-color'],
+    'text-decoration': ['text-decoration-line', 'text-decoration-style', 'text-decoration-color'],
+    font: ['font-style', 'font-variant', 'font-weight', 'font-stretch', 'font-size', 'line-height', 'font-family'],
+    background: ['background-color', 'background-image', 'background-repeat', 'background-attachment',
+        'background-position', 'background-size', 'background-origin', 'background-clip'],
+    'background-position': ['background-position-x', 'background-position-y'],
+    transition: ['transition-property', 'transition-duration', 'transition-timing-function', 'transition-delay'],
+    animation: ['animation-name', 'animation-duration', 'animation-timing-function', 'animation-delay',
+        'animation-iteration-count', 'animation-direction', 'animation-fill-mode', 'animation-play-state'],
+    'border-radius': ['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius'],
+    border: ['border-top', 'border-right', 'border-bottom', 'border-left',
+        'border-width', 'border-style', 'border-color', 'border-image'],
+    'border-top': ['border-top-width', 'border-top-style', 'border-top-color'],
+    'border-right': ['border-right-width', 'border-right-style', 'border-right-color'],
+    'border-bottom': ['border-bottom-width', 'border-bottom-style', 'border-bottom-color'],
+    'border-left': ['border-left-width', 'border-left-style', 'border-left-color'],
+    'border-width': ['border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width'],
+    'border-style': ['border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style'],
+    'border-color': ['border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'],
+    'border-image': ['border-image-source', 'border-image-slice', 'border-image-width', 'border-image-outset', 'border-image-repeat'],
+})
 
 /** Emit one NORMAL non-empty text unit (always wrap — allowed by §3.2.1 A2). */
 function emitNonEmptyText(text: string, out: string[]): void {
