@@ -101,3 +101,25 @@ export function isEventName(name: string): boolean {
 export function hasOnPrefix(name: string): boolean {
     return (name.charCodeAt(0) | 32) === 111 && (name.charCodeAt(1) | 32) === 110 && name.length > 2
 }
+
+/**
+ * @internal
+ * dangerouslySetInnerHTML 的 React 形状 {__html}：带 __html 键的对象（#50）。两端共用这一份判定：
+ *  DOM.setAttribute 解包、createElement.isValidAttribute 把它当静态值（激活时走「已认领元素不重写
+ *  innerHTML」的路径，服务端节点原样保留）、激活时「内容是原始标记」的判定、axii/ssr 的输出。
+ * CAUTION 只认带 __html 键的对象，其余对象原样透传：TrustedHTML（Trusted Types 下 innerHTML 的合法值）
+ *  没有 __html，按「是对象就取 .__html」会被解包成 undefined、静默清空内容。数组不带 __html，
+ *  仍按 setAttribute 的「数组取最后一项」处理（mergeProp 合并出的覆盖值）。
+ */
+export function isInnerHTMLObject(value: any): value is {__html: unknown} {
+    return value !== null && typeof value === 'object' && '__html' in value
+}
+
+/**
+ * @internal
+ * dangerouslySetInnerHTML 值实际表示的 HTML：{__html} 取出 __html，其余原样（字符串、nullish、TrustedHTML…）。
+ *  结果为 nullish 表示清空：{__html: null} / {__html: undefined} 与 null / undefined 同义。
+ */
+export function innerHTMLOf(value: any): any {
+    return isInnerHTMLObject(value) ? value.__html : value
+}

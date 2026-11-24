@@ -100,6 +100,14 @@ describe('F7 regression (Node)', () => {
         expect(renderToString(createElement('div', {dangerouslySetInnerHTML: {__html: '<em>x</em>'}} as any)).html)
             .toBe('<div><em>x</em></div><!--root-->')
     })
+
+    // #50: {__html} is unwrapped by one shared rule (markupNames.isInnerHTMLObject) on both ends;
+    //  a nullish __html clears like the nullish string form (it used to print "null" / "undefined").
+    test('dangerouslySetInnerHTML {__html}: nullish __html clears, function / atom returning {__html} is unwrapped', () => {
+        const html = (value: any) => renderToString(createElement('div', {dangerouslySetInnerHTML: value}, 'child')).html
+        expect([html({__html: null}), html({__html: undefined}), html(() => ({__html: '<i>f</i>'})), html(atom({__html: '<i>a</i>'}))])
+            .toEqual(['<div></div><!--root-->', '<div></div><!--root-->', '<div><i>f</i></div><!--root-->', '<div><i>a</i></div><!--root-->'])
+    })
 })
 
 describe('X3 reactive attributes are serialized (Node)', () => {
