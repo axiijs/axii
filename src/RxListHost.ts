@@ -105,6 +105,9 @@ export class RxListHost implements Host{
     createChildHost(item: any) {
         // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符。
         //  元素按 nodeType 判断：行可以返回另一个 realm 的元素（见 nodeType.ts，#58）。
+        // CAUTION 这是 compactListRow.ts 里 Compact 行规则的节点形态（detachStyledChildren 由 createElement
+        //  从静态子树提升好），服务端与激活按同一规则判断描述（#68）。改这里的条件要同步那份规则。
+        //  热路径：保持内联，不经共享函数调用（多一层调用在生产构建微基准里方向一致地偏慢，#68）。
         if (isElementNode(item) && !(item as ExtendedElement).detachStyledChildren) {
             if (isHydrating()) {
                 advancePastNode(item)

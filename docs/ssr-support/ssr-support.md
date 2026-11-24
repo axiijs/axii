@@ -250,7 +250,7 @@ function isFunctionHostTextSnapshot(node: unknown): boolean {
 | F18 | DirectNodes 空串不进 HTML；`['']` 的 `innerHTML` **仅**结构 Comment；`['','world']` 丢失前导空 Text — **必须** `axii:0`（不可套用 F14） | d5 |
 | F19 | `createElement` 对多 child 中的 `string\|number\|bigint`：`appendChild(createTextNode)`，**不**进 `unhandledChildren`、**不**创建 Host、**不**写入 `directNodes`；仅 **数组** child 才 `Comment('unhandledChild')`→StaticArrayHost（`DOM.ts` ~656–732） | 源码 + review-d6 / d6 |
 | F20 | ElementChildText：相邻非空合并；兄弟间空串丢 HTML 需 `axii:0`；**单 child** 空串走 `textContent` → CSR **0** 子节点、不发哨兵；认领后 Text 仍为元素子节点（非 Host / 非 `directNodes`） | d6 |
-| F21 | `RxListHost.createChildHost`：`(HTMLElement\|SVGElement) && !detachStyledChildren` → **CompactElementHost**（共享 placeholder **永不**入文档；`hostLastNode===element`；`renderNewHosts` 只 `appendChild(element)`）。否则 → `createHost(item, Comment('rx list item'))` | 源码 + d7 |
+| F21 | `RxListHost.createChildHost`：`isElementNode(item) && !detachStyledChildren`（元素按 nodeType 判断；是 `src/compactListRow.ts` 规则的节点形态，热路径上内联）→ **CompactElementHost**（共享 placeholder **永不**入文档；`hostLastNode===element`；`renderNewHosts` 只 `appendChild(element)`）。否则 → `createHost(item, Comment('rx list item'))` | 源码 + d7 |
 | F22 | Compact 元素行 CSR 子序列无 per-row `rx list item`；atom/函数/Fragment 行有；对 Compact 误发 `rx list item` 与 CSR 形状不等价；`detachStyledChildren` 使该元素行走非 Compact | d7 |
 | F23 | FunctionHost + **Text** placeholder 走结构路径：`insertBefore(Comment('computed node'), placeholder)` 后 CSR 稳态为 `[…内容…, <!--computed node-->, Text('')]`（`textNode===null`，`element` 来自 `innerHost`，`placeholder` 仍为尾空 Text）。该空 Text **不**进 `innerHTML`；解析后无 placeholder 位点。Comment placeholder 的同结构路径往返形状保持（F7 类），**不能**代替 Text-ph 结构 | 源码 `FunctionHost.ts` ~176–218 + d9 / review-d9 |
 | F24 | FunctionHost + **Comment** placeholder 走结构路径：稳态 `[…内容…, <!--computed node-->, <!--{placeholder.data}-->]`，**无**尾空 Text；HTML 往返不丢节点。`createRoot` 固定 `Comment('root')`（`render.ts` ~67）。FunctionHost 可持有的 Comment.data 有限集含：`root` / `rx list item` / `array item` / `computed node`（嵌套）等（见 `rg createComment src`）。**不含** `empty`——`Comment('empty')` 仅由 EmptyHost 作为 **element** 创建（F25）。对非 `rx list item` 套用「必须 `rx list item`」字面量 → 与 CSR 不等价（d10） | 源码 + d10 / review-d10；d11 修正 empty |
@@ -690,7 +690,7 @@ function isFunctionHostTextSnapshot(node: unknown): boolean {
 
 **权威闭合规则（d13；禁止再「只补单行」）**：行分派表必须与下列两层 **一一对应、闭合**：
 
-1. `RxListHost.createChildHost` 的 Compact 门闩（仅 Element±`detachStyledChildren`）；
+1. `RxListHost.createChildHost` 的 Compact 门闩（仅 Element±`detachStyledChildren`；规则定义在 `src/compactListRow.ts`，见下方层 A 说明）；
 2. 非 Compact 时调用的 `createHost(item, Comment('rx list item'))` 的**全部分支**（`src/createHost.ts` 源码序）。
 
 凡声称「与 createChildHost/createHost 对齐且穷尽」的表述，**仅**当本表行集合覆盖上述闭合时成立。**废除** d7–d12 期间任何「已穷尽」却未列 `RxList` / `ReusableHost` 的声称。
@@ -709,14 +709,16 @@ function isFunctionHostTextSnapshot(node: unknown): boolean {
 
 ##### 行分派真值表（闭合；唯一）
 
-对列表每一行，在得到 `item` 之后（SSR：与 CSR `createElement`/`createHost` 输入同形的描述，含 `detachStyledChildren`）。
+对列表每一行，在得到 `item` 之后（SSR：与 CSR `createElement`/`createHost` 输入同形的描述；服务端没有 `detachStyledChildren`，按下面的同一规则看描述的静态子树）。
+
+**Compact 判定（#68；规则定义在 `src/compactListRow.ts`，服务端与激活对描述的判定从这里取）**：行是元素（不是 Fragment），并且它的**静态子树**里没有任何生效的 `detachStyle`。静态子树 = 行元素自己 + 经元素 / Fragment 子节点递归可达的元素与 Fragment，**不进入** Host child（函数 / atom、数组、RxList、组件、reusable）；生效 = 值为真（≡ `createElement` 的登记条件 `if (value)`：函数 / atom 总是生效，`null` / `undefined` / `false` / `0` / `''` 不生效）。CSR 读 `createElement` 已提升好的 `detachStyledChildren`（`createChildHost` 里内联的「元素且该字段为空」，热路径上不经函数调用、不遍历子树）；服务端对描述做同一判断（`isCompactListRowDescriptor` + `ssr.ts` 的 `SSR_LIST_ROW_ACCESS`）。两种形态一致由 `__tests__/ssrCompactRow.spec.tsx` 守住。曾经服务端只看行元素**自己**的 `detachStyle`，后代带 `detachStyle` 时少写 `<!--rx list item-->`。
 
 **层 A — `createChildHost` Compact 门闩（先于 createHost）**
 
 | # | 条件 | 行种类 | CSR Host | SSR 必须发出 | SSR 禁止 |
 |---|---|---|---|---|---|
-| G1 | 单根 **Element**（`HTMLElement\|SVGElement`）且 **无** `detachStyledChildren` | **Compact-row** | `CompactElementHost` | 仅该行元素（及元素内递归）；列表级尾锚仍由列表 Host.`placeholder` 发出（常见 `<!--unhandledChild-->`，**不是**行级） | 任何行级结构 Comment；共享 compact placeholder 入文档 |
-| G2 | 单根 Element 且 **有** `detachStyledChildren` | **非 Compact** + StaticHost | `createHost`→StaticHost + `Comment('rx list item')` | 行元素（递归）+ **紧随** `<!--rx list item-->` | 省略行级 Comment；套用 G1 |
+| G1 | 单根 **Element**（`HTMLElement\|SVGElement`）且 **无** `detachStyledChildren`（服务端：静态子树里没有生效的 `detachStyle`） | **Compact-row** | `CompactElementHost` | 仅该行元素（及元素内递归）；列表级尾锚仍由列表 Host.`placeholder` 发出（常见 `<!--unhandledChild-->`，**不是**行级） | 任何行级结构 Comment；共享 compact placeholder 入文档 |
+| G2 | 单根 Element 且 **有** `detachStyledChildren`（服务端：行元素自己**或任一静态后代**有生效的 `detachStyle`） | **非 Compact** + StaticHost | `createHost`→StaticHost + `Comment('rx list item')` | 行元素（递归）+ **紧随** `<!--rx list item-->` | 省略行级 Comment；套用 G1 |
 
 **层 B — 非 Compact：与 `createHost` 分支一一对应**（`placeholder` 固定为 `Comment('rx list item')`）
 
