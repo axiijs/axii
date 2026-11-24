@@ -14,7 +14,7 @@ import {
     HYDRATION_MODE_TOP_DOWN,
 } from "./hydration";
 import {isTextNode} from "./nodeType";
-import {COMPUTED_NODE_SLOT, HydrationSlot, isHydrationSlot, TEXT_SLOT} from "./hydrationElement";
+import {COMPUTED_NODE_SLOT, HydrationSlot, TEXT_SLOT, isHydrationSlot, markTopDownAbort} from "./hydrationElement";
 import {claimTopDownComment, claimTopDownEmptyTextPlaceholder, claimTopDownText, insertTopDownEmptyText} from "./hydrationCursor";
 
 type FunctionNodeContext = {
@@ -303,8 +303,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             } else if (!hydrating && newPlaceholder !== undefined) {
                 newPlaceholder.remove()
             }
-            // #55 新模型的激活中：「渲染为空」接不上游标（服务端节点没有被消费，自己的 slot 也还没认领），向上抛出、中止激活
-            if (topDownSlot !== undefined) throw e
+            // #55 新模型的激活中：「渲染为空」接不上游标（服务端节点没有被消费，自己的 slot 也还没认领），向上抛出、中止激活。
+            //  记下它：它会经过本节点 update 的 error 钩子，那里不能把它当作已消费（isTopDownAbort）
+            if (topDownSlot !== undefined) {
+                markTopDownAbort(e)
+                throw e
+            }
             // 本节点在新内容渲染到一半时已被销毁：这棵子树马上丢弃，它的错误没有归属，
             //  不交给 root 的监听器（监听器在 destroy 之后保留，属于 root 之后的内容），
             //  经 reportAxiiError 报告，不抛出、也不静默丢弃（#58）。先报告再销毁子树：

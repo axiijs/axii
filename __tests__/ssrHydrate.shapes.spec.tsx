@@ -15,7 +15,7 @@ import {createElement, createRoot, configureDiagnostics, RenderContext} from '@f
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, pendingTopDown} from './helpers/hydrate'
+import {hydrate, pendingTopDown, TOP_DOWN_PASS} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {
@@ -261,8 +261,8 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
     // the function leaves the server SVG <title> next to a new empty HTML one, the list row keeps the SVG <a>.
     // Kept executable as test.fails; it flips once hydration claims top-down (#55). A throw from hydrateRoot is not
     // this defect: it is logged and the body returns normally, so test.fails reports it instead of swallowing it.
-    // 内部入口那一遍（#55 §7.2）：新模型在认领处看到命名空间不符，按 R1 报告并重建（B3），之前待实现
-    ;(pendingTopDown('B3') ? test.skip : test.fails)('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
+    // 内部入口那一遍（#55 §7.2）：新模型在认领处看到命名空间不符，按 R1 报告并重建（B3 起通过，是普通 test）
+    ;(TOP_DOWN_PASS ? test : test.fails)('shared-name tags rendered later by a function / list end ≡ CSR after hydration (#55)', async () => {
         const make = () => {
             const tip = atom('d1')
             const rows = new RxList(['r1'])
@@ -278,6 +278,8 @@ describe('#56-2 plain JSX <title> / <a> / <style> / <script> under <svg> are SVG
         try {
             result = setup(make)
         } catch (e) {
+            // 内部入口那一遍是普通 test：任何错误都直接让用例失败，不经守卫
+            if (TOP_DOWN_PASS) throw e
             // eslint-disable-next-line no-console
             console.error('[known-defect case] unexpected error, not the documented failure:', e)
             return

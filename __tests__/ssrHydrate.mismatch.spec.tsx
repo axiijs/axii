@@ -28,7 +28,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('tampered ElementChildText: diagnostics + new text identity; matched sibling preserved', () => {
+    test('tampered ElementChildText: diagnostics + new text identity; matched sibling preserved', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -80,7 +80,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('tampered atom Text-ph: rebuild then reactive updates on new Text', () => {
+    test('tampered atom Text-ph: rebuild then reactive updates on new Text', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -134,7 +134,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k21-audit: §3.7 claim-miss / marker-miss must not leave silent unbound DOM ---
 
-    test.skipIf(pendingTopDown('B3'))('wrong child tag: no leftover axii markers; client tag bound and updates', () => {
+    test('wrong child tag: no leftover axii markers; client tag bound and updates', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -162,7 +162,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('id attribute drift: client id/title applied; no orphan SSR sibling', () => {
+    test('id attribute drift: client id/title applied; no orphan SSR sibling', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="ok" title="t">{'x'}</div>
@@ -183,7 +183,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('missing axii:0: mismatch report + empty Text-ph bound for atom updates', () => {
+    test('missing axii:0: mismatch report + empty Text-ph bound for atom updates', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -211,7 +211,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k22-audit: tryClaimElement must not steal same-tag siblings when cursor unit is wrong tag ---
 
-    test.skipIf(pendingTopDown('B3'))('wrong-tag child with id: must not steal next same-tag sibling; orphan removed', () => {
+    test('wrong-tag child with id: must not steal next same-tag sibling; orphan removed', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -250,7 +250,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('wrong-tag child without id: must not steal next same-tag sibling; orphan removed', () => {
+    test('wrong-tag child without id: must not steal next same-tag sibling; orphan removed', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -287,7 +287,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k23-audit: interstitial extra node / swapped tags (domain-review → milestone-review) ---
 
-    test.skipIf(pendingTopDown('B3'))('interstitial extra element: remove junk, claim next same-tag; no orphan axii:t', () => {
+    test('interstitial extra element: remove junk, claim next same-tag; no orphan axii:t', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -323,7 +323,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('multiple interstitial junk nodes: remove all; claim next exact id', () => {
+    test('multiple interstitial junk nodes: remove all; claim next exact id', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -360,7 +360,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('swapped sibling tags: must not wrongIdMiss-claim earlier wrong role; restore span then p', () => {
+    test('swapped sibling tags: must not wrongIdMiss-claim earlier wrong role; restore span then p', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -405,7 +405,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('middle wrong-tag between correct siblings: rebuild middle only', () => {
+    test('middle wrong-tag between correct siblings: rebuild middle only', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -445,7 +445,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k24-audit: same-tag interstitial / swapped ids (deep-walk bypasses D6 cursor cleanup) ---
 
-    test.skipIf(pendingTopDown('B3'))('same-tag interstitial wrong-id: remove junk; claim next exact id; no orphan', () => {
+    test('same-tag interstitial wrong-id: remove junk; claim next exact id; no orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -481,7 +481,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('swapped same-tag ids: preserve client order roles; no cross-wired bindings', () => {
+    test('swapped same-tag ids: preserve client order roles; no cross-wired bindings', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -517,7 +517,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k25-audit: multi same-tag interstitial (green strengthen) + trailing orphans (red) ---
 
-    test.skipIf(pendingTopDown('B3'))('multiple same-tag interstitial junk: remove all; claim exact id', () => {
+    test('multiple same-tag interstitial junk: remove all; claim exact id', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -556,7 +556,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('trailing same-tag junk: must not leave orphan after hydrate', () => {
+    test('trailing same-tag junk: must not leave orphan after hydrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -588,7 +588,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('trailing different-tag junk: must not leave orphan after hydrate', () => {
+    test('trailing different-tag junk: must not leave orphan after hydrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -620,7 +620,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('trailing text junk: must not leave orphan after hydrate', () => {
+    test('trailing text junk: must not leave orphan after hydrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         function App({}: any, {createElement}: RenderContext) {
@@ -649,7 +649,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k26-audit: element-child trailing strengthen + hydrate-root container orphans (D11) ---
 
-    test.skipIf(pendingTopDown('B3'))('multiple mixed trailing junk: remove all element+text orphans', () => {
+    test('multiple mixed trailing junk: remove all element+text orphans', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         const b = atom('B')
@@ -688,7 +688,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('trailing junk after RxList: must not leave orphan', () => {
+    test('trailing junk after RxList: must not leave orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const items = new RxList(['a', 'b'])
         function App({}: any, {createElement}: RenderContext) {
@@ -717,7 +717,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('hydrate-root trailing junk after <!--root-->: must not leave orphan', () => {
+    test('hydrate-root trailing junk after <!--root-->: must not leave orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         function App({}: any, {createElement}: RenderContext) {
@@ -747,7 +747,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('hydrate-root junk before <!--root-->: must not leave orphan sibling', () => {
+    test('hydrate-root junk before <!--root-->: must not leave orphan sibling', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const a = atom('A')
         function App({}: any, {createElement}: RenderContext) {
@@ -786,7 +786,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k27/k28-audit: Comment-ph text drift (D12) + container leading STYLE/SCRIPT/LINK (D13) ---
 
-    test.skipIf(pendingTopDown('B3'))('Comment-ph atom text drift: must report HydrationMismatchError (not silent run() fix)', () => {
+    test('Comment-ph atom text drift: must report HydrationMismatchError (not silent run() fix)', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -843,7 +843,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('G4-F Function→string Comment-ph text drift: report + identity rebuild', () => {
+    test('G4-F Function→string Comment-ph text drift: report + identity rebuild', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -869,7 +869,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('PrimitiveHost Comment-ph string drift: report + identity rebuild', () => {
+    test('PrimitiveHost Comment-ph string drift: report + identity rebuild', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -895,7 +895,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('hydrate-root leading non-ssr STYLE: must not remain after migrate (CSR shape)', () => {
+    test('hydrate-root leading non-ssr STYLE: must not remain after migrate (CSR shape)', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="d">ok</div>
@@ -923,7 +923,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('hydrate-root leading SCRIPT orphan: must not remain after migrate', () => {
+    test('hydrate-root leading SCRIPT orphan: must not remain after migrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="d">ok</div>
@@ -941,7 +941,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B3'))('hydrate-root leading LINK orphan: must not remain after migrate', () => {
+    test('hydrate-root leading LINK orphan: must not remain after migrate', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         function App({}: any, {createElement}: RenderContext) {
             return <div id="d">ok</div>
