@@ -5,7 +5,21 @@ import {Component, ComponentNode} from "./types";
 import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 import {SSR_STYLE_CLASSES_ATTRIBUTE, autoUnit, getAutoUnitType, setAutoUnitType} from './styleSerialize'
-import {hasOnPrefix, innerHTMLOf, isAriaReflectionProperty, isEventName, isInnerHTMLObject, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
+import {
+    REMOVE_ATTRIBUTE,
+    WRITE_EMPTY,
+    WRITE_NULL,
+    attributeNameOfProperty,
+    emptyOrBooleanWrite,
+    hasOnPrefix,
+    innerHTMLOf,
+    isEventName,
+    isInnerHTMLObject,
+    isRawWriteProperty,
+    svgOnlyElementNames,
+    svgPresentationAttributeNames,
+    textareaContentProp,
+} from './markupNames'
 import {
     advanceCursorUntilComment,
     advanceCursorUntilRxListHostPlaceholder,
@@ -120,66 +134,19 @@ function setProperty(node: HTMLElement, name: string, value: any) {
     }
 }
 
-// 反射 property 与它的 content attribute 不同名（转小写之后也不同）的少数情况。
-//  只在「移除 attribute」时用到：removeAttribute('htmlFor') 是空操作，for 永远留在元素上。
-//  classList / relList 是 DOMTokenList（[PutForwards=value]），对它们写 null 会先写出 "null"，
-//  必须按真实的 attribute 名移除（见 setEmptyOrBooleanProperty 的 object 行）。
-const propertyAttributeAliases: {[property: string]: string} = Object.assign(Object.create(null), {
-    htmlFor: 'for',
-    httpEquiv: 'http-equiv',
-    acceptCharset: 'accept-charset',
-    defaultValue: 'value',
-    classList: 'class',
-    relList: 'rel',
-})
-
-// ARIA 反射属性（ariaLabel / ariaExpanded ...）的判定见 markupNames.isAriaReflectionProperty
-
-function attributeNameOfProperty(name: string): string {
-    const alias = propertyAttributeAliases[name]
-    if (alias !== undefined) return alias
-    // ariaLabel -> aria-label，ariaValueNow -> aria-valuenow
-    return isAriaReflectionProperty(name) ? `aria-${name.slice(4).toLowerCase()}` : name
-}
-
 /**
- * 通用 property 分支里 null / undefined / boolean 值的写入规则（静态与响应式属性共用，唯一一份）。
+ * 通用 property 分支里 null / undefined / boolean 值的写入（静态与响应式属性共用，唯一一份）。
  *
- * CAUTION property 赋值按 IDL 类型做转换，原样赋值只对「boolean 值 → boolean property」是对的：
- *  - string property 会把 false/undefined 字符串化：title={cond && 'tip'} 渲染出 title="false"，
- *    href={false} 链接到 /false，download={false} 反而变成下载链接，popover={false} 把元素变成
- *    隐藏的 manual popover，htmlFor={undefined} 关联到 id 为 "undefined" 的控件；
- *  - number property 把 false 变成 0：maxLength={false} 的输入框一个字符都输不进去；
- *  - object 类型的可空 property（srcObject 的 MediaStream、valueAsDate 的 Date、popoverTargetElement）
- *    不接受 ''：setter 抛 TypeError，setProperty 退回 setAttribute 写一个无意义的 attribute 再移除，
- *    property 本身从没被清空——srcObject={cond && stream} / srcObject={null} 的视频继续播放。
- *    它们的「空」是 null。当前值为 null 的可空反射属性（未设置的 popover / crossOrigin）写 null
- *    同样等于移除 attribute；DOMTokenList（sandbox / relList，[PutForwards=value]）会先写出 "null"，
- *    随后按 attribute 名移除（见 propertyAttributeAliases）。
- *  - 同一个 false 在 attribute 分支（foo={false}）是「移除」，两条路径曾经不一致。
- *  规则（「property 类型」= typeof node[name]，只在这个慢路径里读一次）：
- *
- *  | 值        | property 类型（current）                  | 写入                                    |
- *  |-----------|-------------------------------------------|-----------------------------------------|
- *  | null      | 任意                                      | property = ''，移除 attribute（原有语义）；setter 拒绝 '' 时写 null（object 类型）|
- *  | undefined | string                                    | 同 null                                 |
- *  | undefined | object（current 为 null 或对象）          | property = null，移除 attribute         |
- *  | undefined | 其他                                      | property = undefined，移除 attribute（原有语义）|
- *  | false     | boolean                                   | property = false（原有语义）            |
- *  | false     | string / number                           | 同 null：「条件不满足」= 没写这个属性   |
- *  | false     | object                                    | property = null，移除 attribute         |
- *  | true      | boolean                                   | property = true（原有语义）             |
- *  | true      | string，或 current 为 null 的可空反射属性 | property = ''（等价于 HTML 里只写属性名：download / popover / alt）|
- *  | true      | 其他                                      | property = true（原有语义）             |
+ * 规则本身（按 property 类型决定写什么、要不要移除 attribute）在 markupNames.emptyOrBooleanWrite，
+ *  property 名对应的真实 attribute 名在 markupNames.attributeNameOfProperty（#51）：axii/ssr 用同一条规则、
+ *  按静态类型表推出同一个 attribute，两端不再各有一份。这里只负责取「property 类型」——typeof node[name]，
+ *  只在这个慢路径里读一次——并执行写入码。
  *
  *  null 不读 property（与修改前一样便宜）：先写 ''，只有 object 类型的 setter 会拒绝 ''，
- *  在异常分支里才读类型、改写 null（见 clearProperty）。
+ *  在异常分支里才读类型、改写 null（见 clearProperty）；随后按真实 attribute 名移除。
  *
- *  原样写入的例外（与原来完全一致，不读 property）：
- *  - 自定义元素（tagName 带 '-'）：property 的语义由组件自己定义，boolean / undefined 原样传；
- *  - contentEditable / writingSuggestions / aria*：取值是 "true"/"false" 关键字的 string property，
- *    false 是有语义的值（与 attribute 分支对 contenteditable、aria-* 的处理一致）；
- *  - hidden：它的 getter 在 until-found 状态下返回字符串。
+ *  原样写入的例外（不读 property）：自定义元素（tagName 带 '-'，property 的语义由组件自己定义），
+ *  以及 markupNames.isRawWriteProperty 的名字（contentEditable / writingSuggestions / aria* / hidden）。
  *  value / checked（表单控件）不走这里，各有专门的分支。
  */
 function setEmptyOrBooleanProperty(node: HTMLElement, name: string, value: null | undefined | boolean) {
@@ -188,33 +155,15 @@ function setEmptyOrBooleanProperty(node: HTMLElement, name: string, value: null 
         node.removeAttribute(attributeNameOfProperty(name))
         return
     }
-    let write: any = value
-    let remove = value === undefined
-    if (node.tagName.indexOf('-') === -1 &&
-        name !== 'contentEditable' && name !== 'writingSuggestions' && name !== 'hidden' &&
-        !isAriaReflectionProperty(name)) {
-        const current = (node as any)[name]
-        const type = typeof current
-        if (type === 'string') {
-            write = ''
-            if (value === false) remove = true
-        } else if (type === 'object') {
-            if (value !== true) {
-                write = null
-                remove = true
-            } else if (current === null) {
-                write = ''
-            }
-        } else if (type === 'number' && value === false) {
-            write = ''
-            remove = true
-        }
-    }
-    setProperty(node, name, write)
-    if (remove) node.removeAttribute(attributeNameOfProperty(name))
+    const code = emptyOrBooleanWrite(
+        node.tagName.indexOf('-') === -1 && !isRawWriteProperty(name) ? (node as any)[name] : undefined,
+        value,
+    )
+    setProperty(node, name, code & WRITE_EMPTY ? '' : code & WRITE_NULL ? null : value)
+    if (code & REMOVE_ATTRIBUTE) node.removeAttribute(attributeNameOfProperty(name))
 }
 
-// null 的写入（见 setEmptyOrBooleanProperty 的表）：'' 对 string / number / boolean property 都是「空」。
+// null 的写入（见 markupNames.emptyOrBooleanWrite 的表）：'' 对 string / number / boolean property 都是「空」。
 function clearProperty(node: HTMLElement, name: string) {
     try {
         (node as any)[name] = ''
@@ -1112,7 +1061,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         // CAUTION textarea 的 value 在 HTML 里只能写成子文本（§3.6.2 TA 通道），CSR 则是纯 IDL 赋值、
         //  没有子节点。这段子文本是 value 的编码，不是哪个 child 单元的节点：在这里直接拿掉
         //  （value 由下面延后处理的 value prop 写回），否则它会被当成「尾部孤儿」报一条假的失配。
-        if (type === 'textarea' && rawProps && Object.prototype.hasOwnProperty.call(rawProps, 'value')) {
+        //  defaultValue 同理（#51）：服务端把它写成子文本，下面的 props 循环再把它赋给 defaultValue。
+        if (type === 'textarea' && textareaContentProp(rawProps) !== undefined) {
             container.textContent = ''
         }
         enterElementChildCursor(resolveHydrateChildParent(container as Element, children))
