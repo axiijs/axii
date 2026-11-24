@@ -1522,3 +1522,45 @@ describe('stylesheet declarations behave like inline declarations', () => {
         expect(computed.animationName).toBe('none')
     })
 })
+
+describe('Form same-name fields: re-registration', () => {
+    test('a field registered again (A, B, A) is not handed back after it unregistered', () => {
+        const values = new RxMap<string, any>({})
+        let form: any
+        function Grab({}: any, {context}: RenderContext) {
+            form = context.get(FormContext)
+            return <span/>
+        }
+        root.render(<Form name="f" values={values}><Grab/></Form>)
+        const A = {value: atom('A'), reset() {}, clear() {}}
+        const B = {value: atom('B'), reset() {}, clear() {}}
+        form.register('x', A)
+        form.register('x', B)
+        form.register('x', A)
+        expect(values.get('x')).toBe(A.value)
+        form.unregister('x', A)
+        expect(values.get('x')).toBe(B.value)
+        form.unregister('x', B)
+        // A is gone: nothing is left to hand the name back to
+        expect(values.get('x')).toBeUndefined()
+    })
+
+    test('B registered twice in a row still hands back to A once', () => {
+        const values = new RxMap<string, any>({})
+        let form: any
+        function Grab({}: any, {context}: RenderContext) {
+            form = context.get(FormContext)
+            return <span/>
+        }
+        root.render(<Form name="f" values={values}><Grab/></Form>)
+        const A = {value: atom('A'), reset() {}, clear() {}}
+        const B = {value: atom('B'), reset() {}, clear() {}}
+        form.register('x', A)
+        form.register('x', B)
+        form.register('x', B)
+        form.unregister('x', B)
+        expect(values.get('x')).toBe(A.value)
+        form.unregister('x', A)
+        expect(values.get('x')).toBeUndefined()
+    })
+})
