@@ -914,6 +914,14 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **种类计数（§2.4.1）：** 扩展后的 F1i 生成 `reusable()`（组件返回 `reusable(source)`）与现成节点（元素 / Text 作为元素 child，Text 作为组件结果即 NodeHost），300 棵树里 `HOST_TYPE_NAMES` 全部 10 种与 `CompactElementHost` 两边都出现、逐树相等。现成节点的服务端对应物带 `data-live`，漂移 fuzz 与原始标记一样不往里注入。
 - **诊断开关两遍：** 见 §3.4 末段。两遍都全绿；诊断开启那一遍里开发期不变量、`ELEMENT_ACCESS`、`ATTRIBUTE_RESIDUE` 在未改动的服务端输出上都是 0 条。
 - **产物：** 内部入口独有的字符串（`hydrateTopDown.ts` 里开发期不变量的报错文本）不在 `dist`。`end of hydrate root children` 随容器层的 R5 挪进 `render.hydrateContainerTopDown`（Portal 可达），留在产物里，产物检查改看不变量的文本。
+- **独立审查后的修正：**
+  - 同一个描述（或现成节点）在一棵静态子树里出现两次时，`StaticHost` 预先构造子 Host 只收集一次它的动态 child（≡ CSR：child 循环只在第一次提升元数据）；之前后面兄弟的子 Host 会错位、绑定落到别人的位置。收集用一个模块级的 `Set`，每次收集前清空（激活路径，每个描述一次 `has` / `add`）。
+  - CSR 里静态 child 在 `createElement` 时插入、Host 在之后渲染：同一个元素既是某个 Host 的 source、又是静态 child 时，最后落在 Host 那里。静态位置晚于 Host 出现时只删除服务端的对应物，不再挪走它。Host 认领的描述瘦身时 `rawChildren` 写成共享的 `HOST_PLACED_CHILDREN`（不分配），现成节点记在这次激活的 `WeakSet` 里。
+  - 失配新建、还在等所属 `StaticHost` 插入的元素（#73）被第二次放置时，作废那次插入。
+  - 激活中建好、之后才放进树的 reusable，按构造时所属组件的 context 重建 innerHost（放进树时 `createHost` 改写的是 `ReusableHost.pathContext`）。
+  - 物化描述时数组 child 里的描述项也先物化，SVG 同名标签的改建 ≡ CSR。
+  - 开发期 Proxy 不为 `__` 开头的名字（`getAxiiSource` 读的 `__axiiSource`）创建探测元素。
+  - 没有修、列在 §11 的：同一个 Fragment 描述出现两次时服务端多写的那份内容按 R3 / R5 报告并删除（元素是静默删除对应物，两者不一致）；字符数据父节点里的现成节点没有对应物可删；失配新建的子树里的 Portal 找不到容器时与旧模型一样抛错；列表行的 Compact 判定不看行里现成元素的 `detachStyledChildren`；跨两次激活渲染同一个描述时「由 Host 放置过」的标记沿用上一次。
 - **性能：** CSR 路径上的变化只有 `createChildHost` 非 Compact 分支的一次 `instanceof`（元素行不经过）与 `reusable()` 构造时的一次模式读取。同页 A/B/A′（§5.3 的方法，生产构建，30 轮预热 + 60 轮，A 为 `a14285d`）：最初把描述判定写在 `createChildHost` 里（并让它调用自己），Compact 行负载 B/A 四次 1.007–1.020、A′/A ≤ 0.7%，方向一致地慢；去掉判定的构建回到噪声以内，判定拆成单独的方法 `createCommentRowHost` 之后同样回到噪声以内（两次 0.995 / 0.998）。终版两次运行：`createElement` 3000×4 为 1.0009、0.9996；`render` 1000 静态行 1.0053、0.9904；RxList Compact 行 0.9884（A′/A 0.9842）、1.0268（A′/A 1.0311）；RxList 非 Compact 行（字符串行，经过这次判定）1.0000、0.9799（A′/A 0.9844，B 更快）。相对 PR-A 之前的 `3a43c2b`（给 S）：1.012、1.0012、1.0076、0.9898。
 
 
@@ -1043,6 +1051,13 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **稀疏数组的空位（B2 发现，服务端与 CSR 不一致；#85 已修复）。** `[a, , b]`：CSR 的 `StaticArrayHost.render` 用 `forEach`，跳过空位；服务端 `serializeStaticArray` 曾经用 `for…of`，为空位写 `<!--empty--><!--array item-->`。激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配，B3 起按 R2 / R3 删除，≡ CSR。#85 在服务端修复：`serializeStaticArray` 与 `forEach` 一样跳过空位（`index in items`，显式的 `undefined` / `null` 仍是 EmptyHost）；旧入口的两处数组认领（`DOM.ts` 元素 child、`hydration.walkFragmentHydrateChildren`）同样跳过。同一次修复了 `StaticArrayHost` 的 `firstChild`：曾经只在 `index === 0` 时设置，首位是空位的数组 `element` 退回到 placeholder，CSR 销毁 / 替换 / 移动时内容留在原处，组件根上的这种数组激活时被判成容器里的残留节点。`hydrateTopDown.spec`「a hole in a sparse static array」钉住 #85 之前的服务端 HTML（激活报告失配并修复，B3）与修复后的输出（不报告），各位置两个入口的用例在 `ssrHydrate.sparseArrays.spec.tsx`。
 - **激活中行组件同步改动列表（B2 交接，B3 确认）。** 行组件在 `useEffect` 里同步 `list.push(…)`：CSR 本身被 data0 拒绝（「detect recompute triggerred in sync recompute」），激活时行在 computed 之外认领、computed 在全部行认领之后才建立，这次改动不被追踪，也不报告。下一个 tick 的改动两边都被追踪、≡ CSR（`hydrateTopDownMismatch.spec` 钉住）。同步改动的检测不在 B3 范围。
 - **`ReusableHost` 的保留计数（B4 发现并修复，CSR 同样）。** `createHost` 在 reusable 放进树时登记 `ReusableHost`，`destroyReusable` 不登记销毁，从未渲染的 innerHost 也一样：CSR 渲染再销毁之后 `retainedObjectDiagnostics` 里它们一直算作活跃。只影响诊断计数，不是真实的泄漏。B4 在 `destroyReusable` 里登记（§7.9）。
+- **B4 独立审查列出、没有修的边角（只在误用或极少见的组合里出现）：**
+  - 同一个 Fragment 描述在一次激活里出现两次：服务端写了两份内容，第二份按 R3 / R5 报告失配并删除（≡ CSR 的结果；同一个元素描述出现两次则是静默删除对应物，两者不一致）。
+  - `<title>` / `<textarea>` 等字符数据父节点里的现成 Text：没有可删的对应物，服务端的文本按失配处理。
+  - 失配新建的子树里的 Portal，容器没有 id / `portalKey` 或不在文档里时，与旧模型一样抛错、中止激活（CSR 直接用这个元素）。
+  - 列表行的 Compact 判定（#68 的访问器）不看行里现成元素自带的 `detachStyledChildren`：这种行在 CSR 里是非 Compact 行。
+  - 同一个描述跨两次激活渲染时，「由 Host 放置过」的标记沿用上一次（描述上的标记不随激活清空）。
+  - 激活中 Portal 的 root 被销毁时容器仍留在待检查的表里：函数子节点的更新是延迟的，现在构造不出这种情形，没有改。
 - **#54 报告的疑点不再存在。** 疑点是 `createElementForHydrateMismatch` 新建的元素没有登记为已认领，之后的无游标认领可能拿到它。新模型没有无游标认领，S 之后不再成立，无需单独处理。
 
 ---
