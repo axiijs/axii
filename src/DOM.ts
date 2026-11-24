@@ -38,6 +38,7 @@ import {
     enterElementChildCursor,
     exitElementChildCursor,
     getChildCursor,
+    insertHydrateMismatchElement,
     isElementChildCursorActive,
     isHydrateDeferredElement,
     isHydrateOnMainRoot,
@@ -1355,6 +1356,8 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     let container: HTMLElement | DocumentFragment | SVGElement
     // 激活时元素是认领来的（服务端节点）还是失配后就地新建的
     let hydrateClaimed = false
+    // 失配后新建：脱离文档建好，props 应用完再插到游标处（#73，见 createElementForHydrateMismatch）
+    let hydrateRebuilt = false
     if (type === Fragment) {
         container = document.createDocumentFragment()
     } else if (hydrating) {
@@ -1364,7 +1367,12 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
             // No parent cursor: Portal content under main root — defer until hydratePortalContent.
             // List/array setChildCursor alone must not rebuild (would delete row placeholders).
             if (isElementChildCursorActive()) {
-                container = createElementForHydrateMismatch(type as string, _isSVG) as HTMLElement
+                container = createElementForHydrateMismatch(
+                    type as string,
+                    _isSVG,
+                    rawProps && typeof rawProps.is === 'string' ? rawProps.is : undefined,
+                ) as HTMLElement
+                hydrateRebuilt = true
             } else if (!getChildCursor().parent || isClaimStoppedAtSvgCounterpart()) {
                 // HTML / SVG 同名的标签遇到了它的 SVG 对应物：交给 SVG 父元素按 SVG 认领（#56，见 isClaimStoppedAtSvgCounterpart）
                 return createHydrateDeferredElement(type as string, rawProps, children)
@@ -1399,8 +1407,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     //  在单选语义的 select 里插入时会互相顶掉，只剩最后一个被选中。静态真值在这里预应用；
     //  响应式 multiple（函数/atom）由 setAttribute 的 multiple 分支在翻转时重放存值。
     //  下面的 props 循环会再次应用 multiple，重复设置同值无害。
-    // Hydrate：元素已带属性，跳过预应用（避免覆盖 SSR 结果）；仍登记响应式 attr。
-    if (!hydrating && type === 'select' && rawProps?.multiple && typeof rawProps.multiple !== 'function') {
+    // Hydrate：认领来的元素已带属性，跳过预应用（避免覆盖 SSR 结果）；仍登记响应式 attr。
+    //  失配后新建的元素与 CSR 相同，要预应用：它的 option 在下面的 children 处理中逐个新建、插入（#73）。
+    if (!hydrateClaimed && type === 'select' && rawProps?.multiple && typeof rawProps.multiple !== 'function') {
         setAttribute(container as ExtendedElement, 'multiple', rawProps.multiple, _isSVG)
     }
 
@@ -1677,6 +1686,9 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
     // Process props after children for proper Select/Option behavior（见 applyElementProps）
     applyElementProps(container, rawProps, _isSVG, hydrateClaimed, childrenLength, debugSource,
         unhandledChildren, unhandledAttr, refHandles, detachStyledChildren)
+
+    // 失配后新建的元素此时子节点和 props 都已应用，才插入文档（#73）。游标已由 exitElementChildCursor 恢复到父节点。
+    if (hydrateRebuilt) insertHydrateMismatchElement(container as Element)
     return container as (HTMLElement | DocumentFragment | SVGElement)
 }
 

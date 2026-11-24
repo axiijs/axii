@@ -842,13 +842,24 @@ export function tryClaimElement(
 
 /**
  * §3.7: element claim miss under an active parent child cursor → report + local CSR create.
- * Removes the mismatched child at the cursor (wrong tag / leftover SSR unit), inserts a
- * fresh element, leaves the cursor on that element so the parent `advancePastNode` finds it.
+ * Removes the mismatched child at the cursor (wrong tag / leftover SSR unit) and returns a fresh
+ * **detached** element. The caller (DOM.createElement) applies its children and props while it is
+ * detached, then calls insertHydrateMismatchElement to put it at the cursor.
  * Must not be used without a parent cursor (Portal defer path returns null from tryClaim).
+ *
+ * CAUTION 新建的元素必须在脱离文档时建好（子节点、props 都应用完）再插入，与 CSR 的顺序一致（#73）：
+ *  CSR 的 createElement 返回的是建好的脱离文档的元素，由 Host 插入。有些元素在连入文档的那一刻、
+ *  或连入文档后拿到某个属性的那一刻产生一次性效果，并且只读当时已有的属性：
+ *  已连入文档的 <script> 一拿到文本或 src 就按当时的 type 执行（还没有 type 就当 JavaScript）；
+ *  <link rel=stylesheet> 一有 rel + href 就按当时的 integrity / crossorigin 发出请求；<iframe> 的 src / srcdoc
+ *  一写入就开始导航。曾经先插入、再写文本、最后写 type：服务端的 <script type="application/json">
+ *  被重建时，内容被当成 JavaScript 执行；带 src 的 text/plain 脚本被加载执行，integrity 不校验。
+ *  is（customized built-in）只在创建时生效（I64），同样要在这里以创建选项传入。
+ *  已知局限（#55）：响应式属性（unhandledAttr）由所属 StaticHost 在之后应用，那时元素已经在文档里；
+ *  CSR 在插入根元素之前应用。<script type={atom}> 这类写法在重建时仍按插入时的属性执行。
  */
-export function createElementForHydrateMismatch(tagName: string, isSVG?: boolean): Element {
-    const parent = childCursorParent
-    if (!parent) {
+export function createElementForHydrateMismatch(tagName: string, isSVG?: boolean, is?: string): Element {
+    if (!childCursorParent) {
         throw new Error('[axii] hydrate createElementForHydrateMismatch without element cursor')
     }
     reportHydrationMismatch(
@@ -860,13 +871,24 @@ export function createElementForHydrateMismatch(tagName: string, isSVG?: boolean
         // Drop one mismatched unit at cursor (wrong tag shell + leftover axii:t, etc.)
         node.remove()
     }
-    const el = isSVG
+    return isSVG
         ? document.createElementNS('http://www.w3.org/2000/svg', tagName)
-        : document.createElement(tagName)
-    const before = parent.childNodes[childCursorIndex] ?? null
-    parent.insertBefore(el, before)
-    // Cursor stays on `el`; caller returns it and parent advancePastNode advances past.
-    return el
+        : is === undefined ? document.createElement(tagName) : document.createElement(tagName, {is})
+}
+
+/**
+ * Insert an element made by createElementForHydrateMismatch, after its children and props are
+ * applied, at the parent child cursor — the cursor it was created at: the caller's
+ * enterElementChildCursor / exitElementChildCursor pair has restored it, and the element's own
+ * children only touch the element. The cursor stays on the element; the parent `advancePastNode`
+ * advances past it.
+ */
+export function insertHydrateMismatchElement(el: Element): void {
+    const parent = childCursorParent
+    if (!parent) {
+        throw new Error('[axii] hydrate insertHydrateMismatchElement without element cursor')
+    }
+    parent.insertBefore(el, parent.childNodes[childCursorIndex] ?? null)
 }
 
 /**

@@ -32,6 +32,7 @@ import {
     enterElementChildCursor,
     exitElementChildCursor,
     findRootComment,
+    insertHydrateMismatchElement,
     reconcileFlattenedFragmentHydrateChildren,
     reconcileFragmentHydrateChildren,
     stripAxiiTextBoundariesBetween,
@@ -310,6 +311,11 @@ describe('claim helpers error contracts', () => {
         const errors = captureMismatches()
         const el = createElementForHydrateMismatch('path', true)
         expect(el.namespaceURI).toBe('http://www.w3.org/2000/svg')
+        // #73: the mismatched unit is dropped and the new element stays detached until its props and
+        //  children are applied; insertHydrateMismatchElement then puts it at the cursor.
+        expect(el.parentNode).toBe(null)
+        expect(div.firstChild).toBe(null)
+        insertHydrateMismatchElement(el)
         expect(div.firstChild).toBe(el)
         expect(errors.some(e => e instanceof HydrationMismatchError)).toBe(true)
     })
