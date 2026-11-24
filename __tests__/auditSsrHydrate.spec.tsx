@@ -21,7 +21,6 @@
 import {
     createElement,
     createRoot,
-    configureDiagnostics,
     bindProps,
     PropTypes,
     RenderContext,
@@ -35,7 +34,7 @@ import {
     getAxiiRetainedObjectDiagnosticsSnapshot,
     resetAxiiRetainedObjectDiagnostics,
 } from '../src/retainedObjectDiagnostics'
-import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {

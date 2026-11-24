@@ -12,7 +12,6 @@
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {
     atom,
-    configureDiagnostics,
     createElement,
     createHost,
     createRoot,
@@ -20,7 +19,7 @@ import {
     RxList,
 } from "@framework";
 import {renderToString} from '../src/ssr.js'
-import {hydrate} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 async function settle() {

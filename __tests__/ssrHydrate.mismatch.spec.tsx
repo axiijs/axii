@@ -6,7 +6,6 @@
 import {
     createElement,
     createRoot,
-    configureDiagnostics,
     enableAxiiRetainedObjectDiagnostics,
     disableAxiiRetainedObjectDiagnostics,
     resetAxiiRetainedObjectDiagnostics,
@@ -17,7 +16,7 @@ import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
-import {hydrate} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 describe('M-06 hydration mismatch (§3.7)', () => {
     let rootEl: HTMLElement

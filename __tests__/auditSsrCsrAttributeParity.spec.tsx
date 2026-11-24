@@ -4,11 +4,11 @@
  * attributes as a client render of the same JSX. The server has no DOM to ask for a property's
  * type, so it follows a static table; this spec is what keeps the two sides from drifting apart.
  */
-import {atom, configureDiagnostics, createElement, createRoot, RenderContext} from '@framework'
+import { atom, createElement, createRoot, RenderContext } from '@framework'
 import {describe, expect, test, vi} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {htmlPropertyTypeEntries, type HtmlPropertyType} from '../src/htmlPropertyTypes.js'
-import {hydrate} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 function attributesOf(root: Element): string[] {
     const out: string[] = []

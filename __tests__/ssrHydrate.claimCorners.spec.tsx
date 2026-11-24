@@ -7,7 +7,6 @@
  */
 import {
     createElement,
-    configureDiagnostics,
     RenderContext,
 } from '@framework'
 import {atom, RxList} from 'data0'
@@ -37,7 +36,7 @@ import {
     stripAxiiTextBoundariesBetween,
     tryClaimElement,
 } from '../src/hydration.js'
-import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
 
 function captureMismatches(): unknown[] {
     const errors: unknown[] = []

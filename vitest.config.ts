@@ -10,9 +10,9 @@ const siblingData0 = fileURLToPath(new URL('../data0/src/index.ts', import.meta.
 const forceNpmData0 = process.env.AXII_DATA0_FORCE_NPM === '1'
 const useSiblingData0 = !forceNpmData0 && existsSync(siblingData0)
 
-// #55（设计 docs/ssr-support/hydration-top-down.md §7.2）：调用激活的 spec 文件都经 __tests__/helpers/hydrate.ts 激活。
-//  下面的「top-down」项目把它们再跑一遍，走不导出的内部入口（新模型）；「default」项目照旧跑全部用例、走公开的 hydrateRoot。
-//  一条 `npx vitest run` 跑完两遍，门禁命令不变。新增调用激活的 spec 文件时加进这张表；#55 S 删除入口切换时一并删除它。
+// #55（设计 docs/ssr-support/hydration-top-down.md §7.2、§3.4）：调用激活的 spec 文件都经 __tests__/helpers/hydrate.ts 激活。
+//  下面的「top-down」「top-down-diag-off」项目把它们再跑两遍，走不导出的内部入口（新模型），激活期间诊断分别开、关；
+//  「default」项目照旧跑全部用例、走公开的 hydrateRoot。一条 `npx vitest run` 跑完三遍，门禁命令不变。新增调用激活的 spec 文件时加进这张表；#55 S 删除入口切换时一并删除它。
 const TOP_DOWN_HYDRATE_SPECS = [
   '__tests__/auditSsrCsrAttributeParity.spec.tsx',
   '__tests__/auditSsrHydrate.spec.tsx',
@@ -76,10 +76,16 @@ export default {
     },
     projects: [
       {extends: true, test: {name: 'default'}},
+      // §3.4 两遍验收（B4 起，S 之后保留）：内部入口在激活期间诊断开启（开发期 Proxy 与开发期报告）、关闭（裸描述，≡ 生产）各一遍
       {
         extends: true,
-        define: {__AXII_HYDRATE_TOP_DOWN__: true},
+        define: {__AXII_HYDRATE_TOP_DOWN__: true, __AXII_HYDRATE_DIAGNOSTICS__: true},
         test: {name: 'top-down', include: TOP_DOWN_HYDRATE_SPECS},
+      },
+      {
+        extends: true,
+        define: {__AXII_HYDRATE_TOP_DOWN__: true, __AXII_HYDRATE_DIAGNOSTICS__: false},
+        test: {name: 'top-down-diag-off', include: TOP_DOWN_HYDRATE_SPECS},
       },
     ],
     coverage: {

@@ -15,7 +15,6 @@
  */
 import {
     atom,
-    configureDiagnostics,
     createElement,
     createRoot,
     RenderContext,
@@ -24,7 +23,7 @@ import {
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {CompactElementHost} from '../src/StaticHost.js'
-import {hydrate} from './helpers/hydrate'
+import {hydrate, configureDiagnostics} from './helpers/hydrate'
 
 /** 递归的结构签名：标签、Comment、Text（不含属性），用于比较服务端解析结果与 CSR 的 DOM 形状。 */
 function structure(n: Node): string {

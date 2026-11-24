@@ -13,12 +13,12 @@
  * DOM must equal a CSR root of the same tree.
  * Run: npx vitest run __tests__/ssrHydrate.mismatchRebuild.spec.tsx
  */
-import {createElement, createRoot, configureDiagnostics, RenderContext} from '@framework'
+import {createElement, createRoot, RenderContext} from '@framework'
 import {atom} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
 import {HydrationMismatchError} from '../src/hydration.js'
-import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
 
 type ProbeWindow = Window & {__axiiI73Probe?: string[]}
 const probeWindow = window as ProbeWindow

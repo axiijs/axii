@@ -11,11 +11,11 @@
  * after the reactive data changes the hydrated DOM ≡ a CSR root given the same change.
  * Run: npx vitest run __tests__/ssrHydrate.shapes.spec.tsx
  */
-import {createElement, createRoot, configureDiagnostics, RenderContext} from '@framework'
+import {createElement, createRoot, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
 
 let reports: string[]
 beforeEach(() => {

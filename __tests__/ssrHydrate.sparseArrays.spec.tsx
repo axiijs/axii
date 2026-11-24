@@ -19,11 +19,11 @@
  *  CSR 自己的错「≡ CSR」看不出来，最后一组用例与同一终态的全新 CSR 渲染比较。
  * Run: npx vitest run __tests__/ssrHydrate.sparseArrays.spec.tsx
  */
-import {createElement, createRoot, configureDiagnostics, RenderContext} from '@framework'
+import {createElement, createRoot, RenderContext} from '@framework'
 import {atom, RxList} from 'data0'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {renderToString} from '../src/ssr.js'
-import {hydrate, TOP_DOWN_PASS} from './helpers/hydrate'
+import {hydrate, TOP_DOWN_PASS, configureDiagnostics} from './helpers/hydrate'
 
 /* eslint-disable no-sparse-arrays */
 
