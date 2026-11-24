@@ -7,6 +7,7 @@
 import {atom, configureDiagnostics, createElement, createRoot, hydrateRoot, RenderContext} from '@framework'
 import {describe, expect, test, vi} from 'vitest'
 import {renderToString} from '../src/ssr.js'
+import {htmlPropertyTypeEntries, type HtmlPropertyType} from '../src/htmlPropertyTypes.js'
 
 function attributesOf(root: Element): string[] {
     const out: string[] = []
@@ -627,5 +628,307 @@ describe('#52 checkbox / radio: a nullish value never touches the checked state,
         expect(seen).toEqual([true, false, true, true, true, false])
         root.destroy()
         client.remove()
+    })
+})
+
+/**
+ * #51：服务端的属性写法以「客户端会产生什么」为准。客户端按 property 的运行时类型写 boolean
+ * （setEmptyOrBooleanProperty），服务端没有 DOM，用 markupNames 里同一条写入规则 + 一份按元素区分的静态类型表。
+ * 每个场景比对三份结果：客户端渲染、浏览器解析服务端 HTML、在服务端 HTML 上 hydrate。
+ * 比对内容是 attribute（名字 + 值）与表单相关的 IDL（value / checked / defaultValue / defaultChecked / selected …）。
+ */
+describe('#51 one attribute rule for both sides: server markup parses to what the client writes', () => {
+    // 比对的范围：'full' = attribute + 全部表单 IDL；'idl' = 全部表单 IDL；'live' = 只比当前状态
+    //  （value / checked / selected / muted）——default* 与驱动同一状态的 prop 同时出现时，HTML 只能写出一个，
+    //  解析后的 defaultValue / defaultChecked / defaultMuted 无法同时与客户端一致。
+    type Scope = 'full' | 'idl' | 'live'
+    function idlOf(el: Element, scope: Scope): string {
+        const out: string[] = []
+        const any = el as any
+        const defaults = scope !== 'live'
+        if (el instanceof HTMLInputElement) {
+            out.push(`value=${JSON.stringify(el.value)}`, `checked=${el.checked}`)
+            if (defaults) out.push(`defaultValue=${JSON.stringify(el.defaultValue)}`, `defaultChecked=${el.defaultChecked}`)
+        } else if (el instanceof HTMLTextAreaElement) {
+            out.push(`value=${JSON.stringify(el.value)}`)
+            if (defaults) out.push(`defaultValue=${JSON.stringify(el.defaultValue)}`)
+        } else if (el instanceof HTMLSelectElement) {
+            out.push(`value=${JSON.stringify(el.value)}`)
+        } else if (el instanceof HTMLOptionElement) {
+            out.push(`selected=${el.selected}`, `value=${JSON.stringify(el.value)}`)
+        } else if (el instanceof HTMLMediaElement) {
+            // 解析器创建的媒体元素按创建时的 muted attribute 设 .muted，脚本创建的不会（attribute 后加不影响 .muted）：
+            //  attribute 相同时 .muted 也可能不同，HTML 表达不了。只在 'live' 里比 .muted（muted prop 两端都设了它）。
+            out.push(defaults ? `defaultMuted=${el.defaultMuted}` : `muted=${el.muted}`)
+        } else if (any.open !== undefined && (el instanceof HTMLDetailsElement || el instanceof HTMLDialogElement)) {
+            out.push(`open=${any.open}`)
+        }
+        return out.join(' ')
+    }
+    // 按 id 收集：attribute（排序后的 name=value）与 IDL
+    function stateOf(root: Element, scope: Scope): Record<string, string> {
+        const out: Record<string, string> = {}
+        for (const el of Array.from(root.querySelectorAll('[id]'))) {
+            const attrs = scope === 'full'
+                ? Array.from(el.attributes).filter(a => a.name !== 'id')
+                    .map(a => `${a.name}=${JSON.stringify(a.value)}`).sort().join(' ')
+                : ''
+            out[el.id] = `${attrs} | ${idlOf(el, scope)}`
+        }
+        return out
+    }
+    function clientState(App: any, scope: Scope) {
+        const client = document.createElement('div')
+        document.body.appendChild(client)
+        const root = createRoot(client)
+        root.render(createElement(App, null as any))
+        const state = stateOf(client, scope)
+        root.destroy()
+        client.remove()
+        return state
+    }
+    function serverState(App: any, scope: Scope) {
+        const server = document.createElement('div')
+        server.innerHTML = renderToString(createElement(App, null as any)).html
+        return stateOf(server, scope)
+    }
+    function hydratedState(App: any, scope: Scope) {
+        const errors: unknown[] = []
+        configureDiagnostics({enabled: true, onError: e => { errors.push(e) }})
+        try {
+            const container = document.createElement('div')
+            container.innerHTML = renderToString(createElement(App, null as any)).html
+            document.body.appendChild(container)
+            const root = hydrateRoot(container, createElement(App, null as any))
+            const state = stateOf(container, scope)
+            root.destroy()
+            container.remove()
+            return {state, errors: errors.map(e => String((e as any)?.message ?? e))}
+        } finally {
+            configureDiagnostics({})
+        }
+    }
+    // 服务端按 serverScope 比对；hydrate 之后客户端把所有 prop 重新应用一遍，按 hydratedScope 比对
+    function expectThreeWay(App: any, serverScope: Scope = 'full', hydratedScope: Scope = serverScope) {
+        expect(serverState(App, serverScope)).toEqual(clientState(App, serverScope))
+        expect(hydratedState(App, hydratedScope)).toEqual({state: clientState(App, hydratedScope), errors: []})
+    }
+
+    test('the issue table: boolean attributes, defaultValue / defaultChecked, tabIndex, min / step, href on a div', () => {
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <input id="required" required/>
+                <input id="readOnly" readOnly/>
+                <details id="open" open><summary>s</summary></details>
+                <input id="defaultValue" defaultValue="x"/>
+                <textarea id="textarea" defaultValue="t"/>
+                <input id="defaultChecked" type="checkbox" defaultChecked/>
+                <div id="tabIndex" tabIndex={true}>t</div>
+                <input id="minStep" type="number" min={true} step={true}/>
+                <div id="href" href={true}>h</div>
+            </div>
+        })
+    })
+
+    test('the same names with false: omitted on both sides', () => {
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <input id="required" required={false} readOnly={false} min={false} step={false}/>
+                <details id="open" open={false}><summary>s</summary></details>
+                <input id="defaultValue" defaultValue={false}/>
+                <textarea id="textarea" defaultValue={false}/>
+                <input id="defaultChecked" type="checkbox" defaultChecked={false}/>
+                <div id="tabIndex" tabIndex={false}>t</div>
+                <div id="href" href={false}>h</div>
+            </div>
+        })
+    })
+
+    test('number-typed properties write 1 for true; string-typed ones write ""; the type depends on the element', () => {
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <input id="maxLength" maxLength={true} size={true}/>
+                <textarea id="rows" rows={true} cols={true}/>
+                <img id="img" width={true} height={true}/>
+                <iframe id="iframe" width={true} height={true}/>
+                <meter id="meter" min={true} max={true} low={true}/>
+                <ol id="ol" start={true} reversed><li>a</li></ol>
+                <table><tbody><tr><td id="td" colSpan={true} rowSpan={true}>c</td></tr></tbody></table>
+            </div>
+        })
+    })
+
+    test('aliases are written under the real attribute name, and only on the elements that have the property', () => {
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <label id="label" htmlFor="q">l</label>
+                <div id="divFor" htmlFor="q">d</div>
+                <li id="liDefault" defaultValue="x">li</li>
+                <div id="divChecked" defaultChecked={true}>d</div>
+                <form id="form" acceptCharset="utf-8" encoding="text/plain"/>
+                <meta id="meta" httpEquiv="refresh"/>
+                <a id="relList" relList="noopener" href="#">a</a>
+                <output id="output" htmlFor={true}>o</output>
+                <select id="select"><option id="option" defaultSelected={true} value="b">B</option><option value="a">A</option></select>
+                <video id="video" defaultMuted={true}/>
+            </div>
+        })
+    })
+
+    test('boolean value on elements whose value goes through the value branch: written as the property converts it', () => {
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <select id="select"><option id="yes" value={true}>Yes</option><option id="no" value={false}>No</option></select>
+                <button id="button" value={false}>b</button>
+                <data id="data" value={true}>d</data>
+                <ul><li id="li" value={true}>l</li></ul>
+                <progress id="progress" value={false}/>
+                <meter id="meter" value={true}/>
+            </div>
+        })
+    })
+
+    test('non-boolean values on boolean-typed properties: present exactly when the client would set them', () => {
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <input id="required0" required={0}/>
+                <input id="requiredEmpty" required=""/>
+                <input id="requiredFalseString" required="false"/>
+                <button id="disabled0" disabled={0}>b</button>
+                <button id="disabledEmpty" disabled="">b</button>
+                <button id="disabledString" disabled="disabled">b</button>
+                <details id="open0" open={0}><summary>s</summary></details>
+                <details id="open1" open={1}><summary>s</summary></details>
+                <div id="hidden0" hidden={0}>h</div>
+                <div id="hiddenEmpty" hidden="">h</div>
+                <div id="hiddenUntilFound" hidden="until-found">h</div>
+                <div id="hiddenString" hidden="yes">h</div>
+                <div id="draggable0" draggable={0} spellcheck={1} translate={0}>d</div>
+                <select id="multiple0" multiple={0}><option>a</option></select>
+            </div>
+        })
+    })
+
+    test('custom elements: the client assigns booleans to the inherited properties as they are', () => {
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <x-axii-51 id="t" title={true} tabIndex={true} hidden={true} inert={true} draggable={true} translate={true} role={true}/>
+                <x-axii-51 id="f" title={false} tabIndex={false} hidden={false} inert={false} draggable={false} translate={false} role={false} lang={false}/>
+                <x-axii-51 id="unknown" download={true} href={false}/>
+            </div>
+        })
+    })
+
+    test('default* next to the prop that drives the same state: the parsed state follows the client (IDL)', () => {
+        // HTML 只能写出一个 value / checked / selected：同时出现时以客户端最终的 IDL 为准（React 同样以 value / checked 为准）
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <input id="dv-v" defaultValue="d" value="v"/>
+                <input id="v-dv" value="v" defaultValue="d"/>
+                <textarea id="ta-dv-v" defaultValue="d" value="v"/>
+                <input id="cb-dc-c0" type="checkbox" defaultChecked checked={false}/>
+                <input id="cb-c0-dc" type="checkbox" checked={false} defaultChecked/>
+                <input id="cb-dc0-c1" type="checkbox" defaultChecked={false} checked/>
+                <input id="cb-dc-v0" type="checkbox" defaultChecked value={false}/>
+                <input id="cb-dc-v1" type="checkbox" defaultChecked={false} value={true}/>
+                <input id="cb-dc-red" type="checkbox" defaultChecked value="red"/>
+                <input id="ra-dc" type="radio" name="r1" defaultChecked/>
+                <input id="ra-dc-c0" type="radio" name="r2" defaultChecked checked={false}/>
+                <input id="ra-dc-va" type="radio" name="r3" defaultChecked value="a"/>
+                <select id="so" value="a"><option id="so-a" value="a">A</option><option id="so-b" value="b" defaultSelected>B</option></select>
+                <select id="plain"><option id="plain-a" value="a">A</option><option id="plain-b" value="b" defaultSelected>B</option></select>
+                <video id="muted" muted defaultMuted={false}/>
+            </div>
+        }, 'live', 'idl')
+    })
+
+    test('textarea defaultValue: server child text, hydrated without a mismatch, reactive and nullish values', () => {
+        const text = atom<any>('r')
+        expectThreeWay(function App({}: any, {createElement}: RenderContext) {
+            return <div>
+                <textarea id="static" defaultValue="line"/>
+                <textarea id="leadingNewline" defaultValue={'\nsecond'}/>
+                <textarea id="reactive" defaultValue={text}/>
+                <textarea id="fn" defaultValue={() => 'f'}/>
+                <textarea id="nullish" defaultValue={null}/>
+                <textarea id="number" defaultValue={3}/>
+                <textarea id="true" defaultValue={true}/>
+            </div>
+        })
+    })
+
+    // 静态类型表的每一项都在真实浏览器里核对：解析服务端 HTML 得到的 attribute 与客户端 createElement 写出的完全一致。
+    //  只核对表里的项（表 → 浏览器），不反向枚举浏览器的全部 property：浏览器私有扩展不进表，升级 Playwright 不会因此变红。
+    test('every entry of the static property type table: server attributes equal the client\'s, per element', () => {
+        const SAMPLES: {[type in HtmlPropertyType]: any[]} = {
+            s: [true, false, 'x', '', 0],
+            z: [true, false, 'x', '', 0],
+            t: [true, false, 'x', ''],
+            b: [true, false, 0, 1, '', 'x'],
+            // 数值型 property 对非 boolean 值的 WebIDL 转换（progress max={0} -> "1"、textarea cols={0} -> "20"）不模拟
+            n: [true, false, 3],
+            k: [true, false, 0, 1, 'false'],
+            y: [true, false, 0, 1, 'no'],
+            h: [true, false, 0, 1, '', 'x', 'until-found', 'UNTIL-FOUND'],
+        }
+        const {global, elements} = htmlPropertyTypeEntries()
+        const cases: [string, string, any][] = []
+        for (const tag in elements) {
+            for (const name in elements[tag]) for (const v of SAMPLES[elements[tag][name]]) cases.push([tag, name, v])
+        }
+        const globals: [string, HtmlPropertyType][] = [
+            ...Object.entries(global), ['ariaLabel', 'z'], ['ariaChecked', 'z'], ['ariaValueNow', 'z'],
+        ]
+        for (const tag of ['div', 'input', 'a', 'td', 'x-axii-51']) {
+            for (const [name, type] of globals) for (const v of SAMPLES[type]) cases.push([tag, name, v])
+        }
+        const attrs = (el: Element) => Array.from(el.attributes).map(a => `${a.name}=${JSON.stringify(a.value)}`).sort().join(' ')
+        // 两端都经过组件的 createElement（as 这类组件层的 prop 两端同样处理）。客户端渲染进不在文档里的容器：
+        //  script / iframe 不会加载
+        const client = document.createElement('div')
+        const root = createRoot(client)
+        root.render(createElement(function Cases({}: any, {createElement}: RenderContext) {
+            return <div>{cases.map(([tag, name, v]) => createElement(tag, {[name]: v}))}</div>
+        }, null as any))
+        const clientElements = Array.from(client.firstElementChild!.children)
+        const template = document.createElement('template')
+        const mismatches: string[] = []
+        cases.forEach(([tag, name, v], i) => {
+            // <template> 的解析上下文接受 td / tr / col 这类只能出现在表格里的元素
+            template.innerHTML = renderToString(createElement(function Case({}: any, {createElement}: RenderContext) {
+                return createElement(tag, {[name]: v})
+            }, null as any)).html
+            const server = attrs(template.content.firstElementChild!)
+            const clientAttrs = attrs(clientElements[i])
+            if (server !== clientAttrs) mismatches.push(`<${tag} ${name}={${JSON.stringify(v)}}> client: ${clientAttrs} | server: ${server}`)
+        })
+        root.destroy()
+        expect({checked: cases.length > 1000, mismatches}).toEqual({checked: true, mismatches: []})
+    })
+
+    test('removal: a reactive aliased property going nullish / false removes the real attribute (client)', async () => {
+        const cases: [string, string, any][] = [
+            ['input', 'defaultValue', 'x'], ['input', 'defaultChecked', true], ['option', 'defaultSelected', true],
+            ['video', 'defaultMuted', true], ['label', 'htmlFor', 'q'], ['output', 'htmlFor', 'q'],
+            ['form', 'acceptCharset', 'utf-8'], ['form', 'encoding', 'text/plain'], ['meta', 'httpEquiv', 'refresh'],
+            ['a', 'relList', 'noopener'], ['td', 'ch', '.'], ['td', 'chOff', '1'], ['col', 'ch', '.'], ['tr', 'chOff', '1'],
+        ]
+        for (const next of [null, undefined, false]) {
+            const atoms = cases.map(([, , initial]) => atom<any>(initial))
+            const client = document.createElement('div')
+            document.body.appendChild(client)
+            const root = createRoot(client)
+            root.render(<div>{cases.map(([tag, name], i) => createElement(tag, {[name]: atoms[i]}))}</div>)
+            const elements = Array.from(client.firstElementChild!.children)
+            const before = elements.map(el => el.attributes.length)
+            atoms.forEach(a => a(next))
+            for (let i = 0; i < 100; i++) await Promise.resolve()
+            const left = elements.map((el, i) => el.attributes.length
+                ? `${cases[i][0]}.${cases[i][1]} -> ${next}: ${Array.from(el.attributes).map(a => `${a.name}=${JSON.stringify(a.value)}`).join(' ')}`
+                : '').filter(Boolean)
+            root.destroy()
+            client.remove()
+            expect({set: before, left}).toEqual({set: cases.map(() => 1), left: []})
+        }
     })
 })

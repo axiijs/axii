@@ -123,3 +123,109 @@ export function isInnerHTMLObject(value: any): value is {__html: unknown} {
 export function innerHTMLOf(value: any): any {
     return isInnerHTMLObject(value) ? value.__html : value
 }
+
+// ─── property 分支的写法（#51）：CSR 的 DOM.setAttribute 与 axii/ssr 共用这一份 ───
+//  客户端对 HTML 元素上「是 property 的名字」做 property 赋值，浏览器按 IDL 类型转换、再反射成 attribute；
+//  服务端没有 DOM，只能按同一条写入规则 + 下面的静态类型表推出同一个 attribute。规则、别名、类型知识都只在这里定义：
+//  曾经 ssr.ts 自己有一张 string 型 property 表（不看元素）和一张别名表，DOM.ts 另有一张别名表——
+//  required / readOnly / open 两端写出 "" 与 "true"，tabIndex={true} 写出 "1" 与 "true"，<div href> 写出 "true" 与 ""，
+//  <input defaultValue> 在服务端变成不认识的 defaultvalue（#51）。
+
+/**
+ * property 名与 content attribute 名不同（转小写之后也不同）的情况。客户端按它移除 attribute
+ * （removeAttribute('htmlFor') / removeAttribute('ch') 是空操作，for / char 会永远留在元素上），
+ * 服务端按它写出 attribute 名——只对该元素上确实是 property 的名字生效（见 htmlPropertyTypes.htmlPropertyType）：
+ * <div htmlFor="x"> 在客户端走 attribute 分支，写出的就是 htmlfor。
+ * classList / relList / output.htmlFor 是 DOMTokenList（[PutForwards=value]）。
+ */
+export const propertyAttributeAliases: {[property: string]: string} = /* @__PURE__ */ Object.assign(Object.create(null), {
+    htmlFor: 'for',
+    httpEquiv: 'http-equiv',
+    acceptCharset: 'accept-charset',
+    encoding: 'enctype',
+    defaultValue: 'value',
+    defaultChecked: 'checked',
+    defaultSelected: 'selected',
+    defaultMuted: 'muted',
+    classList: 'class',
+    relList: 'rel',
+    ch: 'char',
+    chOff: 'charoff',
+})
+
+/** @internal property 对应的 content attribute 名（别名、ARIA 反射属性，其余同名）。 */
+export function attributeNameOfProperty(name: string): string {
+    const alias = propertyAttributeAliases[name]
+    if (alias !== undefined) return alias
+    // ariaLabel -> aria-label，ariaValueNow -> aria-valuenow
+    return isAriaReflectionProperty(name) ? `aria-${name.slice(4).toLowerCase()}` : name
+}
+
+/**
+ * @internal
+ * boolean / undefined 原样赋给 property 的名字（不按 property 类型改写，见 emptyOrBooleanWrite）：
+ *  - contentEditable / writingSuggestions / aria*：取值是 "true"/"false" 关键字的 string property，false 是有语义的值；
+ *  - hidden：它的 getter 在 until-found 状态下返回字符串，类型不能代表写法。
+ *  自定义元素（标签名带 '-'）上的所有名字同样原样赋值：property 的语义由组件自己定义——由调用方判断。
+ */
+export function isRawWriteProperty(name: string): boolean {
+    return name === 'contentEditable' || name === 'writingSuggestions' || name === 'hidden' || isAriaReflectionProperty(name)
+}
+
+// emptyOrBooleanWrite 的写入码：低两位是写进 property 的值，REMOVE_ATTRIBUTE 表示随后按真实 attribute 名移除。
+/** @internal 原样写入 value */
+export const WRITE_VALUE = 0
+/** @internal 写入 '' */
+export const WRITE_EMPTY = 1
+/** @internal 写入 null */
+export const WRITE_NULL = 2
+/** @internal 写完后移除 attribute（attributeNameOfProperty） */
+export const REMOVE_ATTRIBUTE = 4
+
+/**
+ * @internal
+ * property 分支里 undefined / boolean 值的写入规则（唯一一份；null 不读类型，见 DOM.setEmptyOrBooleanProperty）。
+ * current 是 property 的当前值：客户端读 node[name]（只在这个慢路径里读一次），服务端用静态类型的样本值；
+ * 原样赋值的情况（isRawWriteProperty、自定义元素）传 undefined。
+ *
+ * CAUTION property 赋值按 IDL 类型做转换，原样赋值只对「boolean 值 → boolean property」是对的：
+ *  - string property 会把 false/undefined 字符串化：title={cond && 'tip'} 渲染出 title="false"，
+ *    href={false} 链接到 /false，download={false} 反而变成下载链接，htmlFor={undefined} 关联到 id 为 "undefined" 的控件；
+ *  - number property 把 false 变成 0：maxLength={false} 的输入框一个字符都输不进去；
+ *  - object 类型的可空 property（srcObject 的 MediaStream、valueAsDate 的 Date）不接受 ''，它们的「空」是 null；
+ *    当前值为 null 的可空反射属性（未设置的 popover / crossOrigin / role）写 null 同样等于移除 attribute；
+ *    DOMTokenList（sandbox / relList，[PutForwards=value]）写 null 会先写出 "null"，随后按 attribute 名移除。
+ *
+ *  | 值        | property 类型（current）                  | 写入                                    |
+ *  |-----------|-------------------------------------------|-----------------------------------------|
+ *  | undefined | string                                    | ''，移除 attribute                       |
+ *  | undefined | object（current 为 null 或对象）          | null，移除 attribute                     |
+ *  | undefined | 其他                                      | 原样（undefined），移除 attribute         |
+ *  | false     | string / number                           | ''，移除：「条件不满足」= 没写这个属性     |
+ *  | false     | object                                    | null，移除 attribute                     |
+ *  | false     | 其他（boolean）                           | 原样                                     |
+ *  | true      | string，或 current 为 null 的可空反射属性 | ''（等价于 HTML 里只写属性名：download / popover / alt）|
+ *  | true      | 其他                                      | 原样（number property 得到 1）            |
+ */
+export function emptyOrBooleanWrite(current: unknown, value: undefined | boolean): number {
+    const type = typeof current
+    if (type === 'string') return value === true ? WRITE_EMPTY : WRITE_EMPTY | REMOVE_ATTRIBUTE
+    if (type === 'object') {
+        if (value !== true) return WRITE_NULL | REMOVE_ATTRIBUTE
+        return current === null ? WRITE_EMPTY : WRITE_VALUE
+    }
+    if (type === 'number' && value === false) return WRITE_EMPTY | REMOVE_ATTRIBUTE
+    return value === undefined ? WRITE_VALUE | REMOVE_ATTRIBUTE : WRITE_VALUE
+}
+
+/**
+ * @internal
+ * textarea 的内容由哪个 prop 决定：value（§3.6.2 TA 通道）优先，其次 defaultValue（客户端的赋值替换子文本）；
+ * 都没有时内容来自 children。服务端把它写成子文本，激活时这段子文本是它的编码、不是哪个 child 单元的节点（DOM.createElement）。
+ */
+export function textareaContentProp(props: {[key: string]: unknown} | null | undefined): 'value' | 'defaultValue' | undefined {
+    if (!props) return undefined
+    if (Object.prototype.hasOwnProperty.call(props, 'value')) return 'value'
+    if (Object.prototype.hasOwnProperty.call(props, 'defaultValue')) return 'defaultValue'
+    return undefined
+}

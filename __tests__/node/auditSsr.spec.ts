@@ -164,8 +164,9 @@ describe('R1–R6 serializeAttrs follows the new CSR attribute rules (Node)', ()
         // custom elements and SVG elements: attribute semantics, "true"
         expect(html('my-el', {title: true, download: true})).toBe('<my-el title="true" download="true"></my-el>')
         expect(html('svg', {title: true})).toBe('<svg title="true"></svg>')
-        // real boolean attributes keep the documented §3.6.1 form
-        expect(html('input', {disabled: true, required: true})).toBe('<input disabled="true" required="true"/>')
+        // disabled has its own CSR branch ("true"); a real boolean property reflects true as x="" (#51: the
+        //  server follows what the client writes)
+        expect(html('input', {disabled: true, required: true})).toBe('<input disabled="true" required=""/>')
     })
 
     test('R2 false / undefined: omitted on string and number properties, literal for keyword attributes', () => {
@@ -180,7 +181,10 @@ describe('R1–R6 serializeAttrs follows the new CSR attribute rules (Node)', ()
         // SVG / custom elements: only the attribute-branch keywords survive
         expect(html('svg', {draggable: false, spellCheck: false, 'aria-hidden': false}))
             .toBe('<svg spellCheck="false" aria-hidden="false"></svg>')
-        expect(html('my-el', {draggable: false, translate: false, 'data-x': false})).toBe('<my-el data-x="false"></my-el>')
+        // custom elements: the client assigns booleans to the inherited HTMLElement properties as they are
+        //  (draggable = false -> "false", translate = false -> "no"); the server follows it (#51)
+        expect(html('my-el', {draggable: false, translate: false, 'data-x': false}))
+            .toBe('<my-el draggable="false" translate="no" data-x="false"></my-el>')
     })
 
     test('R3 checkbox: only a boolean value is a checked state, and only without a checked prop (#52)', () => {
@@ -241,6 +245,27 @@ describe('R1–R6 serializeAttrs follows the new CSR attribute rules (Node)', ()
         expect(html('div', {hidden: true})).toBe('<div hidden=""></div>')
         expect(html('div', {hidden: () => true})).toBe('<div hidden=""></div>')
         expect(html('div', {ariaLabel: 'close'})).toBe('<div aria-label="close"></div>')
+    })
+
+    test('R7 #51: the server writes what the client would (shared rule + per-element property types)', () => {
+        // the issue table
+        expect(html('input', {required: true, readOnly: true, min: true, step: true}))
+            .toBe('<input required="" readOnly="" min="" step=""/>')
+        expect(html('details', {open: true})).toBe('<details open=""></details>')
+        expect(html('div', {tabIndex: true})).toBe('<div tabIndex="1"></div>')
+        expect(html('div', {href: true})).toBe('<div href="true"></div>')
+        expect(html('input', {defaultValue: 'x'})).toBe('<input value="x"/>')
+        expect(html('textarea', {defaultValue: 't'})).toBe('<textarea>t</textarea>')
+        expect(html('input', {type: 'checkbox', defaultChecked: true})).toBe('<input type="checkbox" checked=""/>')
+        // the type depends on the element; aliases only where the name is a property of that element
+        expect(html('meter', {min: true})).toBe('<meter min="1"></meter>')
+        expect(html('div', {htmlFor: 'q', defaultValue: 'x'})).toBe('<div htmlFor="q" defaultValue="x"></div>')
+        // default* superseded by the prop that drives the same state
+        expect(html('input', {defaultValue: 'd', value: 'v'})).toBe('<input value="v"/>')
+        expect(html('textarea', {defaultValue: 'd', value: 'v'})).toBe('<textarea>v</textarea>')
+        // non-boolean values on boolean-typed properties
+        expect(html('input', {required: 0, disabled: '', readOnly: 'false'})).toBe('<input readOnly=""/>')
+        expect(html('div', {hidden: 0})).toBe('<div></div>')
     })
 
     test('R6 data-*: literal authored name for reactive values; an array is stringified as a whole', () => {
