@@ -479,6 +479,9 @@ describe('#52 checkbox / radio: a nullish value never touches the checked state,
         ['v1-ck0', {value: true, checked: false}, false, false, 'true'],
         ['ck1-v0', {checked: true, value: false}, true, true, 'false'],
         ['v0-ck1', {value: false, checked: true}, true, true, 'false'],
+        // checked={undefined} 也是显式的 checked prop：boolean value 不再参与（转发组件 <Check value={true}/> 是未勾选）
+        ['ckU-v1', {checked: undefined, value: true}, false, false, 'true'],
+        ['v1-ckU', {value: true, checked: undefined}, false, false, 'true'],
         // 只有 value：boolean 是复选框旧的勾选通道（行为不变），nullish 不勾选
         ['v1', {value: true}, true, false, 'true'],
         ['v0', {value: false}, false, false, 'false'],

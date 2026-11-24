@@ -103,7 +103,7 @@ describe('fatal bug regression (2026-07 round-13 review)', () => {
             root.destroy()
         })
 
-        test('null value on checkbox unchecks without polluting the submit value', () => {
+        test('null value on checkbox renders unchecked without polluting the submit value', () => {
             const root = createRoot(rootEl)
             root.render(<input type="checkbox" value={null}/>)
             const checkbox = rootEl.querySelector('input')!
