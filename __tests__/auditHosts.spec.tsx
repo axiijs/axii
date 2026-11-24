@@ -1018,3 +1018,94 @@ describe('audit: hosts', () => {
         })
     })
 })
+
+// ------------------------------------------------------------------------------------------
+// Follow-up review of the host commit: bulk removal now runs the row cleanups BEFORE the DOM goes,
+//  so the cleanups can change the parent the bulk path was planned for.
+// ------------------------------------------------------------------------------------------
+describe('audit follow-up: bulk row removal and what the row cleanups did to the parent', () => {
+    let el: HTMLElement
+    beforeEach(() => {
+        document.body.innerHTML = ''
+        el = document.body.appendChild(document.createElement('div'))
+    })
+
+    for (const op of ['clear', 'splice all', 'splice all with a new row'] as const) {
+        test(`B1: the list is the root content, a row cleanup closes the root and renders a fallback into the same container (${op})`, () => {
+            const r = createRoot(el)
+            const list = new RxList<string>(['a', 'b'])
+            let closed = false
+            function Item({item}: {item: string}, {onCleanup}: RenderContext) {
+                if (item === 'a') onCleanup(() => {
+                    if (closed) return
+                    closed = true
+                    r.destroy()
+                    r.render(<p id="fallback">empty</p>)
+                })
+                return <li>{item}</li>
+            }
+            r.render(list.map(item => <Item item={item}/>) as any)
+            expect(el.textContent).toBe('ab')
+            if (op === 'clear') list.clear()
+            else if (op === 'splice all') list.splice(0, 2)
+            else list.splice(0, 2, 'x')
+            expect(el.querySelector('#fallback')?.textContent).toBe('empty')
+            expect(el.textContent).toBe('empty')
+            r.destroy()
+            expect(el.innerHTML).toBe('')
+        })
+    }
+
+    test('B2: a node a row cleanup appends to the parent survives clear()', () => {
+        const r = createRoot(el)
+        const list = new RxList<string>(['a', 'b'])
+        function Item({item}: {item: string}, {onCleanup}: RenderContext) {
+            if (item === 'a') onCleanup(() => { el.querySelector('ul')!.appendChild(document.createElement('hr')) })
+            return <li>{item}</li>
+        }
+        r.render(<ul>{list.map(item => <Item item={item}/>)}</ul>)
+        list.clear()
+        expect(el.querySelector('ul')!.innerHTML).toBe('<!--unhandledChild--><hr>')
+        list.push('c')
+        expect(el.querySelector('ul')!.textContent).toBe('c')
+        r.destroy()
+    })
+
+    test('B2b: a node a row cleanup inserts before the first removed row survives a partial removal', () => {
+        const r = createRoot(el)
+        const list = new RxList<string>(['keep', 'a', 'b'])
+        function Item({item}: {item: string}, {onCleanup, createRef}: RenderContext) {
+            const ref = createRef()
+            if (item === 'a') onCleanup(() => { ref.current.before(document.createElement('hr')) })
+            return <li ref={ref}>{item}</li>
+        }
+        r.render(<ul>{list.map(item => <Item item={item}/>)}</ul>)
+        list.splice(1, 2)
+        expect(Array.from(el.querySelector('ul')!.children).map(c => c.tagName)).toEqual(['LI', 'HR'])
+        r.destroy()
+    })
+
+    test('B3: guard: clearing a list that is the only content of its parent still takes the replaceChildren path', () => {
+        const r = createRoot(el)
+        const list = new RxList<number>(Array.from({length: 50}, (_, i) => i))
+        function Item({item}: {item: number}, {onCleanup}: RenderContext) {
+            onCleanup(() => {})
+            return <li>{item}</li>
+        }
+        r.render(<ul>{list.map(item => <Item item={item}/>)}</ul>)
+        const original = Element.prototype.replaceChildren
+        let calls = 0
+        Element.prototype.replaceChildren = function (this: Element, ...nodes: any[]) {
+            calls++
+            return original.apply(this, nodes)
+        }
+        try {
+            list.clear()
+        } finally {
+            Element.prototype.replaceChildren = original
+        }
+        expect(calls).toBe(1)
+        expect(el.querySelector('ul')!.innerHTML).toBe('<!--unhandledChild-->')
+        r.destroy()
+    })
+})

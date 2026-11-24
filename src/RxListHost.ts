@@ -589,15 +589,13 @@ export class RxListHost implements Host{
         const removeAllElementByParent = keptCount === 0 &&
             !this.placeholder.nextSibling && // 当前节点是父 Host 的最后一个
             !firstNode!.previousSibling // 删除的Host 是父 Host 的第一个，说明从头删到了尾
-        // CAUTION Range 要在 destroy 之前建好：个别 host（PrimitiveHost）在 destroy(true) 里也会
-        //  摘掉自己的文本节点，live Range 会跟着收缩，事后再用被摘掉的节点定边界会抛错。
+        // CAUTION 区间的边界在 destroy 之前记下来，DOM 在 destroy 之后才摘（I39）。不用 live Range：
+        //  文档里有 live Range 时每一次节点移除浏览器都要更新它，replaceChildren 清空 2000 行
+        //  会慢 5 倍；Range 在 destroy 之后再建。边界可能在 destroy 里消失——PrimitiveHost 的
+        //  destroy(true) 会摘掉自己的文本节点——所以同时记下区间外侧的两个邻居做后备。
         const parent = firstNode!.parentNode!
-        let range: Range|undefined
-        if (!removeAllElementByParent) {
-            range = document.createRange()
-            range.setStartBefore(firstNode!)
-            range.setEndAfter(lastNode!)
-        }
+        const before = firstNode!.previousSibling
+        const after = lastNode!.nextSibling
         let destroyed = 0
         try {
             // 先销毁：清理函数看到的 DOM 还连在文档里（I39）
@@ -605,13 +603,28 @@ export class RxListHost implements Host{
         } finally {
             if (destroyed < deletedHosts.length) destroyRowsBestEffort(deletedHosts, destroyed + 1, true)
             // 再摘 DOM。即使某一行的清理函数抛错也必须摘：这些行已经不在 hosts 里了
-            if (removeAllElementByParent) {
-                // 清理函数里列表自己可能已被同步销毁并摘掉了 placeholder（destroyedWith === false）：
-                //  行的 DOM 照样要清，但不能再把 placeholder 放回去
-                if (this.destroyedWith === false) parent.replaceChildren()
-                else parent.replaceChildren(this.placeholder)
+            // CAUTION 上面的判断（removeAllElementByParent）发生在清理函数之前。清理函数是用户代码，
+            //  可能已经改过这个父节点：插入了节点（往同一个容器里重新 render 的 root、一条提示），
+            //  或者同步销毁了列表自己（placeholder 已被摘掉）。这时 replaceChildren 会把这些
+            //  不属于这批行的节点一起抹掉。所以只有父节点里仍然「恰好是这批行 + placeholder」
+            //  时才走 replaceChildren（几次指针比较）；否则只删这批行占据的区间。
+            //  首行自己摘掉了起点（PrimitiveHost）时起点前面是否被插入了节点无从判断，按没有处理。
+            const firstAttached = firstNode!.parentNode === parent
+            const lastAttached = lastNode!.parentNode === parent
+            if (removeAllElementByParent &&
+                lastAttached && lastNode!.nextSibling === this.placeholder &&
+                parent.lastChild === this.placeholder &&
+                (!firstAttached || parent.firstChild === firstNode)) {
+                parent.replaceChildren(this.placeholder)
             } else {
-                range!.deleteContents()
+                const range = document.createRange()
+                if (firstAttached) range.setStartBefore(firstNode!)
+                else if (before && before.parentNode === parent) range.setStartAfter(before)
+                else range.setStart(parent, 0)
+                if (lastAttached) range.setEndAfter(lastNode!)
+                else if (after && after.parentNode === parent) range.setEndBefore(after)
+                else range.setEnd(parent, parent.childNodes.length)
+                range.deleteContents()
             }
         }
     }
