@@ -3,8 +3,9 @@
  * createElement 挂在元素上的元数据（unhandledChildren / unhandledAttr / refHandles / detachStyledChildren）
  * 的形状契约（#55 PR-A）。
  *
- * 元数据路径的拼接（DOM.ts liftElementMetadata）与「应用 props」（DOM.ts applyElementProps）各只有一份，
- * CSR 与激活共用；#55 的新激活模型（B1 的认领步骤）复用它们，必须得到逐位相同的结果。
+ * 元数据路径的拼接（DOM.ts liftElementMetadata）与「应用 props」（DOM.ts applyElementProps）各收成一个函数，
+ * createElement（CSR 与旧模型激活分支）用它们；#55 的新激活模型（B1 的认领步骤）复用它们，必须得到逐位相同的结果
+ * （旧模型专用的 rematerializeDeferredFragmentChildren 另有一份提升，随旧模型在 S 删除）。
  * 其中 unhandledChildren / unhandledAttr 的 path 由 StaticHost 消费（elementPath、样式 id），已有用例覆盖；
  * refHandles / detachStyledChildren 的 path 以及「自己的 ref 排在子元素的 ref 之前」此前没有用例钉住，
  * 改错了全量用例照样通过。这里直接断言元数据的形状，并断言 ref 回调的可观察顺序。

@@ -971,7 +971,10 @@ function shouldMarkHydrateReclaim(children: any[]): boolean {
 }
 
 /**
- * 元数据路径的拼接规则（#55 PR-A；CSR 与激活共用，只有这一份）。
+ * 元数据路径的拼接规则（#55 PR-A）：createElement（CSR 与旧模型激活分支同在其中）用它，
+ * 新激活模型的认领步骤（#55 B1）也用它。
+ * CAUTION 旧模型专用的 rematerializeDeferredFragmentChildren 另有一份（prependPath / liftChildMeta：
+ *  多级前缀、不继承 source、项没有 source 字段），随旧模型在 #55 S 删除；过渡期不要再新增第三份。
  *
  * 子元素的元数据（unhandledChildren / unhandledAttr / refHandles / detachStyledChildren）提升到
  * 父元素时，在每一项的 path 前面加上 index。index 是子元素在父元素 JSX children 数组里的下标
@@ -1079,12 +1082,16 @@ function applyDeferredFormProps(
  * 子元素提升上来的四类元数据由调用方传入（局部变量，不分配收集对象），在这里与自己的合并后一次性挂上。
  * 没有 rawProps 时也要调用：元数据与 __axiiSource 照样要挂。
  *
- * CAUTION 热路径（每个元素一次）：这个函数必须能被 TurboFan 内联进 createElement。它是从 createElement
- *  里搬出来的；不内联时每个元素多一次 10 个参数的调用，同页 A/B 实测纯 createElement 慢约 1.5%
- *  （--trace-turbo-inlining 显示「Cannot consider applyElementProps for inlining (reason: 5)」，
- *  即字节码超过 max_inlined_bytecode_size = 460）。所以冷路径（I66 警告、自己的 ref / detachStyle /
- *  unhandledAttr 项、value / checked 的延后应用）都在上面的独立函数里，这里只留每个 key 都要走的判断。
- *  往这里加逻辑之前，先用 --print-bytecode --print-bytecode-filter=applyElementProps 看字节码长度。
+ * CAUTION 热路径（每个元素一次）：它是从 createElement 里搬出来的，不内联时每个元素多一次 10 个参数的调用。
+ *  - 字节码必须低于 TurboFan 的 max_inlined_bytecode_size（460）。整段搬出时是 616，
+ *    --trace-turbo-inlining 报「Cannot consider applyElementProps for inlining (reason: 5)」，
+ *    同页 A/B 纯 createElement 慢约 1.5%。所以冷路径（I66 警告、自己的 ref / detachStyle / unhandledAttr 项、
+ *    value / checked 的延后应用）都在上面的独立函数里，这里只留每个 key 都要走的判断（现在约 370）。
+ *  - 即使低于 460 也不保证一直内联：createElement 去优化（例如大 GC 后的「weak objects」）后重新优化时，
+ *    如果这个函数已经有自己的优化代码，TurboFan 把它已内联的字节码一并计入累计预算
+ *    （「existing opt code's inlined bytecode size」，再乘 1.2），超过 920 就不再内联。
+ *  往这里加逻辑之前，先用 --print-bytecode --print-bytecode-filter=applyElementProps 看字节码长度，
+ *  并按 docs/ssr-support/hydration-top-down.md §5.3 的同页 A/B/A′ 复测。
  */
 function applyElementProps(
     container: HTMLElement | DocumentFragment | SVGElement,
