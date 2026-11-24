@@ -27,6 +27,7 @@ import {
 import {CompactElementHost, StaticHost} from "./StaticHost.js";
 import {isCompactListRowNode} from "./compactListRow.js";
 import {detachEffectFromCreationContext} from "./LightBindingEffect.js";
+import {isDomNode} from "./nodeType";
 import {ReusableHost} from "./ComponentHost.js";
 import {
     advanceCursorUntilComment,
@@ -103,12 +104,13 @@ export class RxListHost implements Host{
 
     createChildHost(item: any) {
         // 紧凑行快速路径：行内容是单个元素（最常见）时不给行分配 comment 占位符。
+        //  元素按 nodeType 判断：行可以返回另一个 realm 的元素（见 nodeType.ts，#58）。
         // CAUTION Compact 判定只在 compactListRow.ts 定义，服务端写不写 <!--rx list item--> 用的是同一条规则（#68）
         if (isCompactListRowNode(item)) {
             if (isHydrating()) {
                 advancePastNode(item)
             }
-            const host = new CompactElementHost(item, this.childContext!)
+            const host = new CompactElementHost(item as HTMLElement | SVGElement, this.childContext!)
             if (isAxiiRetainedObjectDiagnosticsEnabled()) {
                 trackHostCreated(host, 'CompactElementHost')
                 trackCompactHostCreated(host)
@@ -138,7 +140,7 @@ export class RxListHost implements Host{
             if (item instanceof ReusableHost) {
                 // StaticHost keeps the claimed element on `.source` until render() assigns `.element`
                 const src = (item.innerHost as any)?.source
-                if (src instanceof Node && src.parentNode) {
+                if (isDomNode(src) && src.parentNode) {
                     advancePastNode(src)
                 }
                 advanceCursorUntilComment('reusable')
@@ -216,10 +218,12 @@ export class RxListHost implements Host{
                 host.render()
             }
         } catch (error) {
-            // 列表已被销毁：这批行马上整体丢弃，它们的错误没有归属，不交给 root 的监听器
-            //  （监听器在 destroy 之后保留，属于 root 之后的内容；与组件销毁后 async effect
-            //  的 rejection 不再上报同一语义）。
             if (this.destroyedWith === undefined) throw error
+            // 列表已被销毁：这批行马上整体丢弃。到这里的错误没有被内层的边界消费（行里的组件抛错
+            //  先经过它自己的 dispatch，root 上有 error 监听器时已经在那里交给监听器），
+            //  这里不再交给 root 的监听器（监听器在 destroy 之后保留，属于 root 之后的内容），
+            //  经 reportAxiiError 报告，不抛出、也不静默丢弃（#58）。
+            reportAxiiError(error)
         } finally {
             this.rowsOnStack = outerRowsOnStack
             // destroy 跳过了这批行（当时渲染到一半），现在渲染栈已退出，统一销毁恰好一次。
@@ -624,9 +628,14 @@ export class RxListHost implements Host{
         //  文档里有 live Range 时每一次节点移除浏览器都要更新它，replaceChildren 清空 2000 行
         //  会慢 5 倍；Range 在 destroy 之后再建。边界可能在 destroy 里消失——PrimitiveHost 的
         //  destroy(true) 会摘掉自己的文本节点——所以同时记下区间外侧的两个邻居做后备。
+        // CAUTION 起点还会被摘掉，所以再记下起点后面的那个节点（#58）：首行是 PrimitiveHost 时，
+        //  它的文本后面紧跟着它自己的占位符（destroy(true) 不摘占位符）。起点被摘掉之后，区间里剩下的
+        //  第一个节点就是它，在它前面的节点只能是清理函数插进来的（插在父节点最前面的提示等），
+        //  不能一起删。只多一次指针读，不分配。
         const parent = firstNode!.parentNode!
         const before = firstNode!.previousSibling
         const after = lastNode!.nextSibling
+        const afterFirst = firstNode !== lastNode ? firstNode!.nextSibling : null
         let destroyed = 0
         try {
             // 先销毁：清理函数看到的 DOM 还连在文档里（I39）
@@ -639,17 +648,20 @@ export class RxListHost implements Host{
             //  或者同步销毁了列表自己（placeholder 已被摘掉）。这时 replaceChildren 会把这些
             //  不属于这批行的节点一起抹掉。所以只有父节点里仍然「恰好是这批行 + placeholder」
             //  时才走 replaceChildren（几次指针比较）；否则只删这批行占据的区间。
-            //  首行自己摘掉了起点（PrimitiveHost）时起点前面是否被插入了节点无从判断，按没有处理。
-            const firstAttached = firstNode!.parentNode === parent
+            //  区间剩下的第一个节点：起点还在就是起点，起点被摘掉了就是起点后面的那个节点（见 afterFirst）。
+            //  两个都不在了（用户代码自己摘了列表的节点）才无从判断前面是否被插入了节点，按没有处理。
             const lastAttached = lastNode!.parentNode === parent
+            const start = firstNode!.parentNode === parent ? firstNode :
+                afterFirst !== null && afterFirst.parentNode === parent ? afterFirst :
+                null
             if (removeAllElementByParent &&
                 lastAttached && lastNode!.nextSibling === this.placeholder &&
                 parent.lastChild === this.placeholder &&
-                (!firstAttached || parent.firstChild === firstNode)) {
+                (start === null || parent.firstChild === start)) {
                 parent.replaceChildren(this.placeholder)
             } else {
                 const range = document.createRange()
-                if (firstAttached) range.setStartBefore(firstNode!)
+                if (start !== null) range.setStartBefore(start)
                 else if (before && before.parentNode === parent) range.setStartAfter(before)
                 else range.setStart(parent, 0)
                 if (lastAttached) range.setEndAfter(lastNode!)
@@ -834,6 +846,8 @@ export class RxListHost implements Host{
             newHost.render()
         } catch (error) {
             if (this.destroyedWith === undefined) throw error
+            // 列表已被销毁：与 renderNewHosts 相同，经 reportAxiiError 报告（#58）
+            reportAxiiError(error)
         } finally {
             this.rowsOnStack = outerRowsOnStack
             if (this.destroyedWith !== undefined) newHost.destroy(this.destroyedWith)

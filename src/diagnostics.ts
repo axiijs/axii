@@ -1,5 +1,6 @@
 import type {Host} from "./Host";
 import {isEventName} from "./markupNames";
+import {COMMENT_NODE, ELEMENT_NODE, nodeTypeOf, TEXT_NODE} from "./nodeType";
 
 /**
  * Axii 开发期诊断系统。
@@ -594,41 +595,44 @@ function summarizeSiblings(node: ChildNode, count: number): NodeSummary[] {
 }
 
 function summarizeNode(node: Node): NodeSummary {
-    if (node instanceof Element) {
+    // 按 nodeType 判断：快照里的节点可以来自另一个 realm（同源 iframe，见 nodeType.ts，#58）
+    const nodeType = nodeTypeOf(node)!
+    if (nodeType === ELEMENT_NODE) {
+        const element = node as Element
         const summary: NodeSummary = {
-            nodeType: node.nodeType,
-            name: node.tagName.toLowerCase(),
+            nodeType,
+            name: element.tagName.toLowerCase(),
         }
-        const dataAs = node.getAttribute('data-as')
+        const dataAs = element.getAttribute('data-as')
         if (dataAs) summary.dataAs = dataAs
-        const dataTestId = node.getAttribute('data-testid')
+        const dataTestId = element.getAttribute('data-testid')
         if (dataTestId) summary.dataTestId = dataTestId
-        const dataAxiiHostId = node.getAttribute('data-axii-host-id')
+        const dataAxiiHostId = element.getAttribute('data-axii-host-id')
         if (dataAxiiHostId) summary.dataAxiiHostId = dataAxiiHostId
         // CAUTION SVGElement 的 className 是 SVGAnimatedString 对象，必须走 attribute
-        const className = node.getAttribute('class')
+        const className = element.getAttribute('class')
         if (className) summary.className = className
         return summary
     }
 
-    if (node instanceof Text) {
+    if (nodeType === TEXT_NODE) {
         return {
-            nodeType: node.nodeType,
+            nodeType,
             name: '#text',
             text: node.textContent!,
         }
     }
 
-    if (node instanceof Comment) {
+    if (nodeType === COMMENT_NODE) {
         return {
-            nodeType: node.nodeType,
+            nodeType,
             name: '#comment',
             text: node.textContent!,
         }
     }
 
     return {
-        nodeType: node.nodeType,
+        nodeType,
         name: node.nodeName,
     }
 }

@@ -5,8 +5,9 @@ import {insertBefore, resetOptionOwnerSelect} from './DOM'
 import {createLinkedNode} from "./LinkedList";
 import {trackHostDestroyed, trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {DeferredBindingEffect} from "./LightBindingEffect.js";
-import {isAxiiDiagnosticsEnabled, withReactiveTrace} from "./diagnostics";
+import {isAxiiDiagnosticsEnabled, reportAxiiError, withReactiveTrace} from "./diagnostics";
 import {claimComputedNodeBefore, claimTextBeforeCommentPlaceholder, isHydrating} from "./hydration";
+import {isTextNode} from "./nodeType";
 
 type FunctionNodeContext = {
     onCleanup: (cleanup:()=> any) => void
@@ -164,7 +165,13 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         } catch (e) {
             // 函数节点重算抛错：如果外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
             // （effect 保持活跃，依赖恢复后该区域可以恢复渲染），否则保持向上抛出的行为。
-            if (this.destroyedWith === undefined && !this.pathContext.root.dispatch('error', e)) throw e
+            // source 抛错之前已经同步销毁了本节点：错误没有归属，不交给 root 的监听器（它们属于 root
+            //  之后的内容），经 reportAxiiError 报告，不抛出、也不静默丢弃（#58）。
+            if (this.destroyedWith !== undefined) {
+                reportAxiiError(e)
+            } else if (!this.pathContext.root.dispatch('error', e)) {
+                throw e
+            }
         }
         // CAUTION 重入销毁之一：source 自己（或它调用的回调）同步销毁了本节点（关掉所在的弹层、
         //  root.destroy()、删掉所在的列表行）。占位符可能已经被摘掉，没有地方可渲染：
@@ -194,7 +201,8 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
             // 重入销毁之一（续）：旧内容的清理函数同步销毁了本节点。占位符可能已被摘掉，
             //  下面的 insertBefore 会 TypeError（见 destroyInnerHost 之后结构路径的同一检查）。
             if (this.destroyedWith !== undefined) return
-            if (this.placeholder instanceof Text) {
+            // 按 nodeType 判断：激活时认领到的占位符可能来自另一个 realm（见 nodeType.ts）
+            if (isTextNode(this.placeholder)) {
                 // 占位符本身就是 Text 节点（创建于 createElement 的函数 child 快速路径），直接复用
                 this.placeholder.nodeValue = text
                 this.textNode = this.placeholder
@@ -258,9 +266,11 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
                 newPlaceholder.remove()
             }
             // 本节点在新内容渲染到一半时已被销毁：这棵子树马上丢弃，它的错误没有归属，
-            //  不交给 root 的监听器（监听器在 destroy 之后保留，属于 root 之后的内容；
-            //  与组件销毁后 async effect 的 rejection 不再上报同一语义）。
+            //  不交给 root 的监听器（监听器在 destroy 之后保留，属于 root 之后的内容），
+            //  经 reportAxiiError 报告，不抛出、也不静默丢弃（#58）。先报告再销毁子树：
+            //  子树的清理函数抛错（没有 error 钩子）时不能盖掉这个错误。
             if (this.destroyedWith !== undefined) {
+                reportAxiiError(e)
                 this.destroyInnerHost(this.destroyedWith)
                 return
             }
