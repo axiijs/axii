@@ -32,7 +32,17 @@ import {
     toCssSafeComponentName,
 } from './styleSerialize'
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from './styleCascade'
-import {RAWTEXT_TAGS, RCDATA_TAGS, hasOnPrefix, innerHTMLOf, isAriaReflectionProperty, svgAttributeName, svgOnlyElementNames} from './markupNames'
+import {
+    RAWTEXT_TAGS,
+    RCDATA_TAGS,
+    attributeNameOfProperty,
+    hasOnPrefix,
+    innerHTMLOf,
+    svgAttributeName,
+    svgOnlyElementNames,
+    textareaContentProp,
+} from './markupNames'
+import {htmlPropertyType, reflectedPropertyAttributeValue} from './htmlPropertyTypes'
 import {warnInvalidOnProp} from './diagnostics'
 
 /**
@@ -581,74 +591,65 @@ function emitParentText(text: string, out: string[], parentTag?: string): void {
 //  （CSR 用 setAttributeNS，解析器在外来内容里把 xlink:href 还原成同一个 namespace 属性）。
 //  原样写出 strokeWidth 的话解析后是不认识的 strokewidth——激活前图形的描边、引用全部无效，
 //  激活后还多留一个没人管的属性。
-//  HTML 元素上 CSR 走 property 赋值（`name in node`），绝大多数 IDL 名与 attribute 名只差大小写
-//  （HTML attribute 名大小写不敏感），下面这几个是真正不同名的：原样写出 htmlFor 的话 label 在
-//  激活前不关联控件，激活后 DOM 上还多一个 htmlfor。className 另有专门分支。
-const HTML_PROP_ATTRIBUTE_NAMES: {[k: string]: string} = {
-    htmlFor: 'for',
-    httpEquiv: 'http-equiv',
-    acceptCharset: 'accept-charset',
-}
-
-function attributeNameOf(key: string, isSVG: boolean): string {
+//  HTML 元素上 CSR 对「是该元素 property 的名字」做 property 赋值，attribute 名由浏览器反射决定：绝大多数与 prop 名
+//  只差大小写（HTML attribute 名大小写不敏感），真正不同名的（htmlFor -> for、defaultValue -> value、ch -> char …）
+//  与 ARIA 反射属性见 markupNames.attributeNameOfProperty。不是该元素 property 的名字（<div htmlFor>）在 CSR 走
+//  attribute 分支、原样写出，这里同样原样写（#51：曾经不看元素一律改名）。className 另有专门分支。
+function attributeNameOf(key: string, isSVG: boolean, tagLower: string): string {
     if (isSVG) {
         const xlinkName = key.replace(/^xlink\:?/, '')
         return xlinkName !== key ? `xlink:${xlinkName.toLowerCase()}` : svgAttributeName(key)
     }
-    if (hasOwnProp(HTML_PROP_ATTRIBUTE_NAMES, key)) return HTML_PROP_ATTRIBUTE_NAMES[key]
-    // ARIA 反射属性：ariaLabel -> aria-label（CSR 对它做 property 赋值，反射出的就是这个名字）
-    return isAriaReflectionProperty(key) ? `aria-${key.slice(4).toLowerCase()}` : key
+    return htmlPropertyType(tagLower, key) !== undefined ? attributeNameOfProperty(key) : key
 }
 
-// CAUTION boolean 值怎么写，CSR 取决于「这个名字是不是元素的 property、property 是什么类型」
-//  （规则表在 DOM.ts setEmptyOrBooleanProperty 上方，attribute 分支在 setAttribute 末尾）：
-//   - string 类型的 property：true 等价于 HTML 里只写属性名（download / popover / alt -> x=""），
-//     false 是「没写这个属性」；
-//   - 取值是关键字的名字原样保留 true / false：contenteditable、spellcheck、draggable、
-//     writingSuggestions、aria-* / data-*（attribute 写法）与 ariaXxx（property 写法）；
-//     translate 的关键字是 yes / no；
-//   - hidden：true -> hidden=""，false 不输出；
-//   - 其余（真正的 boolean attribute、不认识的名字、SVG 与自定义元素上的任何名字）：
-//     true -> x="true"（§3.6.1 的布尔属性约定），false 不输出。
-//  服务端没有 DOM 可以问 property 的类型，string 类型的 property 只能列一张静态表：
-//  这里收的是各元素上类型没有歧义的常用反射属性（width / height / min / max 这类在不同元素上
-//  类型不同的名字不收；type / list / form 在 CSR 走 attribute 分支，也不收）。
-//  表里漏掉的名字退回 x="true"——对 download / popover / alt 这样「true 有专门含义」的属性
-//  才有实际差别，它们都在表里。
-const STRING_TYPED_PROPERTIES = new Set([
-    // 全局
-    'title', 'lang', 'dir', 'id', 'slot', 'accessKey', 'nonce', 'popover', 'role',
-    'autocapitalize', 'inputMode', 'enterKeyHint',
-    // 链接 / 资源 / 媒体
-    'href', 'target', 'download', 'rel', 'hreflang', 'ping', 'referrerPolicy', 'src', 'srcset', 'sizes',
-    'alt', 'useMap', 'crossOrigin', 'loading', 'decoding', 'fetchPriority', 'poster', 'preload', 'kind',
-    'srclang', 'label', 'media', 'integrity', 'charset', 'content', 'cite', 'dateTime',
-    // 表单
-    'name', 'placeholder', 'pattern', 'accept', 'autocomplete', 'dirName', 'action', 'method', 'enctype',
-    'formAction', 'formMethod', 'formEnctype', 'formTarget', 'wrap', 'htmlFor', 'httpEquiv', 'acceptCharset',
-    // 表格
-    'abbr', 'scope', 'headers',
-])
-
-/** boolean 值写出的 attribute 值；null 表示不输出该属性。 */
-function booleanAttributeValue(key: string, value: boolean, isSVG: boolean, isCustomElement: boolean): string | null {
-    // disabled 在 CSR 有专门分支：真 -> "true"
+// CAUTION 属性值怎么写，CSR 取决于 DOM.setAttribute 的分发顺序（#51，服务端以客户端的结果为准）：
+//   1. 专门分支：disabled（任何元素，真值 -> "true"）、option 的 selected（§3.6.2 SO）；
+//   2. HTML 元素上是 property 的名字（SVG 不走 property 分支）：property 赋值后由浏览器反射——写入规则在
+//      markupNames.emptyOrBooleanWrite（两端共用），property 类型的静态知识在 htmlPropertyTypes，见 reflectedPropertyAttributeValue。
+//      value 在 option / button / data / li / meter / progress 上走 DOM.setAttribute 的 value 分支，原样赋值；
+//   3. 其余（不是 property 的名字、SVG 元素）走 attribute 分支：true -> "true"，false 不输出；
+//      contenteditable / spellcheck（任一大小写写法）、aria-* / data-* 的 false 是有语义的值，保留 "false"。
+/** 属性写出的 attribute 值；null 表示不输出该属性。value 不是 nullish。 */
+function attributeValueOf(key: string, value: any, tagLower: string, isSVG: boolean): string | null {
+    // ≡ DOM.setAttribute 的 disabled 分支：真值写 "true"、假值移除（disabled={0} / disabled="" 同样移除）
     if (key === 'disabled') return value ? 'true' : null
-    const lower = key.toLowerCase()
-    // property 写法（contentEditable / spellcheck）和 attribute 写法（contenteditable / spellCheck）
-    //  都保留关键字；aria-* / data-* 的 false 是有语义的值，不是移除
-    if (lower === 'contenteditable' || lower === 'spellcheck' ||
-        ((key[0] === 'a' || key[0] === 'd') && (/^aria-/.test(key) || /^data-/.test(key)))) {
-        return value ? 'true' : 'false'
+    if (key === 'selected' && tagLower === 'option') return value ? 'true' : null
+    if (!isSVG) {
+        const reflected = reflectedPropertyAttributeValue(tagLower, key, value, key === 'value')
+        if (reflected !== undefined) return reflected
     }
-    // SVG 元素不走 property 分支；自定义元素的 property 语义由组件自己定义，服务端按 attribute 写
-    if (isSVG || isCustomElement) return value ? 'true' : null
-    if (key === 'draggable' || key === 'writingSuggestions' || isAriaReflectionProperty(key)) {
-        return value ? 'true' : 'false'
+    if (value === true) return 'true'
+    if (value === false) {
+        const lower = key.toLowerCase()
+        // attribute 写法（contenteditable / spellCheck）保留关键字；aria-* / data-* 的 false 是有语义的值，不是移除
+        if (lower === 'contenteditable' || lower === 'spellcheck' ||
+            ((key[0] === 'a' || key[0] === 'd') && (/^aria-/.test(key) || /^data-/.test(key)))) {
+            return 'false'
+        }
+        return null
     }
-    if (key === 'translate') return value ? 'yes' : 'no'
-    if (key === 'hidden' || STRING_TYPED_PROPERTIES.has(key)) return value ? '' : null
-    return value ? 'true' : null
+    return String(value)
+}
+
+// CAUTION default* 与驱动同一状态的 prop 同时出现时（<input defaultValue="d" value="v">），HTML 只能写出一个
+//  value / checked / selected / muted attribute——写两个的话解析器保留第一个，.value 变成 "d"。客户端最终的状态由
+//  后者决定（value / checked 延后应用；select 的 value 决定哪个 option 被选中），服务端写后者、丢掉 default*。
+//  解析后的 defaultValue / defaultChecked 因此与客户端不同（无法同时表达），激活时客户端会把它们重新写上。
+function supersededDefaultProps(
+    props: AttributesLike, tagLower: string, isCheckbox: boolean,
+    hasValue: boolean, hasChecked: boolean, valueSnapshot: any, optionSelectedBySo: boolean | null | undefined,
+): string[] | null {
+    if (tagLower === 'input') {
+        const out: string[] = []
+        if (hasValue) out.push('defaultValue')
+        // checkbox 的 boolean value 是旧的勾选通道（CB，§3.6.2）
+        if (hasChecked || (isCheckbox && hasValue && typeof valueSnapshot === 'boolean')) out.push('defaultChecked')
+        return out
+    }
+    if (tagLower === 'option' && (optionSelectedBySo != null || hasOwnProp(props, 'selected'))) return ['defaultSelected']
+    if ((tagLower === 'audio' || tagLower === 'video') && hasOwnProp(props, 'muted')) return ['defaultMuted']
+    return null
 }
 
 /** §3.6.2 SO: select value snapshot driving option `selected` (not a select content attr). */
@@ -713,7 +714,6 @@ function serializeAttrs(
         return ''
     }
     const tagLower = tag.toLowerCase()
-    const isCustomElement = tag.indexOf('-') !== -1
     const type = inputTypeOf(props)
     const isCheckbox = tagLower === 'input' && type === 'checkbox'
     const isRadio = tagLower === 'input' && type === 'radio'
@@ -736,16 +736,29 @@ function serializeAttrs(
     // SO-driven option: selected comes from match, not prop
     if (optionSelectedBySo != null && tagLower === 'option') skip.add('selected')
 
+    // textarea 的 defaultValue 与 value 一样写成子文本（serializeElementContent，#51）
+    if (tagLower === 'textarea') skip.add('defaultValue')
+
     // Deferred value/checked (§3.6.2 IV / CK / CB). Key order only fixes the attribute order of the IV
     // output; the checkbox checked state does not depend on it (#52).
     const deferredKeys: string[] = []
+    // CAUTION value / checked 是最常见的响应式属性（受控输入：value={atom}、checked={atom}、
+    //  value={() => …}）。必须先取快照再套 IV / CK / CB：直接用 prop 本身的话，
+    //  atom / 函数恒为真（checked={atom(false)} 输出 checked="true"），
+    //  String(fn) 还会把函数源码写进 HTML。defaultChecked 是否被 CB 通道取代也要看 value 的快照。
+    let valueSnapshot: any
+    let checkedSnapshot: any
     if (tagLower === 'input' && (hasValue || hasChecked)) {
         skip.add('value')
         skip.add('checked')
         for (const key in props) {
             if (key === 'value' || key === 'checked') deferredKeys.push(key)
         }
+        if (hasValue) valueSnapshot = snapshotAttrValue(props.value)
+        if (hasChecked) checkedSnapshot = snapshotAttrValue(props.checked)
     }
+    const superseded = supersededDefaultProps(props, tagLower, isCheckbox, hasValue, hasChecked, valueSnapshot, optionSelectedBySo)
+    if (superseded) for (const key of superseded) skip.add(key)
 
     // Style first so we can merge stylesheet classes with className
     const styleExtraClasses: string[] = []
@@ -810,21 +823,12 @@ function serializeAttrs(
             s += ` data-uuid="${escapeAttr(String(value))}"`
             continue
         }
-        if (value === true || value === false) {
-            const written = booleanAttributeValue(key, value, isSVG, isCustomElement)
-            if (written !== null) {
-                // 只校验真正会写出去的名字：不输出的属性在 CSR 走 removeAttribute，同样不校验、不抛错
-                assertAttrName(key)
-                s += ` ${attributeNameOf(key, isSVG)}="${written}"`
-            }
-            continue
+        const written = attributeValueOf(key, value, tagLower, isSVG)
+        if (written !== null) {
+            // 只校验真正会写出去的名字：不输出的属性在 CSR 走 removeAttribute，同样不校验、不抛错
+            assertAttrName(key)
+            s += ` ${attributeNameOf(key, isSVG, tagLower)}="${escapeAttr(written)}"`
         }
-        assertAttrName(key)
-        if (key === 'selected' && tagLower === 'option') {
-            if (value) s += ` selected="true"`
-            continue
-        }
-        s += ` ${attributeNameOf(key, isSVG)}="${escapeAttr(String(value))}"`
     }
 
     const allClasses = [classAttr, ...styleExtraClasses].filter(Boolean).join(' ')
@@ -847,12 +851,6 @@ function serializeAttrs(
 
     // §3.6.2 deferred form props (IV / CK / CB)
     if (tagLower === 'input' && deferredKeys.length) {
-        // CAUTION value / checked 是最常见的响应式属性（受控输入：value={atom}、checked={atom}、
-        //  value={() => …}）。必须先取快照再套 IV / CK / CB：直接用 prop 本身的话，
-        //  atom / 函数恒为真（checked={atom(false)} 输出 checked="true"），
-        //  String(fn) 还会把函数源码写进 HTML。
-        const valueSnapshot = hasValue ? snapshotAttrValue(props.value) : undefined
-        const checkedSnapshot = hasChecked ? snapshotAttrValue(props.checked) : undefined
         if (isCheckbox && hasValue) {
             // CB channel
             // CAUTION 勾选状态与 value / checked 的书写顺序无关（≡ DOM.setAttribute 的 checkbox 分支 +
@@ -1399,11 +1397,14 @@ function serializeElementContent(
     if (hasDangerously) {
         const html = innerHTMLOf(dangerously)
         out.push(html == null ? '' : String(html))
-    } else if (tagLower === 'textarea' && !!el.props && hasOwnProp(el.props, 'value')) {
+    } else if (tagLower === 'textarea' && textareaContentProp(el.props) !== undefined) {
         // TA 通道（§3.6.2）：value 写成子文本。没有 value prop 的 textarea 走下面的通用 children 路径，
         //  与 title 一样按 RCDATA 首尾相接——曾经只认「恰好一个 child」，
         //  <textarea>Hello {name}</textarea> 这类两个文本单元的写法静默输出为空。
-        out.push(escapeText(stringValue(snapshotAttrValue(el.props.value))))
+        // defaultValue（没有 value 时）同样写成子文本（#51）：客户端的 defaultValue 赋值替换子文本（与 children 无关），
+        //  boolean / nullish 得到空串（≡ emptyOrBooleanWrite 的 string 行）。曾经写成不认识的 defaultvalue attribute，
+        //  激活前文本框是空的。
+        out.push(escapeText(stringValue(snapshotAttrValue(el.props![textareaContentProp(el.props)!]))))
     } else {
         const children = el.children.length
             ? el.children
