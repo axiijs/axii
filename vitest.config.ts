@@ -35,6 +35,7 @@ const TOP_DOWN_HYDRATE_SPECS = [
   '__tests__/styleContentIdentity.spec.tsx',
   '__tests__/styleContentLifecycle.spec.tsx',
   '__tests__/styleContentSsrActivation.spec.tsx',
+  '__tests__/styleStringEntries.spec.tsx',
 ]
 
 export default {

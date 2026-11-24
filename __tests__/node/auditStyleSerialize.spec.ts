@@ -5,7 +5,13 @@
  */
 import {afterEach, describe, expect, test} from 'vitest'
 import {createElement, renderToString} from '../../src/ssr.js'
-import {generateStyleContent, isAcceptableInlineDeclaration, setAutoUnitType} from '../../src/styleSerialize.js'
+import {
+    generateStyleContent,
+    isAcceptableInlineDeclaration,
+    isVoidInlineDeclaration,
+    setAutoUnitType,
+    splitInlineDeclarations,
+} from '../../src/styleSerialize.js'
 
 const lastSelector = (rules: string[]) => rules.at(-1)!.split('{')[0].trim()
 
@@ -161,6 +167,53 @@ describe('audit: style serialization without a DOM', () => {
         ]) {
             expect(render([text, yieldColor])).toBe(text.replace(/"/g, '&quot;'))
         }
+    })
+
+    // #79：字符串条目的拆分只有这一份，客户端逐条 setProperty 写入、服务端删声明都用它
+    test('#79: the shared splitter gives each declaration its name, text, value and priority', () => {
+        expect(splitInlineDeclarations(' COLOR : red ; --X: a!b ;margin-top:1px !important')).toEqual([
+            ['color', 'COLOR : red', ' red', false],
+            ['--X', '--X: a!b', ' a!b', false],
+            ['margin-top', 'margin-top:1px !important', '1px ', true],
+        ])
+        // "!" and "important" may be separated by spaces and comments, case-insensitively; only the last "!" counts
+        expect(splitInlineDeclarations('color: red ! /* c */ IMPORTANT /* t */')).toEqual([
+            ['color', 'color: red ! /* c */ IMPORTANT /* t */', ' red ', true],
+        ])
+        expect(splitInlineDeclarations('--x: a ! b !important')![0].slice(2)).toEqual([' a ! b ', true])
+        expect(splitInlineDeclarations('color: red !importantx')![0].slice(2)).toEqual([' red !importantx', false])
+        // "!" inside a string or a function is not a priority
+        expect(splitInlineDeclarations('content: "!important"')![0][3]).toBe(false)
+        // only CSS whitespace is trimmed: U+00A0 is part of the name, so this is not a color declaration
+        expect(splitInlineDeclarations('\u00a0color: red')![0][0]).toBe('\u00a0color')
+        // an empty value is a declaration the browser drops, except for custom properties
+        const [empty, customEmpty, comment] = splitInlineDeclarations('color: ; --x:; color: /* c */')!
+        expect([isVoidInlineDeclaration(empty), isVoidInlineDeclaration(customEmpty), isVoidInlineDeclaration(comment)])
+            .toEqual([true, false, false])
+        // the last result is remembered and shared (callers must not change it)
+        expect(splitInlineDeclarations('color: red; margin: 0')).toBe(splitInlineDeclarations('color: red; margin: 0'))
+        expect(splitInlineDeclarations('color: blue; content: "a')).toBe(null)
+    })
+
+    // #79：客户端后面的条目替换字符串条目里的 !important 声明（setProperty / el.style[k] = v），浏览器解析拼接的文本时
+    //  !important 却压过后面的普通声明：服务端删掉被后面条目覆盖的 !important 声明，其余照原样拼接
+    test('#79 SSR: a later entry replaces an !important declaration of an earlier string entry', () => {
+        const render = (style: any) => /style="([^"]*)"/.exec(renderToString(createElement('div', {style})).html)?.[1]
+        expect(render(['color: red !important; margin-top: 1px', {color: 'blue'}])).toBe('margin-top: 1px;color:blue')
+        expect(render(['color: red !important', 'color: blue'])).toBe('color: blue')
+        // a shorthand replaces its longhands (SHORTHAND_LONGHANDS), as CSSOM does
+        expect(render(['margin-top: 1px !important; padding: 2px', {margin: 3}])).toBe('padding: 2px;margin:3px')
+        expect(render(['margin: 1px !important', 'margin: 2px'])).toBe('margin: 2px')
+        // normal declarations stay: the later value may be one the browser rejects, then the earlier one applies
+        expect(render(['color: red', {color: 'blue'}])).toBe('color: red;color:blue')
+        expect(render(['color: red !important', 'color: blue; color: red !important'])).toBe('color: blue; color: red !important')
+        // a declaration the client does not write (empty value) or a value the gate rejects does not replace it
+        expect(render(['color: red !important', 'color: ; margin-top: 1px'])).toBe('color: red !important;color: ; margin-top: 1px')
+        expect(render(['color: red !important', {color: 'blue;x:y'}])).toBe('color: red !important')
+        // inside one string the browser rules apply: the text stays as written
+        expect(render([{marginTop: 1}, 'color: red !important; color: blue'])).toBe('margin-top:1px;color: red !important; color: blue')
+        // known gap: a longhand does not take its part out of an !important shorthand (hydration rewrites it)
+        expect(render(['margin: 1px !important', {marginTop: 5}])).toBe('margin: 1px !important;margin-top:5px')
     })
 
     test('stylesheet and SSR declarations pass the same gate as inline declarations', () => {

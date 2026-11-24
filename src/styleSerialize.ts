@@ -116,9 +116,9 @@ export function evaluateStyleEntries(styleValue: any): EvaluatedStyleEntry[] {
 //  axii/ssr 的行内样式都经 stringifyCssValue，补单位的名单、逗号列表的判定、[数字, 单位] 简写的单位表都只在这里。
 //  DOM.ts 曾有一份自己的 stringifyStyleValue 与三张同样的表：#48 修 [300, 'ms'] 时要改两处，
 //  名单内的非数字值两端写法也不同（见 stringifyCssValue）。DOM.ts 原样导出这里的名字，公开 API 不变。
-//  CAUTION 已知例外：客户端行内样式里的 CSS 自定义属性（--x）不经过这里，DOM.setAttribute 把求值后的原值交给
-//  el.style.setProperty，数组按 String() 逗号连接（{'--gap': [4, 8]} 客户端 "4,8"、这里 "4 8"；[300, 'ms'] 客户端 "300,ms"）。
-//  自定义属性的数组该按逗号还是空格连接没有唯一答案（字体列表 / 多值长度），留待单独决定，未在 #60 里改动。
+//  CSS 自定义属性（--x）同样经过这里（#79）：客户端曾把求值后的原值直接交给 el.style.setProperty，数组按 String()
+//  逗号连接（{'--gap': [4, 8]} 客户端 "4,8"、服务端 "4 8"；[300, 'ms'] 客户端 "300,ms"、服务端 "300ms"），激活前后不同。
+//  现在两端都是空格连接、[数字, 单位] 拼成一个值；--x 不在补单位名单里，数字原样。
 
 // CAUTION 数字自动补单位的名单（style 对象的驼峰 key）。口径：取值只由长度 / 百分比（以及关键字、函数）组成、
 //  无单位的非零数字不合法的标准 CSS 属性，含只由这类分项组成的简写（margin / inset / gap / borderRadius …）。
@@ -910,6 +910,97 @@ export function isAcceptableInlineDeclaration(name: string, value: string): bool
     const isCustomProperty = name.length > 2 && name.charCodeAt(0) === 0x2D && name.charCodeAt(1) === 0x2D
     const flags = isCustomProperty ? CSS_STOP_SEMICOLON | CSS_STOP_BANG : CSS_STOP_SEMICOLON | CSS_STOP_BANG | CSS_STOP_OPEN_BRACE
     return scanCssComponentValues(value, 0, flags) === value.length
+}
+
+/**
+ * style 数组字符串条目里的一条声明：[属性名, 声明原文, 值, 是否 !important]。
+ *  属性名按 CSSOM 的认法：自定义属性区分大小写，其余转小写。值是冒号之后、!important 之前的原文，
+ *  不去首尾空白（CSSOM 解析值时自己忽略首尾的 CSS 空白；JS 的 trim 还会去掉 U+00A0，把非法值变成合法值）。
+ */
+export type InlineDeclaration = [name: string, text: string, value: string, important: boolean]
+
+const INLINE_DECLARATION_NAME = /^(?:--|-?[_a-zA-Z\u00A0-\uFFFF])[-_a-zA-Z0-9\u00A0-\uFFFF]*$/
+// "!" 之后只有 important（ASCII 不区分大小写），前后可以隔空白和注释（CSS Syntax 3「consume a declaration」）
+const IMPORTANT_TAIL = /^(?:[ \t\n\r\f]|\/\*[^]*?\*\/)*important(?:[ \t\n\r\f]|\/\*[^]*?\*\/)*$/i
+
+/**
+ * 这条声明是不是「什么都不写」：普通属性的值只有 CSS 空白时声明无效，浏览器丢弃它、前面的值保留。
+ *  自定义属性的空值合法（--x: 设为空值）。服务端据此判断后面的字符串条目是否覆盖前面的 !important 声明（ssr.ts）；
+ *  客户端不需要判断：DOM.applyStyleText 把空值写成一个空白，setProperty 按同样的规则忽略或设为空值。
+ */
+export function isVoidInlineDeclaration(declaration: InlineDeclaration): boolean {
+    const name = declaration[0]
+    if (name.charCodeAt(0) === 0x2D && name.charCodeAt(1) === 0x2D) return false
+    const value = declaration[2]
+    for (let i = 0; i < value.length; i++) if (!isCssWhitespace(value.charCodeAt(i))) return false
+    return true
+}
+
+let lastSplitText: string | undefined
+let lastSplitResult: InlineDeclaration[] | null = null
+
+/**
+ * 把 style 数组的字符串条目拆成声明。唯一一份（#79），两端共用：
+ *  - 客户端（DOM.setAttribute）：元素已有行内声明时逐条 setProperty，字符串条目只覆盖它自己声明的属性；
+ *    StyleManager 按这里的属性名记账，下一次更新时删掉不再声明的属性（与对象条目的空值删除一致）。
+ *  - 服务端（ssr.ts）：后面条目的让位、空值删除、对 !important 的覆盖要删到字符串条目里的声明，删过之后输出剩下的声明原文。
+ *
+ * CAUTION 只在拆法与浏览器的 CSS 词法确定一致时返回，否则返回 null，由调用方按原文处理（客户端交给浏览器解析，
+ *  服务端原样输出）：浏览器里引号 / 括号 / 函数里的 ";" 不是分隔符，未闭合的引号 / 注释 / 括号一直吞到结尾，
+ *  不带引号的 url( 一旦含引号、"("、内部空白就成为 bad-url、在第一个 ")" 处结束——
+ *  一个朴素的扫描在这些地方与浏览器分界不同，删声明就会删错、或把后面的声明拼进前一条。
+ *  分界用声明门闩的同一份词法（scanCssComponentValues，#78）。未闭合或不配对的结构、bad-string、
+ *  bad-url、不是属性名的段，整个字符串放弃拆分。另外两类照旧放弃拆分（README「Style arrays」写明的约定）：
+ *  带反斜杠（转义）的文本，以及字符串、注释、url 之外出现花括号的文本。
+ *  首尾只去 CSS 空白（空格、\t、\n、\r、\f）：以 U+00A0 开头的「\u00A0color: red」在浏览器里不是 color 的声明（JS 的 trim 会把它变成 color）。
+ *
+ * CAUTION 返回值是共用的、只读的：记住最近一次的结果，客户端 StyleManager 记账与随后的 setAttribute 写入拆的是
+ *  同一个字符串，第二次不再扫描。调用方不能改动返回的数组（服务端删声明前先复制，见 ssr.ts 的 removeInlineDeclaration）。
+ */
+export function splitInlineDeclarations(text: string): readonly InlineDeclaration[] | null {
+    if (text === lastSplitText) return lastSplitResult
+    const result = splitInlineDeclarationsOnce(text)
+    lastSplitText = text
+    lastSplitResult = result
+    return result
+}
+
+function splitInlineDeclarationsOnce(text: string): InlineDeclaration[] | null {
+    if (text.indexOf('\\') >= 0) return null
+    const declarations: InlineDeclaration[] = []
+    const length = text.length
+    for (let start = 0; start <= length;) {
+        // 一遍扫到这条声明结尾的 ";"，途中记下最后一个顶层的 "!"：!important 是值里最后一个 "!" 之后只有 important，
+        //  "!" 也可以是自定义属性值的一部分（--x: a!b），所以要最后一个。"!" 是单独的 token，从它之后接着扫描与整体扫描分界相同。
+        let bang = -1
+        let end = scanCssComponentValues(text, start, CSS_STOP_SEMICOLON | CSS_STOP_BANG | CSS_NO_BRACES)
+        while (end >= 0 && end < length && text.charCodeAt(end) === 0x21) {
+            bang = end
+            end = scanCssComponentValues(text, end + 1, CSS_STOP_SEMICOLON | CSS_STOP_BANG | CSS_NO_BRACES)
+        }
+        if (end < 0) return null
+        let from = start
+        let to = end
+        while (from < to && isCssWhitespace(text.charCodeAt(from))) from++
+        while (to > from && isCssWhitespace(text.charCodeAt(to - 1))) to--
+        if (from < to) {
+            const colon = text.indexOf(':', from)
+            if (colon < 0 || colon >= to) return null
+            let nameEnd = colon
+            while (nameEnd > from && isCssWhitespace(text.charCodeAt(nameEnd - 1))) nameEnd--
+            const name = text.slice(from, nameEnd)
+            if (!INLINE_DECLARATION_NAME.test(name)) return null
+            const important = bang > colon && IMPORTANT_TAIL.test(text.slice(bang + 1, to))
+            declarations.push([
+                name.charCodeAt(0) === 0x2D && name.charCodeAt(1) === 0x2D ? name : name.toLowerCase(),
+                text.slice(from, to),
+                text.slice(colon + 1, important ? bang : to),
+                important,
+            ])
+        }
+        start = end + 1
+    }
+    return declarations
 }
 
 /** Filter generateStyleContent rules through the escape gate; join survivors with newlines. */
