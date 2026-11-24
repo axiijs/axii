@@ -5,7 +5,7 @@
  */
 import {afterEach, describe, expect, test} from 'vitest'
 import {createElement, renderToString} from '../../src/ssr.js'
-import {generateStyleContent, setAutoUnitType} from '../../src/styleSerialize.js'
+import {generateStyleContent, isAcceptableInlineDeclaration, setAutoUnitType} from '../../src/styleSerialize.js'
 
 const lastSelector = (rules: string[]) => rules.at(-1)!.split('{')[0].trim()
 
@@ -185,6 +185,84 @@ describe('audit: style serialization without a DOM', () => {
         const {html, styles} = renderToString(createElement('div', {style: {color: 'red;position:fixed', '&:hover': {opacity: 1}}}))
         expect(styles).not.toContain('position')
         expect(html).not.toContain('position')
+    })
+
+    // #78：门闩按浏览器的 CSS 词法判断（浏览器侧的 computed 对照见 __tests__/styleDeclarationGate.spec.tsx）
+    test('values the browser tokenizes into more than one declaration never reach a rule or a style attribute', () => {
+        const hostile: [string, string][] = [
+            ['backgroundImage', 'url(a(b);position:fixed;x:())'],   // bad-url ends at the first ")"
+            ['backgroundImage', 'url(a"b);position:fixed;x:("c)'],
+            ['backgroundImage', 'url(a b(c);position:fixed;x:())'],
+            ['backgroundImage', '\\75rl(a(b);position:fixed;x:())'], // an escaped name is still url(
+            ['backgroundImage', 'u\\72 l(a(b);position:fixed;x:())'],
+            ['backgroundImage', 'u\\72\r\nl(a(b);position:fixed;x:())'],
+            ['content', '"a\r;position:fixed;x:"'],                  // \r and \f end a string like \n
+            ['content', '"a\f;position:fixed;x:"'],
+            ['color', 'hover, & {position:fixed}'],                  // re-parsed as a nested rule
+            ['--', 'hover, & {position:fixed}'],                     // "--" alone is not a custom property
+            ['color', '(<!--url(/*));position:fixed;*/))'],          // "<!--" is one token: url( after it is a url token
+            ['color', 'f(<!--url(a")"))'],
+            ['color', 'f(<!--url(/*));}body{display:none}x{*/))'],
+        ]
+        for (const [key, value] of hostile) {
+            const style = {[key]: value, marginTop: 3}
+            const rules = generateStyleContent('.x', style).join('\n')
+            expect({key, value, rules}).toEqual({key, value, rules: '.x {\nmargin-top:3px;\n}'})
+            const sheetPath = renderToString(createElement('div', {style: {...style, '&:hover': {opacity: 1}}}))
+            const inlinePath = renderToString(createElement('div', {style}))
+            expect([sheetPath.styles, sheetPath.html, inlinePath.html].join('\n')).not.toMatch(/position|display/)
+            expect(inlinePath.html).toContain('style="margin-top:3px"')
+        }
+    })
+
+    test('style keys cannot make the SSR stylesheet grow another rule', () => {
+        for (const key of [
+            '@media <!--url(/*){}body{display:none}@media x{*/)',
+            '& <!--url(/*){}body{display:none}x{*/)',
+            '@x;body',                                               // ";" ends an at-rule prelude
+        ]) {
+            const {styles} = renderToString(createElement('div', {style: {marginTop: 3, [key]: {color: 'red'}}}))
+            expect({key, styles}).toEqual({key, styles: expect.not.stringMatching(/body|color/)})
+            expect(styles).toContain('margin-top:3px;')
+        }
+    })
+
+    test('legal values the browser reads as one declaration are kept, and their rules survive the SSR rule gate', () => {
+        const legal: Record<string, string> = {
+            backgroundImage: 'url(a}b.png)',
+            listStyleImage: 'url(a\\29 b.png)',
+            fontFamily: 'a\\}b',
+            color: 'rgb(1, 2, 3) /* } */',
+            quotes: '"{" "}"',
+            content: '"a\\\r\nb"',
+            '--json': '{"k": [1, 2]}',
+            '--y': 'a {b} c',
+        }
+        const rules = generateStyleContent('.x', legal).join('\n')
+        for (const value of Object.values(legal)) expect(rules).toContain(`:${value};`)
+        const {styles} = renderToString(createElement('div', {style: {...legal, marginTop: 3, '&:hover': {opacity: 1}}}))
+        for (const value of Object.values(legal)) expect(styles).toContain(`:${value};`)
+        expect(styles).toContain('margin-top:3px;')
+    })
+
+    // Chromium 把所有非 ASCII 当名字字符；现行 CSS Syntax 3 只认其中若干区段，U+00A0 不在内。SSR 的输出由各家
+    //  引擎解析：名字在非 ASCII 字符之后的部分是 url 时，两种引擎的分界不同（函数 / url token），一律拒绝。
+    test('a url( right after a non-ASCII character is rejected: engines disagree on where that token ends', () => {
+        expect(isAcceptableInlineDeclaration('background-image', '\u00A0url(a(b);position:fixed;x:())')).toBe(false)
+        expect(isAcceptableInlineDeclaration('--x', 'a\u00A0URL(a"b);position:fixed;x:("c)')).toBe(false)
+        expect(isAcceptableInlineDeclaration('--x', '#\u00A0url(a(b);c)')).toBe(false)
+        expect(isAcceptableInlineDeclaration('background-image', '\u00A0url(a.png)')).toBe(false)
+        expect(isAcceptableInlineDeclaration('content', 'caf\u00e9url( a/*)')).toBe(false)
+        expect(isAcceptableInlineDeclaration('--x', 'caf\u00e9(a(b);c)')).toBe(true)
+        expect(isAcceptableInlineDeclaration('--x', '#url(a(b);c)')).toBe(true)
+    })
+
+    test('the gate rejects nesting deeper than its block stack holds, so a hostile value cannot grow it', () => {
+        const nested = (depth: number) => `${'calc('.repeat(depth)}1px${')'.repeat(depth)}`
+        expect(isAcceptableInlineDeclaration('width', nested(1024))).toBe(true)
+        expect(isAcceptableInlineDeclaration('width', nested(1025))).toBe(false)
+        expect(isAcceptableInlineDeclaration('--x', `${'{'.repeat(200000)}${'}'.repeat(200000)}`)).toBe(false)
+        expect(isAcceptableInlineDeclaration('width', 'calc(1px + (2px * 3))')).toBe(true)
     })
 
     test('property names follow what el.style accepts: cssFloat and lower-case vendor prefixes', () => {
