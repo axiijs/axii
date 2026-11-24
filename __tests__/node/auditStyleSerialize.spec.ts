@@ -147,6 +147,8 @@ describe('audit: style serialization without a DOM', () => {
         // anything the browser tokenizes differently from a plain scan is left alone
         for (const text of [
             'content: "a\\"b"; color: blue',          // escape
+            'font-family: a\\;color: blue; margin-top: 1px',           // escaped ";" outside a string
+            'content: "\\"; color: blue; margin-top: 1px; quotes: "x"', // escaped quote inside a string
             'color: blue; content: "abc',              // unterminated string
             'color: blue /* x',                        // unterminated comment
             'color: blue; width: calc(1px',            // unclosed parenthesis
