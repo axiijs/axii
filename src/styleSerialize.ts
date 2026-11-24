@@ -608,10 +608,20 @@ export function scanCssComponentValues(text: string, start: number, flags: numbe
     // 当前名字（ident、函数名、数字的单位）的起点：-1 不在名字里；-2 名字属于前面的 # / @
     //  （hash / at-keyword token，#url( 不是 url token）
     let name = -1
+    // 当前名字里最后一个非 ASCII 字符（未转义）的位置。Chromium 把所有非 ASCII 都当名字字符，现行
+    //  CSS Syntax 3 只认其中若干区段（U+00A0 等不在内）；SSR 的输出由各家引擎解析，所以名字在非 ASCII
+    //  字符之后的部分是 url 时，同样按 url token 判断（\u00A0url( 在收窄的引擎里是 url token）。
+    let nonAscii = -1
     let i = start
     while (i < length) {
         const c = text.charCodeAt(i)
-        if (c >= 0x80 || CSS_ASCII_NAME_CODE_POINT[c] === 1) {
+        if (c >= 0x80) {
+            if (name === -1) name = i
+            nonAscii = i
+            i++
+            continue
+        }
+        if (CSS_ASCII_NAME_CODE_POINT[c] === 1) {
             if (name === -1) name = i
             i++
             continue
@@ -623,9 +633,11 @@ export function scanCssComponentValues(text: string, start: number, flags: numbe
             continue
         }
         const nameStart = name
+        const nameNonAscii = nonAscii
         name = -1
+        nonAscii = -1
         if (c === 0x28) {
-            if (nameStart >= 0 && isCssUrlName(text, nameStart, i)) {
+            if ((nameStart >= 0 && isCssUrlName(text, nameStart, i)) || (nameNonAscii >= 0 && isCssUrlName(text, nameNonAscii + 1, i))) {
                 let j = i + 1
                 while (j < length && isCssWhitespace(text.charCodeAt(j))) j++
                 const q = text.charCodeAt(j)

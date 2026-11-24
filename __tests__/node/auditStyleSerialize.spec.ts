@@ -245,6 +245,17 @@ describe('audit: style serialization without a DOM', () => {
         expect(styles).toContain('margin-top:3px;')
     })
 
+    // Chromium 把所有非 ASCII 当名字字符；现行 CSS Syntax 3 只认其中若干区段，U+00A0 不在内。SSR 的输出由各家
+    //  引擎解析：名字在非 ASCII 字符之后的部分是 url 时按 url token 判断，bad-url 照样拒绝，合法的 url 照常放行。
+    test('a url( right after a non-ASCII character is judged as a url token for engines with narrower name characters', () => {
+        expect(isAcceptableInlineDeclaration('background-image', '\u00A0url(a(b);position:fixed;x:())')).toBe(false)
+        expect(isAcceptableInlineDeclaration('--x', 'a\u00A0URL(a"b);position:fixed;x:("c)')).toBe(false)
+        expect(isAcceptableInlineDeclaration('--x', '#\u00A0url(a(b);c)')).toBe(false)
+        expect(isAcceptableInlineDeclaration('background-image', '\u00A0url(a.png)')).toBe(true)
+        expect(isAcceptableInlineDeclaration('--x', 'caf\u00e9(a(b);c)')).toBe(true)
+        expect(isAcceptableInlineDeclaration('--x', '#url(a(b);c)')).toBe(true)
+    })
+
     test('the gate rejects nesting deeper than its block stack holds, so a hostile value cannot grow it', () => {
         const nested = (depth: number) => `${'calc('.repeat(depth)}1px${')'.repeat(depth)}`
         expect(isAcceptableInlineDeclaration('width', nested(1024))).toBe(true)
