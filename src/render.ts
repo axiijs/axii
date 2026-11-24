@@ -1,3 +1,4 @@
+import {Notifier, ReactiveEffect} from "data0";
 import {createHost} from "./createHost";
 import {ComponentNode} from "./types";
 import {PathContext, Host} from "./Host";
@@ -50,6 +51,33 @@ export type Root = {
 
 type AttachQueueEntry = {node: Node, run: () => void, cancelled: boolean}
 
+/**
+ * root 是归属边界：root.render() / root.destroy() 里执行的代码（组件函数体、useEffect 回调与清理、
+ * ref、各层 host 的创建与销毁）不属于恰好正在运行的 effect。
+ *
+ * CAUTION 在用户 effect 里调用这两个方法是常见写法（按一个 atom 打开 / 关闭弹层）。不隔离的话：
+ *  - 里面读到的 atom 成为那个 effect 的依赖，之后写它就把整个 root 重新渲染或再销毁一次；
+ *  - 里面创建的绑定 effect 被收集成那个 effect 的子 effect，它下一次重跑就把它们销毁——
+ *    DOM 还在，绑定却不再更新，而 root 并没有被销毁。
+ *  内容的生命周期只由 root.destroy() 决定。只暂停「正在运行的 effect」的追踪和子 effect 收集，
+ *  不动 ManualCleanup 的收集帧：Portal 在组件函数体里渲染内层 root，内容仍随 Portal 组件销毁。
+ *  没有正在运行的 effect（绝大多数调用）时直接执行。
+ */
+function runOutsideRunningEffect<T>(run: () => T): T {
+    const scopes = ReactiveEffect.activeScopes
+    if (!scopes.length) return run()
+    const running = scopes[scopes.length - 1]
+    const collectChild = running.shouldCollectChild
+    running.shouldCollectChild = false
+    Notifier.instance.pauseTracking()
+    try {
+        return run()
+    } finally {
+        Notifier.instance.resetTracking()
+        running.shouldCollectChild = collectChild
+    }
+}
+
 function createRootInternal(element: HTMLElement, parentContext?:PathContext, hydratePlaceholder?: Comment): Root {
     const eventCallbacks = new Map<string, Set<EventCallback>>()
     let attachQueue: AttachQueueEntry[] = []
@@ -73,29 +101,34 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
         render(componentOrEl: JSX.Element|ComponentNode|Function) {
             // CAUTION render 不可重入，否则会往容器里追加多棵树
             assert(!root.host, 'root can only render once, destroy the root before rendering again')
-            const placeholder = hydratePlaceholder ?? document.createComment('root')
-            if (!hydratePlaceholder) {
-                const frag = document.createDocumentFragment()
-                frag.appendChild(placeholder)
-                root.host = createHost(componentOrEl, placeholder, pathContext)
-                root.host.render()
-                element.appendChild(frag)
-            } else {
-                // Hydrate：认领已有 <!--root-->，不新建、不整树重建
-                root.host = createHost(componentOrEl, placeholder, pathContext)
-                root.host.render()
-            }
-            // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
-            if(element.isConnected) {
-                root.dispatch('attach')
-                root.attached = true
-            }
-            return root.host
+            return runOutsideRunningEffect(() => {
+                const placeholder = hydratePlaceholder ?? document.createComment('root')
+                let host: Host
+                if (!hydratePlaceholder) {
+                    const frag = document.createDocumentFragment()
+                    frag.appendChild(placeholder)
+                    root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                    host.render()
+                    element.appendChild(frag)
+                } else {
+                    // Hydrate：认领已有 <!--root-->，不新建、不整树重建
+                    root.host = host = createHost(componentOrEl, placeholder, pathContext)
+                    host.render()
+                }
+                // CAUTION 如果是之后再 attach 到 DOM 上的，需要手动触发 attach 事件
+                if(element.isConnected) {
+                    root.dispatch('attach')
+                    root.attached = true
+                }
+                return host
+            })
         },
         destroy() {
-            // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
-            root.dispatch('detach')
-            root.host?.destroy()
+            runOutsideRunningEffect(() => {
+                // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
+                root.dispatch('detach')
+                root.host?.destroy()
+            })
             eventCallbacks.clear()
             attachQueue = []
             root.host = undefined
@@ -172,25 +205,44 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             }
             const callbacks = eventCallbacks.get(event)
             const consumed = !!callbacks?.size
-            if (consumed) {
-                callbacks!.forEach(callback => {
-                    // CAUTION 一个监听器抛错不能中断兄弟监听器，更不能把新错误传播回框架的
-                    //  错误恢复路径——dispatch('error') 的调用点都在 catch 块里，向上抛会
-                    //  覆盖原始错误、把 fail-stop 变成二次崩溃。监听器自身的错误收敛到
-                    //  reportAxiiError（结构化打印 + onError 回调），保持可观测。
-                    try {
-                        callback(arg)
-                    } catch (handlerError) {
-                        reportAxiiError(handlerError)
+            // CAUTION 监听器是注册者的代码，却跑在派发点的 effect 帧里：绑定更新抛错时，error 就在
+            //  出错绑定自己的 update 里派发。不暂停追踪的话监听器读的 atom 会成为该绑定的依赖，
+            //  监听器读错误列表、再异步追加错误列表就是无限重算。派发方只关心有没有人消费事件，
+            //  监听器的读取不可能是它的依赖，所以对所有事件统一暂停。
+            //  attach 补执行的 layoutEffect/ref 有监听和 deferred 队列两条路径，必须在同一个暂停区间内。
+            Notifier.instance.pauseTracking()
+            try {
+                if (consumed) {
+                    const notify = () => callbacks!.forEach(callback => {
+                        // CAUTION 一个监听器抛错不能中断兄弟监听器，更不能把新错误传播回框架的
+                        //  错误恢复路径——dispatch('error') 的调用点都在 catch 块里，向上抛会
+                        //  覆盖原始错误、把 fail-stop 变成二次崩溃。监听器自身的错误收敛到
+                        //  reportAxiiError（结构化打印 + onError 回调），保持可观测。
+                        try {
+                            callback(arg)
+                        } catch (handlerError) {
+                            reportAxiiError(handlerError)
+                        }
+                    })
+                    // CAUTION error 由出错的绑定/组件触发，监听器创建的 effect（错误提示的绑定等）不属于它：
+                    //  被收集成绑定的子 effect 会在下一次更新时销毁，被收集进组件的 collect frame 会随
+                    //  失败的 render 立即销毁。其余事件是调用方主动派发的，归属不变——Portal 内容的
+                    //  layoutEffect 创建的 effect 仍由 Portal 组件收集并随它销毁。
+                    if (event === 'error') {
+                        ReactiveEffect.createDetached(notify)
+                    } else {
+                        notify()
                     }
-                })
-            }
-            // CAUTION 手动 dispatch('attach')（容器脱离文档后重新连通是公开用法）也必须
-            //  flush deferred-attach 队列：root.attached 为 true 期间动态创建、但插入时
-            //  仍未连通的组件/元素登记在这里，没有任何外层插入动作会再替它们 flush，
-            //  不 flush 的话它们的 layoutEffect/ref 永不执行。
-            if (event === 'attach') {
-                root.flushAttachQueue()
+                }
+                // CAUTION 手动 dispatch('attach')（容器脱离文档后重新连通是公开用法）也必须
+                //  flush deferred-attach 队列：root.attached 为 true 期间动态创建、但插入时
+                //  仍未连通的组件/元素登记在这里，没有任何外层插入动作会再替它们 flush，
+                //  不 flush 的话它们的 layoutEffect/ref 永不执行。
+                if (event === 'attach') {
+                    root.flushAttachQueue()
+                }
+            } finally {
+                Notifier.instance.resetTracking()
             }
             if (consumed) return true
             // CAUTION 只冒泡 error：attach/detach 是每个 root 自己的生命周期事件，不能转发

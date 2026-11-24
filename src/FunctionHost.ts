@@ -57,19 +57,36 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
     get forceHandleElement(): boolean {
         return !!this.innerHost?.forceHandleElement
     }
+    // CAUTION 旧内容的销毁（onCleanup、innerHost 里的 effect 清理/ref(null)/detachStyle 求值等）
+    //  会执行用户代码，而重算时本 effect 已在作用域栈顶。不隔离的话销毁里的 atom 读取会成为
+    //  函数节点的依赖：之后写那个 atom 就重建整个新内容，新内容挂载时正好写它就是无限重挂。
+    //  销毁里创建的 effect 也不属于本节点，被收集为子 effect 会在下一次重算时被误销毁。
+    //  与 createHost/render 的隔离对称；放在这两个方法里，重算与 destroy 的所有入口都覆盖到。
+    // CAUTION 子 effect 收集用「保存原值、还原」，不能用 resumeCollectChild()（无条件置 true）：
+    //  本节点可能在收集已暂停的区间里被重入销毁——新内容渲染中途、或 error 监听器的
+    //  createDetached 区间里，监听器调用 root.destroy()。那时置回 true，监听器随后创建的
+    //  effect（渲染到另一个 root 的错误提示等）会被本节点收集，随它的延迟销毁一起销毁。
     runCleanups() {
         const cleanups = this.cleanups
         if (cleanups?.length) {
             this.cleanups = undefined
-            // CAUTION 与 ComponentHost cleanup 的错误语义一致：注册了 root error
-            // 钩子时，一个 cleanup 抛错不能中断兄弟 cleanup、函数节点重算或整棵
-            // root 的销毁。未注册钩子时仍保持向上抛出的旧行为。
-            for (const cleanup of cleanups) {
-                try {
-                    cleanup()
-                } catch (error) {
-                    if (!this.pathContext.root.dispatch('error', error)) throw error
+            const collectChild = this.shouldCollectChild
+            Notifier.instance.pauseTracking()
+            this.pauseCollectChild()
+            try {
+                // CAUTION 与 ComponentHost cleanup 的错误语义一致：注册了 root error
+                // 钩子时，一个 cleanup 抛错不能中断兄弟 cleanup、函数节点重算或整棵
+                // root 的销毁。未注册钩子时仍保持向上抛出的旧行为。
+                for (const cleanup of cleanups) {
+                    try {
+                        cleanup()
+                    } catch (error) {
+                        if (!this.pathContext.root.dispatch('error', error)) throw error
+                    }
                 }
+            } finally {
+                this.shouldCollectChild = collectChild
+                Notifier.instance.resetTracking()
             }
         }
     }
@@ -232,8 +249,17 @@ export class FunctionHost extends DeferredBindingEffect implements Host{
         const host = this.innerHost
         if (host) {
             this.innerHost = null
-            // CAUTION 内层 host 的 effect 是在 pauseCollectChild 下创建的（没有父 effect），必须显式销毁
-            host.destroy(parentHandle)
+            // 隔离追踪与子 effect 收集，见 runCleanups
+            const collectChild = this.shouldCollectChild
+            Notifier.instance.pauseTracking()
+            this.pauseCollectChild()
+            try {
+                // CAUTION 内层 host 的 effect 是在 pauseCollectChild 下创建的（没有父 effect），必须显式销毁
+                host.destroy(parentHandle)
+            } finally {
+                this.shouldCollectChild = collectChild
+                Notifier.instance.resetTracking()
+            }
         }
     }
     destroy(parentHandle?: boolean) {
