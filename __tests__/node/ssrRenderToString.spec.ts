@@ -312,7 +312,7 @@ describe('M-02 renderToString (Node)', () => {
         expect(radioVal).not.toContain('checked')
     })
 
-    test('CB deferred: value then checked=false; checked=false then value=true', () => {
+    test('CB deferred: an explicit checked wins over a boolean value in either key order (#52)', () => {
         const props1: any = {type: 'checkbox'}
         props1.value = true
         props1.checked = false
@@ -325,7 +325,7 @@ describe('M-02 renderToString (Node)', () => {
         props2.value = true
         const {html: h2} = renderToString(createElement('input', props2))
         expect(h2).toContain('value="true"')
-        expect(h2).toContain('checked="true"')
+        expect(h2).not.toContain('checked')
     })
     test('RAWTEXT </style> termination throws', () => {
         expect(() => assertNoRawTextTerminator('color:red;</style><script>', 'style')).toThrow(

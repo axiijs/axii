@@ -71,12 +71,15 @@ describe('F7 regression (Node)', () => {
         expect([
             cb({value: atom(true)}), cb({value: atom(0)}), cb({checked: () => true}),
             cb({value: atom('v'), checked: atom(false)}), cb({checked: atom(false), value: atom(true)}),
+            cb({checked: atom(true), value: atom(undefined)}),
         ]).toEqual([
             '<input type="checkbox" value="true" checked="true"/><!--root-->',
             '<input type="checkbox" value="0"/><!--root-->',
             '<input type="checkbox" checked="true"/><!--root-->',
             '<input type="checkbox" value="v"/><!--root-->',
-            '<input type="checkbox" value="true" checked="true"/><!--root-->',
+            // #52：显式的 checked 永远生效，与书写顺序无关
+            '<input type="checkbox" value="true"/><!--root-->',
+            '<input type="checkbox" value="" checked="true"/><!--root-->',
         ])
     })
 
@@ -172,7 +175,7 @@ describe('R1–R6 serializeAttrs follows the new CSR attribute rules (Node)', ()
         expect(html('my-el', {draggable: false, translate: false, 'data-x': false})).toBe('<my-el data-x="false"></my-el>')
     })
 
-    test('R3 checkbox: only a boolean / nullish value is a checked state', () => {
+    test('R3 checkbox: only a boolean value is a checked state, and only without a checked prop (#52)', () => {
         const cb = (props: any) => html('input', {type: 'checkbox', ...props})
         expect([
             cb({value: 'red'}), cb({value: 1}), cb({value: 0}),
@@ -184,13 +187,25 @@ describe('R1–R6 serializeAttrs follows the new CSR attribute rules (Node)', ()
             '<input type="checkbox" value="red"/>',
             '<input type="checkbox" value="red" checked="true"/>',
         ])
-        // boolean / nullish value: unchanged dual channel (§3.6.2 CB)
-        expect([cb({value: true}), cb({value: false}), cb({value: null}), cb({value: true, checked: false}), cb({checked: false, value: true})])
-            .toEqual([
-                '<input type="checkbox" value="true" checked="true"/>', '<input type="checkbox" value="false"/>',
-                '<input type="checkbox" value=""/>', '<input type="checkbox" value="true"/>',
-                '<input type="checkbox" value="true" checked="true"/>',
-            ])
+        // boolean value without a checked prop: unchanged dual channel (§3.6.2 CB)
+        expect([cb({value: true}), cb({value: false}), cb({value: null}), cb({value: undefined})]).toEqual([
+            '<input type="checkbox" value="true" checked="true"/>', '<input type="checkbox" value="false"/>',
+            '<input type="checkbox" value=""/>', '<input type="checkbox" value=""/>',
+        ])
+        // #52：显式的 checked 永远生效，与书写顺序无关；nullish 的 value 不触碰勾选状态
+        expect([
+            cb({value: true, checked: false}), cb({checked: false, value: true}),
+            cb({value: false, checked: true}), cb({checked: true, value: false}),
+            cb({checked: true, value: undefined}), cb({value: undefined, checked: true}),
+            cb({checked: true, value: null}), cb({value: null, checked: true}),
+            cb({checked: undefined, value: true}),
+        ]).toEqual([
+            '<input type="checkbox" value="true"/>', '<input type="checkbox" value="true"/>',
+            '<input type="checkbox" value="false" checked="true"/>', '<input type="checkbox" value="false" checked="true"/>',
+            '<input type="checkbox" value="" checked="true"/>', '<input type="checkbox" value="" checked="true"/>',
+            '<input type="checkbox" value="" checked="true"/>', '<input type="checkbox" value="" checked="true"/>',
+            '<input type="checkbox" value="true"/>',
+        ])
     })
 
     test('R4 SVG: camelCase is dash-converted only for presentation attributes (exact names)', () => {
