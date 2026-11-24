@@ -32,7 +32,8 @@ import {
     toCssSafeComponentName,
 } from './styleSerialize'
 import {compareStyleSheetOrder, getStyleSheetOrder, type StyleSheetOrder} from './styleCascade'
-import {RAWTEXT_TAGS, RCDATA_TAGS, isAriaReflectionProperty, svgAttributeName, svgOnlyElementNames} from './markupNames'
+import {RAWTEXT_TAGS, RCDATA_TAGS, hasOnPrefix, isAriaReflectionProperty, svgAttributeName, svgOnlyElementNames} from './markupNames'
+import {warnInvalidOnProp} from './diagnostics'
 
 /**
  * SSR 自己的 Fragment 标记：服务端的 JSX 走 createSsrElement / 组件 renderContext，从不调用 DOM.ts 的
@@ -776,7 +777,16 @@ function serializeAttrs(
     let classAttr = ''
     for (const key in props) {
         if (skip.has(key)) continue
-        if (key[0] === 'o' && key[1] === 'n') continue // events — client only
+        // CAUTION 以 on 开头（不区分大小写）的名字一个都不写（≡ DOM.setAttribute 的 hasOnPrefix 分支，#49）：
+        //  事件（isEventName + 函数）只在客户端绑定；其余（ONCLICK / oNclick / once / onclick）两端都丢弃——
+        //  这里原来只跳过严格以小写 o、n 开头的 key，ONCLICK / oNclick 原样写进 HTML，解析后就是可执行的 onclick，
+        //  ONCLICK={fn} 还会在下面被当成响应式属性调用。必须在取快照之前跳过。
+        //  SVG 上的 xlink 前缀名（xlinkOnclick / xlink:onclick）剥掉前缀后是 on* 名字的，客户端同样丢弃（DOM.setAttribute）。
+        if (hasOnPrefix(key) ||
+            (isSVG && key.charCodeAt(0) === 120 && key.startsWith('xlink') && hasOnPrefix(key.replace(/^xlink\:?/, '')))) {
+            warnInvalidOnProp(key, props[key])
+            continue
+        }
         let value = props[key]
         if (key === 'className' || key === 'class') {
             if (value != null && typeof value !== 'boolean') classAttr = classNameSnapshot(value)

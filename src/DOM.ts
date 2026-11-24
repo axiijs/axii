@@ -2,10 +2,10 @@
 import {isAtom, RxList} from "data0";
 import {assert, each, isPlainObject} from './util'
 import {Component, ComponentNode} from "./types";
-import {isAxiiDiagnosticsEnabled, reportAxiiError} from "./diagnostics";
+import {isAxiiDiagnosticsEnabled, reportAxiiError, warnInvalidOnProp} from "./diagnostics";
 import type {AxiiSource} from "./diagnostics";
 import {SSR_STYLE_CLASSES_ATTRIBUTE, autoUnit, getAutoUnitType, setAutoUnitType} from './styleSerialize'
-import {isAriaReflectionProperty, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
+import {hasOnPrefix, isAriaReflectionProperty, isEventName, svgOnlyElementNames, svgPresentationAttributeNames} from './markupNames'
 import {
     advanceCursorUntilComment,
     advanceCursorUntilRxListHostPlaceholder,
@@ -337,17 +337,10 @@ function captureEventProxy(this: ExtendedElement, e: Event) {
 export type UnhandledPlaceholder = Comment | Text
 
 
-/**
- * @internal
- * CAUTION 事件必须是 on + 大写字母（onClick/onChangeCapture），与 mergeProp 的约定一致：
- *  宽松的 startsWith('on') 会把 once/online 这类普通 prop 吞进事件分支——
- *  属性永远设不到 DOM 上，还会挂上一个永不触发的假监听器。
- */
-export function isEventName(name: string) {
-    if (name[0] !== 'o' || name[1] !== 'n') return false
-    const third = name.charCodeAt(2)
-    return third >= 65 && third <= 90
-}
+// 事件名判定（on + 大写字母）与「以 on 开头、不区分大小写」的判定都只在 markupNames.ts 定义一份：
+//  axii/ssr 与 diagnostics 也要用，而它们不能 import 本模块。这里原样导出 isEventName（定义处的 @internal
+//  标记保证它和原来一样不进入发布的类型声明），运行时导出不变。
+export {isEventName}
 
 
 // svgPresentationAttributeNames / svgOnlyElementNames 在 markupNames.ts：CSR 与 axii/ssr 共用同一份名称表。
@@ -388,8 +381,20 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
         return
     }
 
-    // 事件
-    if (isEventName(name)) {
+    // 事件，以及其余所有以 on 开头（不区分大小写）的名字
+    // CAUTION 这里原来只判断 isEventName：ONCLICK / oNclick / OnClick 落进下面的 attribute 回退分支，
+    //  setAttribute 后被 HTML 转成小写的 onclick，成了可执行的事件处理器；小写 onclick 在 SVG 上
+    //  同样走 attribute 分支，在 HTML 元素上走 property 分支（函数值会成为生效的 handler）。
+    //  名字以 on 开头、但不是事件名的 prop 一律不写（#49，与 React 一致；见 markupNames.hasOnPrefix）。
+    //  热路径：hasOnPrefix 替换了原来的 isEventName 分发判断，首字符不是 o/O 的名字只读一次 charCode，
+    //  普通属性写入不多付代价；只有以 on 开头的名字才多一次 isEventName。
+    if (hasOnPrefix(name)) {
+        if (!isEventName(name)) {
+            warnInvalidOnProp(name, value)
+            return
+        }
+        // 书写时的 prop 名（剥掉 Capture 之前），开发期警告按它去重；只是引用，不分配
+        const propName = name
         // CAUTION Capture 后缀表示捕获阶段，但 gotpointercapture / lostpointercapture 是事件名本身：
         //  无条件剥掉后缀的话 onGotPointerCapture 会在不存在的 gotpointer 事件上挂一个捕获监听，
         //  永远不触发且没有任何报错。它们的捕获形态是 onGotPointerCaptureCapture（与 React 一致）。
@@ -420,13 +425,18 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
             //  handler 不执行且状态损坏，没有任何报错。事件按设计是非响应式的（绑定一次），
             //  正确写法是 onClick={(e) => handlerAtom()(e)}。绑定只在元素创建时发生一次，
             //  诊断关闭（生产）时只付一个布尔检查。
-            if (isAxiiDiagnosticsEnabled() &&
-                (Array.isArray(value) ? value.some(isAtom) : isAtom(value))) {
-                /* eslint-disable no-console */
-                console.error(`[axii] "${name}" received an atom as its event handler. ` +
-                    'Dispatching the event would WRITE the event object into the atom instead of calling the stored handler ' +
-                    '(events are bound once and are not reactive). Use a wrapper like onClick={(e) => handlerAtom()(e)}.')
-                /* eslint-enable no-console */
+            if (isAxiiDiagnosticsEnabled()) {
+                if (Array.isArray(value) ? value.some(isAtom) : isAtom(value)) {
+                    /* eslint-disable no-console */
+                    console.error(`[axii] "${name}" received an atom as its event handler. ` +
+                        'Dispatching the event would WRITE the event object into the atom instead of calling the stored handler ' +
+                        '(events are bound once and are not reactive). Use a wrapper like onClick={(e) => handlerAtom()(e)}.')
+                    /* eslint-enable no-console */
+                } else {
+                    // 事件名配非函数值（onClick="alert(1)"）不是合法的事件处理器（#49）：从不写成 attribute，
+                    //  仍按原样绑定（事件触发时抛错，行为不变），开发期按 prop 名警告一次。
+                    warnInvalidOnProp(propName, value)
+                }
             }
             // CAUTION 同一个 proxy 重复 addEventListener 会被 DOM 自动去重，这里无需判断
             node.addEventListener(eventName, proxy, useCapture)
@@ -697,6 +707,13 @@ export function setAttribute(node: ExtendedElement, name: string, value: any, is
     } else {
         /* v8 ignore next 4 */
         const ns = isSvg && (name !== (name = name.replace(/^xlink\:?/, '')))
+        // CAUTION xlink 前缀在上面的 hasOnPrefix 分发之后才剥掉：xlinkOnclick / xlink:onclick 剥完就是 on* 名字，
+        //  函数值会走下面不带 namespace 的 setAttribute('onclick', fn)，写出可执行的 onclick。同样丢弃（#49，
+        //  ssr.ts serializeAttrs 用同一条规则）。只有 SVG 上带 xlink 前缀的名字才多这一次判断。
+        if (ns && hasOnPrefix(name)) {
+            warnInvalidOnProp(`xlink:${name}`, value)
+            return
+        }
         // svg 的 presentation attribute 要从驼峰转换成连字符风格（见 svgPresentationAttributeNames）。
         // CAUTION 写入和移除必须用同一个名字：移除曾用驼峰原名（removeAttribute('strokeWidth')
         //  是空操作），响应式值变成 null/undefined/false 后 stroke-width 永久残留。
@@ -1487,7 +1504,10 @@ createElement.isValidAttribute = function (name: string, value: any): boolean {
 
     if (valueType !== 'object' && valueType !== 'function') return true
     // 事件 允许是函数
-    if (isEventName(name) && valueType === 'function') return true
+    // CAUTION 以 on 开头（不区分大小写）的名字一律交给 setAttribute：事件在那里绑定，其余在那里丢弃（#49）。
+    //  不能判成响应式属性——ONCLICK={fn} / onclick={atom} 会被 ReactiveAttributeEffect 求值（渲染时调用 fn）
+    //  并把结果写成 attribute。
+    if (hasOnPrefix(name)) return true
     if (name === 'style' && (isSimpleStyleObject(value) || valueType === 'string')) return true
     // 默认支持 className/class 的对象形式
     if ((name === 'className' || name === 'class') && isPlainObject(value)) return true

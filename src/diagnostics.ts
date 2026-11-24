@@ -1,4 +1,5 @@
 import type {Host} from "./Host";
+import {isEventName} from "./markupNames";
 
 /**
  * Axii 开发期诊断系统。
@@ -152,6 +153,53 @@ export function configureDiagnostics(config: DiagnosticsConfig) {
 
 export function isAxiiDiagnosticsEnabled() {
     return diagnosticsConfig.enabled ?? (typeof __DEV__ === 'undefined' || __DEV__)
+}
+
+// 同一个 prop 名只警告一次（#49）。只在诊断开启时分配，生产环境从不创建。
+let warnedOnPropNames: Set<string> | undefined
+
+// 合法的事件处理器值：函数 / 函数数组。规则与实际绑定、调用一致：
+//  - 值本身 falsy 表示解绑（DOM.setAttribute 事件分支的 if (value)：onClick={cond && fn}）；
+//  - 数组项只有 nullish / boolean 是条件项（invokeEventEntries 跳过它们：onClick={[a, cond && b]}），
+//    0 / '' 这类 falsy 项会被调用、每次事件都抛 TypeError，所以要警告；嵌套数组在绑定时摊平。
+function isEventHandlerValue(value: unknown): boolean {
+    if (!value) return true
+    return Array.isArray(value) ? value.every(isEventHandlerItem) : typeof value === 'function'
+}
+
+function isEventHandlerItem(item: unknown): boolean {
+    if (item == null || typeof item === 'boolean') return true
+    return Array.isArray(item) ? item.every(isEventHandlerItem) : typeof item === 'function'
+}
+
+/**
+ * 名字以 on 开头（markupNames.hasOnPrefix）、但不是合法事件处理器的 prop 的开发期警告（#49）。
+ * @internal
+ * 合法事件处理器 = isEventName 且值是函数 / 函数数组；合法时什么都不做。
+ * 这类 prop 两端都不写成 attribute：客户端在 DOM.setAttribute 丢弃（事件名配非函数值时仍按原样绑定，
+ * 事件触发时抛错），服务端在 serializeAttrs 跳过。同一个名字只警告一次。
+ * CAUTION 诊断关闭（生产）时只付 isAxiiDiagnosticsEnabled 一个布尔检查：不拼消息、不分配去重表。
+ *  这里不能访问 document / window：axii/ssr 在纯 Node 里调用它。
+ */
+export function warnInvalidOnProp(name: string, value: unknown) {
+    if (!isAxiiDiagnosticsEnabled()) return
+    const eventName = isEventName(name)
+    if (eventName && isEventHandlerValue(value)) return
+    if (warnedOnPropNames?.has(name)) return
+    ;(warnedOnPropNames ??= new Set()).add(name)
+    /* v8 ignore next */
+    if (typeof console === 'undefined') return
+    /* eslint-disable no-console */
+    console.error(eventName ?
+        `[axii] "${name}" expects a function (or an array of functions) as its event handler, but got ` +
+        `${Array.isArray(value) ? 'an array with a non-function item' : `a value of type ${typeof value}`}. ` +
+        'It is never written as an attribute on the client or the server; a non-function handler throws when the event fires.' :
+        `[axii] "${name}" was not written to the element. A prop whose name starts with "on" (in any letter case) ` +
+        'is only an event handler when it is written as on + an uppercase letter (onClick) and its value is a function ' +
+        'or an array of functions. Every other "on*" prop is dropped on both the client and the server: attribute names ' +
+        'are case-insensitive, so a name like ONCLICK would become an executable onclick handler. ' +
+        'Use onClick={handler} for an event, or a data-* attribute for data.')
+    /* eslint-enable no-console */
 }
 
 /**

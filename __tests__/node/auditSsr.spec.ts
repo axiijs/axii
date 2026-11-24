@@ -328,3 +328,28 @@ describe('F9 raw-text elements inside foreign content (Node)', () => {
             .toBe('<svg><plaintext><!--axii:t-->&lt;x&gt;<!--axii:/t--></plaintext></svg><!--root-->')
     })
 })
+
+// #49：名字以 on 开头（不区分大小写）、但不是合法事件处理器的 prop 在服务端同样不写；
+//  值是函数时也不能被当成响应式属性求值（ONCLICK: fn 曾经在服务端被调用、返回值写进 HTML）。
+describe('#49 on* props that are not event handlers are never serialized (Node)', () => {
+    test('case variants, plain on* names and function values are dropped; a bare `on` is kept', () => {
+        const calls: string[] = []
+        const fn = (name: string) => () => { calls.push(name); return 'alert(1)' }
+        const node = createElement('div', null,
+            createElement('div', {ONCLICK: 'alert(1)', oNclick: 'alert(1)', onclick: 'alert(1)', OnClick: 'alert(1)'}),
+            createElement('div', {once: 'x', online: 'y', 'on-click': 'z'}),
+            createElement('svg', {ONCLICK: fn('ONCLICK'), oNclick: fn('oNclick'), onclick: atom('alert(1)')}),
+            createElement('button', {on: 'tap:lightbox', onClick: fn('onClick')}),
+        )
+        const original = console.error
+        console.error = () => {}
+        try {
+            expect({html: renderToString(node).html, calls}).toEqual({
+                html: '<div><div></div><div></div><svg></svg><button on="tap:lightbox"></button></div><!--root-->',
+                calls: [],
+            })
+        } finally {
+            console.error = original
+        }
+    })
+})

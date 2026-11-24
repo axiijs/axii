@@ -73,6 +73,7 @@ export function mergeProps(origin:{[k:string]: any}, newProps: {[k:string]: any}
 export function mergeProp(key:string, originValue:any, value: any) {
     // CAUTION 事件判定统一用 isEventName（on + 大写字母），startsWith('on') 会误伤
     //  once/onlyIcon 这类普通 prop；同一分类谓词只保留一份，行为分叉就是新的 bug 面。
+    //  （mergeProp 合并的是组件 / AOP 的 props；once 这类 prop 落到 DOM 元素上时两端都不写，见 markupNames.hasOnPrefix。）
     //  JSX 中的 className 是驼峰写法，小写 'classname' 永远匹配不上。
     if(originValue && (isEventName(key) || key === 'ref'|| key==='style' || key==='className' || key==='class')) {
         // CAUTION 事件一定要把 value 放前面，这样在事件中外部的 configure 还可以通过 preventDefault 来阻止默认行为。
@@ -293,9 +294,11 @@ export class ComponentHost implements Host{
         }
         return false
     }
+    // CAUTION 事件判定只用 isEventName（#49）：裸前缀 key[0]==='o' && key[1]==='n' 会把 once/online
+    //  这类不会绑定任何监听的 prop 也算进来（多分配一份 listenerBoundArgs），同一分类存在两种写法。
     static hasEventProps(rawProps: AttributesArg) {
         for (const key in rawProps) {
-            if (key[0] === 'o' && key[1] === 'n') return true
+            if (isEventName(key)) return true
         }
         return false
     }
