@@ -510,6 +510,48 @@ describe('a description placed before its static occurrence in an outer static t
         }
     })
 
+    test('a mismatch where the Host places the element (new element, approximate claim) or at the static position: repaired ≡ CSR, reported, bindings in place', async () => {
+        // 先放置它的一方认领元素时的失配状态（R1 新建、§4.1 近似认领）留到收集它的遍历认领内容时用：新建的元素在新建的层里建子节点，
+        //  近似认领的元素按 CSR 写属性。用错状态时内容在空元素里按失配处理，报告条数会多
+        const make = () => {
+            const x = atom('x')
+            const y = atom('y')
+            const c = atom('c1')
+            function App({}: any, {createElement}: RenderContext) {
+                const s = <b id="s" class={() => c()}><i>{() => x()}</i></b>
+                return <div>{() => s}{s}{() => y()}</div>
+            }
+            return {App, step: () => { x('x2'); y('y2'); c('c2') }}
+        }
+        // [服务端 HTML 的改动, 报告条数]。静态位置上是别的标签时那里不是它的对应物，不删除：之后 y 的文本单元处按 R2 替换它、R5 删除
+        //  服务端剩下的文本单元，两条
+        const edits: Record<string, [(html: string) => string, number]> = {
+            'another tag where the Host places it (R1)': [html => html.replace('<b id="s"', '<em id="s"').replace('</b><!--computed node-->', '</em><!--computed node-->'), 1],
+            // 两份都漂移：前方没有 id 相符的同标签元素（否则按 D6 认领静态位置那一份），Host 处按属性漂移近似认领
+            'id drift where the Host places it (approximate claim)': [html => html.replace('<b id="s"', '<b id="drift"').replace('<b id="s"', '<b id="drift2"'), 1],
+            'another tag at the static position': [html => {
+                const at = html.lastIndexOf('<b id="s"')
+                return html.slice(0, at) + html.slice(at).replace('<b id="s"', '<u id="s"').replace('</b>', '</u>')
+            }, 2],
+        }
+        for (const [name, [edit, reported]] of Object.entries(edits)) {
+            reports = []
+            const c = make()
+            const csr = mount()
+            createRoot(csr).render(createElement(c.App, null))
+            const hyd = mount()
+            hyd.innerHTML = edit(renderToString(createElement(make().App, null)).html)
+            const h = make()
+            hydrateRootTopDown(hyd, createElement(h.App, null))
+            const before = {dom: kids(hyd), mismatches: mismatches().length, invariants: invariants()}
+            const csrBefore = kids(csr)
+            c.step()
+            h.step()
+            await tick()
+            expect({name, ...before, after: kids(hyd)}).toEqual({name, dom: csrBefore, mismatches: reported, invariants: [], after: kids(csr)})
+        }
+    })
+
     test('a description placed by a Host in an earlier activation and written as a static child in a later one moves there like CSR (nothing carried across activations)', () => {
         const make = () => {
             let s: any
