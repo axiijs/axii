@@ -110,10 +110,12 @@ createRoot(document.getElementById('root')).render(<ListApp />)
 
 axii 可在服务端输出 HTML 字符串，并在浏览器中**认领**同一份 DOM 完成激活（无需 Virtual DOM）。
 
+> **`hydrateRoot` 目前是实验性的。** 在[已知的激活局限](#已知的激活局限)列出的写法里，它会认领到错误的服务端节点：内容丢失、`hydrateRoot` 抛错，或者属性和监听器静默地落到别的元素上。请对照这份清单检查你的页面。
+
 | API | 包入口 | 作用 |
 |---|---|---|
 | `renderToString(source)` | `axii/ssr` | Node 安全的字符串序列化，**不依赖 DOM 全局** |
-| `hydrateRoot(container, source, options?)` | `axii` | 认领已有节点，绑定事件与响应式 Host |
+| `hydrateRoot(container, source, options?)` | `axii` | 认领已有节点，绑定事件与响应式 Host（**实验性**） |
 
 ```jsx
 /* @jsx createElement */
@@ -155,6 +157,17 @@ hydrateRoot(root, <App />)
 - **lazy**：服务端只同步输出 fallback（或 `null`），不 await `load()`；客户端 hydrate 后再加载。
 - 非目标：流式 SSR（`renderToStream`）、应用状态序列化协议。
 - 完整契约见 `docs/ssr-support/`。
+
+### 已知的激活局限
+
+`hydrateRoot` 在 JSX 求值的同时认领服务端节点：子元素先于父元素，每个元素按这个顺序取第一个还没被认领、标签相同的服务端元素。在同一个组件的 JSX 内部，这与服务端输出一致——不同深度的同标签元素、列表行、`dangerouslySetInnerHTML` 的标记都能原地激活。出错的是子组件和函数子节点：它们在父级 JSX 求值**之后**才渲染，而服务端输出里没有任何标记说明它们的内容从哪里开始：
+
+1. **子组件或函数子节点排在父级某个同标签元素之前。** `<div><Header/><main><p>…</p></main></div>` 里 `Header` 渲染了 `<p>` 时，`<main>` 里的 `<p>` 会拿走 `Header` 的 `<p>`：`<main>` 变空，并报告 `HydrationMismatchError`。如果父级的外层元素与 `Header` 渲染的某个元素同标签（外层是 `<div>`，`Header` 渲染 `<header><div>…</div></header>`），`hydrateRoot` 会抛错。
+2. **输出形态混合的函数子节点。** 返回文本的函数子节点后面跟着返回元素的函数子节点（`<h1>{() => title()}{() => <b/>}</h1>`）会让 `hydrateRoot` 抛错；函数返回的 Fragment 里还有函数子节点时，激活后的节点顺序与客户端渲染不同。
+3. **服务端与客户端渲染的结构不同。** 列表多一行或少一行、函数在一端返回元素在另一端返回文本，既不报告也不修复：页面保留服务端的结构，多出或缺少的行从此与数据不同步（服务端是文本、客户端是元素时抛错）。请按上面的约定保持两端数据一致。
+4. **`dangerouslySetInnerHTML` 的标记里含有元素自己的标签**，例如 `<div dangerouslySetInnerHTML={'<div>…</div>'}/>`：元素会认领到自己标记里的那个 `<div>`，它的属性和监听器静默地落在那里。给这样的元素加一个静态 `id`：带静态 `id` 的元素只认领 `id` 相同的服务端节点。
+
+hydration 改为自顶向下按位置认领（axiijs/axii#55）之后，这些局限会消失，届时去掉「实验性」标注。
 
 ## 📚 学习更多
 

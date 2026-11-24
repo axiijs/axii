@@ -229,17 +229,30 @@ export const docGroups: DocGroup[] = [
       },
       {
         id: 'ssr',
-        title: 'SSR — renderToString + hydrateRoot',
+        title: 'SSR — renderToString + hydrateRoot (experimental)',
         group: 'Infrastructure',
         prose:
           'Server rendering uses the Node-safe entry axii/ssr: renderToString(source) returns ' +
           '{ html, styles, portals } with no DOM globals. html ends with <!--root-->. Inject styles ' +
           '(e.g. <style data-axii-ssr>) and write each portals[key].html into the matching container before ' +
           'activation. On the client, hydrateRoot(container, source, { portals? }) claims existing nodes ' +
-          'instead of rebuilding them; matched identity is preserved, mismatches report HydrationMismatchError ' +
-          'and rebuild only the failing unit. Keep the component tree and reactive data identical between ' +
-          'SSR and hydrate — axii does not dehydrate application state. Streaming SSR and state transfer are ' +
-          'out of scope. Full design contracts live under docs/ssr-support/.',
+          'instead of rebuilding them; matched identity is preserved, and most mismatches report ' +
+          'HydrationMismatchError and rebuild only the failing unit. Keep the component tree and reactive data ' +
+          'identical between SSR and hydrate — axii does not dehydrate application state. Streaming SSR and ' +
+          'state transfer are out of scope. Full design contracts live under docs/ssr-support/. ' +
+          'hydrateRoot is experimental. It claims server nodes while your JSX runs — children before their ' +
+          'parent, each element taking the first unclaimed server element with the same tag — and a child ' +
+          'component or function child renders only after its parent\'s JSX, with nothing in the server output ' +
+          'marking where that output starts. Known limits: (1) a component or function child placed before a ' +
+          'same-tag element of the parent — <div><Header/><main><p/></main></div> where Header renders a <p> — ' +
+          'lets that element take the child\'s node: content is lost with a HydrationMismatchError, or ' +
+          'hydrateRoot throws; (2) a function child returning text followed by one returning an element throws, ' +
+          'and a function returning a Fragment that holds another function child ends up with its nodes out of ' +
+          'order; (3) server/client structure differences (list row count, element vs text) are neither ' +
+          'reported nor repaired; (4) dangerouslySetInnerHTML markup that contains the element\'s own tag makes ' +
+          'the element silently claim the inner node of its markup — give such an element a static id. These ' +
+          'limits, and the experimental label, go away when hydration claims nodes top-down by position ' +
+          '(axiijs/axii#55).',
         raw: ssrRaw,
         html: ssrHtml,
         language: 'tsx',

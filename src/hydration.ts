@@ -91,6 +91,16 @@ function ownText(text: Text): Text {
     return text
 }
 
+// CAUTION 内容是 dangerouslySetInnerHTML 原始标记的元素（table 的隐含 tbody 时记 tbody）。
+//  这段标记由服务端原样写出，不对应客户端的任何 child 单元；tryClaimElement 不往里找，
+//  否则后面的同标签兄弟会认领到标记里的节点（auditSsrHydrate F1e）。
+//  登记点只有 exitElementChildCursor(rawContent)，「内容是原始标记」的判定只在 DOM.ts 的调用处。
+//  生命周期同 ownedTexts：本次激活内有效，begin / end 时丢弃。
+//  局限（F1j，#55）：登记发生在元素自己认领之后；它认领自己时仍会往自己的标记里找。标记里有同标签
+//  元素、而它又没有静态 id 时，拿到的是标记里的那个节点。服务端不为原始标记写任何标记，只看 DOM
+//  分不清「原始元素」和「它标记里的同标签节点」，要靠自顶向下按位置认领解决。
+let rawContentParents: WeakSet<ParentNode> | undefined
+
 let hydrating = false
 let claimedRollingStyleBases: WeakMap<Element, string> | undefined
 let hydrateRootEl: ParentNode | null = null
@@ -121,6 +131,7 @@ export function isHydrateOnMainRoot(): boolean {
 export function beginHydration(container: ParentNode, portals?: Record<string, HTMLElement>): void {
     hydrating = true
     ownedTexts = undefined
+    rawContentParents = undefined
     hydrateRootEl = container
     hydratePortalEls = portals
     hydrateRootStack.length = 0
@@ -133,6 +144,7 @@ export function beginHydration(container: ParentNode, portals?: Record<string, H
 export function endHydration(): void {
     hydrating = false
     ownedTexts = undefined
+    rawContentParents = undefined
     claimedRollingStyleBases = undefined
     hydrateRootEl = null
     hydratePortalEls = undefined
@@ -160,6 +172,7 @@ export function runOutsideHydration<T>(run: () => T): T {
     const savedCursorStack = childCursorStack.slice()
     const savedCursorDepth = elementChildCursorDepth
     const savedOwnedTexts = ownedTexts
+    const savedRawContentParents = rawContentParents
     const savedRollingStyleBases = claimedRollingStyleBases
     hydrating = false
     try {
@@ -176,6 +189,7 @@ export function runOutsideHydration<T>(run: () => T): T {
         childCursorStack.push(...savedCursorStack)
         elementChildCursorDepth = savedCursorDepth
         ownedTexts = savedOwnedTexts
+        rawContentParents = savedRawContentParents
         claimedRollingStyleBases = savedRollingStyleBases
     }
 }
@@ -458,7 +472,7 @@ function candidateFitsChildren(el: Element, children: any[] | undefined): boolea
  * - Different tag → D4/D5/D6 interstitial / wrong-tag unit
  * - Same tag with `id !== wantId` (when wantId set) → D8 same-tag interstitial / D9 swap partner
  *
- * Children-first createElement (no cursor) must not deep-claim past such units.
+ * Children-first createElement (no cursor) must not claim past such units.
  * Same-tag blockers: clear via blockedExact + removeEarlierBlockingSiblings.
  * Different-tag blockers: defer → cursor-first (D4/D6/middle) — do not early-claim later
  * siblings (would leave the wrong-tag role with nothing to rebuild against).
@@ -657,10 +671,12 @@ function tryClaimElementAtCursor(
  * Claim modes:
  * - **Active child cursor**: cursor-first only (`currentChild`). Wrong tag → null (no
  *   sibling steal). Same-tag wrong-id + exact ahead → interstitial remove (D8).
- * - **No cursor** (JSX children-before-parent, root, portal pushHydrateRoot): deepest
- *   unmatched same-tag in the hydrate root (ties: first in tree order), but **skip**
- *   candidates that sit after an earlier unclaimed wrong-tag or same-tag-wrong-id sibling
- *   (D4/D5/D8/D9). Blocked exact-id → remove blockers then claim (preserves exact identity).
+ * - **No cursor** (JSX children-before-parent, root, portal pushHydrateRoot): first
+ *   unmatched same-tag in children-before-parent order (post-order) of the hydrate root —
+ *   the order JSX evaluates createElement calls — but **skip** candidates that sit after an
+ *   earlier unclaimed wrong-tag or same-tag-wrong-id sibling (D4/D5/D8/D9), and never look
+ *   inside dangerouslySetInnerHTML markup. Blocked exact-id → remove blockers then claim
+ *   (preserves exact identity).
  *
  * Id matching:
  * - Exact `id` match claims even when the element is empty (missing `axii:0` / Text-ph
@@ -690,64 +706,67 @@ export function tryClaimElement(
         return tryClaimElementAtCursor(tagName, upper, wantId, children)
     }
 
-    // No parent cursor: deep walk (children-first nested claim / root / portal).
-    let best: Element | null = null
-    let bestDepth = -1
+    // No parent cursor: walk the hydrate root (children-first nested claim / root / portal).
     let blockedExact: Element | null = null
-    let blockedExactDepth = -1
     let wrongIdMiss: Element | null = null
-    let wrongIdDepth = -1
+    const rawContent = rawContentParents
 
+    // CAUTION 认领顺序是「子先于父」（后序遍历）里第一个合格的候选，与 JSX 的求值顺序一致：
+    //  参数先于调用求值，所以一棵静态 JSX 树里各元素的 createElement 恰好按 DOM 的后序依次发生。
+    //  曾经按「整棵树里最深的候选」认领：<div><span>a</span><p><span>b</span></p></div> 里
+    //  span a 先求值，却拿到更深的 span b——文字对调、监听器绑到别的按钮上（auditSsrHydrate F1a / F1c）。
+    //  已知局限（#55）：组件、函数子节点等由 Host 稍后渲染的内容，在父级 JSX 求值时还没有认领，
+    //  却排在后序前面；父级里同标签的元素会先把它们拿走（F1b 及其镜像）。根治要自顶向下认领。
+    //  三类候选（best / blockedExact / wrongIdMiss）都取后序里的第一个；best 优先级最高，
+    //  找到就停止遍历——一个 N 行的列表，第 k 行只走到第 k 行，不再每次遍历整个容器。
     // CAUTION 「前面有没有挡路的未认领兄弟」沿兄弟顺序递推一次即可，结论与逐个候选回头数一遍完全相同。
     //  曾经对每个候选都从父节点的第一个子节点重新数到自己：N 个同级行的列表里，一次认领是 O(N²)，
     //  整个列表 O(N³)——1000 行的列表激活要十几秒（CSR 创建同一个列表是 1~2 毫秒）。
-    //  这里只去掉这一层重复计算；每次认领仍然遍历整个容器（整体 O(N²)），认领规则没有任何变化。
-    function walkChildren(parent: ParentNode, depth: number) {
+    // CAUTION 已认领的元素仍要往里走：组件 / 函数子节点的输出就在已认领的父元素里，稍后才认领。
+    //  只有 rawContentParents 里的元素不往里走：它的内容是 dangerouslySetInnerHTML 写出的原始标记，
+    //  不属于任何 child 单元（F1e）。
+    function walkChildren(parent: ParentNode): Element | null {
         const kids = parent.childNodes
         let blockedByEarlier = false
         for (let i = 0; i < kids.length; i++) {
             const n = kids[i]
             if (n.nodeType !== Node.ELEMENT_NODE) continue
-            walk(n as Element, depth, blockedByEarlier)
+            const found = walk(n as Element, blockedByEarlier)
+            if (found) return found
             if (!blockedByEarlier && isClaimBlockingSibling(n as Element, upper, wantId)) blockedByEarlier = true
         }
+        return null
     }
 
-    function walk(el: Element, depth: number, blocked: boolean) {
-        if (!claimedElements.has(el) && el.tagName === upper) {
-            if (wantId != null && el.id !== wantId) {
-                // Attribute drift candidate — used only if no exact id match exists.
-                // Skip when a different-tag unclaimed sibling exists (role swap — D7):
-                // that node belongs to another createElement call; defer → cursor rebuild.
-                if (!blocked && !hasConflictingUnclaimedSibling(el, upper) && depth > wrongIdDepth) {
-                    wrongIdMiss = el
-                    wrongIdDepth = depth
-                }
-            } else if (wantId != null && el.id === wantId) {
-                // Strong id match: accept empty / marker-miss shells (D3); Text-ph rebuilds.
-                if (!blocked) {
-                    if (depth > bestDepth) {
-                        best = el
-                        bestDepth = depth
-                    }
-                } else if (hasSameTagWrongIdEarlierSibling(el, upper, wantId)
-                    && depth > blockedExactDepth) {
-                    // Exact id behind same-tag interstitial / swap partner (D8/D9).
-                    // Different-tag blockers alone → leave deferred for cursor (D4/D6).
-                    blockedExact = el
-                    blockedExactDepth = depth
-                }
-            } else if (!blocked && candidateFitsChildren(el, children)) {
-                if (depth > bestDepth) {
-                    best = el
-                    bestDepth = depth
-                }
-            }
+    function walk(el: Element, blocked: boolean): Element | null {
+        if (rawContent === undefined || !rawContent.has(el)) {
+            const found = walkChildren(el)
+            if (found) return found
         }
-        walkChildren(el, depth + 1)
+        if (claimedElements.has(el) || el.tagName !== upper) return null
+        if (wantId != null && el.id !== wantId) {
+            // Attribute drift candidate — used only if no exact id match exists.
+            // Skip when a different-tag unclaimed sibling exists (role swap — D7):
+            // that node belongs to another createElement call; defer → cursor rebuild.
+            if (wrongIdMiss === null && !blocked && !hasConflictingUnclaimedSibling(el, upper)) {
+                wrongIdMiss = el
+            }
+            return null
+        }
+        if (wantId != null) {
+            // Strong id match: accept empty / marker-miss shells (D3); Text-ph rebuilds.
+            if (!blocked) return el
+            if (blockedExact === null && hasSameTagWrongIdEarlierSibling(el, upper, wantId)) {
+                // Exact id behind same-tag interstitial / swap partner (D8/D9).
+                // Different-tag blockers alone → leave deferred for cursor (D4/D6).
+                blockedExact = el
+            }
+            return null
+        }
+        return !blocked && candidateFitsChildren(el, children) ? el : null
     }
 
-    walkChildren(root, 0)
+    const best = walkChildren(root)
 
     if (best) {
         claimedElements.add(best)
@@ -811,8 +830,8 @@ export function createElementForHydrateMismatch(tagName: string, isSVG?: boolean
 }
 
 /**
- * Claim the deepest unmatched element with matching tag (ties: first in tree order).
- * Matches JSX createElement evaluation order (children before parent).
+ * Claim the first unmatched element with matching tag in children-before-parent order
+ * (see tryClaimElement). Matches JSX createElement evaluation order.
  */
 export function claimElement(tagName: string): Element {
     const best = tryClaimElement(tagName)
@@ -967,10 +986,15 @@ export function removeHydrateContainerOrphans(
     }
 }
 
-export function exitElementChildCursor(keepTrailing = false): void {
+export function exitElementChildCursor(rawContent = false): void {
     // D10: claim path only clears interstitial/ahead blockers; trailing siblings never claimed.
-    // keepTrailing：元素内容是 dangerouslySetInnerHTML 写出的原始标记，不属于任何 child 单元，不是孤儿。
-    if (!keepTrailing) removeTrailingOrphansAtCursor()
+    // rawContent：元素内容是 dangerouslySetInnerHTML 写出的原始标记，不属于任何 child 单元：
+    //  不是孤儿，也不是之后任何 createElement 的认领候选（见 rawContentParents）。
+    if (rawContent) {
+        if (childCursorParent) (rawContentParents ??= new WeakSet()).add(childCursorParent)
+    } else {
+        removeTrailingOrphansAtCursor()
+    }
     if (elementChildCursorDepth > 0) elementChildCursorDepth--
     const prev = childCursorStack.pop()
     if (prev) {

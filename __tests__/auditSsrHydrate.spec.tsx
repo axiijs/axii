@@ -2,12 +2,15 @@
 /**
  * Audit: hydration + SSR ≡ CSR.
  * On pristine v4.8.1 every F* / X* / N* test of the original audit fails. With the fixes in src/:
- *  - pass: F1d (mitigated: cubic → quadratic), F2, F5, F6, F7, F8, X1–X7, N1, N2 and their regressions;
+ *  - pass: F1a, F1c, F1e (#54: claim order = JSX evaluation order, raw markup skipped), F1d
+ *    (mitigated: cubic → quadratic), F2, F5, F6, F7, F8, X1–X7, N1, N2 and their regressions;
  *  - NOT fixed, kept as `test.fails` so the evidence stays executable (each flips to a failure the
- *    day it starts passing): F1a, F1b, F1c, F1e (global deepest-same-tag claim), F3a, F3b
- *    (function-child anchor look-ahead), F4a–F4d (structural drift). All three need hydration to
- *    claim top-down by position; JSX evaluates children before their parent, so that means
- *    deferred descriptors instead of live nodes during hydration — a design decision.
+ *    day it starts passing): F1b, F1f–F1h (content a component / function child renders later is
+ *    taken by a same-tag element of the parent), F1j (a raw-markup element claims a same-tag node
+ *    inside its own markup), F3a, F3b (function-child anchor look-ahead),
+ *    F4a–F4d (structural drift). All of them need hydration to claim top-down by position (#55);
+ *    JSX evaluates children before their parent, so that means deferred descriptors instead of
+ *    live nodes during hydration — a design decision.
  *
  * Oracles:
  *  (a) parse the server HTML in the browser and compare with a CSR render of the same tree;
@@ -95,8 +98,10 @@ function hydrateKnownDefect(container: HTMLElement, source: any, reason?: RegExp
 }
 
 // ───────────────────────── Finding 1: element claim order ─────────────────────────
-describe('F1 tryClaimElement claims the deepest same-tag element of the whole root', () => {
-    test.fails('F1a same tag at two depths: hydrated DOM must equal CSR and report nothing', () => {
+// v4.8.1 claimed the deepest same-tag element of the whole root (F1a / F1c / F1e). #54 claims the first
+// one in children-before-parent order (the order JSX evaluates createElement) and skips raw markup.
+describe('F1 tryClaimElement: which same-tag element of the root a createElement claims', () => {
+    test('F1a same tag at two depths: hydrated DOM must equal CSR and report nothing', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <div><span>a</span><p><span>b</span></p></div>
         }
@@ -105,6 +110,9 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
         expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
     })
 
+    // #55: App's <p>hello</p> is claimed while App's JSX is evaluated, before <Header/> renders; the
+    // first unclaimed <p> in children-before-parent order is Header's. Needs component-region
+    // awareness (top-down claim), not a different search order.
     test.fails('F1b child component deeper than a later sibling: content must survive hydration', () => {
         function Header({}: any, {createElement}: RenderContext) {
             return <header><nav><p>deep</p></nav></header>
@@ -117,7 +125,7 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
         expect(kids(hyd)).toBe(kids(csr(App)))
     })
 
-    test.fails('F1c listeners must be bound to the element at the same position', () => {
+    test('F1c listeners must be bound to the element at the same position', () => {
         const log: string[] = []
         function App({}: any, {createElement}: RenderContext) {
             return <div>
@@ -131,9 +139,61 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
         expect(log).toEqual(['A'])
     })
 
-    test.fails('F1e markup written by dangerouslySetInnerHTML is not claimed by a same-tag JSX sibling', () => {
+    test('F1e markup written by dangerouslySetInnerHTML is not claimed by a same-tag JSX sibling', () => {
         function App({}: any, {createElement}: RenderContext) {
             return <div><div id="raw" dangerouslySetInnerHTML={'<p><em>raw</em></p>'}/><em>sibling</em></div>
+        }
+        const hyd = ssrInto(App)
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
+    })
+
+    // ── #55: content that a Host renders after the parent's JSX was evaluated ──
+    // A component / function child renders after the parent's whole JSX is evaluated, so the parent's
+    // own elements are claimed first. When the parent has a same-tag element nested in a later sibling,
+    // the first unclaimed one in children-before-parent order is the child's (it comes earlier).
+    // F1f / F1g passed on 4e5dbef only because the deepest-candidate rule happened to pick the deeper
+    // element; that rule is what broke F1a / F1c, and the static form is far more common. F1h fails
+    // under both rules (it throws). Fixing these needs top-down claim by position (#55).
+    test.fails('F1f component output shallower than a same-tag element in a later sibling', () => {
+        function Comp({}: any, {createElement}: RenderContext) { return <p>c</p> }
+        function App({}: any, {createElement}: RenderContext) {
+            return <div><Comp/><main><p>x</p></main></div>
+        }
+        const hyd = ssrInto(App)
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
+    })
+
+    test.fails('F1g function child output shallower than a same-tag element in a later sibling', () => {
+        function App({}: any, {createElement}: RenderContext) {
+            return <div>{() => <p>f</p>}<main><p>x</p></main></div>
+        }
+        const hyd = ssrInto(App)
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
+    })
+
+    test.fails('F1h component wrapping a same-tag element, same depth as one in a later sibling', () => {
+        function Comp({}: any, {createElement}: RenderContext) { return <header><div>logo</div></header> }
+        function App({}: any, {createElement}: RenderContext) {
+            return <div><Comp/><main><div>x</div></main></div>
+        }
+        const hyd = ssrInto(App)
+        // throws: App's <div>x</div> takes Comp's <div>, so Comp's <header> no longer fits the cursor
+        if (!hydrateKnownDefect(hyd, createElement(App, null as any), /<!--unhandledChild--> not found from cursor/)) return
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csr(App)), reports: []})
+    })
+
+    // #55 (same class as F1e, not covered by #54's mitigation): the raw element's own claim still looks
+    // inside its own markup. Its markup is skipped only once it is claimed; while it is being claimed, an
+    // element of the same tag inside that markup comes first in children-before-parent order, and the
+    // DOM alone cannot tell the raw element from the nodes of its own markup (the server writes no
+    // marker for it). Already failing on 4e5dbef (the deepest-candidate rule picks the inner node too).
+    // Silent: no report, class / listeners land on the inner node. A static id avoids it (exact-id match).
+    test.fails('F1j raw markup containing the raw element\'s own tag: the element claims itself, not its markup', () => {
+        function App({}: any, {createElement}: RenderContext) {
+            return <section><div className="raw" dangerouslySetInnerHTML={'<div><b>raw</b></div>'}/><b>sibling</b></section>
         }
         const hyd = ssrInto(App)
         if (!hydrateKnownDefect(hyd, createElement(App, null as any))) return
@@ -165,6 +225,111 @@ describe('F1 tryClaimElement claims the deepest same-tag element of the whole ro
         // quadratic and cubic: a factor 2 of timing noise either way still classifies correctly
         // (a 2x rows step only left 4 vs 5 between quadratic and the bound).
         expect(growth).toBeLessThan(32)
+    })
+})
+
+// #54: the class behind F1a / F1c / F1e, not just those three shapes. Within one component's JSX (no
+// child component / function child), createElement runs in children-before-parent order, so every
+// generated tree must hydrate exactly: same DOM as CSR, no report, every server element kept, and each
+// listener bound to the element at its own position. Few tags → same-tag elements at every depth.
+// Generated: elements (some with a static id), static text, atom text, eager RxList rows, raw markup.
+// Not generated: child components / function children (F1b, F1f–F1h) and raw markup that contains the
+// raw element's own tag (F1j) — the known limits of this claim model, kept executable above (#55).
+// On 4e5dbef 131 of these 300 trees fail (16 throw, 3 are silent: no report).
+describe('F1 regression: static trees hydrate in place (deterministic fuzz)', () => {
+    const TAGS = ['div', 'span', 'b', 'em', 'section']
+    type Kid = Spec | {text: string} | {atom: string} | {rows: Spec[]}
+    type Spec = {tag: string, key: string, id?: string, raw?: string, kids: Kid[]}
+
+    function mulberry32(seed: number) {
+        let a = seed >>> 0
+        return () => {
+            a = (a + 0x6D2B79F5) >>> 0
+            let t = a
+            t = Math.imul(t ^ (t >>> 15), t | 1)
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+        }
+    }
+    function generate(seed: number): Spec {
+        const rnd = mulberry32(seed)
+        const pick = <T,>(xs: T[]) => xs[Math.floor(rnd() * xs.length)]
+        let n = 0
+        // markup written by dangerouslySetInnerHTML, built from the same tags as the JSX around it —
+        // except the raw element's own tag: that shape is the known limit F1j (#55), excluded here on purpose
+        const rawHtml = (own: string, depth: number): string => {
+            const tag = pick(TAGS.filter(t => t !== own))
+            return `<${tag}>${depth < 2 && rnd() < 0.5 ? rawHtml(own, depth + 1) : `r${n++}`}</${tag}>`
+        }
+        const element = (depth: number): Spec => {
+            const spec: Spec = {tag: depth === 0 ? 'div' : pick(TAGS), key: `k${n++}`, kids: []}
+            if (rnd() < 0.2) spec.id = `i${spec.key}`
+            if (depth > 0 && rnd() < 0.15) {
+                spec.raw = rawHtml(spec.tag, 0)
+                return spec
+            }
+            const count = depth >= 4 ? 0 : Math.floor(rnd() * 4)
+            for (let i = 0; i < count; i++) {
+                const r = rnd()
+                if (r < 0.15) spec.kids.push({text: `t${n++}`})
+                else if (r < 0.25) spec.kids.push({atom: `a${n++}`})
+                else if (r < 0.35 && depth < 3) {
+                    spec.kids.push({rows: Array.from({length: 1 + Math.floor(rnd() * 3)}, () => element(depth + 1))})
+                } else spec.kids.push(element(depth + 1))
+            }
+            return spec
+        }
+        return element(0)
+    }
+
+    function appOf(spec: Spec, log: string[]) {
+        function render(s: Spec, h: RenderContext['createElement']): any {
+            const props: any = {
+                'data-k': s.key,
+                onClick: (e: Event) => { if (e.target === e.currentTarget) log.push(s.key) },
+            }
+            if (s.id) props.id = s.id
+            if (s.raw !== undefined) props.dangerouslySetInnerHTML = s.raw
+            // kids.map runs before createElement(s.tag): the same order as JSX arguments
+            const children = s.kids.map(k =>
+                'text' in k ? k.text
+                    : 'atom' in k ? atom(k.atom)
+                        : 'rows' in k ? new RxList(k.rows.map((_, i) => i)).map(i => render(k.rows[i], h))
+                            : render(k, h))
+            return h(s.tag, props, ...children)
+        }
+        return function App({}: any, {createElement: h}: RenderContext) { return render(spec, h) }
+    }
+
+    test('F1i 300 generated trees: DOM ≡ CSR, no report, server nodes kept, listeners at their own position', () => {
+        for (let seed = 1; seed <= 300; seed++) {
+            const spec = generate(seed)
+            const log: string[] = []
+            const hyd = ssrInto(appOf(spec, log))
+            const nodesBefore = Array.from(hyd.querySelectorAll('*'))
+            const keyed = Array.from(hyd.querySelectorAll('[data-k]')) as HTMLElement[]
+            const keysBefore = keyed.map(el => el.getAttribute('data-k'))
+            reports.length = 0
+            hydrateRoot(hyd, createElement(appOf(spec, log), null as any))
+            const nodesAfter = Array.from(hyd.querySelectorAll('*'))
+            const clicked = keyed.map(el => { log.length = 0; el.click(); return log.join(',') })
+            const actual = {
+                seed,
+                dom: kids(hyd),
+                reports: reports.slice(),
+                serverNodesKept: nodesAfter.length === nodesBefore.length && nodesAfter.every((el, i) => el === nodesBefore[i]),
+                clicked,
+            }
+            const expected = {
+                seed,
+                dom: kids(csr(appOf(spec, []))),
+                reports: [],
+                serverNodesKept: true,
+                clicked: keysBefore,
+            }
+            expect(actual).toEqual(expected) // `seed` in the diff: rerun generate(seed) to replay
+            document.body.innerHTML = ''
+        }
     })
 })
 
