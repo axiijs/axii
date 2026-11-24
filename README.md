@@ -177,6 +177,7 @@ hydrateRoot(root, <App />)
 ### Design notes / limitations
 
 - **Event handlers are bound once and are not reactive.** An `on*` prop is attached with `addEventListener` when the element is created; passing an atom or a function-returning-handler will not make the binding itself reactive. If you need conditional behavior, write the condition *inside* the handler (e.g. `onClick={(e) => enabled() && doSomething(e)}`) instead of trying to swap the handler dynamically.
+- **Only `on` + an uppercase letter with a function value is an event handler.** Any other prop whose name starts with `on` in any letter case (`onclick`, `ONCLICK`, `oNclick`, `once`, `online`) is not written to the element on the client or in `renderToString` output, the same as React. Attribute names are case-insensitive, so writing such a name could create an executable inline handler, for example when spreading an untrusted object (`<div {...untrusted}/>`). In development, axii logs one warning per prop name. A bare `on` attribute, such as AMP's `on="tap:…"`, is still written.
 
 ## 🤝 Contributing
 

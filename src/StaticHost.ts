@@ -3,7 +3,6 @@ import {
     DetachStyledInfo,
     ExtendedElement,
     insertBefore,
-    isEventName,
     RefHandleInfo,
     restoreSelectValueAfterRemoval,
     setAttribute,
@@ -13,6 +12,7 @@ import {
 } from "./DOM";
 import {Host, PathContext} from "./Host";
 import {isAtom} from "data0";
+import {hasOnPrefix} from "./markupNames";
 import {LightBindingEffect} from "./LightBindingEffect.js";
 import {trackLightBindingCreated, trackLightBindingDestroyed} from "./retainedObjectDiagnostics.js";
 import {createHost} from "./createHost";
@@ -55,9 +55,12 @@ import {
 // data0 2.0 移除了 reactive() 深层代理，响应式值只剩 atom 和 function 两种形态。
 const originalIsValidAttribute = createElement.isValidAttribute
 createElement.isValidAttribute = function (name: string, value: any) {
-    // CAUTION 只有真正的事件（on + 大写字母）直接放行；once/online 这类普通 on* prop
-    //  要继续走 isReactiveValue 判断，atom/函数值才能建立响应式属性绑定。
-    if (isEventName(name)) return true
+    // CAUTION 以 on 开头（不区分大小写）的名字一律直接放行给 setAttribute，从不建立响应式属性绑定（#49）：
+    //  真正的事件（isEventName）在那里绑定；once / onclick / ONCLICK 这类非事件的 on* prop 在那里丢弃。
+    //  判成响应式属性的话，ReactiveAttributeEffect 会在渲染时调用 onclick={fn} 的 fn、读 ONCLICK={atom}，
+    //  再把结果写成 attribute（ONCLICK 被 HTML 转成可执行的 onclick）。
+    //  hasOnPrefix 替换了原来的 isEventName 判断，首字符不是 o/O 的名字代价不变。
+    if (hasOnPrefix(name)) return true
 
     if (Array.isArray(value) && value.some(isReactiveValue)) {
         return false
