@@ -26,6 +26,7 @@ import {
     isDataAttributeName,
     isEventName,
     isFalseKeywordAttributeName,
+    isAttributeWrittenByProps,
     isInnerHTMLObject,
     isRawWriteProperty,
     isSvgHtmlIntegrationPoint,
@@ -1866,7 +1867,12 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
         }
         exitTopDownElement()
     }
-    if (!fresh && !approximate) reclaimSsrStyleClasses(el)
+    if (!fresh && !approximate) {
+        reclaimSsrStyleClasses(el)
+        // §4.1：干净认领不清理服务端独有的属性（D4），开发期报告（AXII_HYDRATION_ATTRIBUTE_RESIDUE）。服务端的样式标记与生成的类名
+        //  已由上一步读走，写 props 之前看
+        if (isAxiiDiagnosticsEnabled()) reportAttributeResidue(el, rawProps, tag, isSVG)
+    }
     // claimed 为 false（新建、近似认领）时与 CSR 相同写入 dangerouslySetInnerHTML；干净认领保留服务端的标记
     applyElementProps(el, rawProps, isSVG, !fresh && !approximate, children.length, debugSource,
         undefined, unhandledAttr, refHandles, detachStyledChildren)
@@ -1878,6 +1884,21 @@ function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDown
     // 子节点、props 都已应用：放到游标处。父节点在文档里时等所属 StaticHost 绑定了响应式属性之后才连入（#73）
     if (fresh) placeTopDownFreshElement(el)
     return el
+}
+
+// 开发期（诊断开启）：干净认领的元素上客户端 props 不写的服务端属性（markupNames.isAttributeWrittenByProps）
+function reportAttributeResidue(el: Element, rawProps: AttributesArg | null | undefined, tag: string, isSVG: boolean): void {
+    const tagLower = tag.toLowerCase()
+    let residue: string[] | undefined
+    for (const name of el.getAttributeNames()) {
+        if (!isAttributeWrittenByProps(name, rawProps as {[key: string]: unknown} | null | undefined, tagLower, isSVG)) (residue ??= []).push(name)
+    }
+    if (residue !== undefined) {
+        reportTopDownDevHint('AXII_HYDRATION_ATTRIBUTE_RESIDUE',
+            `<${tagLower}> claimed from the server keeps attribute(s) ${residue.join(', ')} that the client props do not write. ` +
+            'The server and the client rendered different props here (a mismatch elsewhere can make an element take another role); ' +
+            'the DOM differs from createRoot().render() only in these attributes')
+    }
 }
 
 // §4.1：近似认领的元素先清空服务端写下的全部属性（data-axii-ssr 样式类已由 reclaimSsrStyleClasses 读走），
