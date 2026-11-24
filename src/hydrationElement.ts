@@ -14,7 +14,7 @@ import {HydrationMismatchError} from "./hydration"
  *
  * - tag 不叫 type：Fragment 是函数，叫 type 会被 createHost 的 ComponentNode 判定（typeof source.type === 'function'）误认。
  * - isSVG：创建时按 CSR 的规则（显式 _isSVG，否则 SVG 专有标签）；HTML / SVG 同名的标签作为 SVG 元素（不是 HTML
- *   integration point）的静态子元素时，认领时改为 true（≡ CSR 的 DOM.adoptSvgChildren，#56）。
+ *   integration point）的静态子元素时，认领时改为 true（≡ CSR 的 DOM.adoptSvgChild，#56）。
  * - node：认领或新建后的真实节点；认领后 rawProps / rawChildren 置为 undefined（瘦身，§2.2），描述本身永远不变成节点（§3.1.1）。
  * - listenerBoundArgs：ComponentHost.createHTMLOrSVGElement 写入，认领时转交给 node。
  *

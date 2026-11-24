@@ -1816,7 +1816,7 @@ function throwConsumedDescription(): never {
 }
 
 // parentAdoptsSvg：父元素是 SVG 元素且不是 HTML integration point。HTML / SVG 同名的标签（a / title / style / script）
-//  作为它的静态子元素（含 Fragment 展开的）时按 SVG 认领与应用属性，≡ CSR 里 SVG 父元素的改建（adoptSvgChildren，#56）。
+//  作为它的静态子元素（含 Fragment 展开的）时按 SVG 认领与应用属性，≡ CSR 里 SVG 父元素的改建（adoptSvgChild，#56）。
 //  Host 稍后渲染的内容不经过这里（parentAdoptsSvg 为 false），与 CSR 相同仍是 HTML 元素。
 function hydrateElementDescriptionAt(desc: HydrationElement, innerHosts: TopDownInnerHosts | undefined, parentAdoptsSvg: boolean): HTMLElement | SVGElement {
     const tag = desc.tag as string
@@ -1933,11 +1933,11 @@ function hydrateDescriptionChildren(
                 hydrateFragmentDescriptionChildren(child, innerHosts, childAdoptsSvg) :
                 hydrateElementDescriptionAt(child, innerHosts, childAdoptsSvg)
             const childElement = node as ExtendedElement
-            const inheritedSource = childElement.__axiiSource ?? debugSource
+            // __axiiSource 只在真的提升 attr 元数据时才读（≡ createElement 子节点循环里的同一段）
             const childUnhandledAttr = childElement.unhandledAttr
             if (childUnhandledAttr?.length) {
                 lifted ??= {unhandledAttr: undefined, refHandles: undefined, detachStyledChildren: undefined}
-                lifted.unhandledAttr = liftElementMetadata(childUnhandledAttr, index, lifted.unhandledAttr, inheritedSource)
+                lifted.unhandledAttr = liftElementMetadata(childUnhandledAttr, index, lifted.unhandledAttr, childElement.__axiiSource ?? debugSource)
                 childElement.unhandledAttr = undefined
             }
             const childRefHandles = childElement.refHandles

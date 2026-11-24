@@ -333,7 +333,7 @@ describe('component boundary and construction order (§2.4)', () => {
 })
 
 describe('element claim details (§2.6.1, §2.6.7)', () => {
-    test('HTML / SVG shared-name tags as static children of <svg> are claimed as SVG (≡ CSR adoptSvgChildren, #56); integration points keep HTML', () => {
+    test('HTML / SVG shared-name tags as static children of <svg> are claimed as SVG (≡ CSR adoptSvgChild, #56); integration points keep HTML', () => {
         const make = () => {
             const tip = atom('t1')
             function App({}: any, {createElement, Fragment}: RenderContext) {
