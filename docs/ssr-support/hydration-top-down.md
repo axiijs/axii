@@ -914,7 +914,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **种类计数（§2.4.1）：** 扩展后的 F1i 生成 `reusable()`（组件返回 `reusable(source)`）与现成节点（元素 / Text 作为元素 child，Text 作为组件结果即 NodeHost），300 棵树里 `HOST_TYPE_NAMES` 全部 10 种与 `CompactElementHost` 两边都出现、逐树相等。现成节点的服务端对应物带 `data-live`，漂移 fuzz 与原始标记一样不往里注入。
 - **诊断开关两遍：** 见 §3.4 末段。两遍都全绿；诊断开启那一遍里开发期不变量、`ELEMENT_ACCESS`、`ATTRIBUTE_RESIDUE` 在未改动的服务端输出上都是 0 条。
 - **产物：** 内部入口独有的字符串（`hydrateTopDown.ts` 里开发期不变量的报错文本）不在 `dist`。`end of hydrate root children` 随容器层的 R5 挪进 `render.hydrateContainerTopDown`（Portal 可达），留在产物里，产物检查改看不变量的文本。
-- **性能：** CSR 路径上的变化只有 `createChildHost` 非 Compact 分支的一次 `instanceof`（元素行不经过）与 `reusable()` 构造时的一次模式读取。A/B/A′ 见 B4 的 PR：__PERF__
+- **性能：** CSR 路径上的变化只有 `createChildHost` 非 Compact 分支的一次 `instanceof`（元素行不经过）与 `reusable()` 构造时的一次模式读取。同页 A/B/A′（§5.3 的方法，生产构建，30 轮预热 + 60 轮，A 为 `a14285d`）：最初把描述判定写在 `createChildHost` 里（并让它调用自己），Compact 行负载 B/A 四次 1.007–1.020、A′/A ≤ 0.7%，方向一致地慢；去掉判定的构建回到噪声以内，判定拆成单独的方法 `createCommentRowHost` 之后同样回到噪声以内（两次 0.995 / 0.998）。终版两次运行：`createElement` 3000×4 为 1.0009、0.9996；`render` 1000 静态行 1.0053、0.9904；RxList Compact 行 0.9884（A′/A 0.9842）、1.0268（A′/A 1.0311）；RxList 非 Compact 行（字符串行，经过这次判定）1.0000、0.9799（A′/A 0.9844，B 更快）。相对 PR-A 之前的 `3a43c2b`（给 S）：1.012、1.0012、1.0076、0.9898。
 
 
 ---
