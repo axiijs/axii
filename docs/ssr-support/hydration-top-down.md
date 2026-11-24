@@ -858,7 +858,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 
 ### 7.8 B3 落地记录（与上文不同或上文没有写到的）
 
-- **失配不中止：** 新模型里的失配一律经 `reportHydrationMismatch` 报告（交给 onError，不抛出），然后在游标处按 R1–R5 修复（`hydrationCursor.ts`）。内部入口上剩下的中止只有 B4「待实现」与没人处理的渲染错误（组件抛错且没有 error 监听器、函数结构态渲染抛错）。`isTopDownAbort` 仍包含 `HydrationMismatchError`，新模型里已没有地方抛出它。
+- **失配不中止：** 新模型里的失配一律经 `reportHydrationMismatch` 报告（交给 onError，不抛出），然后在游标处按 R1–R5 修复（`hydrationCursor.ts`）。内部入口上剩下的中止只有 B4「待实现」与渲染错误（组件抛错且没有 error 监听器；函数结构态的内容渲染抛错，有没有监听器都中止，见下面「独立审查后的修正」）。中止时激活的树留在容器里，`root` 仍被占用（与 B1 相同，§7.6）。`isTopDownAbort` 仍包含 `HydrationMismatchError`，新模型里已没有地方抛出它。
 - **R1 的新建（与 §4.2「`runOutsideHydration` + 物化描述」不同）：** 不重放 `createElement`，而是在一个「新建的层」（`enterTopDownFreshElement`）里走同一条认领路径：这一层没有服务端节点，每个单元直接新建、插到末尾，不报告（失配在新建处报告过一次）。理由：`StaticHost.hydrate` 已经按 CSR 的顺序为整棵描述子树（包括要新建的这部分）预先构造了子 Host，placeholder 是 slot 常量，它们必须被消费；物化描述会让 CSR 的 `createHost` 再构造一份（组件类型 id、种类计数都会多出来）。新建的层让这些 Host 照常 `hydrate(slot)`，各单元的插入顺序 ≡ CSR `createElement` 的 child 循环与各 Host 的 `render`，元数据经同一段 `liftElementMetadata` 按 CSR 的路径并入所属 StaticHost。元素节点的创建与旧模型共用 `hydration.createHydrateMismatchElementNode`（命名空间、`is`）；`<select multiple>` 先预应用 `multiple`；`applyElementProps` 按 `claimed = false` 写入（含 `dangerouslySetInnerHTML`）。
 - **建好、绑定之后再插入（#73，追加项 1）：** 父节点在文档里时，新建的元素先在游标处放一个占位注释（`axii:fresh`），所属 `StaticHost` / `CompactElementHost` 在 `hydrate` 收集完响应式属性、ref、detachStyle 之后把占位换成元素（`insertTopDownFreshElements`）。嵌套的 Host 先完成，各自只处理自己 mark 之后的那些；父节点也是新建的，直接插入，随父节点一起连入。用占位而不是记下游标处的节点：游标之后的节点在所属 Host 完成之前可能被 R3 / R5 删除，游标之前的节点不会再动。`ssrHydrate.mismatchRebuild`「a rebuilt `<script>` with a reactive data type does not run」在内部入口那一遍翻转为 `test`。
 - **追加项 2：** 新模型在 JSX 求值时不认领任何节点，新建元素的子描述在新建的层里按 CSR 建好：`<span><b>x</b><i>y</i></span>` 新建后子元素都在。
@@ -872,6 +872,14 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **B2 交接的形态：** #82 / #85 之前的服务端 HTML（atom 数组项空值前多的 `axii:0`、函数返回 RxList 时行后多的 `unhandledChild`、稀疏数组空位的 `<!--empty--><!--array item-->`）由 R2 / R3 / R5 报告并删除，≡ CSR；被改建成 SVG 的 `<a>` 里的数组项按 R1 新建为 HTML 元素；修复过的列表（多一行、少一行、行间杂节点，Compact 与 Fragment 行）销毁后 Host / 绑定 / 样式计数归零；行组件改动列表见 §11。这些用例用手写的服务端 HTML，不随 #85 等服务端修复变成匹配路径。
 - **滚动样式 id：** 被另一角色认领的行与新建的行各自分配滚动样式基名（`allocateRollingStyleId` 跳过已被占用的基名），没有共用；用例按 `getComputedStyle` 核对每一行。
 - **性能：** 只改激活路径（`hydrationCursor.ts`、认领步骤、`StaticHost.hydrate` / `CompactElementHost.hydrate`、内部入口），CSR 的 `createElement` / `createHost` / Host `render` 零改动；旧模型的 `createElementForHydrateMismatch` 只把建元素的三行收进 `createHydrateMismatchElementNode`。激活的匹配路径上新增的只有：每层多压两个布尔量（`cursorFresh` / `cursorMismatched`）；每次元素认领多写读一个布尔量（`lastClaimApproximate`）；每个 `StaticHost` / `CompactElementHost` 的 `hydrate` 多读一次数组长度、调一次空循环（`markTopDownFreshElements` / `insertTopDownFreshElements`）；每个干净认领的静态原始元素一次数组 push；入口多读两次计数。失配描述字符串只在失配时拼接。
+- **独立审查后的修正：**
+  - 函数子节点结构态的内容在激活中渲染抛错时，错误经 `FunctionHost` 自己的 `update` 交给 `root.dispatch('error')`，注册了监听器就被当作已消费，元素层没有弹出，之后的修复落在错误的父节点上（B1 / B2 里下一次失配会中止，掩盖了它）。`FunctionHost` 在重新抛出前记下这个错误（`markTopDownAbort`），`isTopDownAbort` 认它，激活照 §7.6 的设计中止；入口结束时清掉。
+  - 新建元素换到占位处经 `DOM.insertBefore`：插进 `<select>` 的 `<option>` 按 select 记下的值重放选中状态（select 的 props 在新建的 option 连入之前应用，裸 `replaceChild` 让浏览器选中第一项），连入前写入待生效的 stylesheet。
+  - 容器层的 R5 与原始标记的核对挪到 `root.render` 派发 attach 之前（`createRootInternal` 的 `afterTopDownHydrate`）：ref / layoutEffect 改动的原始标记内容不再被核对覆盖。
+  - 容器层期望元素时，游标处的空白 Text（页面模板里激活容器的缩进）按杂节点删除、报告一次，继续认领；按 D5 替换会把没有静态 id 的根元素整棵新建，服务端的节点全部丢失。
+  - 失配报告的 `onError` 是用户代码，在 `runOutsideHydration` 里执行：它创建的 JSX 是真实节点，对已激活列表的改动按 CSR 插入。
+  - 近似认领的元素进入时这一层从「已失配」开始：它的子树同样可能跨了角色，子元素的服务端独有属性一并清掉（§4.1 原文只说「同一父节点」）。
+  - 开发期不变量也报告残留的 `axii:fresh` 占位。
 - **用例：** 去掉 45 处 `pendingTopDown('B3')`：`ssrHydrate.mismatch` 27、`mismatchRebuild` 9、`auditSsrHydrate` 6（F4a–F4d、F7g、I50g）、`claimCorners` 2、`shapes` 1。`auditSsrHydrate` 的 F4a–F4d、`shapes`「shared-name tags rendered later…」与 `mismatchRebuild`「reactive data type」在内部入口那一遍是普通 `test`，旧入口那一遍仍是 `test.fails`。既有用例的期望改动（都是「报告并抛出」→「报告并修复」，§7.2）：`hydrationCursor.spec` 的失配用例换成 R1–R5 的规则用例；`hydrateTopDown.spec` 的「aborting the activation」两条（中止改用没人处理的渲染错误）、SVG 数组项、稀疏数组空位、error 监听器销毁 root（报告从一条变为认领处的两条）；`claimCorners`「root atom hydrate throws when an Element sits before `<!--root-->`」只在旧入口那一遍运行，内部入口那一遍加一条「按 R2 替换并报告」。新增 `hydrateTopDownMismatch.spec.tsx`（R1 新建、#73、§4.1、R2–R5 黑盒、B2 交接形态）。
 - **漂移 fuzz**（`auditSsrHydrate` 扩展生成器，只在内部入口那一遍）：300 棵树 × 7 种注入——客户端一侧的行增、行减、元素 ↔ 文本，服务端 DOM 上的标签替换、插入杂节点（元素 / Text / Comment）、删除一个标记注释、文本篡改；原始标记的内容不动（不透明）。每次断言：不抛错；节点结构、文本、结构 Comment 与客户端 props 写下的属性 ≡ CSR（CSR 元素上的每个属性都在、值相同，多出来的是服务端独有属性）；漂移改变了服务端输出时至少一条失配报告、否则没有（从不静默）；没有开发期不变量报告；每个元素的监听器在自己的位置；全部 atom 改值之后 ≡ CSR；两个 root 销毁后 Host 与绑定计数归零；服务端独有属性只出现在报告过失配的树里。每种注入至少 100 棵树（需要列表 / 文本的几种不是每棵树都有），残留路径至少出现一次。
 
