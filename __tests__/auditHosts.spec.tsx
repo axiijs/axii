@@ -1378,3 +1378,54 @@ describe('audit follow-up: a row cleanup that destroys the list destroys every r
         }
     })
 })
+
+describe('audit follow-up: root.destroy() called again by the cleanups it runs', () => {
+    beforeEach(() => { document.body.innerHTML = '' })
+
+    test('G1: "close the dialog when this row goes away", then the dialog is closed normally', () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        const r = createRoot(el)
+        const list = new RxList<string>(['a', 'b'])
+        const log: string[] = []
+        function Item({item}: {item: string}, {onCleanup}: RenderContext) {
+            onCleanup(() => { log.push(`cleanup ${item}`); r.destroy() })
+            return <li>{item}</li>
+        }
+        r.render(<ul>{list.map(item => <Item item={item}/>)}</ul>)
+        let thrown: any
+        try { r.destroy() } catch (e) { thrown = e }
+        expect(String(thrown)).toBe('undefined')
+        expect(log).toEqual(['cleanup a', 'cleanup b'])
+        expect(el.innerHTML).toBe('')
+        expect(r.host).toBe(undefined)
+    })
+
+    test('G2: a cleanup closes the root and renders a replacement into it while the root is being destroyed', () => {
+        const el = document.body.appendChild(document.createElement('div'))
+        document.body.appendChild(el)
+        const r = createRoot(el)
+        const log: string[] = []
+        let replaced = false
+        function Dialog(_: any, {onCleanup}: RenderContext) {
+            onCleanup(() => {
+                if (replaced) return
+                replaced = true
+                r.destroy()
+                r.render(<Toast/>)
+            })
+            return <b>dialog</b>
+        }
+        function Toast(_: any, {useLayoutEffect}: RenderContext) {
+            useLayoutEffect(() => { log.push('toast layout'); return () => log.push('toast cleanup') })
+            return <i>closed</i>
+        }
+        r.render(<Dialog/>)
+        r.destroy()
+        expect(el.textContent).toBe('closed')
+        expect(log).toEqual(['toast layout'])
+        // the replacement owns the root now: destroying it tears it down
+        r.destroy()
+        expect(el.innerHTML).toBe('')
+        expect(log).toEqual(['toast layout', 'toast cleanup'])
+    })
+})

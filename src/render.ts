@@ -145,16 +145,24 @@ function createRootInternal(element: HTMLElement, parentContext?:PathContext, hy
             })
         },
         destroy() {
+            // CAUTION 重入销毁：树的销毁会执行用户代码（清理函数），「这一行 / 这块内容消失就关掉
+            //  弹层」会在销毁过程中再次调用 root.destroy()。root.host 必须在执行任何用户代码之前
+            //  就交出来：否则内层调用又去销毁同一棵树，清理函数再调 destroy……直到栈溢出。
+            //  清理函数里还可能「关掉、再渲染一个提示」到同一个 root：那时 root 已经属于新内容，
+            //  外层不能再清掉它的监听器和 attach 队列。
+            const host = root.host
+            root.host = undefined
             runOutsideRunningEffect(() => {
                 // CAUTION 一定要先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
                 root.dispatch('detach')
                 // CAUTION 还在渲染的树不在这里销毁，见 render 的重入说明
-                if (root.host !== renderingHost) root.host?.destroy()
+                if (host !== renderingHost) host?.destroy()
             })
-            eventCallbacks.clear()
-            attachQueue = []
-            root.host = undefined
-            root.attached = false
+            if (root.host === undefined) {
+                eventCallbacks.clear()
+                attachQueue = []
+                root.attached = false
+            }
         },
         deferUntilAttached(node: Node, run: () => void) {
             const entry: AttachQueueEntry = {node, run, cancelled: false}
