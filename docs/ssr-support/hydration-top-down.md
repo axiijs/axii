@@ -845,7 +845,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
 - **computed：** `RxListHost.render` 与 `hydrate` 共用 `createRenderComputed(skipInitialRender)`，行的初次渲染与 patch 只有这一份；激活时行在 computed 之外认领（与旧模型相同），首次运行只建立追踪。这是每个列表一次的方法调用，不在行或 patch 的路径上；`createChildHost` 与各 patch 处理不变。
 - **atom 数组项的空值：** B2 实现时服务端对 atom 数组项按 Text-ph 写（`emitTextPh`，空值多一个 `axii:0`），CSR 是 Comment-ph 的 AtomHost，激活在未改动的服务端输出上失配。B2 起初让 `AtomHost.hydrate` 在 `'array item'` 上认领这个哨兵；合并 main 时 #82（#83）已在服务端改为 Comment-ph（空值不写节点），这个例外随之去掉，`AtomHost.hydrate` 对所有 Comment slot 一视同仁。旧服务端写出的 HTML 在这里多一个 `axii:0`，由 B3 的规则报告并清扫。
 - **SVG 的数组 child：** 见 §2.2「isSVG」。
-- **稀疏数组：** `StaticArrayHost.hydrate` 与 `render` 的 `forEach` 一样跳过空位（服务端为空位多写的标记见 §11）。
+- **稀疏数组：** `StaticArrayHost.hydrate` 与 `render` 的 `forEach` 一样跳过空位，`firstChild` 是第一个不是空位的项（#85，见 §11）。
 - **写回的边界：** 冻结的数组（`Object.freeze([...])`）不写回，CSR 照常渲染它，写回在严格模式下会 TypeError，项留在描述壳上。RxListHost 在全部行认领之后按 `data` 现在的内容写回，只写已认领的描述（行的组件在激活中改动列表时不会写错位置或写入 `null`）。
 - **独立审查后的修正：** 数组项的 SVG 改建只发生在创建时就是 SVG 的元素上（§2.2）；开发期不变量的遍历不用展开参数（行数超过参数个数上限时 RangeError）；以上两条与冻结数组、组件返回空 atom 作为数组项各有一条用例。
 - **同一个描述作为 Host 的 source 第二次出现**（`[s, s]`、同一个描述作为两行）：`hydrateSource` 在读 `rawChildren` 之前显式抛 B4「待实现」（`throwConsumedDescription` 收到 `hydrationElement.ts`，认领步骤与 Host 共用）。
@@ -977,7 +977,7 @@ TypeScript 类型不能代劳：`JSX.Element` 要同时描述 CSR 的返回值�
   
   激活时这一行的结构对不上。按 §2.6.4，两边应共用一个判定。协调者已单独开 #68，排在实现 PR 之前修；B2 直接使用 #68 落地的判定。
 - **函数结构态的值是 RxList（B2 发现，服务端缺陷，与上面第一条同类；#82 已修复）。** `{() => list.map(…)}`：CSR 里 RxListHost 的 placeholder 就是 FunctionHost 的 `<!--computed node-->`，服务端曾经经 `serializeChild` 按元素 child 写这个列表，行之后多一个 `<!--unhandledChild-->`。旧模型激活后把它留在 DOM 里，之后 push 的行插在它后面（DOM 与 CSR 不同，不报告）；新模型报告并抛出。#82 的修复（`serializeStructureResult` → `serialize`）一并覆盖了它；B2 写下的 `test.fails` 在合并 #82 之后翻转为 `test`，扩展后的 F1i 也生成这种形态。
-- **稀疏数组的空位（B2 发现，服务端与 CSR 不一致）。** `[a, , b]`：CSR 的 `StaticArrayHost.render` 用 `forEach`，跳过空位；服务端 `serializeStaticArray` 用 `for…of`，为空位写 `<!--empty--><!--array item-->`。激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复）。根治在服务端（跳过空位）。`hydrateTopDown.spec`「a hole in a sparse static array」钉住。
+- **稀疏数组的空位（B2 发现，服务端与 CSR 不一致；#85 已修复）。** `[a, , b]`：CSR 的 `StaticArrayHost.render` 用 `forEach`，跳过空位；服务端 `serializeStaticArray` 曾经用 `for…of`，为空位写 `<!--empty--><!--array item-->`。激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复）。#85 在服务端修复：`serializeStaticArray` 与 `forEach` 一样跳过空位（`index in items`，显式的 `undefined` / `null` 仍是 EmptyHost）；旧入口的两处数组认领（`DOM.ts` 元素 child、`hydration.walkFragmentHydrateChildren`）同样跳过。同一次修复了 `StaticArrayHost` 的 `firstChild`：曾经只在 `index === 0` 时设置，首位是空位的数组 `element` 退回到 placeholder，CSR 销毁 / 替换 / 移动时内容留在原处，组件根上的这种数组激活时被判成容器里的残留节点。`hydrateTopDown.spec`「a hole in a sparse static array」钉住 #85 之前的服务端 HTML（激活报告失配）与修复后的输出（不报告），各位置两个入口的用例在 `ssrHydrate.sparseArrays.spec.tsx`。
 - **#54 报告的疑点不再存在。** 疑点是 `createElementForHydrateMismatch` 新建的元素没有登记为已认领，之后的无游标认领可能拿到它。新模型没有无游标认领，S 之后不再成立，无需单独处理。
 
 ---

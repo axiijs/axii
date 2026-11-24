@@ -1643,7 +1643,10 @@ function walkFragmentHydrateChildren(
             // Must stash DirectNodes — StaticArrayHost no-stash findArrayContentStart would
             // walk past <!--fragment start--> (not an array-region boundary).
             const hydrateDirectNodes: Text[] = []
-            for (const item of child) {
+            for (let itemIndex = 0; itemIndex < child.length; itemIndex++) {
+                // ≡ StaticArrayHost.render 的 forEach：稀疏数组的空位跳过（同 DOM.ts 元素 child 数组的认领，#85）
+                if (!(itemIndex in child)) continue
+                const item = child[itemIndex]
                 const it = typeof item
                 if (it === 'string' || it === 'number' || it === 'bigint') {
                     hydrateDirectNodes.push(claimDirectNodeText())

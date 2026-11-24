@@ -861,13 +861,27 @@ describe('server / CSR agreement found in B2 (fixed in #82)', () => {
     })
 })
 
-describe('a hole in a sparse static array (pre-existing server / CSR disagreement)', () => {
-    // CSR 的 StaticArrayHost.render 用 forEach，跳过空位；服务端 serializeStaticArray 用 for…of，为空位写 <!--empty--><!--array item-->。
-    //  激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复），不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
+describe('a hole in a sparse static array (server / CSR disagreement, fixed in #85)', () => {
+    // CSR 的 StaticArrayHost.render 用 forEach，跳过空位；服务端 serializeStaticArray 曾经用 for…of，为空位写 <!--empty--><!--array item-->。
+    //  #85 在服务端修复（与 forEach 一样跳过空位）：renderToString 的输出激活后 ≡ CSR，不报告（各位置的覆盖见 ssrHydrate.sparseArrays.spec）。
+    test('the server skips the hole like CSR: the activation reports nothing and ≡ CSR', () => {
+        // eslint-disable-next-line no-sparse-arrays
+        function App({}: any, {createElement}: RenderContext) { return <p>{['a', , 'b']}</p> }
+        const csrEl = mount()
+        createRoot(csrEl).render(createElement(App, null))
+        const hyd = ssrInto(createElement(App, null))
+        expect(hyd.innerHTML).not.toContain('<!--empty-->')
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+    })
+
+    // #85 之前的服务端写出的 HTML（逐字）：激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复），
+    //  不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
     test('the activation follows CSR (the hole is skipped) and reports the extra server markup', () => {
         // eslint-disable-next-line no-sparse-arrays
         function App({}: any, {createElement}: RenderContext) { return <p>{['a', , 'b']}</p> }
-        const hyd = ssrInto(createElement(App, null))
+        const hyd = mount()
+        hyd.innerHTML = '<p><!--axii:t-->a<!--axii:/t--><!--empty--><!--array item--><!--axii:t-->b<!--axii:/t--><!--unhandledChild--></p><!--root-->'
         expect(hyd.innerHTML).toContain('<!--empty--><!--array item-->')
         let thrown: unknown
         try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
