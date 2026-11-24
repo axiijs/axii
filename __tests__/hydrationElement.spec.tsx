@@ -72,8 +72,8 @@ describe('createElement during a top-down activation returns descriptions', () =
         }
         const el = document.createElement('div')
         document.body.appendChild(el)
-        el.innerHTML = renderToString(createElement(App, null)).html
-        const root = hydrateRoot(el, createElement(App, null))
+        el.innerHTML = renderToString(createElement(App as any, null)).html
+        const root = hydrateRoot(el, createElement(App as any, null))
         expect(publicIsHydrationElement).toBe(isHydrationElement)
         expect({captured: publicIsHydrationElement(captured), csr: publicIsHydrationElement(createElement('b', null))})
             .toEqual({captured: true, csr: false})
