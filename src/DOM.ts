@@ -1115,6 +1115,205 @@ function shouldMarkHydrateReclaim(children: any[]): boolean {
     return false
 }
 
+/**
+ * 元数据路径的拼接规则（#55 PR-A）：createElement（CSR 与旧模型激活分支同在其中）用它，
+ * 新激活模型的认领步骤（#55 B1）也用它。
+ * CAUTION 旧模型专用的 rematerializeDeferredFragmentChildren 另有一份（prependPath / liftChildMeta：
+ *  多级前缀、不继承 source、项没有 source 字段），随旧模型在 #55 S 删除；过渡期不要再新增第三份。
+ *
+ * 子元素的元数据（unhandledChildren / unhandledAttr / refHandles / detachStyledChildren）提升到
+ * 父元素时，在每一项的 path 前面加上 index。index 是子元素在父元素 JSX children 数组里的下标
+ * （null / undefined / boolean 也占下标，不是 DOM 子节点下标）。提升自底向上、每个子元素一次，
+ * 所以最终的 path 是从 StaticHost 的根元素到该元素、逐层 children 下标组成的数组。
+ * StaticHost 按 path 定位元素，样式 id（generateComponentElementStaticId）由 path 拼出，
+ * 服务端与客户端、CSR 与激活必须逐位一致。
+ *
+ * 只有 unhandledChildren / unhandledAttr 的项带 source：自身没有 source 时继承 inheritedSource。
+ * refHandles / detachStyledChildren 的项没有 source 字段，调用方传 undefined，不给它们新增字段。
+ *
+ * CAUTION 热路径（每个带元数据的子元素一次）：不分配。项数组的所有权是唯一的（由子元素的
+ *  createElement 创建，提升一次后调用方清空子元素上的引用），所以原地改写 path；父级还没有
+ *  同类数组时直接接管子级的数组。
+ */
+function liftElementMetadata<T extends {path: number[], source?: AxiiSource}>(
+    entries: T[],
+    index: number,
+    into: T[] | undefined,
+    inheritedSource: AxiiSource | undefined,
+): T[] {
+    for (const entry of entries) {
+        entry.path.unshift(index)
+        if (inheritedSource && !entry.source) entry.source = inheritedSource
+    }
+    if (into) {
+        into.push(...entries)
+        return into
+    }
+    return entries
+}
+
+// 下面四个是 applyElementProps 的冷路径，单独成函数只为让 applyElementProps 本身保持可内联（见它的 CAUTION）。
+// CAUTION 项对象的字面量各只有这一处（字段顺序决定隐藏类），不要在别处另写同类字面量。
+function warnInnerHTMLWithChildren() {
+    /* eslint-disable no-console */
+    console.error('[axii] an element received both "dangerouslySetInnerHTML" and children. ' +
+        'innerHTML overwrites the children (including reactive child placeholders), so the children ' +
+        'will not render and reactive children will silently stop updating. Provide only one of them.')
+    /* eslint-enable no-console */
+}
+
+// 自己的 ref 放在子元素提升上来的 ref 之前（ref handles should be attached before children）
+function prependOwnRef(refHandles: RefHandleInfo[] | undefined, handle: any, el: HTMLElement | DocumentFragment | SVGElement): RefHandleInfo[] {
+    const ownRef: RefHandleInfo = {handle, path: [], el}
+    if (refHandles) {
+        refHandles.unshift(ownRef)
+        return refHandles
+    }
+    return [ownRef]
+}
+
+function appendOwnDetachStyle(detachStyledChildren: DetachStyledInfo[] | undefined, style: any, el: HTMLElement | DocumentFragment | SVGElement): DetachStyledInfo[] {
+    (detachStyledChildren ||= []).push({el, style, path: []})
+    return detachStyledChildren
+}
+
+function appendOwnUnhandledAttr(unhandledAttr: UnhandledAttrInfo[] | undefined, el: HTMLElement | DocumentFragment | SVGElement, key: string, value: any, source: AxiiSource | undefined): UnhandledAttrInfo[] {
+    (unhandledAttr ||= []).push({el: el as ExtendedElement, key, value, path: [], source})
+    return unhandledAttr
+}
+
+// value / checked 的延后应用（1：有 value，2：有 checked），在其余 prop 全部应用之后
+function applyDeferredFormProps(
+    container: HTMLElement | DocumentFragment | SVGElement,
+    rawProps: AttributesArg,
+    isSVG: boolean,
+    debugSource: AxiiSource | undefined,
+    unhandledAttr: UnhandledAttrInfo[] | undefined,
+    deferredFormProps: number,
+): UnhandledAttrInfo[] | undefined {
+    // CAUTION 显式的 checked 永远决定勾选状态，与书写顺序无关（#52，规则见 setAttribute 的 checkbox 分支）：
+    //  同时带 value 和 checked 的 input 在应用这两个 key 之前记下这个事实，之后每一次 value 写入
+    //  （首帧按键序或经 unhandledAttr 延后、响应式更新、type 翻转后的重放）都只读这一个标记。
+    //  只带其中一个 key 的元素（列表行里常见的 <input type="checkbox" checked={done}/>）不多字段。
+    if (deferredFormProps === 3 && (container as HTMLElement).tagName === 'INPUT') {
+        (container as InputWithAxiiValue).__axiiInputHasCheckedProp__ = true
+    }
+    for (const key in rawProps) {
+        if (key !== 'value' && key !== 'checked') continue
+        const value = rawProps[key]
+        // 响应式 value/checked 同样延后登记，保证 LightBindingEffect 的初始求值
+        // 也发生在 type/multiple 等（可能也是响应式的）属性之后
+        if (!createElement.isValidAttribute(key, value)) {
+            unhandledAttr = appendOwnUnhandledAttr(unhandledAttr, container, key, value, debugSource)
+        } else {
+            setAttribute(container as ExtendedElement, key, value, isSVG)
+        }
+    }
+    return unhandledAttr
+}
+
+/**
+ * 「应用 props」（#55 PR-A；CSR 与激活共用，只有这一份）：children 处理完之后应用元素的 props，
+ * value / checked 延后到其余 prop 之后，再把元数据挂到元素上。
+ *
+ * - 在 children 之后：select 的 value 依赖 option 已经就位（select / option 的语义）。
+ * - value / checked 延后，及 __axiiInputHasCheckedProp__（#52）：见函数体与 applyDeferredFormProps 的 CAUTION。
+ * - dangerouslySetInnerHTML 经 setAttribute → innerHTMLOf 解包（#50）；claimed（激活认领到的服务端元素）
+ *   上不重新赋值，保留服务端写出的标记。
+ * - 属性写入规则在 setAttribute / markupNames（#51），这里只决定「哪些 key、什么顺序、静态还是响应式」。
+ * - 自己的元数据：ref 放在子元素提升上来的 ref 之前（unshift），unhandledAttr / detachStyle 追加在后；
+ *   path 都是 []（元素自身）。
+ *
+ * 子元素提升上来的四类元数据由调用方传入（局部变量，不分配收集对象），在这里与自己的合并后一次性挂上。
+ * 没有 rawProps 时也要调用：元数据与 __axiiSource 照样要挂。
+ *
+ * CAUTION 热路径（每个元素一次）：它是从 createElement 里搬出来的，不内联时每个元素多一次 10 个参数的调用。
+ *  - 字节码必须低于 TurboFan 的 max_inlined_bytecode_size（460）。整段搬出时是 616，
+ *    --trace-turbo-inlining 报「Cannot consider applyElementProps for inlining (reason: 5)」，
+ *    同页 A/B 纯 createElement 慢约 1.5%。所以冷路径（I66 警告、自己的 ref / detachStyle / unhandledAttr 项、
+ *    value / checked 的延后应用）都在上面的独立函数里，这里只留每个 key 都要走的判断（现在约 370）。
+ *  - 即使低于 460 也不保证一直内联：createElement 去优化（例如大 GC 后的「weak objects」）后重新优化时，
+ *    如果这个函数已经有自己的优化代码，TurboFan 把它已内联的字节码一并计入累计预算
+ *    （「existing opt code's inlined bytecode size」，再乘 1.2），超过 920 就不再内联。
+ *  往这里加逻辑之前，先用 --print-bytecode --print-bytecode-filter=applyElementProps 看字节码长度，
+ *  并按 docs/ssr-support/hydration-top-down.md §5.3 的同页 A/B/A′ 复测。
+ */
+function applyElementProps(
+    container: HTMLElement | DocumentFragment | SVGElement,
+    rawProps: AttributesArg | null | undefined,
+    isSVG: boolean,
+    claimed: boolean,
+    childrenLength: number,
+    debugSource: AxiiSource | undefined,
+    unhandledChildren: UnhandledChildInfo[] | undefined,
+    unhandledAttr: UnhandledAttrInfo[] | undefined,
+    refHandles: RefHandleInfo[] | undefined,
+    detachStyledChildren: DetachStyledInfo[] | undefined,
+): void {
+    if (rawProps) {
+        // CAUTION 开发期警告（I66）：dangerouslySetInnerHTML 与 children 并存时，
+        //  innerHTML 赋值会把刚 append 的 children（含响应式 child 的占位符）整体抹掉——
+        //  静态内容消失，atom/函数 child 从此写进脱离文档的占位符，「更新不生效」且没有
+        //  任何报错。React 对这个组合直接抛错；这里保持渲染语义不变（innerHTML 胜出），
+        //  开发期给出明确警告。诊断关闭（生产）时只付一个布尔检查。
+        if (childrenLength && isAxiiDiagnosticsEnabled() && rawProps.dangerouslySetInnerHTML !== undefined) {
+            warnInnerHTMLWithChildren()
+        }
+        // CAUTION value/checked 的语义依赖同元素的其他 prop 已经就位：
+        //  select 的数组 value 依赖 multiple（单选 select 上逐个 selected 会互相顶掉），
+        //  input 的 value/checked 解释依赖 type（value={true} type="checkbox" 是 checked 语义），
+        //  range 的 value 会被 min/max 截断。JSX 属性顺序是用户的书写顺序，不能要求用户
+        //  把 value 写在最后——这两个 key 统一延后到其余 prop 全部应用之后再处理（applyDeferredFormProps）。
+        //  value 与 checked 之间的先后不决定勾选状态（#52）：见 __axiiInputHasCheckedProp__。
+        // 1：有 value，2：有 checked
+        let deferredFormProps = 0
+        for (const key in rawProps) {
+            // key 目前不参与运行时逻辑（保留给未来的 diff），直接跳过；
+            // __source/__self 是开发期元数据，绝不能作为普通 attr 落到 DOM 上
+            if (key === '_isSVG' || key === 'children' || key === 'key' || key === '__source' || key === '__self') continue
+            if (key === 'value') {
+                deferredFormProps |= 1
+                continue
+            }
+            if (key === 'checked') {
+                deferredFormProps |= 2
+                continue
+            }
+            const value = rawProps[key]
+            if (key === 'ref') {
+                if (value) refHandles = prependOwnRef(refHandles, value, container)
+                continue
+            }
+            if (key === 'detachStyle') {
+                if (value) detachStyledChildren = appendOwnDetachStyle(detachStyledChildren, value, container)
+                continue
+            }
+            if (!createElement.isValidAttribute(key, value)) {
+                unhandledAttr = appendOwnUnhandledAttr(unhandledAttr, container, key, value, debugSource)
+            } else if (claimed && key === 'dangerouslySetInnerHTML') {
+                // SSR HTML already has markup; re-assigning innerHTML would destroy claimed nodes
+                // （失配后新建的元素里没有这段标记，照常赋值）
+            } else {
+                setAttribute(container as ExtendedElement, key, value, isSVG)
+            }
+        }
+        if (deferredFormProps) {
+            unhandledAttr = applyDeferredFormProps(container, rawProps, isSVG, debugSource, unhandledAttr, deferredFormProps)
+        }
+    }
+
+    // Attach metadata to container only if necessary
+    // CAUTION 写入顺序固定（__axiiSource → unhandledChildren → unhandledAttr → refHandles → detachStyledChildren），
+    //  只在这里一次性写：在 props 循环里边走边写到元素上，字段的添加顺序会跟着 JSX 的 key 顺序变，
+    //  同一种元素分出多个隐藏类，StaticHost 读这些字段的位置变成多态。
+    const containerElement = container as ExtendedElement
+    if (debugSource) containerElement.__axiiSource = debugSource
+    if (unhandledChildren) containerElement.unhandledChildren = unhandledChildren
+    if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
+    if (refHandles) containerElement.refHandles = refHandles
+    if (detachStyledChildren) containerElement.detachStyledChildren = detachStyledChildren
+}
+
 // 这里的返回类型要和 global.d.ts 中的 JSX.Element 类型一致
 export function createElement(type: JSXElementType, rawProps: AttributesArg, ...rawChildren: any[]): ComponentNode | HTMLElement | DocumentFragment | SVGElement {
     // CAUTION __source/__self 既可能来自 jsxDEV，也可能来自 Babel classic dev transform，
@@ -1303,56 +1502,29 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
                     continue
                 }
 
-                // Handle extended element properties
-                // CAUTION 这些元数据数组的所有权是唯一的（由子元素的 createElement 创建，
-                //  在这里被提升一次并清空引用），所以可以直接原地改写 path、直接接管数组。
+                // Handle extended element properties：提升子元素的元数据，路径规则见 liftElementMetadata
                 const childElement = nodeChild as ExtendedElement
                 // 动态节点自身没有 JSX source 时，继承最近的父元素 source
                 const inheritedSource = childElement.__axiiSource ?? debugSource
                 const childUnhandledChildren = childElement.unhandledChildren
                 if (childUnhandledChildren?.length) {
-                    for (const c of childUnhandledChildren) {
-                        c.path.unshift(index)
-                        if (inheritedSource && !c.source) c.source = inheritedSource
-                    }
-                    if (unhandledChildren) {
-                        unhandledChildren.push(...childUnhandledChildren)
-                    } else {
-                        unhandledChildren = childUnhandledChildren
-                    }
+                    unhandledChildren = liftElementMetadata(childUnhandledChildren, index, unhandledChildren, inheritedSource)
                     childElement.unhandledChildren = undefined
                 }
                 const childUnhandledAttr = childElement.unhandledAttr
                 if (childUnhandledAttr?.length) {
-                    for (const c of childUnhandledAttr) {
-                        c.path.unshift(index)
-                        if (inheritedSource && !c.source) c.source = inheritedSource
-                    }
-                    if (unhandledAttr) {
-                        unhandledAttr.push(...childUnhandledAttr)
-                    } else {
-                        unhandledAttr = childUnhandledAttr
-                    }
+                    unhandledAttr = liftElementMetadata(childUnhandledAttr, index, unhandledAttr, inheritedSource)
                     childElement.unhandledAttr = undefined
                 }
+                // ref / detachStyle 的项没有 source 字段，不继承（传 undefined，不给它们新增字段）
                 const childRefHandles = childElement.refHandles
                 if (childRefHandles?.length) {
-                    for (const c of childRefHandles) c.path.unshift(index)
-                    if (refHandles) {
-                        refHandles.push(...childRefHandles)
-                    } else {
-                        refHandles = childRefHandles
-                    }
+                    refHandles = liftElementMetadata(childRefHandles, index, refHandles, undefined)
                     childElement.refHandles = undefined
                 }
                 const childDetachStyled = childElement.detachStyledChildren
                 if (childDetachStyled?.length) {
-                    for (const c of childDetachStyled) c.path.unshift(index)
-                    if (detachStyledChildren) {
-                        detachStyledChildren.push(...childDetachStyled)
-                    } else {
-                        detachStyledChildren = childDetachStyled
-                    }
+                    detachStyledChildren = liftElementMetadata(childDetachStyled, index, detachStyledChildren, undefined)
                     childElement.detachStyledChildren = undefined
                 }
             } else {
@@ -1511,101 +1683,12 @@ export function createElement(type: JSXElementType, rawProps: AttributesArg, ...
         }
     }
 
-    // Process props after children for proper Select/Option behavior
-    if (rawProps) {
-        // CAUTION 开发期警告（I66）：dangerouslySetInnerHTML 与 children 并存时，
-        //  innerHTML 赋值会把刚 append 的 children（含响应式 child 的占位符）整体抹掉——
-        //  静态内容消失，atom/函数 child 从此写进脱离文档的占位符，「更新不生效」且没有
-        //  任何报错。React 对这个组合直接抛错；这里保持渲染语义不变（innerHTML 胜出），
-        //  开发期给出明确警告。诊断关闭（生产）时只付一个布尔检查。
-        if (childrenLength && isAxiiDiagnosticsEnabled() && rawProps.dangerouslySetInnerHTML !== undefined) {
-            /* eslint-disable no-console */
-            console.error('[axii] an element received both "dangerouslySetInnerHTML" and children. ' +
-                'innerHTML overwrites the children (including reactive child placeholders), so the children ' +
-                'will not render and reactive children will silently stop updating. Provide only one of them.')
-            /* eslint-enable no-console */
-        }
-        // CAUTION value/checked 的语义依赖同元素的其他 prop 已经就位：
-        //  select 的数组 value 依赖 multiple（单选 select 上逐个 selected 会互相顶掉），
-        //  input 的 value/checked 解释依赖 type（value={true} type="checkbox" 是 checked 语义），
-        //  range 的 value 会被 min/max 截断。JSX 属性顺序是用户的书写顺序，不能要求用户
-        //  把 value 写在最后——这两个 key 统一延后到其余 prop 全部应用之后再处理。
-        //  value 与 checked 之间的先后不决定勾选状态（#52）：见下面的 __axiiInputHasCheckedProp__。
-        // 1：有 value，2：有 checked
-        let deferredFormProps = 0
-        for (const key in rawProps) {
-            // key 目前不参与运行时逻辑（保留给未来的 diff），直接跳过；
-            // __source/__self 是开发期元数据，绝不能作为普通 attr 落到 DOM 上
-            if (key === '_isSVG' || key === 'children' || key === 'key' || key === '__source' || key === '__self') continue
-            if (key === 'value') {
-                deferredFormProps |= 1
-                continue
-            }
-            if (key === 'checked') {
-                deferredFormProps |= 2
-                continue
-            }
-            const value = rawProps[key]
-            if (key === 'ref') {
-                // ref handles should be attached before children
-                if (value) {
-                    const ownRef: RefHandleInfo = {handle: value, path: [], el: container as HTMLElement}
-                    if (refHandles) {
-                        refHandles.unshift(ownRef)
-                    } else {
-                        refHandles = [ownRef]
-                    }
-                }
-                continue
-            }
-            if (key === 'detachStyle') {
-                if (value) {
-                    (detachStyledChildren ||= []).push({el: container as HTMLElement, style: value, path: []})
-                }
-                continue
-            }
-            if (!createElement.isValidAttribute(key, value)) {
-                (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
-            } else if (hydrateClaimed && key === 'dangerouslySetInnerHTML') {
-                // SSR HTML already has markup; re-assigning innerHTML would destroy claimed nodes
-                // （失配后新建的元素里没有这段标记，照常赋值）
-            } else {
-                setAttribute(container as ExtendedElement, key, value, _isSVG)
-            }
-        }
-        if (deferredFormProps) {
-            // CAUTION 显式的 checked 永远决定勾选状态，与书写顺序无关（#52，规则见 setAttribute 的 checkbox 分支）：
-            //  同时带 value 和 checked 的 input 在应用这两个 key 之前记下这个事实，之后每一次 value 写入
-            //  （首帧按键序或经 unhandledAttr 延后、响应式更新、type 翻转后的重放）都只读这一个标记。
-            //  只带其中一个 key 的元素（列表行里常见的 <input type="checkbox" checked={done}/>）不多字段。
-            if (deferredFormProps === 3 && (container as HTMLElement).tagName === 'INPUT') {
-                (container as InputWithAxiiValue).__axiiInputHasCheckedProp__ = true
-            }
-            for (const key in rawProps) {
-                if (key !== 'value' && key !== 'checked') continue
-                const value = rawProps[key]
-                // 响应式 value/checked 同样延后登记，保证 LightBindingEffect 的初始求值
-                // 也发生在 type/multiple 等（可能也是响应式的）属性之后
-                if (!createElement.isValidAttribute(key, value)) {
-                    (unhandledAttr ||= []).push({el: container as ExtendedElement, key, value, path: [], source: debugSource})
-                } else {
-                    setAttribute(container as ExtendedElement, key, value, _isSVG)
-                }
-            }
-        }
-    }
+    // Process props after children for proper Select/Option behavior（见 applyElementProps）
+    applyElementProps(container, rawProps, _isSVG, hydrateClaimed, childrenLength, debugSource,
+        unhandledChildren, unhandledAttr, refHandles, detachStyledChildren)
 
     // 失配后新建的元素此时子节点和 props 都已应用，才插入文档（#73）。游标已由 exitElementChildCursor 恢复到父节点。
     if (hydrateRebuilt) insertHydrateMismatchElement(container as Element)
-
-    // Attach metadata to container only if necessary
-    const containerElement = container as ExtendedElement
-    if (debugSource) containerElement.__axiiSource = debugSource
-    if (unhandledChildren) containerElement.unhandledChildren = unhandledChildren
-    if (unhandledAttr) containerElement.unhandledAttr = unhandledAttr
-    if (refHandles) containerElement.refHandles = refHandles
-    if (detachStyledChildren) containerElement.detachStyledChildren = detachStyledChildren
-
     return container as (HTMLElement | DocumentFragment | SVGElement)
 }
 
