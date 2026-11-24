@@ -595,6 +595,15 @@ function emitTextPh(text: string, out: string[]): void {
     }
 }
 
+// CAUTION §3.2.1 A1c：placeholder 是结构 Comment 的文本单元（Comment-ph：数组项 / 列表行 / 根 / computed node 上的
+//  AtomHost、FunctionHost 文本态、PrimitiveHost）空时不写任何节点——激活时在 placeholder 前插入 Text('')。
+//  写 axii:0 是 Text-ph 的写法（emitTextPh）：CSR 里没有这个节点，旧模型激活后它留在 DOM 里，新模型在认领 slot 时报告失配。
+//  Comment-ph 的文本单元经这里写，不要在调用处重复判定。唯一的例外是 serializeStructureResult 的 atom 分支：
+//  同样空时不写，非空时省略 axii:t 对（紧挨 computed node，A2 允许），这个既有写法有用例钉住。
+function emitCommentPhText(text: string, out: string[]): void {
+    if (text.length) emitNonEmptyText(text, out)
+}
+
 function emitElementChildText(text: string, out: string[]): void {
     if (text.length === 0) {
         out.push('<!--axii:0-->')
@@ -1042,21 +1051,17 @@ function serializeStructureResult(
         return
     }
     if (isSsrElement(result) && result.type === Fragment) {
+        // StaticHost(DocumentFragment) 作为 Host 的 source：写 fragment start（serialize 在根上把 Fragment 描述摊平，这里不能用它）
         out.push('<!--fragment start-->')
         serializeChildren(result.children, out, undefined, selectSo)
         return
     }
-    if (isComponentNode(result)) {
-        serializeComponent(result, out, selectSo)
-        return
-    }
-    if (Array.isArray(result)) {
-        serializeStaticArray(result, out, undefined, null, selectSo)
-        return
-    }
-    // result cannot be null/undefined here — serializeFunctionHost only calls this on
-    // the non-text-snapshot path (isFunctionHostTextSnapshot(null|undefined) === true).
-    serializeChild(result, out, undefined, true, selectSo)
+    // CAUTION 其余结构态的值（函数、元素、数组、RxList、reusable、组件）≡ CSR 的 createHost(值, <!--computed node-->)：
+    //  placeholder 是 Comment，与根 / 组件根同一个分派（serialize），不是元素 child 的分派（serializeChild）。
+    //  曾经经 serializeChild 写（#82）：内层函数按 Text-ph 写（多一个 axii:0，内层 FunctionHost 还多登记了一个 owner），
+    //  RxList / reusable 后面多一个 <!--unhandledChild-->（那是元素 child 的 placeholder，CSR 这里没有）。
+    //  值不会是 null / undefined / 原始值：serializeFunctionHost 只在非文本态时调用这里（isFunctionHostTextSnapshot）。
+    serialize(result, out, selectSo)
 }
 
 /** FunctionHost 求值的唯一写法（≡ FunctionHost.renderSourceWithoutTrace：零参函数不传 context）。 */
@@ -1108,9 +1113,8 @@ function serializeFunctionHost(
             if (placeholderKind === 'text') {
                 emitTextPh(stringValue(result), out)
             } else {
-                // Comment-ph text: empty → nothing; non-empty → text (placeholder Comment by caller)
-                const text = stringValue(result)
-                if (text.length) emitNonEmptyText(text, out)
+                // Comment-ph text (placeholder Comment by caller)
+                emitCommentPhText(stringValue(result), out)
             }
             return
         }
@@ -1154,7 +1158,8 @@ function serializeStaticArrayItemContent(
         return
     }
     if (isAtom(item)) {
-        emitTextPh(stringValue(item()), out)
+        // AtomHost 的 placeholder 是 <!--array item-->（Comment-ph），不是 DirectNodes：空值不写 axii:0（#82）
+        emitCommentPhText(stringValue(item()), out)
         return
     }
     if (itemType === 'function') {
@@ -1340,8 +1345,7 @@ function serializeRxListRow(item: any, out: string[], selectSo: SelectSoCtx | nu
     if (typeof item === 'function') {
         if (isAtom(item)) {
             // G4 Comment-ph
-            const text = stringValue(item())
-            if (text.length) emitNonEmptyText(text, out)
+            emitCommentPhText(stringValue(item()), out)
             out.push('<!--rx list item-->')
             return
         }
@@ -1354,8 +1358,7 @@ function serializeRxListRow(item: any, out: string[], selectSo: SelectSoCtx | nu
     const t = typeof item
     if (t === 'string' || t === 'number' || t === 'boolean' || t === 'bigint') {
         // G4′ PrimitiveHost Comment-ph
-        const text = t === 'boolean' ? '' : item.toString()
-        if (text.length) emitNonEmptyText(text, out)
+        emitCommentPhText(t === 'boolean' ? '' : item.toString(), out)
         out.push('<!--rx list item-->')
         return
     }
@@ -1819,8 +1822,7 @@ function serialize(source: any, out: string[], selectSo: SelectSoCtx | null = nu
     }
     if (isAtom(source)) {
         // Top-level atom: Comment-ph (placeholder=root)
-        const text = stringValue(source())
-        if (text.length) emitNonEmptyText(text, out)
+        emitCommentPhText(stringValue(source()), out)
         return
     }
     if (isComponentNode(source)) {
@@ -1838,8 +1840,7 @@ function serialize(source: any, out: string[], selectSo: SelectSoCtx | null = nu
     }
     const t = typeof source
     if (t === 'string' || t === 'number' || t === 'bigint') {
-        const text = source.toString()
-        if (text.length) emitNonEmptyText(text, out)
+        emitCommentPhText(source.toString(), out)
         return
     }
     if (t === 'boolean') {

@@ -530,13 +530,12 @@ describe('retained objects (§5.2)', () => {
     })
 })
 
-describe('pre-existing server / CSR disagreement (out of B1 scope)', () => {
-    // 函数结构态的值又是（非 atom 的）函数：CSR 里内层 FunctionHost 的 placeholder 是外层的 <!--computed node-->（Comment-ph），
-    //  服务端 ssr.serializeStructureResult 却经 serializeChild 按 Text-ph 写内层（多一个 axii:0）。旧模型激活后留下一个 axii:0
-    //  （值为空时）或抛错（值是元素时）；新模型在认领处报告失配并抛出（B3 的 R3 会修复并报告）。
-    //  根治在服务端：serializeStructureResult 对函数结果按 Comment-ph 写（serializeFunctionHost(result, out, 'comment')）。
-    //  服务端修好之后这条翻转为通过。
-    test.fails('function child returning a function returning "" / an element: hydrates ≡ CSR without a report', () => {
+describe('server / CSR agreement found in B1 (fixed in #82)', () => {
+    // 函数结构态的值又是（非 atom 的）函数：CSR 里内层 FunctionHost 的 placeholder 是外层的 <!--computed node-->（Comment-ph）。
+    //  服务端曾经经 serializeChild 按 Text-ph 写内层（多一个 axii:0），新模型在认领处报告失配并抛出。#82 在服务端修复
+    //  （ssr.serializeStructureResult 按 Comment-ph 的分派写），这条由 test.fails 翻转为 test；两个入口的覆盖见
+    //  ssrHydrate.functionValues.spec.tsx。
+    test('function child returning a function returning "" / an element: hydrates ≡ CSR without a report', () => {
         for (const inner of [() => '', (createElement: any) => <b>e</b>]) {
             reports = []
             function App({}: any, {createElement}: RenderContext) { return <div>{() => () => inner(createElement)}<i>tail</i></div> }
