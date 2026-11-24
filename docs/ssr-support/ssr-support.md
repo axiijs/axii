@@ -172,13 +172,13 @@ next-action: 无
 
 **服务端**：`renderToString(source, options?)` 走纯字符串序列化与组件执行（同步），求值当前 atom/computed/RxList 快照，输出 HTML 文本 + 样式文本 + portal 旁路结果。不创建 Host 更新订阅的长期生命周期；渲染结束释放全部临时订阅/计算。
 
-**客户端**：`hydrateRoot(container, source)` 在已有子树上建立 Root/Host/绑定：`createElement`/Host 在 hydrating 期间从游标**认领**节点与 placeholder，而不是 `document.create*` 新建。激活完成后 `hydrating` 结束，后续更新与 CSR 同一代码路径。
+**客户端**：`hydrateRoot(container, source)` 在已有子树上建立 Root/Host/绑定，认领服务端节点与 placeholder，而不是 `document.create*` 新建。激活完成后激活状态结束，后续更新与 CSR 同一代码路径。
 
-**元素认领顺序（现状，#54；实验性）**：JSX 先求值子节点、后求值父节点，元素的 `createElement` 发生时父元素还没有认领、没有游标。此时 `tryClaimElement` 在整个激活根里按「子先于父」的顺序（DOM 后序）取第一个未认领、标签相同且合格的元素——一棵静态 JSX 树里各元素的 `createElement` 恰好按这个顺序发生。已认领的 `dangerouslySetInnerHTML` 元素的内容不参与搜索。已知局限（`auditSsrHydrate.spec.tsx` 的 `test.fails`，归 #55 自顶向下按位置认领）：子组件、函数子节点在父级 JSX 求值之后才渲染，服务端输出里也没有它们内容起点的标记，父级里排在后面的同标签元素会先拿走它们的节点（F1b、F1f–F1h）；原始标记元素认领自己时仍会搜到自己标记里的同标签节点（F1j）；另有 F3（函数子节点锚点前瞻）、F4（结构漂移不报告不修复）。在 #55 落地之前，README 与站点文档把 `hydrateRoot` 标为实验性。
+**认领模型（#55，自顶向下按位置认领）**：激活是 `serialize` 的逆过程。激活期间 `createElement` 不碰 DOM，返回延迟描述（`HydrationElement`）；各 Host 在自己的位置按文档顺序从游标处读回服务端节点，先消费自己的内容、再认领自己的 placeholder，父级从不搜索、不向前看。服务端标记不变，任何版本 `renderToString` 的输出都能激活。设计、受影响的契约与迁移（C1–C10：激活期间 JSX 的结果是描述，不是节点，被闭包捕获的描述在激活结束后仍是描述，迁移方式是改用 `ref`；需要按节点类型判断 JSX 结果时用导出的 `isHydrationElement`）、失配修复规则、零开销保证与实现记录见 [`hydration-top-down.md`](./hydration-top-down.md)。`hydrateRoot` 自 #55 S 起使用这个模型。
 
-**元素认领顺序（#55 设计，待实现）**：激活期间 `createElement` 返回延迟描述，各 Host 按文档顺序自顶向下消费自己的节点，先内容、后 placeholder；服务端标记不变。设计、受影响的契约与迁移、失配修复规则、零开销保证与实现拆分见 [`hydration-top-down.md`](./hydration-top-down.md)。新模型先经不导出的内部入口分步落地，`hydrateRoot` 在切换 PR（该文档 §7 的 S）合入后改用它；此后本段「现状」与 §3.7 的修复粒度以该文档为准。
+此前（#54）的认领顺序是「子先于父」：元素的 `createElement` 发生时父元素还没有认领、没有游标，只能在整个激活根里按 DOM 后序取第一个未认领的同标签元素。子组件、函数子节点在父级 JSX 求值之后才渲染，父级里排在后面的同标签元素会先拿走它们的节点（F1b、F1f–F1h），原始标记元素会搜到自己标记里的同标签节点（F1j），另有函数子节点锚点前瞻（F3a、F3b）与结构漂移不报告、不修复（F4a–F4d）。这 11 条曾是 `auditSsrHydrate.spec.tsx` 的 `test.fails`，#55 S 删除旧模型后都是普通用例。
 
-**CSR 隔离**：SSR 实现放在独立导出 `axii/ssr`（类比已有 `axii/vite-plugin`），不打进浏览器主包。Hydration 认领逻辑仅在 hydrate 入口设置的短生命周期上下文中生效；`LightBindingEffect` / atom 文本更新 / `RxListHost` patch / `createHost` 分发在非 hydrating 稳态下不增加分支成本（允许 hydrate 期间 Host.`render` 上一次布尔读，禁止热更新路径常驻 SSR 分支）。
+**CSR 隔离**：SSR 实现放在独立导出 `axii/ssr`（类比已有 `axii/vite-plugin`），不打进浏览器主包。Hydration 认领逻辑仅在 hydrate 入口设置的短生命周期上下文中生效；`LightBindingEffect` / atom 文本更新 / `RxListHost` patch / `createHost` 分发在非 hydrating 稳态下不增加分支成本。认领走各 Host 的 `hydrate(slot)` 原型方法，CSR 的 `render` 里没有激活分支；CSR 路径上剩下的只有 `createElement` 开头一次布尔读（为真时返回描述），以及 `FunctionHost` 在文本快速返回之后的一次读（见 [`hydration-top-down.md`](./hydration-top-down.md) §5.1），禁止热更新路径常驻 SSR 分支。
 
 ### 3.2 标记与 DOM 对应
 
@@ -1202,13 +1202,12 @@ CSR 多处写 IDL/`__axiiSelectValue__` 而不反映到 `outerHTML`。SSR **必�
 
 | 环境 | 行为 |
 |---|---|
-| diagnostics / `__DEV__` | 结构化报告（`reportAxiiError` 或专用 hydration 诊断），包含期望 vs 实际；**不得**静默留下错误绑定 |
-| 生产 | 对失配**子树**丢弃该区间既有 DOM 并改为 CSR 创建（局部重建）；不整页无声失败 |
-| 观测 | 测试可断言：诊断被触发；失配子树节点 identity 与解析前不同；匹配子树 identity 保持 |
+| 报告 | 每处失配报告一条 `HydrationMismatchError`（期望 vs 实际），经 `reportAxiiError` 交给 `onError`，与诊断开关无关；激活不中止。**不得**静默留下错误绑定 |
+| 修复粒度 | 在游标处按「期望什么」局部修复（R1–R5）：替换或新建失配的那一个单元（元素、文本单元、结构注释），删除多余的节点；父节点里其余匹配的节点照常认领。结果的节点结构、文本与客户端 props 写下的属性 ≡ CSR；服务端独有的属性只在失配路径上清理（干净认领时保留，开发期报告 `AXII_HYDRATION_ATTRIBUTE_RESIDUE`） |
+| diagnostics / `__DEV__` | 另外检查开发期不变量（`AXII_HYDRATION_INVARIANT`：Host 区间可达、placeholder 都已认领、没有残留的 `axii:*` 标记），以及描述被当作节点读写、激活之后才渲染的描述、现成节点、残留属性四种开发期报告 |
+| 观测 | 测试可断言：报告被触发；失配单元的节点 identity 与解析前不同；匹配的节点 identity 保持 |
 
-版本/数据漂移与 HTML 篡改均落入本条款。正确匹配路径禁止重建（identity 断言）。
-
-自顶向下认领下的失配规则（按「游标处期望什么」分类的局部修复 R1–R5，以及「位置对齐 ⇒ DOM ≡ CSR」的不变量）见 [`hydration-top-down.md`](./hydration-top-down.md) §4。
+版本/数据漂移与 HTML 篡改均落入本条款。正确匹配路径禁止重建（identity 断言）。规则与「位置对齐 ⇒ DOM ≡ CSR」的不变量见 [`hydration-top-down.md`](./hydration-top-down.md) §4。
 
 ### 3.8 公开 API 与产物
 
