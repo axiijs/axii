@@ -1,5 +1,6 @@
 import {
     ExtendedElement,
+    Fragment,
     insertAfter,
     insertBefore,
     restoreSelectValueAfterRemoval,
@@ -9,7 +10,7 @@ import {
 } from './DOM'
 import {computed, destroyComputed, RxList, TrackOpTypes, TriggerOpTypes, Computed, TriggerInfo} from "data0";
 import {PathContext, Host} from "./Host";
-import {createHost} from "./createHost";
+import {createHost, createHydrateHost} from "./createHost";
 import {createLinkedNode} from "./LinkedList";
 import {
     isAxiiRetainedObjectDiagnosticsEnabled,
@@ -36,6 +37,21 @@ import {
     isHydrating,
     setChildCursor,
 } from "./hydration";
+import {HydrationElement, HydrationSlot, isHydrationElement, RX_LIST_ITEM_SLOT} from "./hydrationElement";
+import {claimTopDownComment} from "./hydrationCursor";
+import {isCompactListRowDescriptor, type ListRowDescriptorAccess} from "./compactListRow";
+
+const EMPTY_ROW_CHILDREN: readonly unknown[] = []
+/**
+ * #55 新模型：#68 的 Compact 判定读描述（HydrationElement）的访问器，模块级常量，不每行分配（compactListRow.ts 的约定）。
+ * 已认领的描述（同一个描述第二次作为行）已经瘦身，按没有 children 判定；随后认领它时显式抛错（throwConsumedDescription，B4）。
+ */
+const HYDRATION_ROW_ACCESS: ListRowDescriptorAccess<HydrationElement> = {
+    asStaticNode: (value) => isHydrationElement(value) ? value : undefined,
+    isFragment: (node) => node.tag === Fragment,
+    props: (node) => node.rawProps,
+    children: (node) => node.rawChildren ?? EMPTY_ROW_CHILDREN,
+}
 
 function isHostRendered(host: Host): boolean {
     return host instanceof CompactElementHost ? !!host.element.parentNode : !!host.placeholder.parentNode
@@ -239,7 +255,6 @@ export class RxListHost implements Host{
     }
 
     render(): void {
-        const host = this
         const source = this.source
         // 所有行共享同一个 childContext/hostPath 节点（内容完全相同），避免每行两次对象分配
         this.childContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
@@ -262,7 +277,57 @@ export class RxListHost implements Host{
         } else {
             this.hosts = []
         }
-
+        this.createRenderComputed(hydrateSkipInitial)
+    }
+    /**
+     * #55 新模型（设计 §2.5 RxListHost 行、§2.6.4、§3.3）：从游标处逐行认领服务端节点，然后认领自己的 slot。
+     *  1. 先构造全部行 Host，再按文档顺序逐行认领（≡ CSR：computation 先对每行 createChildHost，再 renderNewHosts 逐行渲染）。
+     *     ComponentHost 的构造器分配组件类型 id，行与行内组件的 id 因此按与 CSR 相同的顺序分配。
+     *     Compact 判定在构造时、认领之前（认领后描述瘦身），用 #68 的唯一判定（compactListRow.ts）。Compact 行 ≡ createChildHost
+     *     的快速路径：直接构造 CompactElementHost 并同样登记；其余行 createHydrateHost(行, 'rx list item')，不传 position（≡ createHost）。
+     *     嵌套 RxList 行就是一个 RxListHost：它消费内层各行后认领外层的 `<!--rx list item-->`。
+     *  2. 行是描述时，认领之后把 source.data[i] 写回为认领到的节点（Fragment 行是那个空的 DocumentFragment，≡ CSR 的 data），
+     *     普通下标赋值，不触发 patch（data0Contract 13a–13c）。激活完成后 data 里与 CSR 一样是节点，没有描述（§5.2）。
+     *     只覆盖被渲染的这一个列表：map(f).filter(p) 的上游 map 仍持有描述壳，谓词稍后重新放行的行是描述（C10 / §3.3，B4）。
+     *  3. 认领 slot；computed 首次运行只建立追踪（≡ 旧模型的 hydrateSkipInitial），之后的 patch 走 CSR。
+     * 行在 computed 之外认领：行 Host 的 effect 都自行脱离创建上下文（detachEffectFromCreationContext），与在 computation 里
+     * 暂停子 effect 收集的 CSR 结果相同。激活时元素已在文档里，不打开样式批次（≡ StaticHost.hydrate）。
+     */
+    hydrate(slot: HydrationSlot): void {
+        const childContext = this.childContext = {...this.pathContext, hostPath: createLinkedNode<Host>(this, this.pathContext.hostPath)}
+        const data = this.source.data
+        const hosts: Host[] = this.hosts = []
+        for (let i = 0; i < data.length; i++) {
+            const row = data[i]
+            if (isCompactListRowDescriptor(row, HYDRATION_ROW_ACCESS)) {
+                const host = new CompactElementHost(row as unknown as HTMLElement, childContext)
+                if (isAxiiRetainedObjectDiagnosticsEnabled()) {
+                    trackHostCreated(host, 'CompactElementHost')
+                    trackCompactHostCreated(host)
+                }
+                hosts.push(host)
+            } else {
+                hosts.push(createHydrateHost(row, RX_LIST_ITEM_SLOT, childContext))
+            }
+        }
+        for (let i = 0; i < hosts.length; i++) hosts[i].hydrate!(RX_LIST_ITEM_SLOT)
+        // 全部行认领之后写回：按 data 现在的内容逐项写，行的组件在激活中改动了列表（位置移动）也不会写错位置；
+        //  没有被认领的描述（node 为 null）不写
+        for (let i = 0; i < data.length; i++) {
+            const row = data[i]
+            if (isHydrationElement(row) && row.node !== null) data[i] = row.node
+        }
+        this.placeholder = claimTopDownComment(slot)
+        this.createRenderComputed(true)
+        if (this.placeholder.isConnected) {
+            this.pathContext.root.flushAttachQueue()
+        }
+    }
+    // render 与 hydrate 共用：行的初次渲染与之后的 patch 都在这个 computed 里。skipInitialRender 为 true 时行已经认领好
+    //  （激活），首次运行只建立追踪。每个列表一次，不在行 / patch 的热路径上。
+    createRenderComputed(skipInitialRender: boolean): void {
+        const host = this
+        const source = this.source
         let ownedByHost = false
         this.hostRenderComputed = computed(
             function computation(this:Computed) {
@@ -281,8 +346,8 @@ export class RxListHost implements Host{
                 this.pauseCollectChild()
                 try {
                     const hosts = host.hosts!
-                    if (hydrateSkipInitial) {
-                        hydrateSkipInitial = false
+                    if (skipInitialRender) {
+                        skipInitialRender = false
                         return null
                     }
                     // CAUTION data0 >= 2.9 的错误恢复契约(data0Contract.spec 条款 8):

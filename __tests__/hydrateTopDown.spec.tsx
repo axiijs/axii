@@ -19,7 +19,7 @@ import {
 import {renderToString} from '../src/ssr.js'
 import {hydrateRootTopDown} from '../src/hydrateTopDown'
 import {HydrationMismatchError} from '../src/hydration'
-import {TopDownPendingError} from '../src/hydrationElement'
+import {isHydrationElement, TopDownPendingError} from '../src/hydrationElement'
 import {componentTypeIds} from '../src/styleSerialize'
 import {
     disableAxiiRetainedObjectDiagnostics,
@@ -463,11 +463,302 @@ describe('aborting the activation (§6: B1 reports and throws on a mismatch)', (
     })
 })
 
+describe('lists and arrays (B2: §2.5, §2.6.4, §3.3)', () => {
+    const OPACITY_0 = {opacity: 0}
+    type RowKind = 'compact' | 'non-compact' | 'fragment' | 'component' | 'function'
+    const rowKinds: RowKind[] = ['compact', 'non-compact', 'fragment', 'component', 'function']
+    // 组件直接返回 RxList（#68 会话报告的形态，B2 追加的验收）：作为激活根（slot 是 root），以及作为元素 child 里的组件
+    function makeRows(kind: RowKind, asRoot: boolean) {
+        const list = new RxList([1, 2, 3])
+        function Item({i}: any, {createElement}: RenderContext) { return <li>c{i}</li> }
+        function Rows({}: any, {createElement, Fragment}: RenderContext) {
+            return list.map(i =>
+                kind === 'compact' ? <li data-i={i}>{i}</li>
+                    : kind === 'non-compact' ? <li data-i={i}><b detachStyle={OPACITY_0}>{i}</b></li>
+                        : kind === 'fragment' ? <Fragment><li>{i}</li></Fragment>
+                            : kind === 'component' ? <Item i={i}/>
+                                : () => <li>f{i}</li>)
+        }
+        function App({}: any, {createElement}: RenderContext) { return <ul><Rows/></ul> }
+        return {list, App: asRoot ? Rows : App}
+    }
+    for (const asRoot of [true, false]) {
+        test.each(rowKinds)(`a component returning list.map(...) ${asRoot ? 'as the activation root' : 'inside an element'}, %s rows: ≡ CSR, no report, server nodes kept; patches ≡ CSR`, (kind) => {
+            const csrEl = mount()
+            const c = makeRows(kind, asRoot)
+            createRoot(csrEl).render(createElement(c.App, null))
+            const hyd = ssrInto(createElement(makeRows(kind, asRoot).App, null))
+            const before = Array.from(hyd.querySelectorAll('li'))
+            const h = makeRows(kind, asRoot)
+            const root = hydrateRootTopDown(hyd, createElement(h.App, null))
+            expect({dom: kids(hyd), reports, kept: Array.from(hyd.querySelectorAll('li')).every((li, i) => li === before[i])})
+                .toEqual({dom: kids(csrEl), reports: [], kept: true})
+            const findList = (host: any): any => !host ? undefined
+                : host.constructor.name === 'RxListHost' ? host
+                    : findList(host.innerHost) ?? (Array.isArray(host.reactiveHosts) ? undefined : findList(host.reactiveHosts))
+            const rowHosts = findList(root.host).hosts.map((row: any) => row.constructor.name)
+            expect(rowHosts).toEqual(Array(3).fill(kind === 'compact' ? 'CompactElementHost'
+                : kind === 'component' ? 'ComponentHost' : kind === 'function' ? 'FunctionHost' : 'StaticHost'))
+            for (const s of [c, h]) { s.list.push(4); s.list.splice(0, 1); s.list.unshift(0) }
+            expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        })
+    }
+
+    test('after the activation list.data and array items hold the claimed nodes, never descriptions (§3.3, §5.2)', () => {
+        const make = () => {
+            const list = new RxList([1, 2])
+            const got: {[k: string]: any} = {}
+            function App({}: any, {createElement, Fragment}: RenderContext) {
+                got.compact = list.map(i => <li>{i}</li>)
+                got.nonCompact = list.map(i => <li><b detachStyle={OPACITY_0}>{i}</b></li>)
+                got.fragment = list.map(i => <Fragment><i>{i}</i></Fragment>)
+                got.nested = list.map(i => new RxList([i, i * 10]).map(j => <s>{j}</s>))
+                got.array = [<b>x</b>, 'y', <Fragment><u>f</u></Fragment>, null]
+                got.fnArray = undefined
+                return <div>
+                    <ul>{got.compact}</ul><ul>{got.nonCompact}</ul><p>{got.fragment}</p><p>{got.nested}</p><p>{got.array}</p>
+                    {() => (got.fnArray = [<em>e</em>, <em>f</em>])}
+                </div>
+            }
+            return {App, got}
+        }
+        const kindsOf = (got: any) => ({
+            compact: got.compact.data.map((x: any) => x.localName),
+            nonCompact: got.nonCompact.data.map((x: any) => x.localName),
+            fragment: got.fragment.data.map((x: any) => x.nodeType),
+            nestedInner: got.nested.data.map((inner: any) => inner.data.map((x: any) => x.localName)),
+            array: got.array.map((x: any) => x?.nodeType ?? x),
+            fnArray: got.fnArray.map((x: any) => x.localName),
+        })
+        const csrEl = mount()
+        const c = make()
+        createRoot(csrEl).render(createElement(c.App, null))
+        const hyd = ssrInto(createElement(make().App, null))
+        const lis = Array.from(hyd.querySelectorAll('ul')).map(ul => Array.from(ul.querySelectorAll(':scope > li')))
+        const b = hyd.querySelector('p > b')
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        expect(reports).toEqual([])
+        expect(kindsOf(h.got)).toEqual(kindsOf(c.got))
+        // 写回的就是认领到的服务端节点
+        expect([h.got.compact.data[0] === lis[0][0], h.got.nonCompact.data[1] === lis[1][1], h.got.array[0] === b])
+            .toEqual([true, true, true])
+        const descriptions = [h.got.compact, h.got.nonCompact, h.got.fragment, ...h.got.nested.data].flatMap((l: any) => l.data)
+            .concat(h.got.array, h.got.fnArray)
+            .filter((x: unknown) => isHydrationElement(x))
+        expect(descriptions).toEqual([])
+    })
+
+    test('rows and array items are all constructed before any of them hydrates: component type ids follow CSR order (§2.4)', () => {
+        // CSR：RxListHost 先对每行 createChildHost（组件行在这里构造），再逐行渲染（Compact 行里的组件在这时构造）；
+        //  StaticArrayHost 同样先构造全部项再渲染。服务端 HTML 用另一组同样的组件生成，类型 id 在激活里第一次分配
+        const makeTypes = () => {
+            function RowLeaf({}: any, {createElement}: RenderContext) { return <i>leaf</i> }
+            function RowComp({}: any, {createElement}: RenderContext) { return <u>row</u> }
+            function ItemLeaf({}: any, {createElement}: RenderContext) { return <i>leaf</i> }
+            function ItemComp({}: any, {createElement}: RenderContext) { return <u>item</u> }
+            const list = new RxList([0, 1])
+            function App({}: any, {createElement}: RenderContext) {
+                return <div>
+                    <ul>{list.map(i => i === 0 ? <li><RowLeaf/></li> : <RowComp/>)}</ul>
+                    <p>{[<b><ItemLeaf/></b>, <ItemComp/>]}</p>
+                </div>
+            }
+            return {App, RowLeaf, RowComp, ItemLeaf, ItemComp}
+        }
+        const hyd = ssrInto(createElement(makeTypes().App, null))
+        const t = makeTypes()
+        hydrateRootTopDown(hyd, createElement(t.App, null))
+        const id = (f: Function) => componentTypeIds.get(f)!
+        expect({rows: id(t.RowComp) < id(t.RowLeaf), items: id(t.ItemComp) < id(t.ItemLeaf), reports})
+            .toEqual({rows: true, items: true, reports: []})
+    })
+
+    test('atoms as array items (Comment-ph AtomHost on <!--array item-->), empty and non-empty, next to DirectNodes: hydrates ≡ CSR, updates ≡ CSR', async () => {
+        const make = () => {
+            const a = atom('')
+            const b = atom('y')
+            const list = new RxList([1])
+            // 组件返回 atom：数组项的 placeholder 由组件与它的 AtomHost 共享
+            function C({}: any, {createElement}: RenderContext) { return a }
+            function App({}: any, {createElement}: RenderContext) {
+                return <div><p>{[a, 'x', b, '']}</p><ul>{list.map(() => [a, <i>i</i>])}</ul><p>{[<C/>, b]}</p></div>
+            }
+            return {App, a, b}
+        }
+        const csrEl = mount()
+        const c = make()
+        createRoot(csrEl).render(createElement(c.App, null))
+        const hyd = ssrInto(createElement(make().App, null))
+        // 空值的 Comment-ph 文本单元服务端不写任何节点（#82 之前曾写 axii:0），激活在 placeholder 前插入 Text('')
+        expect(hyd.innerHTML).not.toContain('<!--axii:0--><!--array item-->')
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        expect({dom: kids(hyd), reports, markers: hyd.innerHTML.includes('axii:')}).toEqual({dom: kids(csrEl), reports: [], markers: false})
+        for (const s of [c, h]) { s.a('A'); s.b('') }
+        await tick()
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+    })
+
+    test('an array under an element that only became SVG keeps HTML items like CSR: the parser\'s SVG <title> is reported, not claimed silently', () => {
+        // CSR 的 adoptSvgChildren 只在创建时就是 SVG 的元素上改建数组项；被父元素改建、或作为数组项被改建的 <a> 不改建它的数组项，
+        //  其中的 <title> 是 HTML 元素，解析器却按 SVG 解析。激活与 CSR 一致按 HTML 认领，在认领处报告失配（B3 修复）
+        const ns = (root: Element) => Array.from(root.querySelectorAll('title')).map(n => n.namespaceURI === 'http://www.w3.org/2000/svg' ? 'svg' : 'html')
+        const shapes = [
+            function App({}: any, {createElement}: RenderContext) { return <svg><a>{[<title>t</title>]}</a></svg> },
+            function App({}: any, {createElement}: RenderContext) { return <svg>{[<a>{[<title>t</title>]}</a>]}</svg> },
+        ]
+        for (const App of shapes) {
+            reports = []
+            const csrEl = mount()
+            createRoot(csrEl).render(createElement(App, null))
+            expect(ns(csrEl)).toEqual(['html'])
+            const hyd = ssrInto(createElement(App, null))
+            let thrown: unknown
+            try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
+            expect(thrown).toBeInstanceOf(HydrationMismatchError)
+            expect(reports.length).toBe(1)
+        }
+        // 对照：创建时就是 SVG 的元素（<g>）改建它的数组项，激活 ≡ CSR、不报告
+        reports = []
+        function Control({}: any, {createElement}: RenderContext) { return <svg><g>{[<title>t</title>]}</g></svg> }
+        const csrEl = mount()
+        createRoot(csrEl).render(createElement(Control, null))
+        const hyd = ssrInto(createElement(Control, null))
+        hydrateRootTopDown(hyd, createElement(Control, null))
+        expect({ns: ns(hyd), dom: kids(hyd), reports}).toEqual({ns: ['svg'], dom: kids(csrEl), reports: []})
+    })
+
+    test('a frozen array hydrates ≡ CSR: its items are not written back (that would throw in strict mode)', () => {
+        let frozen: any[] = []
+        function App({}: any, {createElement}: RenderContext) {
+            frozen = Object.freeze([<b>x</b>, 'y', <i>z</i>]) as any[]
+            return <p>{frozen}</p>
+        }
+        const csrEl = mount()
+        createRoot(csrEl).render(createElement(App, null))
+        const hyd = ssrInto(createElement(App, null))
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+        // 已知：冻结的数组里留着认领过的描述壳（不能写回）
+        expect(isHydrationElement(frozen[0])).toBe(true)
+    })
+
+    test('development invariants on a list / array longer than the argument-count limit: no RangeError (diagnostics on)', () => {
+        const N = 150000
+        const make = () => {
+            const list = new RxList(Array.from({length: N}, (_, i) => i))
+            return function App({}: any, {createElement}: RenderContext) {
+                return <div>{list.map(() => <i/>)}{Array.from({length: N}, () => <b/>)}</div>
+            }
+        }
+        const hyd = ssrInto(createElement(make(), null))
+        hydrateRootTopDown(hyd, createElement(make(), null))
+        expect({rows: hyd.querySelectorAll('i').length + hyd.querySelectorAll('b').length, reports}).toEqual({rows: 2 * N, reports: []})
+    })
+
+    test('the same JSX element twice as array items / list rows throws TopDownPendingError (C6, B4) instead of a TypeError', () => {
+        const shapes = [
+            function App({}: any, {createElement}: RenderContext) { const s = <span>s</span>; return <div>{[s, s]}</div> },
+            function App({}: any, {createElement}: RenderContext) { const s = <span>s</span>; return <ul>{new RxList([1, 2]).map(() => s)}</ul> },
+        ]
+        for (const App of shapes) {
+            const hyd = mount()
+            // 服务端写两份；CSR 第二次插入把同一个节点挪走
+            hyd.innerHTML = renderToString(createElement(App, null)).html
+            let thrown: unknown
+            try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
+            expect(thrown).toBeInstanceOf(TopDownPendingError)
+            expect((thrown as Error).message).toContain('(#55 B4)')
+        }
+    })
+
+    test('map(f).filter(p): a row the predicate admits again after the activation is a description of the upstream map (C10 / §3.3): TopDownPendingError (B4)', () => {
+        // 写回只覆盖被渲染的 filter 列表；上游 map 的 data 仍是（已认领、瘦身的）描述，谓词重新放行时插入的是它。
+        //  CSR / 旧模型插回同一批元素（ssrHydrate.lists 里 ≡ CSR 的那一条，内部入口那一遍标为 B4 待实现）。
+        //  B4 在 createHost 链尾的描述分支落地之前，内部入口显式抛错，不静默。
+        const list = new RxList([1, 2])
+        const show = atom(true)
+        function App({}: any, {createElement}: RenderContext) {
+            return <ul>{list.map(i => <li>{i}</li>).filter(() => show())}</ul>
+        }
+        const hyd = ssrInto(createElement(App, null))
+        hydrateRootTopDown(hyd, createElement(App, null))
+        expect(reports).toEqual([])
+        show(false)
+        let thrown: unknown
+        try { show(true) } catch (e) { thrown = e }
+        expect(thrown).toBeInstanceOf(TopDownPendingError)
+        expect((thrown as Error).message).toContain('(#55 B4)')
+    })
+
+    test('development invariants (§4.4) walk list rows and array items; Compact rows (no placeholder of their own) are not misreported', () => {
+        const kinds = (App: any) => {
+            reports = []
+            const el = mount()
+            el.innerHTML = renderToString(createElement(App, null)).html
+            hydrateRootTopDown(el, createElement(App, null))
+            return reports.map((e: any) => `${e.code}: ${String(e.message).replace(/^\[axii\] hydration invariant broken: | \(AXII_HYDRATION_INVARIANT\)$/g, '')}`)
+        }
+        const removeNext = (el: Element | null) => { if (el) el.nextSibling?.remove() }
+        // 匹配路径：Compact 行、非 Compact 行、数组项都不报告
+        expect(kinds(function App({}: any, {createElement}: RenderContext) {
+            return <div><ul>{new RxList([1, 2]).map(i => <li>{i}</li>)}</ul><p>{[<b>x</b>, () => 'y']}</p></div>
+        })).toEqual([])
+        // ref 在激活结束前执行：拿掉非 Compact 行自己的 <!--rx list item-->、数组项自己的 <!--array item-->
+        expect(kinds(function App({}: any, {createElement}: RenderContext) {
+            return <ul>{new RxList([1]).map(i => <li ref={removeNext}><b detachStyle={OPACITY_0}>{i}</b></li>)}</ul>
+        })).toEqual(['AXII_HYDRATION_INVARIANT: StaticHost.placeholder is not in the document'])
+        expect(kinds(function App({}: any, {createElement}: RenderContext) {
+            return <p>{[<b ref={removeNext}>x</b>]}</p>
+        })).toEqual(['AXII_HYDRATION_INVARIANT: StaticHost.placeholder is not in the document'])
+        // Compact 行的元素被拿出文档：列表自己的区间（从第一行开始）也断开
+        expect(kinds(function App({}: any, {createElement}: RenderContext) {
+            return <ul>{new RxList([1]).map(i => <li ref={(el: Element | null) => { el?.remove() }}>{i}</li>)}</ul>
+        })).toEqual([
+            'AXII_HYDRATION_INVARIANT: RxListHost range [element … placeholder] is not reachable',
+            'AXII_HYDRATION_INVARIANT: CompactElementHost.element is not in the document',
+        ])
+    })
+
+    test('hydrate + destroy returns host / binding counters to zero (B2 kinds: RxListHost, CompactElementHost, StaticArrayHost)', async () => {
+        enableAxiiRetainedObjectDiagnostics({reset: true})
+        try {
+            const list = new RxList([1, 2])
+            const label = atom('x')
+            function Item({i}: any, {createElement}: RenderContext) { return <em>{i}</em> }
+            function App({}: any, {createElement, Fragment}: RenderContext) {
+                return <div>
+                    <ul>{list.map(i => <li className={() => label()}>{i}{label}</li>)}</ul>
+                    <ul>{list.map(i => <li><b detachStyle={OPACITY_0}>{i}</b></li>)}</ul>
+                    <p>{list.map(i => <Item i={i}/>)}{list.map(i => <Fragment>{i}{() => label()}</Fragment>)}</p>
+                    <p>{[<b>{label}</b>, 'y', () => label(), new RxList([3]).map(i => <s>{i}</s>), null, false]}</p>
+                </div>
+            }
+            const hyd = ssrInto(createElement(App, null))
+            const root = hydrateRootTopDown(hyd, createElement(App, null))
+            expect(reports).toEqual([])
+            const mid = getAxiiRetainedObjectDiagnosticsSnapshot()
+            expect([mid.hosts.activeByType.RxListHost, mid.hosts.activeByType.CompactElementHost, mid.hosts.activeByType.StaticArrayHost])
+                .toEqual([5, 3, 1])
+            list.push(3)
+            list.splice(0, 1)
+            label('z')
+            await tick()
+            root.destroy()
+            const after = getAxiiRetainedObjectDiagnosticsSnapshot()
+            expect([after.hosts.totalActive, after.lightBindings.totalActive, after.compactListHosts.active])
+                .toEqual([0, 0, 0])
+        } finally {
+            disableAxiiRetainedObjectDiagnostics()
+            resetAxiiRetainedObjectDiagnostics()
+        }
+    })
+})
+
 describe('not implemented yet on the internal entry: explicit throws (§7.2)', () => {
     // 第四项：服务端 HTML（缺省时用 renderToString 生成）。现成节点在服务端没有对应的写法，给出它所在元素的形状
-    const shapes: [string, 'B2' | 'B4', () => any, string?][] = [
-        ['RxList', 'B2', () => { const l = new RxList([1]); return function App({}: any, {createElement}: RenderContext) { return <ul>{l.map(i => <li>{i}</li>)}</ul> } }],
-        ['array', 'B2', () => function App({}: any, {createElement}: RenderContext) { return <ul>{[1, 2].map(i => <li>{i}</li>)}</ul> }],
+    const shapes: [string, 'B4', () => any, string?][] = [
         ['Portal', 'B4', () => function App({}: any, {createElement}: RenderContext) { return <div><Portal container="td-portal" content={<b>p</b>}/></div> }],
         ['lazy', 'B4', () => { const L = lazy(() => new Promise(() => {}), () => 'loading'); return function App({}: any, {createElement}: RenderContext) { return <div><L/></div> } }],
         ['reusable', 'B4', () => function App({}: any, {createElement, reusable}: RenderContext) { return <div>{reusable(<b>r</b>)}</div> }],
@@ -545,6 +836,43 @@ describe('server / CSR agreement found in B1 (fixed in #82)', () => {
             hydrateRootTopDown(hyd, createElement(App, null))
             expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
         }
+    })
+})
+
+describe('server / CSR agreement found in B2 (fixed in #82)', () => {
+    // 函数结构态的值是 RxList（{() => list.map(...)}）：CSR 里 RxListHost 的 placeholder 就是 FunctionHost 的 <!--computed node-->。
+    //  服务端曾经经 serializeChild 按「元素 child」写这个列表，行之后多一个 <!--unhandledChild-->：旧模型把它留在 DOM 里，
+    //  之后 push 的行插在它后面；新模型在认领 <!--computed node--> 处报告失配并抛出。#82 在服务端按 Comment-ph 的分派修复
+    //  （ssr.serializeStructureResult → serialize），B2 写下这条时是 test.fails，合入 #82 之后翻转为 test。
+    test('function child returning list.map(...): hydrates ≡ CSR without a report, push ≡ CSR', () => {
+        const make = () => {
+            const list = new RxList([1, 2])
+            function App({}: any, {createElement}: RenderContext) { return <div>{() => list.map(i => <li>{i}</li>)}<p>x</p></div> }
+            return {list, App}
+        }
+        const csrEl = mount()
+        const c = make()
+        createRoot(csrEl).render(createElement(c.App, null))
+        const hyd = ssrInto(createElement(make().App, null))
+        const h = make()
+        hydrateRootTopDown(hyd, createElement(h.App, null))
+        for (const s of [c, h]) s.list.push(3)
+        expect({dom: kids(hyd), reports}).toEqual({dom: kids(csrEl), reports: []})
+    })
+})
+
+describe('a hole in a sparse static array (pre-existing server / CSR disagreement)', () => {
+    // CSR 的 StaticArrayHost.render 用 forEach，跳过空位；服务端 serializeStaticArray 用 for…of，为空位写 <!--empty--><!--array item-->。
+    //  激活与 CSR 一样跳过空位，服务端多写的部分在认领处报告失配（B3 修复），不静默地多建一个 EmptyHost、在 DOM 里多留两个注释。
+    test('the activation follows CSR (the hole is skipped) and reports the extra server markup', () => {
+        // eslint-disable-next-line no-sparse-arrays
+        function App({}: any, {createElement}: RenderContext) { return <p>{['a', , 'b']}</p> }
+        const hyd = ssrInto(createElement(App, null))
+        expect(hyd.innerHTML).toContain('<!--empty--><!--array item-->')
+        let thrown: unknown
+        try { hydrateRootTopDown(hyd, createElement(App, null)) } catch (e) { thrown = e }
+        expect(thrown).toBeInstanceOf(HydrationMismatchError)
+        expect(reports.length).toBe(1)
     })
 })
 

@@ -57,8 +57,12 @@ export const TEXT_SLOT = '#text'
 export const UNHANDLED_CHILD_SLOT = 'unhandledChild'
 export const COMPUTED_NODE_SLOT = 'computed node'
 export const ROOT_SLOT = 'root'
+/** RxListHost 的非 Compact 行（≡ RxListHost.createChildHost 的 `<!--rx list item-->`）。 */
+export const RX_LIST_ITEM_SLOT = 'rx list item'
+/** StaticArrayHost 的非 DirectNodes 项（≡ StaticArrayHost.render 的 `<!--array item-->`）。 */
+export const ARRAY_ITEM_SLOT = 'array item'
 export type HydrationSlot = typeof TEXT_SLOT | typeof UNHANDLED_CHILD_SLOT | typeof COMPUTED_NODE_SLOT | typeof ROOT_SLOT
-    | 'rx list item' | 'array item' | 'reusable'
+    | typeof RX_LIST_ITEM_SLOT | typeof ARRAY_ITEM_SLOT | 'reusable'
 
 /** 值是不是还没有认领的 slot（placeholder 还不是节点）。开发期不变量用（§4.4）。 */
 export function isHydrationSlot(value: unknown): value is HydrationSlot {
@@ -77,6 +81,16 @@ export class TopDownPendingError extends Error {
 
 export function throwTopDownPending(kind: string, pr: 'B2' | 'B3' | 'B4'): never {
     throw new TopDownPendingError(kind, pr)
+}
+
+/**
+ * 同一个描述在一次激活里第二次被消费（const s = <span/>; <div>{s}{s}</div>、[s, s]，或激活中存下的 JSX 再次渲染，C6）：
+ * CSR 第二次插入时把节点挪走，服务端写两份；描述已经瘦身（rawChildren 为 undefined），「已有 node 就当作那个元素」的分支
+ * 在 B4 落地，之前显式抛错。消费描述的每个入口（认领步骤的子描述、StaticHost / CompactElementHost 的 source）在读
+ * rawChildren 之前先判断 desc.node，不能在空的 rawChildren 上 TypeError。
+ */
+export function throwConsumedDescription(): never {
+    throwTopDownPending('the same JSX element rendered more than once (C6)', 'B4')
 }
 
 /**

@@ -688,7 +688,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B2'))('trailing junk after RxList: must not leave orphan', () => {
+    test.skipIf(pendingTopDown('B3'))('trailing junk after RxList: must not leave orphan', () => {
         configureDiagnostics({enabled: true, onError: () => {}})
         const items = new RxList(['a', 'b'])
         function App({}: any, {createElement}: RenderContext) {
@@ -786,7 +786,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
 
     // --- k27/k28-audit: Comment-ph text drift (D12) + container leading STYLE/SCRIPT/LINK (D13) ---
 
-    test.skipIf(pendingTopDown('B2'))('Comment-ph atom text drift: must report HydrationMismatchError (not silent run() fix)', () => {
+    test.skipIf(pendingTopDown('B3'))('Comment-ph atom text drift: must report HydrationMismatchError (not silent run() fix)', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -820,7 +820,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B2'))('matched Comment-ph: no mismatch; text identity reused', () => {
+    test('matched Comment-ph: no mismatch; text identity reused', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -843,7 +843,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B2'))('G4-F Function→string Comment-ph text drift: report + identity rebuild', () => {
+    test.skipIf(pendingTopDown('B3'))('G4-F Function→string Comment-ph text drift: report + identity rebuild', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -869,7 +869,7 @@ describe('M-06 hydration mismatch (§3.7)', () => {
         configureDiagnostics({})
     })
 
-    test.skipIf(pendingTopDown('B2'))('PrimitiveHost Comment-ph string drift: report + identity rebuild', () => {
+    test.skipIf(pendingTopDown('B3'))('PrimitiveHost Comment-ph string drift: report + identity rebuild', () => {
         const errors: unknown[] = []
         configureDiagnostics({
             enabled: true,
@@ -1022,7 +1022,7 @@ describe('M-06 retained after hydrate+destroy', () => {
         document.body.appendChild(rootEl)
     })
 
-    test.skipIf(pendingTopDown('B2'))('hydrate+destroy returns host/binding/style retained counters to zero', () => {
+    test('hydrate+destroy returns host/binding/style retained counters to zero', () => {
         enableAxiiRetainedObjectDiagnostics({reset: true})
         try {
             const label = atom('x')
